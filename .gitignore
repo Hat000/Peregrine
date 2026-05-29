@@ -27,8 +27,13 @@ desktop.ini
 # Project
 data/runs/
 data/recordings/
+data/synthetic/
 *.log
 .env
+
+# ML artifacts
+*.pt
+runs/
 
 # Academic papers (large/binary PDFs + extracts; reference only, untracked by design)
 Academic/
