@@ -68,3 +68,23 @@ def project_camera_point(p_camera: np.ndarray) -> tuple[float, float] | None:
         return None
     uvw = CAMERA_INTRINSICS_K @ p_camera
     return float(uvw[0] / uvw[2]), float(uvw[1] / uvw[2])
+
+
+def horizontal_fov_deg() -> float:
+    """Horizontal field of view (deg) from the intrinsics. fx=320, W=640 -> 90 deg.
+    NB the spec labels '90 deg VFoV' but that is actually the HORIZONTAL FoV."""
+    return float(np.rad2deg(2.0 * np.arctan(IMAGE_WIDTH / (2.0 * CAMERA_INTRINSICS_K[0, 0]))))
+
+
+def vertical_fov_deg() -> float:
+    """Vertical field of view (deg). fy=320, H=360 -> ~58.7 deg (NOT 90)."""
+    return float(np.rad2deg(2.0 * np.arctan(IMAGE_HEIGHT / (2.0 * CAMERA_INTRINSICS_K[1, 1]))))
+
+
+def camera_elevation_band_deg() -> tuple[float, float]:
+    """Body-frame elevation range the camera sees (deg): the optical axis is +20 deg (up),
+    spanning +/- VFoV/2 about it. ~(-9.4, +49.4) -> the camera 'looks UP'; low gates and
+    climbs can fall out of the bottom of the frame (a planner/visibility consideration)."""
+    half = vertical_fov_deg() / 2.0
+    axis = float(np.rad2deg(CAMERA_PITCH_RAD))
+    return (axis - half, axis + half)

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from racer.mavlink_client import MavlinkClient
+from racer.mavlink_client import MavlinkClient  # sets MAVLINK20 before importing mavutil
+from pymavlink import mavutil
 
 
 def _attitude(time_boot_ms, roll=0.0, pitch=0.0, yaw=0.0):
@@ -77,3 +78,87 @@ def test_highres_imu_populates_sensors():
     np.testing.assert_array_equal(c.state.accel_body, [0.0, 0.0, -9.0])
     np.testing.assert_array_equal(c.state.mag_body, [1.0, 2.0, 3.0])
     assert c.state.baro_pressure_hpa == 1013.25
+
+
+# -- first-contact additions: arming / acks / statustext / heartbeat metadata --------------
+class _FakeMav:
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    def command_long_send(self, target_system, target_component, command, confirmation,
+                          p1, p2, p3, p4, p5, p6, p7):
+        self.sent.append(dict(command=command, confirmation=confirmation,
+                              p1=p1, p2=p2, p3=p3, p4=p4, p5=p5, p6=p6, p7=p7))
+
+
+class _FakeConn:
+    def __init__(self):
+        self.mav = _FakeMav()
+        self.target_system = 1
+        self.target_component = 1
+
+
+def _command_ack(command, result):
+    m = SimpleNamespace(command=command, result=result)
+    m.get_type = lambda: "COMMAND_ACK"
+    return m
+
+
+def _statustext(text, severity=6):
+    m = SimpleNamespace(severity=severity, text=text)
+    m.get_type = lambda: "STATUSTEXT"
+    return m
+
+
+def _heartbeat(autopilot, vtype, base_mode=0, custom_mode=0):
+    m = SimpleNamespace(autopilot=autopilot, type=vtype, base_mode=base_mode, custom_mode=custom_mode)
+    m.get_type = lambda: "HEARTBEAT"
+    return m
+
+
+def test_arm_disarm_send_component_arm_disarm():
+    c = MavlinkClient()
+    c.conn = _FakeConn()
+    c.arm()
+    s = c.conn.mav.sent[-1]
+    assert s["command"] == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+    assert s["p1"] == 1.0 and s["p2"] == 0.0          # arm, no force
+    c.arm(force=True)
+    assert c.conn.mav.sent[-1]["p2"] == 21196.0       # force magic
+    c.disarm()
+    assert c.conn.mav.sent[-1]["p1"] == 0.0           # disarm
+
+
+def test_command_ack_captured_with_name():
+    c = MavlinkClient()
+    c._handle(_command_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                           mavutil.mavlink.MAV_RESULT_ACCEPTED))
+    ack = c.last_command_ack
+    assert ack["command"] == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
+    assert ack["result"] == mavutil.mavlink.MAV_RESULT_ACCEPTED
+    assert ack["result_name"] == "MAV_RESULT_ACCEPTED"
+
+
+def test_statustext_captured_decoded_and_capped():
+    c = MavlinkClient()
+    c._max_statustexts = 3
+    c._handle(_statustext(b"Armed\x00\x00"))          # bytes, NUL-padded
+    c._handle(_statustext("Race started"))
+    assert c.statustexts[0]["text"] == "Armed"
+    assert c.statustexts[1]["text"] == "Race started"
+    for i in range(5):
+        c._handle(_statustext(f"m{i}"))
+    assert len(c.statustexts) == 3                     # cap holds
+    assert c.statustexts[-1]["text"] == "m4"
+
+
+def test_heartbeat_captures_backend_metadata():
+    c = MavlinkClient()
+    c._handle(_heartbeat(mavutil.mavlink.MAV_AUTOPILOT_PX4,
+                         mavutil.mavlink.MAV_TYPE_QUADROTOR,
+                         base_mode=mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED,
+                         custom_mode=7))
+    assert c.autopilot == mavutil.mavlink.MAV_AUTOPILOT_PX4
+    assert c.vehicle_type == mavutil.mavlink.MAV_TYPE_QUADROTOR
+    assert c.custom_mode == 7
+    assert c.state.armed is True

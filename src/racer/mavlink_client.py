@@ -65,6 +65,14 @@ def _pos_type_mask(
     return mask
 
 
+def _result_name(result: int) -> str:
+    """Human-readable MAV_RESULT enum name for a COMMAND_ACK result code."""
+    try:
+        return mavutil.mavlink.enums["MAV_RESULT"][result].name
+    except Exception:
+        return str(result)
+
+
 class MavlinkClient:
     HEARTBEAT_HZ = 2  # spec minimum
 
@@ -78,6 +86,14 @@ class MavlinkClient:
         # parsing. The recorder sets this to capture msg.get_msgbuf() (raw wire bytes).
         # Kept orthogonal so recording never perturbs the parse/state path.
         self.on_message: Callable[[Any], None] | None = None
+        # First-contact diagnostics (events / heartbeat metadata, not steady telemetry, so
+        # kept OFF the immutable DroneState snapshot). Populated by _handle; read by the probes.
+        self.last_command_ack: dict | None = None   # {command, result, result_name, recv_monotonic_ns}
+        self.statustexts: list[dict] = []            # recent STATUSTEXT: {severity, text, recv_monotonic_ns}
+        self._max_statustexts = 200
+        self.autopilot: int | None = None            # HEARTBEAT.autopilot (MAV_AUTOPILOT)
+        self.vehicle_type: int | None = None         # HEARTBEAT.type (MAV_TYPE)
+        self.custom_mode: int | None = None          # HEARTBEAT.custom_mode (autopilot-specific)
 
     def connect(self, wait_heartbeat: bool = True, timeout_s: float = 15.0) -> None:
         self.conn = mavutil.mavlink_connection(
@@ -153,6 +169,33 @@ class MavlinkClient:
         elif t == "HEARTBEAT":
             armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
             self.state = replace(self.state, armed=armed, status_flags=int(msg.base_mode))
+            # Backend metadata: which autopilot/mode model are we actually talking to? A
+            # first-contact unknown (PX4? ArduPilot? Betaflight-ish?) the probes report.
+            self.autopilot = int(msg.autopilot)
+            self.vehicle_type = int(msg.type)
+            self.custom_mode = int(msg.custom_mode)
+        elif t == "COMMAND_ACK":
+            # Tells us if the sim accepted/rejected a command (e.g. arm) + why. Keystone
+            # feedback for the lifecycle/control probes.
+            self.last_command_ack = {
+                "command": int(msg.command),
+                "result": int(msg.result),
+                "result_name": _result_name(int(msg.result)),
+                "recv_monotonic_ns": recv,
+            }
+        elif t == "STATUSTEXT":
+            # Sims often narrate the session here ("armed", "race started", "gate N",
+            # "finished") -- can reveal the whole lifecycle for free. Capture verbatim.
+            text = msg.text
+            if isinstance(text, (bytes, bytearray)):
+                text = bytes(text).decode("ascii", "replace")
+            self.statustexts.append({
+                "severity": int(getattr(msg, "severity", 6)),
+                "text": str(text).rstrip("\x00").strip(),
+                "recv_monotonic_ns": recv,
+            })
+            if len(self.statustexts) > self._max_statustexts:
+                self.statustexts.pop(0)
         elif t in ("TIMESYNC", "BAD_DATA"):
             pass  # TODO(clock): use TIMESYNC to reconcile sim_time_ns across streams.
         else:
@@ -242,3 +285,52 @@ class MavlinkClient:
                 thrust=thrust,
             )
         )
+
+    # -- arming + lifecycle (spec-standard MAVLink; autopilot-AGNOSTIC, NOT Elodin) --------
+    def send_command_long(
+        self, command: int,
+        p1: float = 0.0, p2: float = 0.0, p3: float = 0.0, p4: float = 0.0,
+        p5: float = 0.0, p6: float = 0.0, p7: float = 0.0, *, confirmation: int = 0,
+    ) -> None:
+        """Send a COMMAND_LONG. Generic so the probes can issue any MAV_CMD_*."""
+        assert self.conn is not None
+        self.conn.mav.command_long_send(
+            self.conn.target_system, self.conn.target_component,
+            command, confirmation, p1, p2, p3, p4, p5, p6, p7,
+        )
+
+    def arm(self, force: bool = False) -> None:
+        """Request ARM via MAV_CMD_COMPONENT_ARM_DISARM (param1=1). ``force`` sends the 21196
+        magic that bypasses prearm checks. Confirm with wait_command_ack / wait_armed. Standard
+        across PX4/ArduPilot; the spec sim's actual arming policy is a first-contact unknown."""
+        self.send_command_long(
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 1.0, 21196.0 if force else 0.0
+        )
+
+    def disarm(self, force: bool = False) -> None:
+        """Request DISARM (param1=0)."""
+        self.send_command_long(
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0.0, 21196.0 if force else 0.0
+        )
+
+    def wait_command_ack(self, command: int, timeout_s: float = 3.0) -> dict | None:
+        """Pump until a COMMAND_ACK for ``command`` arrives; return the ack dict or None on
+        timeout. Set ``self.last_command_ack = None`` before sending to avoid a stale match."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            self.pump()
+            ack = self.last_command_ack
+            if ack is not None and ack["command"] == command:
+                return ack
+            time.sleep(0.005)
+        return None
+
+    def wait_armed(self, armed: bool = True, timeout_s: float = 5.0) -> bool:
+        """Pump until the HEARTBEAT armed flag (ground truth) reaches ``armed``. Returns bool."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            self.pump()
+            if self.state.armed == armed:
+                return True
+            time.sleep(0.01)
+        return False
