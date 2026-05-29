@@ -30,5 +30,8 @@ data/recordings/
 *.log
 .env
 
+# Academic papers (large/binary PDFs + extracts; reference only, untracked by design)
+Academic/
+
 # Claude Code local config (user-specific)
 .claude/settings.local.json
