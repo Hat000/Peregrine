@@ -28,9 +28,13 @@ metadata:
 - Smallest GPU VM in Azure period is 4 vCPUs (NV4as_v4 or NC4as_T4_v3), so the 3-vCPU Student cap blocks *any* GPU work; upgrade-to-PAYG is unavoidable for GPU use.
 - **NOTE (2026-05-29): cost is no longer a constraint (user directive).** NV12ads is the FLOOR, not a ceiling. Size UP to NV18ads (12 GB) or NV36ads (full A10, 24 GB) if it buys sim FPS or headroom for parallel sim instances + on-real-sim optimization (CMA-ES/RL/sweeps). Choose VM by performance, not price.
 
-**Azure path decision (still pending user choice):**
-- **Free Trial:** $200 credit, 30-day validity, credit card required, immediate.
-- **Student → Upgrade to PAYG:** $100 credit, 12-month validity (key advantage given sim release timing uncertainty), .edu email verification, must upgrade subscription to unlock GPU quota.
+**Windows-GPU-host decision (RESOLVED 2026-05-29; sim drops 2026-05-30):**
+- **Azure for Students ($100) = DEAD END for GPU** — Student tier hard-caps 3 vCPU and locks N-series GPU quota to 0 with NO increase possible. Cannot host the sim. (User-verified.)
+- **Azure Free Trial ($200) = the only viable Azure path, ~1-day friction:** GPU quota defaults to 0 → must convert Free Trial to Pay-As-You-Go ($200 stays valid 30 days) → open a support ticket for an N-series quota increase (NVadsA10 v5 / NCasT4_v3 / NVv4) → wait for Microsoft approval (hours–1–2 business days). This is the DURABLE headless/scriptable long-term host (parallel sim instances, VQ2 optimization). FILE THE QUOTA TICKET NOW.
+- **Paperspace = OUT:** DigitalOcean deprecated Windows templates for users who joined after 2024-07-01 ⇒ new accounts are Linux-only. (Earlier suggestion retracted.)
+- **AWS Educate = OUT:** Starter/lab accounts exclude EC2 GPU instances; a normal AWS account hits the same new-account G-instance quota-ticket wait as Azure. No hyperscaler is "instant" for GPU on a fresh account.
+- **INSTANT Windows + NVIDIA GPU, no quota (the ASAP path for first contact) = cloud-PC providers:** AirGPU (hourly ~$0.75/hr+, pay-as-you-go, RDP; add persistent storage), Vagon (NVIDIA, persistent files, engineer-targeted), or Shadow PC (full persistent Windows PC ~$34–55/mo, possible signup queue). Pick a ≥8GB-VRAM NVIDIA tier (gaming RTX 3080/4080 or workstation A4000/A5000 all clear the RTX 2060 Super reference). Run BOTH the sim and the Python client on this one box (localhost MAVLink/UDP → in <50ms budget). Confirm ToS allows non-gaming/compute (AirGPU/Vagon fine).
+- **RECOMMENDED PLAY:** AirGPU/Vagon for tomorrow's first contact (instant, no quota) + Azure Free Trial→PAYG→N-series quota ticket in parallel as the durable headless host.
 
 **GPU contention (flagged 2026-05-28 review):** the DCL sim RENDERS on the GPU and the YOLO detector INFERS on the GPU — they share one A10 partition on the same Windows VM (real-time inference must co-locate with the sim; Adroit is Linux/offline-only). With cost not a constraint, **size up to the full A10 (NV36ads, 24 GB)** so neither starves. Also: run the autonomy/ML stack on **Python 3.12** (no CUDA PyTorch wheels for 3.14 yet) on both Azure VM and Adroit. The **Elodin surrogate** (Apache-2.0, Linux) can run on Adroit or laptop-WSL for sim-independent dev/RL before the official sim releases — see [[reference-competition-materials]].
 
