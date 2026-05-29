@@ -25,7 +25,7 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-pytest   # expect 5 passed (tests/test_frames.py)
+pytest   # expect 125 passed
 ```
 
 ## Smoke tests
@@ -35,6 +35,22 @@ With the DCL simulator running:
 python scripts\smoke_mavlink.py udp:127.0.0.1:14550
 python scripts\smoke_video.py 30
 ```
+
+## Recording (run for every sim contact)
+The course is deterministic, so one good recording replays into many offline iterations
+(system-ID, mapping, racing-line fitting, detector auto-labels). Start the sim first, then:
+
+```powershell
+python scripts\record_session.py --label first_contact      # Ctrl-C to stop
+python scripts\record_session.py --label probe --seconds 60 # fixed duration
+```
+
+Writes `data/runs/<stamp>_<label>/`: `mavlink.tlog` (standard pymavlink tlog — readable by
+MAVExplorer/QGC; the sim clock rides inside the frames), `video.bin` + `video_index.jsonl`
+(bit-exact JPEGs, seekable), and `meta.json` (clock bridge + stats). On exit it prints the
+MAVLink message-type histogram and which hedge fields (position/velocity/mag/baro) appeared
+— a built-in first-contact `msg_audit` that resolves risk R1. Replay in code via
+`racer.recording.RecordingReader` (`.iter_mavlink()`, `.frames()`, `.iter_jpeg()`).
 
 ## Pipeline (intended)
 

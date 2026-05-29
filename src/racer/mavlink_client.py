@@ -13,7 +13,9 @@ import os
 os.environ.setdefault("MAVLINK20", "1")
 
 import time
+from collections.abc import Callable
 from dataclasses import replace
+from typing import Any
 
 import numpy as np
 from pymavlink import mavutil
@@ -72,6 +74,10 @@ class MavlinkClient:
         self.state = DroneState()
         self.unknown_msg_types: set[str] = set()
         self._last_heartbeat_tx_s = 0.0
+        # Optional raw-message tap, called with each inbound pymavlink message BEFORE
+        # parsing. The recorder sets this to capture msg.get_msgbuf() (raw wire bytes).
+        # Kept orthogonal so recording never perturbs the parse/state path.
+        self.on_message: Callable[[Any], None] | None = None
 
     def connect(self, wait_heartbeat: bool = True, timeout_s: float = 15.0) -> None:
         self.conn = mavutil.mavlink_connection(
@@ -94,6 +100,8 @@ class MavlinkClient:
             msg = self.conn.recv_match(blocking=False)
             if msg is None:
                 break
+            if self.on_message is not None:
+                self.on_message(msg)
             self._handle(msg)
         if now - self._last_heartbeat_tx_s >= 1.0 / self.HEARTBEAT_HZ:
             self._send_heartbeat()

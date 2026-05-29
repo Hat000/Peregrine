@@ -50,6 +50,9 @@ class Frame:
     sim_time_ns: int
     image_bgr: np.ndarray            # (360, 640, 3) uint8, BGR (OpenCV order)
     recv_monotonic_ns: int = 0       # local arrival time, for latency profiling
+    jpeg_bytes: bytes | None = None  # raw JPEG exactly as received; set by jpeg_receiver,
+                                     # consumed by the recorder for bit-exact replay. None
+                                     # when a Frame is synthesised rather than received.
 
 
 @dataclass(frozen=True, eq=False)

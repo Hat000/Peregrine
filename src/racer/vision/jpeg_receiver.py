@@ -132,6 +132,7 @@ class JpegUdpReceiver:
             sim_time_ns=partial.sim_time_ns,
             image_bgr=img,
             recv_monotonic_ns=time.monotonic_ns(),
+            jpeg_bytes=jpeg_bytes,   # keep the raw bytes for bit-exact recording/replay
         )
 
     def _evict_stale(self) -> None:
