@@ -219,6 +219,29 @@ class NavState:
 
 
 # ---------------------------------------------------------------------------
+# PLAN  (the THINK -> ACT seam)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, eq=False)
+class Setpoint:
+    """A reference state for the controller — the planner's output (THINK -> ACT seam).
+
+    The differential-flatness reference a trajectory generator emits: a desired world-NED
+    position and/or velocity (+ optional acceleration feedforward) and a desired heading.
+    Provide whatever the planner computes and leave the rest ``None``; the controller uses
+    what its mode needs (POSITION leans on the sim stabilizer; the attitude path runs a PD
+    law on the position/velocity error plus the accel feedforward). This frozen seam lets
+    the planner swap (reactive LOS -> min-snap -> MPCC/RL) without touching the controller.
+    """
+
+    sim_time_ns: int = 0
+    position_ned: np.ndarray | None = None
+    velocity_ned: np.ndarray | None = None
+    accel_ned: np.ndarray | None = None
+    yaw: float | None = None
+    yaw_rate: float | None = None
+
+
+# ---------------------------------------------------------------------------
 # ACT
 # ---------------------------------------------------------------------------
 class ControlMode(IntEnum):
