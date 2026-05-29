@@ -48,9 +48,31 @@ def test_dronestate_defaults_are_safe():
     assert DroneState().accel_body is not s.accel_body
 
 
-def test_gateobservation_rejects_bad_corner_shape():
+def test_gateobservation_corner_contract():
+    # 4 corners with no ids -> OK (assumed canonical [0,1,2,3]).
+    GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((4, 2)))
+    # 3 corners are allowed (clipped gate) BUT need corner_ids to name which canonical
+    # corners they are -- order alone is ambiguous for a partial set.
     with pytest.raises(AssertionError):
         GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((3, 2)))
+    GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((3, 2)),
+                    corner_ids=np.array([0, 1, 3]))
+    # Fewer than 3 or more than 4 corners are rejected.
+    with pytest.raises(AssertionError):
+        GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((2, 2)),
+                        corner_ids=np.array([0, 1]))
+    with pytest.raises(AssertionError):
+        GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((5, 2)))
+    # corner_ids must be distinct indices within 0..3, and match the corner count.
+    with pytest.raises(AssertionError):
+        GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((3, 2)),
+                        corner_ids=np.array([0, 1, 7]))
+    with pytest.raises(AssertionError):
+        GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((3, 2)),
+                        corner_ids=np.array([0, 1, 1]))
+    with pytest.raises(AssertionError):
+        GateObservation(frame_id=1, sim_time_ns=1, corners_px=np.zeros((4, 2)),
+                        corner_ids=np.array([0, 1, 2]))
 
 
 def test_gatepose_geometry():

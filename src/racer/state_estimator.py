@@ -37,6 +37,12 @@ _I3 = np.eye(3)
 _Z3 = np.zeros((3, 3))
 GRAVITY_NED = np.array([0.0, 0.0, 9.80665])
 
+
+def _skew(v: np.ndarray) -> np.ndarray:
+    """Skew-symmetric cross-product matrix: ``_skew(v) @ w == np.cross(v, w)``."""
+    x, y, z = v
+    return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+
 _H_POS = np.hstack([_I3, _Z3])            # observes position
 _H_VEL = np.hstack([_Z3, _I3])            # observes velocity
 _H_Z = np.array([[0.0, 0.0, 1.0, 0.0, 0.0, 0.0]])  # observes pz (baro)
@@ -49,6 +55,7 @@ class LinearKF:
     x: np.ndarray                      # (6,)
     P: np.ndarray                      # (6,6)
     accel_noise_std: float = 0.3       # m/s^2, accel process/measurement noise (tune to the IMU)
+    attitude_noise_std: float = np.deg2rad(1.0)  # rad, 1-sigma error in the GIVEN attitude [review 3A]
     gravity_ned: np.ndarray = field(default_factory=lambda: GRAVITY_NED.copy())
     process_floor: float = 1e-6        # tiny diagonal to keep Q full-rank
 
@@ -73,11 +80,20 @@ class LinearKF:
         """Propagate by dt using body specific force + the given body->world rotation."""
         if dt <= 0:
             return
-        a_world = R_world_body @ np.asarray(accel_body, dtype=np.float64) + self.gravity_ned
+        specific_force_world = R_world_body @ np.asarray(accel_body, dtype=np.float64)
+        a_world = specific_force_world + self.gravity_ned
         F = np.block([[_I3, dt * _I3], [_Z3, _I3]])
         B = np.vstack([0.5 * dt * dt * _I3, dt * _I3])   # (6,3)
         self.x = F @ self.x + B @ a_world
-        Q = B @ (self.accel_noise_std**2 * _I3) @ B.T + self.process_floor * np.eye(6)
+        # Acceleration noise = isotropic IMU noise + attitude-error projected through the
+        # rotated specific force. A small attitude error rotates the ~9.8 m/s^2 specific-
+        # force vector, injecting ~(|s| * sigma_theta) of phantom horizontal acceleration
+        # that would otherwise integrate into unmodelled drift on a blind coast. Covariance
+        # sigma_theta^2 * [s]x [s]x^T is PSD; at hover s~[0,0,-g] it adds g^2 to the
+        # horizontal axes and 0 to vertical (gravity tilts sideways, not up/down). [review 3A]
+        S = _skew(specific_force_world)
+        accel_cov = self.accel_noise_std**2 * _I3 + self.attitude_noise_std**2 * (S @ S.T)
+        Q = B @ accel_cov @ B.T + self.process_floor * np.eye(6)
         self.P = F @ self.P @ F.T + Q
 
     # -- correction ---------------------------------------------------------

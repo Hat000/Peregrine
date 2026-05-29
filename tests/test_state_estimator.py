@@ -108,6 +108,52 @@ def test_tracks_under_constant_yaw():
     assert np.sqrt(np.mean(errs**2)) < 0.1
 
 
+def test_attitude_noise_inflates_horizontal_process_cov_only():
+    # [review 3A] At hover the rotated specific force is ~[0,0,-g]; an attitude error tilts
+    # gravity into the HORIZONTAL plane only. So attitude_noise_std inflates x/y position +
+    # velocity variance and leaves z untouched, and never moves the predicted mean.
+    rest = np.array([0.0, 0.0, -9.80665])
+    kf0 = LinearKF.initialize(np.zeros(3), np.zeros(3), pos_std=0.0, vel_std=0.0,
+                              accel_noise_std=0.3, attitude_noise_std=0.0)
+    kf1 = LinearKF.initialize(np.zeros(3), np.zeros(3), pos_std=0.0, vel_std=0.0,
+                              accel_noise_std=0.3, attitude_noise_std=np.deg2rad(1.0))
+    kf0.predict(rest, np.eye(3), 0.05)
+    kf1.predict(rest, np.eye(3), 0.05)
+    assert kf1.P[0, 0] > kf0.P[0, 0]                   # x position variance inflated
+    assert kf1.P[1, 1] > kf0.P[1, 1]                   # y
+    assert kf1.P[3, 3] > kf0.P[3, 3]                   # vx
+    assert kf1.P[4, 4] > kf0.P[4, 4]                   # vy
+    assert kf1.P[2, 2] == pytest.approx(kf0.P[2, 2])   # z position unchanged (gravity is vertical)
+    assert kf1.P[5, 5] == pytest.approx(kf0.P[5, 5])   # vz unchanged
+    np.testing.assert_allclose(kf1.position, kf0.position, atol=1e-12)  # mean unaffected
+
+
+def test_attitude_noise_inflates_blind_coast_uncertainty():
+    # [review 3A] A real (unmodelled) attitude bias makes a blind coast drift via phantom
+    # gravity. Modeling attitude_noise_std inflates the filter's predicted uncertainty so it
+    # is less overconfident and re-weights vision harder on recovery. It does NOT erase the
+    # systematic drift -- a deterministic bias integrated over time outruns any random-walk
+    # Q; estimating the bias itself is the ESKF fallback's job. Here we check the inflation
+    # mechanism: predicted sigma grows with the modeled attitude error, the mean is untouched,
+    # and the filter becomes less overconfident about the (unchanged) drift.
+    f_rest = np.array([0.0, 0.0, -9.80665])
+    R_err = R_world_from_body(0.0, np.deg2rad(2.0), 0.0)   # filter is fed a 2-deg-wrong pitch
+
+    def coast(att_std):
+        kf = LinearKF.initialize(np.zeros(3), np.zeros(3), pos_std=0.0, vel_std=0.0,
+                                 accel_noise_std=0.05, attitude_noise_std=att_std)
+        for _ in range(100):                               # 1 s blind, dt=0.01, no updates
+            kf.predict(f_rest, R_err, 0.01)
+        return np.linalg.norm(kf.position[:2]), np.sqrt(kf.P[0, 0] + kf.P[1, 1])
+
+    drift_m, sigma_m = coast(np.deg2rad(2.0))
+    drift_z, sigma_z = coast(0.0)
+    np.testing.assert_allclose(drift_m, drift_z)           # mean drift independent of Q
+    assert drift_m > 0.05                                  # the phantom-gravity drift is real
+    assert sigma_m > 1.5 * sigma_z                         # modeling attitude error inflates sigma
+    assert drift_m / sigma_m < drift_z / sigma_z           # ...and reduces overconfidence
+
+
 def test_make_nav_state_carries_attitude_and_cov():
     kf = LinearKF.initialize(np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3]))
     ds = DroneState(sim_time_ns=12345, roll=0.1, pitch=-0.2, yaw=0.3,

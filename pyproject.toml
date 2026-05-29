@@ -16,6 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# YOLO-pose corner detector: training (Adroit/Azure) AND runtime inference -> GateObservation.
+# Heavy (pulls torch) and GPU-only, so it stays out of the core deps. Install on the GPU
+# boxes: `pip install -e ".[detector]"`. CUDA torch wheels (cp313, cu12x) are installed
+# out-of-band per platform; ultralytics will otherwise pull a CPU torch.
+detector = ["ultralytics>=8.3.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/racer"]

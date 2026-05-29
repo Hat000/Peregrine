@@ -16,9 +16,12 @@ Conventions (read once, never guess — sign/frame errors are the #1 risk here):
 - Time: ``sim_time_ns`` is the master timeline (simulator epoch, nanoseconds); drive all
   loops + latency comp off it. ``recv_monotonic_ns`` (``time.monotonic_ns``) is the local
   arrival time, for measuring end-to-end latency.
-  TODO(clock): telemetry stamps ``sim_time_ns`` best-effort from the source message's own
-  clock (ATTITUDE.time_boot_ms vs HIGHRES_IMU.time_usec may use different epochs). Reconcile
-  via TIMESYNC once ``msg_audit`` characterises the offsets — see master-plan hole #10.
+  Clock isolation: ``sim_time_ns`` is driven SOLELY by HIGHRES_IMU.time_usec (one epoch,
+  high rate); ATTITUDE.time_boot_ms is a different epoch and is NOT written here, so the
+  timeline stays monotonic (writing both made it oscillate — see mavlink_client review 2A).
+  Orientation thus carries the most-recent IMU stamp (sub-IMU-period stale). TODO(clock):
+  reconcile the epochs via TIMESYNC once ``msg_audit`` characterises the offsets — master
+  plan hole #10. Until then, ``recv_monotonic_ns`` is the safe clock for cross-stream dt.
 
 Equality: array-bearing contracts use ``eq=False`` (identity equality) to dodge numpy's
 ambiguous-truth pitfalls; compare fields explicitly if you ever need value equality.
@@ -90,21 +93,40 @@ class DroneState:
 class GateObservation:
     """A single detected gate in one frame, BEFORE PnP. Produced by the detector.
 
-    ``corners_px`` are the 4 inner-square corners in the canonical order expected by
-    ``gate_pose`` (the same order as the 3D model points). 8-corner (inner+outer) is a
-    later upgrade and would extend this contract, not replace it.
+    ``corners_px`` are inner-square corners in pixels. Normally all 4 (canonical order,
+    matching the 3D model points), but as the drone closes on a gate the 20-deg up-tilt +
+    ~59-deg VFoV push the lower corners out of frame, so we keep flying on whatever is
+    still visible: 3 corners are enough for a (P3P) pose. When fewer than 4 are given,
+    ``corner_ids`` MUST say which canonical corners they are (0=LL, 1=LR, 2=UR, 3=UL) so
+    the PnP can pick the matching object points — order alone is ambiguous. With all 4,
+    ``corner_ids`` may be omitted (assumed canonical [0,1,2,3]). 8-corner (inner+outer) is
+    a later upgrade that would widen the cap, not replace this contract.
     """
 
     frame_id: int
     sim_time_ns: int
-    corners_px: np.ndarray                       # (4, 2) float, pixel coords, ordered
-    corner_confidence: np.ndarray | None = None  # (4,) per-keypoint confidence, or None
+    corners_px: np.ndarray                       # (N, 2) float pixel coords, N in {3, 4}
+    corner_ids: np.ndarray | None = None         # (N,) canonical corner index 0..3 per row; None => [0..N-1]
+    corner_confidence: np.ndarray | None = None  # (N,) per-keypoint confidence, or None
     score: float = 1.0                           # object detection confidence
     bbox_xywh: np.ndarray | None = None          # (4,) optional, for ROI / debug
     gate_id: int | None = None                   # filled by data-association; None from raw detector
 
     def __post_init__(self) -> None:
-        assert self.corners_px.shape == (4, 2), f"corners_px must be (4,2), got {self.corners_px.shape}"
+        c = self.corners_px
+        assert c.ndim == 2 and c.shape[1] == 2, f"corners_px must be (N,2), got {c.shape}"
+        n = c.shape[0]
+        assert 3 <= n <= 4, f"need 3 or 4 corners, got {n}"
+        if self.corner_ids is None:
+            assert n == 4, "corner_ids is required when fewer than 4 corners are given"
+        else:
+            ids = np.asarray(self.corner_ids)
+            assert ids.shape == (n,), f"corner_ids must be ({n},), got {ids.shape}"
+            uniq = {int(i) for i in ids}
+            assert uniq <= {0, 1, 2, 3} and len(uniq) == n, "corner_ids must be distinct indices in 0..3"
+        if self.corner_confidence is not None:
+            assert self.corner_confidence.shape == (n,), \
+                f"corner_confidence must be ({n},), got {self.corner_confidence.shape}"
 
 
 @dataclass(frozen=True, eq=False)
@@ -125,6 +147,7 @@ class GatePose:
     gate_id: int | None = None
     covariance: np.ndarray | None = None         # (6,6) pose cov [t(3), rot(3)]; from corner sampling
     ambiguity_ratio: float | None = None         # IPPE 2-fold: err2/err1 (>>1 = unambiguous); None if n/a
+    n_corners: int = 4                            # corners used: 4 => IPPE_SQUARE; 3 => P3P (less constrained, trust less)
 
     def __post_init__(self) -> None:
         assert self.R_cam_gate.shape == (3, 3), f"R_cam_gate must be (3,3), got {self.R_cam_gate.shape}"

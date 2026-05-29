@@ -105,9 +105,16 @@ class MavlinkClient:
         t = msg.get_type()
         recv = time.monotonic_ns()
         if t == "ATTITUDE":
+            # CLOCK ISOLATION [review 2A]: ATTITUDE.time_boot_ms and HIGHRES_IMU.time_usec
+            # run on DIFFERENT epochs. If both wrote sim_time_ns, it would oscillate as the
+            # streams interleave, and any dt computed from it would flip negative/huge and
+            # diverge the estimator. So HIGHRES_IMU is the SOLE driver of sim_time_ns (its
+            # high-rate usec clock is our master timeline); ATTITUDE updates orientation
+            # only. recv_monotonic_ns still advances for liveness/latency. The attitude
+            # then carries the most-recent IMU sim-time (sub-IMU-period stale, monotonic).
+            # TODO(clock): reconcile the two epochs via TIMESYNC, then fuse a single stamp.
             self.state = replace(
                 self.state,
-                sim_time_ns=int(msg.time_boot_ms) * 1_000_000,
                 recv_monotonic_ns=recv,
                 roll=msg.roll,
                 pitch=msg.pitch,
@@ -117,7 +124,7 @@ class MavlinkClient:
                 ),
             )
         elif t == "HIGHRES_IMU":
-            # NB: time_usec epoch may differ from ATTITUDE.time_boot_ms — see clock TODO.
+            # Sole driver of sim_time_ns — the master sim timeline (see ATTITUDE above).
             self.state = replace(
                 self.state,
                 sim_time_ns=int(msg.time_usec) * 1_000,

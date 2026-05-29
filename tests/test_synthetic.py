@@ -65,6 +65,26 @@ def test_keypoints_are_pnp_consistent():
     assert _rotation_geodesic(gp.R_cam_gate, R) < 2e-3
 
 
+def test_label_string_is_pnp_consistent():
+    # [YOLO constraint 1] Parse the actual written YOLO-pose row back into pixel keypoints
+    # and round-trip through gate_pose. This proves the on-disk label ORDER matches the PnP
+    # convention -- a wrong keypoint order would train the detector to emit corners that make
+    # the PnP silently produce garbage poses.
+    from racer.frames import IMAGE_HEIGHT, IMAGE_WIDTH
+
+    R = Rotation.from_euler("y", 0.35).as_matrix()
+    t = np.array([0.2, -0.1, 6.0])
+    s = render_gate_sample(np.random.default_rng(3), pose=(R, t))
+    row = to_yolo_pose_label(s).split()           # class cx cy w h (x y v)*4
+    kp = [[float(row[5 + 3 * i]) * IMAGE_WIDTH, float(row[6 + 3 * i]) * IMAGE_HEIGHT]
+          for i in range(4)]
+    obs = GateObservation(frame_id=0, sim_time_ns=0, corners_px=np.array(kp))
+    gp = estimate_gate_pose(obs)
+    assert gp is not None
+    np.testing.assert_allclose(gp.t_cam_gate, t, atol=1e-2)
+    assert _rotation_geodesic(gp.R_cam_gate, R) < 5e-3
+
+
 def test_bbox_encloses_keypoints():
     s = render_gate_sample(np.random.default_rng(1), pose=(np.eye(3), np.array([0.0, 0.0, 7.0])))
     x, y, w, h = s.bbox_xywh

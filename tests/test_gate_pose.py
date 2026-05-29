@@ -6,6 +6,7 @@ from racer.contracts import GateObservation, GatePose
 from racer.frames import CAMERA_INTRINSICS_K
 from racer.vision.gate_pose import (
     GATE_INNER_SIZE_M,
+    PRIOR_DISAMBIG_MAX_RATIO,
     _rotation_geodesic,
     _solve,
     estimate_gate_pose,
@@ -71,31 +72,100 @@ def test_range_property_matches_translation():
     assert pose.range_m == pytest.approx(np.linalg.norm(t_true), abs=1e-2)
 
 
-def test_prior_selects_the_consistent_branch():
-    # A tilted gate yields two IPPE solutions; the prior must pick the matching one.
-    R_true = _BASE @ Rotation.from_euler("y", 0.35).as_matrix()
+def test_prior_ignored_when_geometry_unambiguous():
+    # [review 2B] A clearly tilted gate has one IPPE solution that fits far better (high
+    # ambiguity_ratio). A STALE prior pointing at the wrong/flipped branch must NOT override
+    # the obviously-correct low-reprojection pose -- this is the bug the gating fixes.
+    R_true = _BASE @ Rotation.from_euler("y", 0.45).as_matrix()
     t_true = np.array([0.0, 0.0, 5.0])
     corners = project_gate_corners(R_true, t_true)
     cands = _solve(gate_object_points(), corners, CAMERA_INTRINSICS_K)
-    assert len(cands) >= 2  # genuinely ambiguous geometry
-
+    assert len(cands) >= 2
     best = min(cands, key=lambda c: c[2])
     other = max(cands, key=lambda c: c[2])
-    assert _rotation_geodesic(best[0], other[0]) > 1e-2  # the two branches differ
+    assert _rotation_geodesic(best[0], other[0]) > 1e-2          # distinct branches
 
     obs = GateObservation(frame_id=1, sim_time_ns=0, corners_px=corners)
+    prior = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=other[0],
+                     t_cam_gate=other[1], reproj_error_px=other[2])
+    pose = estimate_gate_pose(obs, prior=prior)
+    # The true (low-reproj) branch wins despite the misleading prior.
+    assert _rotation_geodesic(pose.R_cam_gate, best[0]) < 1e-6
+    assert _rotation_geodesic(pose.R_cam_gate, R_true) < 5e-3
 
-    # No prior -> lowest-reprojection-error branch (the true pose).
-    no_prior = estimate_gate_pose(obs)
-    assert _rotation_geodesic(no_prior.R_cam_gate, best[0]) < 1e-6
 
-    # Prior near the *other* branch -> that branch is returned instead.
-    prior = GatePose(
-        frame_id=0, sim_time_ns=0,
-        R_cam_gate=other[0], t_cam_gate=other[1], reproj_error_px=other[2],
-    )
-    with_prior = estimate_gate_pose(obs, prior=prior)
-    assert _rotation_geodesic(with_prior.R_cam_gate, other[0]) < 1e-6
+def test_prior_breaks_tie_when_ambiguous():
+    # [review 2B] A near-frontal gate with measurement noise: both IPPE solutions fit
+    # nearly as well (ambiguity_ratio below the threshold), so the prior decides the branch.
+    rng = np.random.default_rng(0)
+    R_true = _BASE @ Rotation.from_euler("y", 0.06).as_matrix()
+    t_true = np.array([0.0, 0.0, 5.0])
+    corners = project_gate_corners(R_true, t_true) + rng.normal(0, 1.0, (4, 2))
+    cands = _solve(gate_object_points(), corners, CAMERA_INTRINSICS_K)
+    assert len(cands) >= 2
+    e = sorted(c[2] for c in cands)
+    assert 1.0 < e[1] / e[0] < PRIOR_DISAMBIG_MAX_RATIO         # genuinely ambiguous regime
+    best = min(cands, key=lambda c: c[2])
+    other = max(cands, key=lambda c: c[2])
+    assert _rotation_geodesic(best[0], other[0]) > 1e-2
+
+    obs = GateObservation(frame_id=1, sim_time_ns=0, corners_px=corners)
+    # No prior -> lowest-reproj branch.
+    assert _rotation_geodesic(estimate_gate_pose(obs).R_cam_gate, best[0]) < 1e-6
+    # Prior near the other branch -> the prior breaks the tie.
+    prior = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=other[0],
+                     t_cam_gate=other[1], reproj_error_px=other[2])
+    assert _rotation_geodesic(estimate_gate_pose(obs, prior=prior).R_cam_gate, other[0]) < 1e-6
+
+
+@pytest.mark.parametrize("missing", [0, 1, 2, 3])
+def test_three_corner_pose_with_prior(missing):
+    # [review 2C] A clipped gate (one corner out of frame) still yields a pose via the P3P
+    # fallback, disambiguated by a temporal prior -> near-exact recovery.
+    R_true = _BASE @ Rotation.from_euler("y", 0.3).as_matrix()
+    t_true = np.array([0.4, -0.2, 5.0])
+    corners4 = project_gate_corners(R_true, t_true)
+    keep = [i for i in range(4) if i != missing]
+    obs = GateObservation(frame_id=2, sim_time_ns=5,
+                          corners_px=corners4[keep], corner_ids=np.array(keep))
+    prior = GatePose(frame_id=1, sim_time_ns=0, R_cam_gate=R_true,
+                     t_cam_gate=t_true, reproj_error_px=0.0)
+    pose = estimate_gate_pose(obs, prior=prior)
+    assert pose is not None and pose.n_corners == 3
+    np.testing.assert_allclose(pose.t_cam_gate, t_true, atol=1e-3)
+    assert _rotation_geodesic(pose.R_cam_gate, R_true) < 1e-3
+    assert pose.covariance is None        # covariance only on the 4-corner IPPE path
+    assert pose.ambiguity_ratio is None   # P3P branches can't be error-ranked
+
+
+def test_three_corner_pose_no_prior_is_close():
+    # Without a prior, P3P picks the most head-on cheirality-valid pose: a usable degraded
+    # fallback (not exact). Callers at gate transit should supply a temporal/map prior.
+    R_true = _BASE @ Rotation.from_euler("y", 0.12).as_matrix()
+    t_true = np.array([0.1, 0.0, 5.0])
+    corners4 = project_gate_corners(R_true, t_true)
+    keep = [0, 1, 2]
+    obs = GateObservation(frame_id=2, sim_time_ns=5,
+                          corners_px=corners4[keep], corner_ids=np.array(keep))
+    pose = estimate_gate_pose(obs)
+    assert pose is not None and pose.n_corners == 3
+    assert _rotation_geodesic(pose.R_cam_gate, R_true) < 0.1     # within ~6 deg
+    np.testing.assert_allclose(pose.t_cam_gate, t_true, atol=0.1)
+
+
+def test_four_corner_with_permuted_ids():
+    # corner_ids let a detector hand corners in any order; estimate_gate_pose reorders them
+    # to the canonical IPPE_SQUARE order before solving.
+    R_true = _BASE @ Rotation.from_euler("y", 0.3).as_matrix()
+    t_true = np.array([0.2, 0.1, 6.0])
+    corners = project_gate_corners(R_true, t_true)
+    perm = [2, 0, 3, 1]
+    obs = GateObservation(frame_id=1, sim_time_ns=0,
+                          corners_px=corners[perm], corner_ids=np.array(perm))
+    pose = estimate_gate_pose(obs)
+    assert pose is not None and pose.n_corners == 4
+    np.testing.assert_allclose(pose.t_cam_gate, t_true, atol=1e-2)
+    assert _rotation_geodesic(pose.R_cam_gate, R_true) < 5e-3
 
 
 def test_corner_perturbation_covariance():

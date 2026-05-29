@@ -1,0 +1,70 @@
+"""Tests for the JPEG-UDP reassembler. ``_ingest`` is exercised directly (no socket); the
+eviction logic is tested standalone. Together these cover the leak fix [review 4A]."""
+import struct
+import time
+
+import cv2
+import numpy as np
+
+from racer.vision.jpeg_receiver import (
+    HEADER_FMT,
+    JpegUdpReceiver,
+    _PartialFrame,
+)
+
+
+def _datagram(frame_id, chunk_id, total_chunks, jpeg_size, payload, sim_time_ns):
+    header = struct.pack(HEADER_FMT, frame_id, chunk_id, total_chunks, jpeg_size,
+                         len(payload), sim_time_ns)
+    return header + payload
+
+
+def test_ingest_reassembles_valid_jpeg_across_chunks():
+    rx = JpegUdpReceiver()
+    img = np.full((360, 640, 3), 127, np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    jpeg = buf.tobytes()
+    half = len(jpeg) // 2
+    assert rx._ingest(_datagram(7, 0, 2, len(jpeg), jpeg[:half], 99)) is None   # incomplete
+    frame = rx._ingest(_datagram(7, 1, 2, len(jpeg), jpeg[half:], 99))          # completes
+    assert frame is not None
+    assert frame.frame_id == 7 and frame.sim_time_ns == 99
+    assert frame.image_bgr.shape == (360, 640, 3)
+    assert frame.recv_monotonic_ns > 0
+    assert 7 not in rx._partials                 # completed frame is removed
+
+
+def test_ingest_corrupt_complete_frame_returns_none_and_pops():
+    # [review 4A] A complete-but-undecodable frame returns None AND drops its partial (no
+    # leak), without raising. This is the path that previously skipped eviction.
+    rx = JpegUdpReceiver()
+    payload = b"this is not a jpeg"
+    assert rx._ingest(_datagram(5, 0, 1, len(payload), payload, 42)) is None
+    assert 5 not in rx._partials
+
+
+def test_ingest_size_mismatch_returns_none_and_pops():
+    rx = JpegUdpReceiver()
+    payload = b"abc"
+    # Declared jpeg_size (999) won't match the reassembled length -> dropped.
+    assert rx._ingest(_datagram(6, 0, 1, 999, payload, 1)) is None
+    assert 6 not in rx._partials
+
+
+def test_ingest_short_datagram_ignored():
+    rx = JpegUdpReceiver()
+    assert rx._ingest(b"\x00\x01\x02") is None   # shorter than the 24-byte header
+    assert rx._partials == {}
+
+
+def test_evict_stale_removes_only_aged_partials():
+    rx = JpegUdpReceiver(stale_after_s=0.5)
+    now = time.monotonic()
+    rx._partials[1] = _PartialFrame(total_chunks=2, jpeg_size=10, sim_time_ns=0,
+                                    chunks={0: b"x"}, first_seen_monotonic=now - 1.0)  # aged
+    rx._partials[2] = _PartialFrame(total_chunks=2, jpeg_size=10, sim_time_ns=0,
+                                    chunks={0: b"y"}, first_seen_monotonic=now)         # fresh
+    rx._evict_stale()
+    assert 1 not in rx._partials                 # aged partial evicted
+    assert 2 in rx._partials                     # fresh partial kept
