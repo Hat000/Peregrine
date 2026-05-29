@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "racer"
 version = "0.1.0"
 description = "AI Grand Prix autonomous drone race entry"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"  # 3.13 has stable PyTorch CUDA wheels; 3.14 nightly-only until torch 2.10
 dependencies = [
     "pymavlink>=2.4.40",
     "opencv-python>=4.9",

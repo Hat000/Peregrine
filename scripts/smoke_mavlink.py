@@ -27,11 +27,19 @@ def main() -> int:
         now = time.monotonic()
         if now - last_log >= 0.5:
             s = client.state
+            t_s = s.sim_time_ns / 1e9
+            ax, ay, az = s.accel_body
+            v = s.velocity_ned
+            vstr = f"({v[0]:+.2f},{v[1]:+.2f},{v[2]:+.2f})" if v is not None else "n/a"
+            pos = s.position_ned
+            pstr = f"({pos[0]:+.2f},{pos[1]:+.2f},{pos[2]:+.2f})" if pos is not None else "n/a"
+            baro = f"{s.baro_pressure_hpa:.1f}" if s.baro_pressure_hpa is not None else "n/a"
+            mag = "yes" if s.mag_body is not None else "no"
             print(
-                f"t={s.timestamp_s:7.2f}  "
+                f"t={t_s:8.2f}  armed={s.armed}  "
                 f"rpy=({s.roll:+.2f},{s.pitch:+.2f},{s.yaw:+.2f})  "
-                f"acc=({s.xacc:+.2f},{s.yacc:+.2f},{s.zacc:+.2f})  "
-                f"v=({s.vx:+.2f},{s.vy:+.2f},{s.vz:+.2f})"
+                f"acc=({ax:+.2f},{ay:+.2f},{az:+.2f})  "
+                f"baro={baro}  mag={mag}  pos={pstr}  v={vstr}"
             )
             last_log = now
         time.sleep(0.005)

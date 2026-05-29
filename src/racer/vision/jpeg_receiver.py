@@ -17,19 +17,14 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from racer.contracts import Frame
+
 VIDEO_PORT = 5600
 # Header: frame_id (u32), chunk_id (u16), total_chunks (u16), jpeg_size (u32),
 #         payload_size (u32), sim_time_ns (u64). Little-endian.
 HEADER_FMT = "<IHHIIQ"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 assert HEADER_SIZE == 24, "Spec sec 4.6: header is 24 bytes"
-
-
-@dataclass
-class Frame:
-    frame_id: int
-    sim_time_ns: int
-    image_bgr: np.ndarray  # shape (360, 640, 3)
 
 
 @dataclass
@@ -112,7 +107,12 @@ class JpegUdpReceiver:
                 img = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if img is None:
                     continue
-                yield Frame(frame_id=frame_id, sim_time_ns=partial.sim_time_ns, image_bgr=img)
+                yield Frame(
+                    frame_id=frame_id,
+                    sim_time_ns=partial.sim_time_ns,
+                    image_bgr=img,
+                    recv_monotonic_ns=time.monotonic_ns(),
+                )
             self._evict_stale()
 
     def _evict_stale(self) -> None:

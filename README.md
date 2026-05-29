@@ -12,13 +12,20 @@ through a sequence of gates over a MAVLink + UDP-JPEG interface.
 - `tests/` — unit tests
 - `data/` — recorded runs (gitignored)
 
-## Setup (Windows, Python 3.14.2+ per spec sec 5.1)
+## Setup (Python 3.13)
+
+The autonomy/ML stack runs on **Python 3.13**, not the spec's 3.14: stable
+PyTorch ships CUDA wheels for 3.13 (`cp313`), while 3.14 is nightly-only until
+PyTorch 2.10. The spec's "3.14.2" applies to the comms layer only and explicitly
+allows other environments. Use the same 3.13 on the Azure VM and Adroit.
 
 ```powershell
-# Install Python 3.14.2 from python.org or:  winget install Python.Python.3.14
-py -3.14 -m venv .venv
+# Install Python 3.13 if needed:  winget install Python.Python.3.13
+py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
+pytest   # expect 5 passed (tests/test_frames.py)
 ```
 
 ## Smoke tests
