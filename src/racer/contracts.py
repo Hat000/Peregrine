@@ -142,6 +142,35 @@ class GatePose:
 
 
 # ---------------------------------------------------------------------------
+# MAP
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, eq=False)
+class Gate:
+    """A mapped gate in the world (NED). Produced by the mapper; consumed by the
+    localizer (anchors a PnP fix to the world) and the planner.
+
+    Orientation = the gate frame (X=right, Y=down, Z=downrange/through-direction, the
+    same convention as ``gate_pose``) expressed in world NED, as a rotation matrix.
+    This contract may evolve once we learn how the sim communicates gate
+    positions/order (risk R4 — likely "rough" data per the FAQ).
+    """
+
+    gate_id: int
+    position_ned: np.ndarray       # (3,) gate centre in world NED
+    R_world_gate: np.ndarray       # (3,3) gate frame -> world NED
+    inner_size_m: float = 1.5      # spec 3.7 inner square (m)
+
+    def __post_init__(self) -> None:
+        assert self.position_ned.shape == (3,), f"position_ned must be (3,), got {self.position_ned.shape}"
+        assert self.R_world_gate.shape == (3, 3), f"R_world_gate must be (3,3), got {self.R_world_gate.shape}"
+
+    @property
+    def normal_ned(self) -> np.ndarray:
+        """Through-direction (gate +Z, downrange) in world NED."""
+        return self.R_world_gate[:, 2].copy()
+
+
+# ---------------------------------------------------------------------------
 # ESTIMATION
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, eq=False)
