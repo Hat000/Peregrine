@@ -154,6 +154,23 @@ def test_attitude_noise_inflates_blind_coast_uncertainty():
     assert drift_m / sigma_m < drift_z / sigma_z           # ...and reduces overconfidence
 
 
+def test_update_matches_explicit_inverse():
+    # [red-team 2026-05-30] The inv(S) -> solve(S, .) refactor must give the identical gain
+    # and result, and keep P symmetric positive-definite (Joseph form).
+    kf = LinearKF.initialize(np.array([1.0, -2.0, 0.5]), np.array([0.1, 0.0, -0.2]),
+                             pos_std=1.5, vel_std=0.7)
+    P0, x0 = kf.P.copy(), kf.x.copy()
+    H = np.hstack([np.eye(3), np.zeros((3, 3))])
+    z, R = np.array([1.2, -1.8, 0.4]), 0.05 * np.eye(3)
+    y = z - H @ x0
+    K_ref = P0 @ H.T @ np.linalg.inv(H @ P0 @ H.T + R)        # explicit-inverse reference
+    x_ref = x0 + K_ref @ y
+    kf.update_position(z, R)
+    np.testing.assert_allclose(kf.x, x_ref, atol=1e-12)
+    np.testing.assert_allclose(kf.P, kf.P.T, atol=1e-15)      # symmetric
+    assert np.all(np.linalg.eigvalsh(kf.P) > 0)              # positive-definite
+
+
 def test_make_nav_state_carries_attitude_and_cov():
     kf = LinearKF.initialize(np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3]))
     ds = DroneState(sim_time_ns=12345, roll=0.1, pitch=-0.2, yaw=0.3,

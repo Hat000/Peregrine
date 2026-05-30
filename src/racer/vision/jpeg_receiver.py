@@ -8,6 +8,7 @@ Spec ref: VADR-TS-002 sec 4.6.
 """
 from __future__ import annotations
 
+import select
 import socket
 import struct
 import time
@@ -73,16 +74,25 @@ class JpegUdpReceiver:
         """
         assert self._sock is not None
         deadline = None if max_wait_s is None else time.monotonic() + max_wait_s
+        # Cap each kernel wait so _evict_stale still runs (and the idle deadline is honoured)
+        # during quiet stretches, even when no datagram arrives.
+        poll_s = self.stale_after_s if max_wait_s is None else min(self.stale_after_s, max_wait_s)
+        poll_s = max(poll_s, 1e-3)
         while True:
             # Evict first, unconditionally: every early-return below would otherwise skip
             # it and leak stale partials under packet loss / decode failures. [review 4A]
             self._evict_stale()
+            # Block in the kernel until the socket is readable or poll_s elapses. Replaces a
+            # time.sleep(0.001) busy-poll whose ~15 ms granularity on Windows added frame
+            # latency + jitter; select wakes the instant a datagram lands. [red-team 2026-05-30]
+            ready, _, _ = select.select([self._sock], [], [], poll_s)
+            if not ready:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return
+                continue
             try:
                 data, _ = self._sock.recvfrom(65535)
             except BlockingIOError:
-                if deadline is not None and time.monotonic() >= deadline:
-                    return
-                time.sleep(0.001)
                 continue
             if deadline is not None:
                 deadline = time.monotonic() + max_wait_s

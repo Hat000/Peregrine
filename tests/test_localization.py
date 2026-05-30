@@ -3,7 +3,11 @@ import pytest
 
 from racer.contracts import Gate, GateObservation, GatePose
 from racer.frames import R_camera_from_body, R_world_from_body
-from racer.localization import apply_gate_pose_update, gate_pose_to_world_position
+from racer.localization import (
+    P3P_FIX_COV_INFLATION,
+    apply_gate_pose_update,
+    gate_pose_to_world_position,
+)
 from racer.state_estimator import LinearKF
 from racer.vision.gate_pose import estimate_gate_pose, project_gate_corners
 
@@ -94,3 +98,23 @@ def test_apply_update_moves_kf_toward_truth():
     apply_gate_pose_update(kf, gp, gate, R_wb)
     assert np.linalg.norm(kf.position - p_drone) < before
     np.testing.assert_allclose(kf.position, p_drone, atol=0.1)
+
+
+def test_three_corner_fix_covariance_inflated_soft_coast():
+    # [red-team 2026-05-30, Tier B] A weak 3-corner (P3P) fix gets its covariance inflated so
+    # it nudges rather than snaps the KF at gate transit. Same sighting, n_corners 4 vs 3:
+    # the 3-corner update uses inflated R and so moves the estimate less toward the fix.
+    p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
+    sigma = np.zeros((6, 6))
+    sigma[:3, :3] = np.diag([0.01, 0.01, 0.01])
+    common = dict(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg,
+                  reproj_error_px=0.0, covariance=sigma)
+    gp4 = GatePose(n_corners=4, **common)
+    gp3 = GatePose(n_corners=3, **common)
+    kf4 = LinearKF.initialize(np.zeros(3), np.zeros(3), pos_std=3.0, vel_std=1.0)
+    kf3 = LinearKF.initialize(np.zeros(3), np.zeros(3), pos_std=3.0, vel_std=1.0)
+    _, cov4 = apply_gate_pose_update(kf4, gp4, gate, R_wb)
+    _, cov3 = apply_gate_pose_update(kf3, gp3, gate, R_wb)
+    np.testing.assert_allclose(cov3, cov4 * P3P_FIX_COV_INFLATION)
+    # The inflated (weaker) fix pulls the KF less far toward the measurement.
+    assert np.linalg.norm(kf3.position - p_drone) > np.linalg.norm(kf4.position - p_drone)
