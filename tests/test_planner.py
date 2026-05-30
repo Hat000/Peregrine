@@ -58,6 +58,18 @@ def test_yaw_faces_a_gate_to_the_east():
     assert sp.yaw == pytest.approx(np.pi / 2)                       # heading east
 
 
+def test_overshoot_with_forward_velocity_does_not_uturn():
+    # [red-team 2026-05-30] Just past the gate plane but still moving forward through it: the
+    # carrot must stay on the exit side, not flip to the approach side and U-turn back through
+    # the gate. The velocity (not position-relative-to-gate) disambiguates the through-axis.
+    gate = _gate([10.0, 0.0, 0.0], normal=[1.0, 0.0, 0.0])
+    nav = NavState(sim_time_ns=0, position_ned=np.array([10.5, 0.0, 0.0]),  # 0.5 m past the plane
+                   velocity_ned=np.array([5.0, 0.0, 0.0]))                   # still heading north
+    sp = ReactivePlanner(lookahead_m=2.0).plan(nav, gate)
+    np.testing.assert_allclose(sp.position_ned, [12.0, 0.0, 0.0])  # carrot still beyond the gate
+    assert sp.velocity_ned[0] > 0.0                                # keeps going forward (no U-turn)
+
+
 def test_velocity_is_a_feedforward_with_position_carrot():
     # The planner provides BOTH a position carrot and a velocity feedforward, so the floor
     # works whether the controller is in POSITION mode or runs the attitude PD law.

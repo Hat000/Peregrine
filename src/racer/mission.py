@@ -54,14 +54,14 @@ class Mission:
     config: MissionConfig = field(default_factory=MissionConfig)
     state: MissionState = MissionState.IDLE
     gate_index: int = 0
-    _takeoff_xy: np.ndarray | None = field(default=None, repr=False)
+    _takeoff_origin: np.ndarray | None = field(default=None, repr=False)
 
     # -- lifecycle transitions ----------------------------------------------
     def start(self) -> None:
         """Begin the mission (IDLE -> TAKEOFF). No-op if already running."""
         if self.state == MissionState.IDLE:
             self.gate_index = 0
-            self._takeoff_xy = None
+            self._takeoff_origin = None
             self.state = MissionState.TAKEOFF
 
     def abort(self) -> None:
@@ -78,9 +78,14 @@ class Mission:
     def step(self, nav: NavState) -> ControlCommand:
         """One control iteration: advance the state machine and return the command to send."""
         if self.state == MissionState.TAKEOFF:
-            if self._takeoff_xy is None:
-                self._takeoff_xy = np.asarray(nav.position_ned, dtype=np.float64)[:2].copy()
-            target = np.array([self._takeoff_xy[0], self._takeoff_xy[1], -self.config.takeoff_altitude_m])
+            if self._takeoff_origin is None:
+                self._takeoff_origin = np.asarray(nav.position_ned, dtype=np.float64).copy()
+            # Climb to takeoff_altitude_m ABOVE the start point, not to an absolute NED z.
+            # The estimator's z origin is only zero at the pad if the baro is referenced at
+            # arming; if it carries an absolute (MSL) bias, an absolute target would launch
+            # the drone to the wrong height (into the ceiling or the floor). Relative-to-start
+            # is robust either way and mirrors how the start xy is already captured. [red-team]
+            target = self._takeoff_origin + np.array([0.0, 0.0, -self.config.takeoff_altitude_m])
             if abs(float(nav.position_ned[2]) - target[2]) <= self.config.takeoff_tol_m:
                 self.state = MissionState.RUN          # reached altitude -> fall through to RUN this tick
             else:
@@ -118,10 +123,26 @@ class Mission:
 
     # -- helpers ------------------------------------------------------------
     def _passed(self, nav: NavState, gate: Gate) -> bool:
-        # Floor: proximity to the gate centre. (Refinement for high speed: detect crossing the
-        # gate plane on the exit side within the opening, so a fast fly-through can't skip it.)
-        d = np.asarray(nav.position_ned, dtype=np.float64) - np.asarray(gate.position_ned, dtype=np.float64)
-        return float(np.linalg.norm(d)) <= self.config.gate_pass_radius_m
+        rel = np.asarray(nav.position_ned, dtype=np.float64) - np.asarray(gate.position_ned, dtype=np.float64)
+        # (1) Proximity: sign-agnostic, catches slow / centred passes.
+        if float(np.linalg.norm(rel)) <= self.config.gate_pass_radius_m:
+            return True
+        # (2) Plane crossing within the opening: a fast fly-through translates >0.5 m/frame, so
+        # it can pass cleanly through the 1.5 m opening yet never sample inside the 1.0 m sphere
+        # -- gate_index would never advance and the planner would U-turn to re-enter. Advance
+        # once the drone is on/past the gate's exit plane AND inside the inner square. Orient the
+        # through-axis downrange by the drone's motion (not its position-relative-to-gate, which
+        # inverts the instant it crosses the plane); fall back to approach geometry at rest.
+        R = np.asarray(gate.R_world_gate, dtype=np.float64)
+        through = R[:, 2]
+        vel = np.asarray(nav.velocity_ned, dtype=np.float64)
+        ref = vel if float(np.linalg.norm(vel)) > 1e-3 else -rel
+        if through @ ref < 0.0:
+            through = -through
+        if rel @ through < 0.0:            # still on the approach side
+            return False
+        half = gate.inner_size_m / 2.0
+        return abs(float(rel @ R[:, 0])) <= half and abs(float(rel @ R[:, 1])) <= half
 
     def _hold(self, nav: NavState) -> ControlCommand:
         return self.controller.command(

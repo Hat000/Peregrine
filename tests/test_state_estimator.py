@@ -171,6 +171,23 @@ def test_update_matches_explicit_inverse():
     assert np.all(np.linalg.eigvalsh(kf.P) > 0)              # positive-definite
 
 
+def test_predict_rejects_huge_or_negative_dt_from_sim_reset():
+    # [red-team 2026-05-30] A sim reset / clock stutter yields a huge (or negative) dt. predict
+    # must drop it rather than integrate across the discontinuity (which would blow up x and P).
+    kf = LinearKF.initialize(np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.0, -0.2]),
+                             pos_std=1.0, vel_std=1.0)
+    x0, P0 = kf.x.copy(), kf.P.copy()
+    rest = np.array([0.0, 0.0, -9.80665])
+    kf.predict(rest, np.eye(3), 5.0)                    # 5 s jump (> max_dt_s) -> dropped
+    np.testing.assert_array_equal(kf.x, x0)
+    np.testing.assert_array_equal(kf.P, P0)
+    kf.predict(rest, np.eye(3), -0.1)                   # negative dt (time ran backwards) -> dropped
+    np.testing.assert_array_equal(kf.x, x0)
+    np.testing.assert_array_equal(kf.P, P0)
+    kf.predict(rest, np.eye(3), 0.01)                   # a sane step still propagates
+    assert not np.array_equal(kf.P, P0)
+
+
 def test_make_nav_state_carries_attitude_and_cov():
     kf = LinearKF.initialize(np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3]))
     ds = DroneState(sim_time_ns=12345, roll=0.1, pitch=-0.2, yaw=0.3,

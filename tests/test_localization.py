@@ -49,7 +49,9 @@ def test_glue_covariance_is_rotated_translation_block():
     cov6[:3, :3] = sigma_tt
     gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg,
                   reproj_error_px=0.0, covariance=cov6)
-    _, cov = gate_pose_to_world_position(gp, gate, R_wb)
+    # attitude_noise_std=0 isolates the pure PnP-translation rotation (the attitude lever-arm
+    # term is exercised separately in test_glue_inflates_covariance_for_attitude_uncertainty).
+    _, cov = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0)
     R_wc = R_wb @ R_camera_from_body().T
     np.testing.assert_allclose(cov, R_wc @ sigma_tt @ R_wc.T, atol=1e-12)
 
@@ -57,8 +59,23 @@ def test_glue_covariance_is_rotated_translation_block():
 def test_glue_default_covariance_when_none():
     p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
     gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg, reproj_error_px=0.0)
-    _, cov = gate_pose_to_world_position(gp, gate, R_wb, default_position_std=0.3)
+    _, cov = gate_pose_to_world_position(gp, gate, R_wb, default_position_std=0.3, attitude_noise_std=0.0)
     np.testing.assert_allclose(cov, 0.09 * np.eye(3))
+
+
+def test_glue_inflates_covariance_for_attitude_uncertainty():
+    # [red-team 2026-05-30] Attitude error rotating the lever arm dominates the fix error at
+    # range; the covariance must grow with attitude_noise_std (and with distance to the gate).
+    p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
+    gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg, reproj_error_px=0.0)
+    _, cov0 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0)
+    _, cov1 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=np.deg2rad(1.0))
+    assert np.trace(cov1) > np.trace(cov0)                       # attitude term adds uncertainty
+    assert np.all(np.linalg.eigvalsh(cov1) >= -1e-12)           # and stays PSD
+    # trace of sigma^2 (|L|^2 I - L L^T) is sigma^2 * 2|L|^2 -- grows with range squared.
+    lever = R_wb @ R_camera_from_body().T @ t_cg
+    added = float(np.trace(cov1 - cov0))
+    assert added == pytest.approx(np.deg2rad(1.0) ** 2 * 2.0 * float(lever @ lever), rel=1e-9)
 
 
 def test_end_to_end_project_pnp_glue_recovers_position():

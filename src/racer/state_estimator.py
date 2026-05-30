@@ -69,6 +69,7 @@ class LinearKF:
     attitude_noise_std: float = np.deg2rad(1.0)  # rad, 1-sigma error in the GIVEN attitude [review 3A]
     gravity_ned: np.ndarray = field(default_factory=lambda: GRAVITY_NED.copy())
     process_floor: float = 1e-6        # tiny diagonal to keep Q full-rank
+    max_dt_s: float = 0.2              # reject implausibly large predict steps (sim reset/stutter) [red-team]
 
     @classmethod
     def initialize(
@@ -88,8 +89,15 @@ class LinearKF:
 
     # -- prediction ---------------------------------------------------------
     def predict(self, accel_body: np.ndarray, R_world_body: np.ndarray, dt: float) -> None:
-        """Propagate by dt using body specific force + the given body->world rotation."""
-        if dt <= 0:
+        """Propagate by dt using body specific force + the given body->world rotation.
+
+        ``dt`` must come from consecutive HIGHRES_IMU ``time_usec`` stamps (the master sim
+        clock), NOT the wall-clock loop period, or the integration scales wrong. A
+        non-positive or implausibly large ``dt`` (a sim reset, a clock stutter, or the first
+        sample) is dropped rather than integrated across the discontinuity -- the navigator
+        owns detecting a reset and re-initialising the filter. [red-team 2026-05-30]
+        """
+        if dt <= 0 or dt > self.max_dt_s:
             return
         specific_force_world = R_world_body @ np.asarray(accel_body, dtype=np.float64)
         a_world = specific_force_world + self.gravity_ned

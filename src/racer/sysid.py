@@ -30,6 +30,36 @@ def fit_hover_thrust(thrusts, up_accels) -> tuple[float, float]:
     return float(hover), float(slope)
 
 
+def fit_thrust_curve(thrusts, up_accels) -> dict:
+    """Fit net upward acceleration vs normalized thrust with a QUADRATIC, and report how
+    non-linear the plant is.
+
+    The controller's placeholder maps required force to throttle linearly (``hover_thrust *
+    f/g``), but a real rotor plant (PWM->RPM->force) is roughly quadratic, so a 2 g demand can
+    badly undershoot if the sim does not linearise it -- the drone sags into the bottom of a
+    gate on a climb. This characterises the curve so we know whether the linear map is good
+    enough or the controller needs a curve / sqrt mapping. Returns ``coeffs`` (a2, a1, a0 for
+    ``a = a2 t^2 + a1 t + a0``), ``hover_thrust`` (smallest root in [0,1] where net accel = 0),
+    and ``nonlinearity`` = RMS(quadratic residual) / RMS(linear residual): ~1 means linear,
+    <<1 means real curvature the linear fit misses. NaNs if the sweep is degenerate.
+    """
+    t = np.asarray(thrusts, dtype=np.float64)
+    a = np.asarray(up_accels, dtype=np.float64)
+    nan = float("nan")
+    if t.size < 3 or np.ptp(t) < 1e-9:
+        return {"coeffs": (nan, nan, nan), "hover_thrust": nan, "nonlinearity": nan}
+    a2, a1, a0 = (float(c) for c in np.polyfit(t, a, 2))
+    roots = np.roots([a2, a1, a0]) if abs(a2) > 1e-12 else np.array([-a0 / a1] if abs(a1) > 1e-12 else [])
+    real = [float(r.real) for r in np.atleast_1d(roots) if abs(r.imag) < 1e-9 and -0.05 <= r.real <= 1.05]
+    hover = min(real, key=lambda r: abs(r - 0.5)) if real else nan
+    lin_res = a - np.polyval(np.polyfit(t, a, 1), t)
+    quad_res = a - np.polyval([a2, a1, a0], t)
+    rms = lambda e: float(np.sqrt(np.mean(e**2)))
+    lin_rms = rms(lin_res)
+    nonlin = (rms(quad_res) / lin_rms) if lin_rms > 1e-9 else nan
+    return {"coeffs": (a2, a1, a0), "hover_thrust": hover, "nonlinearity": nonlin}
+
+
 def step_response_metrics(t, y, t_step: float, *, settle_frac: float = 0.2) -> dict:
     """Characterise a (possibly noisy) step response ``y(t)`` stepped at ``t_step``.
 
