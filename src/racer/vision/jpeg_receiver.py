@@ -8,6 +8,7 @@ Spec ref: VADR-TS-002 sec 4.6.
 """
 from __future__ import annotations
 
+import select
 import socket
 import struct
 import time
@@ -36,6 +37,26 @@ class _PartialFrame:
     first_seen_monotonic: float
 
 
+@dataclass
+class ReceiverMetrics:
+    """Stream-health counters for first-contact MTU / packet-loss diagnostics [red-team].
+
+    ``max_datagram_bytes`` vs the ~1500 B Ethernet MTU answers "does the sim send chunks the
+    OS must IP-fragment?"; ``max_total_chunks`` = how many datagrams per frame; the gap between
+    ``frames_completed`` and ``partials_evicted`` = frames lost to missing chunks (UDP drops).
+    """
+
+    datagrams: int = 0
+    short_datagrams: int = 0
+    frames_completed: int = 0
+    frames_decode_failed: int = 0
+    frames_size_mismatch: int = 0
+    partials_evicted: int = 0          # incomplete frames dropped as stale = lost chunk(s)
+    min_datagram_bytes: int = 0
+    max_datagram_bytes: int = 0
+    max_total_chunks: int = 0
+
+
 class JpegUdpReceiver:
     """Reassembles chunked JPEG frames from the simulator vision stream."""
 
@@ -50,6 +71,7 @@ class JpegUdpReceiver:
         self.stale_after_s = stale_after_s
         self._sock: socket.socket | None = None
         self._partials: dict[int, _PartialFrame] = {}
+        self.metrics = ReceiverMetrics()
 
     def __enter__(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -73,16 +95,25 @@ class JpegUdpReceiver:
         """
         assert self._sock is not None
         deadline = None if max_wait_s is None else time.monotonic() + max_wait_s
+        # Cap each kernel wait so _evict_stale still runs (and the idle deadline is honoured)
+        # during quiet stretches, even when no datagram arrives.
+        poll_s = self.stale_after_s if max_wait_s is None else min(self.stale_after_s, max_wait_s)
+        poll_s = max(poll_s, 1e-3)
         while True:
             # Evict first, unconditionally: every early-return below would otherwise skip
             # it and leak stale partials under packet loss / decode failures. [review 4A]
             self._evict_stale()
+            # Block in the kernel until the socket is readable or poll_s elapses. Replaces a
+            # time.sleep(0.001) busy-poll whose ~15 ms granularity on Windows added frame
+            # latency + jitter; select wakes the instant a datagram lands. [red-team 2026-05-30]
+            ready, _, _ = select.select([self._sock], [], [], poll_s)
+            if not ready:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return
+                continue
             try:
                 data, _ = self._sock.recvfrom(65535)
             except BlockingIOError:
-                if deadline is not None and time.monotonic() >= deadline:
-                    return
-                time.sleep(0.001)
                 continue
             if deadline is not None:
                 deadline = time.monotonic() + max_wait_s
@@ -96,7 +127,13 @@ class JpegUdpReceiver:
         Pure of socket I/O and eviction, so it is directly unit-testable: feed crafted
         datagrams, observe the returned Frame / None and ``self._partials``.
         """
+        m = self.metrics
+        m.datagrams += 1
+        dn = len(data)
+        m.min_datagram_bytes = dn if m.max_datagram_bytes == 0 else min(m.min_datagram_bytes, dn)
+        m.max_datagram_bytes = max(m.max_datagram_bytes, dn)
         if len(data) < HEADER_SIZE:
+            m.short_datagrams += 1
             return None
         (
             frame_id,
@@ -106,6 +143,7 @@ class JpegUdpReceiver:
             payload_size,
             sim_time_ns,
         ) = struct.unpack_from(HEADER_FMT, data, 0)
+        m.max_total_chunks = max(m.max_total_chunks, total_chunks)
         payload = data[HEADER_SIZE:HEADER_SIZE + payload_size]
         partial = self._partials.get(frame_id)
         if partial is None:
@@ -123,10 +161,13 @@ class JpegUdpReceiver:
         jpeg_bytes = b"".join(partial.chunks[i] for i in range(partial.total_chunks))
         self._partials.pop(frame_id, None)
         if len(jpeg_bytes) != partial.jpeg_size:
+            m.frames_size_mismatch += 1
             return None
         img = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if img is None:
+            m.frames_decode_failed += 1
             return None
+        m.frames_completed += 1
         return Frame(
             frame_id=frame_id,
             sim_time_ns=partial.sim_time_ns,
@@ -140,3 +181,4 @@ class JpegUdpReceiver:
         stale = [fid for fid, p in self._partials.items() if p.first_seen_monotonic < cutoff]
         for fid in stale:
             self._partials.pop(fid, None)
+        self.metrics.partials_evicted += len(stale)

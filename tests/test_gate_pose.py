@@ -4,9 +4,11 @@ from scipy.spatial.transform import Rotation
 
 from racer.contracts import GateObservation, GatePose
 from racer.frames import CAMERA_INTRINSICS_K
+import racer.vision.gate_pose as gp_mod
 from racer.vision.gate_pose import (
     GATE_INNER_SIZE_M,
     PRIOR_DISAMBIG_MAX_RATIO,
+    _reproj_rms,
     _rotation_geodesic,
     _solve,
     estimate_gate_pose,
@@ -208,3 +210,40 @@ def test_degenerate_geometry_does_not_raise():
 def test_projector_rejects_gate_behind_camera():
     with pytest.raises(ValueError):
         project_gate_corners(_BASE, np.array([0.0, 0.0, -1.0]))
+
+
+def test_p3p_returns_none_when_all_solutions_behind_camera(monkeypatch):
+    # [red-team 2026-05-30] If every P3P solution is cheirality-invalid (gate behind the
+    # camera), estimate_gate_pose must return None -- NOT pick the "most frontal" of
+    # physically-impossible poses and feed it to the KF. Force that degenerate case.
+    monkeypatch.setattr(gp_mod, "_solve_p3p",
+                        lambda obj, img, K: [(np.eye(3), np.array([0.0, 0.0, -5.0]))])
+    R_true = _BASE @ Rotation.from_euler("y", 0.2).as_matrix()
+    t_true = np.array([0.2, 0.0, 5.0])
+    corners4 = project_gate_corners(R_true, t_true)
+    obs = GateObservation(frame_id=1, sim_time_ns=0,
+                          corners_px=corners4[[0, 1, 2]], corner_ids=np.array([0, 1, 2]))
+    assert estimate_gate_pose(obs) is None
+
+
+def test_frontal_noise_free_ambiguity_ratio_is_finite():
+    # [red-team 2026-05-30] A near-frontal gate in zero noise drives the best reprojection
+    # error to ~0. The old code set ambiguity_ratio=inf there, forcing use_prior=False and
+    # bypassing the prior in the MOST ambiguous case. The additive epsilon keeps it finite
+    # (~1) so the prior is honoured on ties.
+    R_true = _BASE @ Rotation.from_euler("y", 0.03).as_matrix()
+    t_true = np.array([0.0, 0.0, 5.0])
+    corners = project_gate_corners(R_true, t_true)
+    pose = estimate_gate_pose(GateObservation(frame_id=1, sim_time_ns=0, corners_px=corners))
+    assert pose is not None
+    assert pose.ambiguity_ratio is not None
+    assert np.isfinite(pose.ambiguity_ratio)                 # old code: inf here
+    assert pose.ambiguity_ratio < PRIOR_DISAMBIG_MAX_RATIO   # near-frontal -> ambiguous regime
+
+
+def test_reproj_rms_guards_point_behind_camera():
+    # [red-team 2026-05-30] _reproj_rms must not divide by ~0 for a Z<=0 pose; report +inf.
+    obj = gate_object_points()
+    img = np.zeros((4, 2))
+    rms = _reproj_rms(obj, img, np.eye(3), np.array([0.0, 0.0, -1.0]), CAMERA_INTRINSICS_K)
+    assert rms == float("inf")

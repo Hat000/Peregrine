@@ -109,3 +109,27 @@ def test_body_rate_mode_not_implemented_yet():
     c = Controller(mode=ControlMode.BODY_RATE)
     with pytest.raises(NotImplementedError):
         c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.zeros(3)))
+
+
+# -- singularity guards [red-team 2026-05-30] ------------------------------
+def test_straight_down_accel_recovers_upright_not_inverted():
+    # A desired accel pointing straight down past gravity makes the required thrust point
+    # straight DOWN -- the antipode of WORLD_UP, where the tilt-clamp axis is undefined. The
+    # old `if n > 1e-9` guard skipped the clamp and let an inverted command through. The fix
+    # clamps via an arbitrary horizontal axis and recovers toward upright.
+    c = Controller(mode=ControlMode.ATTITUDE)   # default max_tilt 45 deg
+    cmd = c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.array([0.0, 0.0, 20.0]), yaw=0.0))
+    assert np.all(np.isfinite(cmd.attitude_quat_wxyz))      # no NaNs
+    assert _body_up_world(cmd)[2] < 0.0                     # thrust points UP, not into the ground
+
+
+def test_horizontal_thrust_aligned_with_heading_no_nan():
+    # b3 (body-down) parallel to the heading vector zeros the cross product b3 x x_c. Lift the
+    # tilt clamp (max_tilt > 90 deg) so we actually reach that singularity, and check the b2
+    # fallback keeps the attitude quaternion finite instead of emitting NaNs.
+    c = Controller(mode=ControlMode.ATTITUDE, max_tilt_rad=np.deg2rad(120.0))
+    cmd = c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.array([10.0, 0.0, _G]), yaw=0.0))
+    q = cmd.attitude_quat_wxyz
+    assert np.all(np.isfinite(q))                            # no NaNs from the zero cross product
+    assert np.linalg.norm(q) == pytest.approx(1.0)          # a well-formed unit quaternion
+    assert np.all(np.isfinite(_body_up_world(cmd)))         # ...and a usable thrust direction

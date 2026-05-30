@@ -113,13 +113,29 @@ class Controller:
             axis = np.cross(_WORLD_UP, thrust_dir)
             n = np.linalg.norm(axis)
             if n > 1e-9:
-                thrust_dir = Rotation.from_rotvec((axis / n) * self.max_tilt_rad).apply(_WORLD_UP)
+                axis = axis / n
+            else:
+                # thrust_dir is (anti)parallel to vertical: past the tilt limit only when
+                # pointing straight DOWN (a pathological dive), where no tilt axis is defined.
+                # The old `if n > 1e-9` guard silently SKIPPED the clamp here, leaving an
+                # inverted thrust command. Pick an arbitrary horizontal axis so we still clamp
+                # to the limit and recover toward upright. [red-team 2026-05-30]
+                axis = np.array([1.0, 0.0, 0.0])
+            thrust_dir = Rotation.from_rotvec(axis * self.max_tilt_rad).apply(_WORLD_UP)
 
         # Build R_world_body (FRD) from the desired body-down axis + heading.
         b3 = -thrust_dir                                   # body z (down) in world; hover -> [0,0,1]
         x_c = np.array([np.cos(yaw), np.sin(yaw), 0.0])    # desired forward heading in the world plane
         b2 = np.cross(b3, x_c)
-        b2 /= np.linalg.norm(b2)                           # body y (right)
+        n2 = float(np.linalg.norm(b2))
+        if n2 < 1e-6:
+            # b3 is (anti)parallel to the heading vector -- only reachable at ~horizontal
+            # thrust, which the tilt clamp normally prevents. Use the heading's left-normal as
+            # body-y to keep a defined, heading-consistent frame instead of dividing by ~0 and
+            # emitting NaNs into the attitude quaternion. [red-team 2026-05-30]
+            b2 = np.array([-np.sin(yaw), np.cos(yaw), 0.0])
+            n2 = float(np.linalg.norm(b2))
+        b2 = b2 / n2                                       # body y (right)
         b1 = np.cross(b2, b3)                              # body x (forward)
         R_wb = np.column_stack([b1, b2, b3])
         q_xyzw = Rotation.from_matrix(R_wb).as_quat()

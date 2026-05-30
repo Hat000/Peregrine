@@ -50,6 +50,16 @@ def gate_pose_to_world_position(
     return position_ned, cov
 
 
+# Gate-transit coast policy [red-team 2026-05-30, Tier B]. A 3-corner P3P fix (a gate
+# clipping out of frame at transit; GatePose.n_corners < 4) is geometrically weaker and can't
+# self-disambiguate, so we DON'T let it yank the estimate: inflate its measurement covariance
+# so the KF leans on the IMU prediction (a "soft coast") instead of snapping to a maybe-wrong
+# pose. The HARD coast (drop vision entirely within X m of a gate) and an innovation /
+# Mahalanobis gate that rejects wrong-gate "teleport" fixes (master-plan NEG-3; needs the
+# mapper + live range-to-gate) live in the navigator loop and are deferred to that wiring.
+P3P_FIX_COV_INFLATION = 9.0   # variance multiplier (=3x std) for a 3-corner fix; tune at first contact
+
+
 def apply_gate_pose_update(
     kf: LinearKF,
     gate_pose: GatePose,
@@ -57,9 +67,15 @@ def apply_gate_pose_update(
     R_world_body: np.ndarray,
     default_position_std: float = 0.3,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert a gate sighting to a world-position fix and apply it to the KF."""
+    """Convert a gate sighting to a world-position fix and apply it to the KF.
+
+    A weak 3-corner (P3P) fix has its covariance inflated by ``P3P_FIX_COV_INFLATION`` so it
+    nudges rather than snaps the estimate at gate transit (the soft gate-transit coast).
+    """
     position_ned, cov = gate_pose_to_world_position(
         gate_pose, gate, R_world_body, default_position_std
     )
+    if gate_pose.n_corners < 4:
+        cov = cov * P3P_FIX_COV_INFLATION
     kf.update_position(position_ned, cov)
     return position_ned, cov

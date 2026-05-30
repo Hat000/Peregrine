@@ -24,6 +24,17 @@ Update: generic linear ``update(z, H, R)`` plus conveniences:
 
 Magnetometer/yaw are NOT used here: yaw comes from the given attitude. Mag is
 reserved for the ESKF fallback / an attitude cross-check.
+
+Deferred rebuilds (noted, NOT built) [red-team 2026-05-30]:
+1. ESKF bias-state to ESTIMATE attitude bias, not merely inflate Q for it (see
+   ``attitude_noise_std``) -- build only if first-contact data shows the sim's given
+   attitude is biased under high-G; covariance inflation masks drift, it does not remove a
+   systematic bias.
+2. Delayed-vision ring buffer: rewind to a fix's capture sim-time and re-propagate the
+   buffered IMU (out-of-sequence handling). ``update_position`` currently applies the fix to
+   the CURRENT state -- fine at VQ1 speed (~cm), matters at VQ2 speed (~0.6-1 m at 20 m/s).
+   Prereq: the video capture clock must be reconciled with HIGHRES_IMU (TIMESYNC).
+Both are upgrades behind this filter's interface, not rewrites of it.
 """
 from __future__ import annotations
 
@@ -102,8 +113,12 @@ class LinearKF:
         H = np.asarray(H, dtype=np.float64)
         R = np.asarray(R, dtype=np.float64)
         y = z - H @ self.x
-        S = H @ self.P @ H.T + R
-        K = self.P @ H.T @ np.linalg.inv(S)
+        PHt = self.P @ H.T
+        S = H @ PHt + R
+        # Solve S K^T = (P H^T)^T rather than forming inv(S): identical Kalman gain, but more
+        # numerically stable + faster (no explicit inverse). The Joseph-form update below keeps
+        # P symmetric positive-definite. [red-team 2026-05-30]
+        K = np.linalg.solve(S, PHt.T).T
         self.x = self.x + K @ y
         I_KH = np.eye(6) - K @ H
         # Joseph form: stays symmetric + positive-definite under finite precision.

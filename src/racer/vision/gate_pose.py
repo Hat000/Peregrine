@@ -59,6 +59,14 @@ _GATE_NORMAL = np.array([0.0, 0.0, 1.0])  # gate +Z (downrange) in the gate fram
 # its reprojection and ignore the prior. Tunable at first sim contact. [review 2B]
 PRIOR_DISAMBIG_MAX_RATIO = 5.0
 
+# Additive sub-pixel floor for the IPPE ambiguity ratio. Without it, a frontal gate in
+# near-zero noise drives the best reprojection error toward 0, so err2/err1 explodes (or hit
+# the old `inf` sentinel) and mislabelled the MOST-ambiguous case as unambiguous -- bypassing
+# the prior exactly when it is needed. With the floor, both-near-zero -> ratio ~1 (ambiguous,
+# trust the prior); a genuinely better single solution (err2 >> err1) still yields a large
+# ratio (unambiguous, trust reprojection). [red-team 2026-05-30]
+AMBIGUITY_EPS_PX = 0.1
+
 
 def gate_object_points(inner_size_m: float = GATE_INNER_SIZE_M) -> np.ndarray:
     """The 4 inner-square corners in the gate's own frame, IPPE_SQUARE order. Shape (4,3)."""
@@ -102,8 +110,15 @@ def _rotation_geodesic(a: np.ndarray, b: np.ndarray) -> float:
 
 def _reproj_rms(obj_pts: np.ndarray, img_pts: np.ndarray, R: np.ndarray, t: np.ndarray,
                 K: np.ndarray) -> float:
-    """RMS pixel reprojection error of (R, t) over the given object/image correspondences."""
+    """RMS pixel reprojection error of (R, t) over the given object/image correspondences.
+
+    Guards the perspective divide: a point on/behind the optical plane (Z<=0) cannot
+    reproject, so report +inf instead of dividing by ~0 and leaking a NaN into the error.
+    Callers already select among cheirality-valid poses, so this is defence-in-depth. [red-team]
+    """
     cam = (R @ obj_pts.T).T + t
+    if np.any(cam[:, 2] <= 1e-9):
+        return float("inf")
     uv = (K @ cam.T).T
     uv = uv[:, :2] / uv[:, 2:3]
     return float(np.sqrt(np.mean(np.sum((uv - img_pts) ** 2, axis=1))))
@@ -163,7 +178,10 @@ def _estimate_ippe(obj: np.ndarray, img: np.ndarray, K: np.ndarray, prior: GateP
     ambiguity_ratio: float | None = None
     if len(cands) >= 2:
         e_sorted = sorted(c[2] for c in cands)
-        ambiguity_ratio = e_sorted[1] / e_sorted[0] if e_sorted[0] > 1e-9 else float("inf")
+        # Additive floor so both-near-zero errors (a frontal gate in low/zero noise) give
+        # ratio ~1 (ambiguous -> use the prior) instead of the old inf sentinel that bypassed
+        # the prior exactly when it is needed most. [red-team 2026-05-30]
+        ambiguity_ratio = (e_sorted[1] + AMBIGUITY_EPS_PX) / (e_sorted[0] + AMBIGUITY_EPS_PX)
     # Trust the prior to break the tie only when the geometry is genuinely ambiguous;
     # otherwise the lowest-reprojection solution wins (so a stale prior can't force the
     # flipped, high-error pose). [review 2B]
@@ -186,17 +204,20 @@ def _estimate_p3p(obj: np.ndarray, img: np.ndarray, K: np.ndarray, prior: GatePo
     P3P's solutions all reproject the 3 points, so they cannot be ranked by error. We keep
     only cheirality-valid (gate in front) poses and pick by the prior (near-exact) or, with
     no prior, the most head-on gate (its +Z pointing into the scene) -- a ~1-2 deg-uncertain
-    last resort; callers at gate transit should supply a temporal/map prior.
+    last resort; callers at gate transit should supply a temporal/map prior. If NO solution is
+    cheirality-valid we return None (PnP failed) rather than accepting a behind-camera pose --
+    let the caller coast on IMU through the transit. [red-team 2026-05-30]
     """
     cands = _solve_p3p(obj, img, K)
     if not cands:
         return None
     in_front = [(R, t) for (R, t) in cands if np.all(((R @ obj.T).T + t)[:, 2] > 0)]
-    valid = in_front or cands
+    if not in_front:
+        return None
     if prior is not None:
-        R, t = min(valid, key=lambda c: _rotation_geodesic(c[0], prior.R_cam_gate))
+        R, t = min(in_front, key=lambda c: _rotation_geodesic(c[0], prior.R_cam_gate))
     else:
-        R, t = max(valid, key=lambda c: float((c[0] @ _GATE_NORMAL)[2]))
+        R, t = max(in_front, key=lambda c: float((c[0] @ _GATE_NORMAL)[2]))
     return R, t, _reproj_rms(obj, img, R, t, K), None
 
 
