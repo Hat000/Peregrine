@@ -96,3 +96,29 @@ def test_frames_idle_timeout_returns_without_hanging():
         elapsed = time.monotonic() - t0
     assert frames == []                                  # idle timeout -> graceful stop
     assert elapsed < 1.0                                 # returned promptly, did not hang
+
+
+# -- stream-health metrics (first-contact MTU / packet-loss diagnostics) [red-team] --------
+def test_metrics_track_datagrams_chunks_and_completion():
+    rx = JpegUdpReceiver()
+    img = np.full((360, 640, 3), 127, np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    jpeg = buf.tobytes()
+    half = len(jpeg) // 2
+    assert rx._ingest(_datagram(7, 0, 2, len(jpeg), jpeg[:half], 99)) is None
+    assert rx._ingest(_datagram(7, 1, 2, len(jpeg), jpeg[half:], 99)) is not None
+    m = rx.metrics
+    assert m.datagrams == 2
+    assert m.frames_completed == 1
+    assert m.max_total_chunks == 2
+    assert 0 < m.min_datagram_bytes <= m.max_datagram_bytes
+
+
+def test_metrics_count_evicted_incomplete_as_loss():
+    rx = JpegUdpReceiver(stale_after_s=0.5)
+    rx._ingest(_datagram(8, 0, 3, 999, b"abcdef", 1))    # chunk 1 of 3, never completes
+    assert rx.metrics.frames_completed == 0
+    rx._partials[8].first_seen_monotonic -= 10.0          # age it past stale_after_s
+    rx._evict_stale()
+    assert rx.metrics.partials_evicted == 1

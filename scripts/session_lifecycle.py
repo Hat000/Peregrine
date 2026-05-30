@@ -26,7 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from pymavlink import mavutil
 
-from racer.firstcontact import backend_summary, drain_statustexts, telemetry_summary
+from racer.firstcontact import (
+    backend_summary,
+    drain_statustexts,
+    sample_attitude_bias,
+    telemetry_summary,
+)
 from racer.mavlink_client import MavlinkClient
 
 _ARM = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
@@ -72,6 +77,22 @@ def main() -> int:
         print("  R1: position IS in telemetry (LOCAL_POSITION_NED present) -> localisation collapses.")
     else:
         print("  R1: no position telemetry -> vision is the sole position source (as expected).")
+
+    # Attitude-bias check (red-team CRIT-2 / the ESKF decision): at rest the GIVEN attitude
+    # should match the gravity-implied tilt; a persistent residual = a static bias the linear
+    # KF can't see and the ESKF bias-state would. Keep the vehicle STILL on the ground for this.
+    print("  [attitude-bias] sampling given-vs-gravity tilt (keep it still, pre-arm) ...")
+    bias = sample_attitude_bias(client, seconds=2.0)
+    if bias is None:
+        print("    not quasi-static (|accel| far from 1 g) -> can't infer; ensure it's at rest.")
+    else:
+        worst = max(abs(bias["roll_bias_deg"]), abs(bias["pitch_bias_deg"]))
+        print(f"    roll {bias['roll_bias_deg']:+.2f}+/-{bias['roll_bias_std_deg']:.2f} deg, "
+              f"pitch {bias['pitch_bias_deg']:+.2f}+/-{bias['pitch_bias_std_deg']:.2f} deg "
+              f"[n={bias['n']}/{bias['n_total']}]")
+        print(f"    -> {worst:.1f} deg max bias: "
+              + ("given attitude NOT clean; weigh the ESKF bias-state." if worst > 0.5
+                 else "given attitude looks trustworthy at rest (linear KF OK)."))
 
     armed_ok: bool | None = None
     arm_latency: float | None = None
@@ -130,6 +151,9 @@ def main() -> int:
     print(f"  master clock: sim_time_ns (HIGHRES_IMU) advanced {(sim_t1 - sim_t0) / 1e9:.3f}s, "
           f"{'monotonic' if sim_t1 >= sim_t0 else 'NON-MONOTONIC!'}")
     print(f"  TIMESYNC:     {'present' if type_counts.get('TIMESYNC') else 'NOT seen'}")
+    if bias is not None:
+        print(f"  attitude-bias: roll {bias['roll_bias_deg']:+.2f} / pitch {bias['pitch_bias_deg']:+.2f} deg "
+              "at rest (>~0.5 deg -> consider ESKF bias-state)")
     print(f"  msg types:    {dict(type_counts.most_common())}")
     n = len(client.statustexts)
     print(f"  STATUSTEXT:   {n} message(s)" + (" -- lifecycle clues, read above" if n else ""))
