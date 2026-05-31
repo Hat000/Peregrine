@@ -20,7 +20,12 @@ dev = ["pytest>=8.0"]
 # Heavy (pulls torch) and GPU-only, so it stays out of the core deps. Install on the GPU
 # boxes: `pip install -e ".[detector]"`. CUDA torch wheels (cp313, cu12x) are installed
 # out-of-band per platform; ultralytics will otherwise pull a CPU torch.
-detector = ["ultralytics>=8.3.0"]
+detector = ["ultralytics>=8.3.0", "albumentations>=1.4"]  # albumentations = L3 "chaos" dataset aug
+# Time-optimal speed profiling. The pure-numpy `racer.speed_profile` is the Windows-friendly
+# DEFAULT; `toppra` is a Cython/C++ lib needing the Windows SDK to build (same pain class as
+# acados), so it installs only off-Windows (Linux sim box / Adroit) as a drop-in robustness
+# upgrade behind the same `time_optimal_profile` API.
+planning = ["toppra>=0.6.0; platform_system != 'Windows'"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/racer"]
