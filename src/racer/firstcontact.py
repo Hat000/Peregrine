@@ -51,6 +51,23 @@ def telemetry_summary(client: MavlinkClient) -> str:
     )
 
 
+def mission_summary(client: MavlinkClient) -> str:
+    """One line on the sim-provided race/track state (repurposed ENCAPSULATED_DATA) + any
+    collisions. Resolves R4 (how gate order/positions arrive) and exercises the mission
+    plumbing (active gate, race start/finish, collision feedback)."""
+    gates = client.track_gates
+    gate_map = f"{len(gates)} gates" if gates else "NONE"
+    rs = client.race_status
+    if rs is None:
+        race = "race_status=NONE"
+    else:
+        race = (
+            f"active_gate={rs['active_gate_index']} "
+            f"started={rs['started']} finished={rs['finished']}"
+        )
+    return f"gate_map={gate_map}  {race}  collisions={len(client.collisions)}"
+
+
 def baro_altitude_m(client: MavlinkClient) -> float | None:
     """ISA altitude from the latest baro pressure, or None if baro is absent.
     Only *relative* changes are meaningful (no arming-reference calibration here)."""
