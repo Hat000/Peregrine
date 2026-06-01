@@ -40,9 +40,16 @@ class ReactivePlanner:
         to_gate = gate_pos - position
 
         # The map's gate normal sign is arbitrary; orient it to point the way we're travelling
-        # ("through the gate, away from us") so the carrot lands on the exit side.
+        # ("through the gate, away from us") so the carrot lands on the exit side. Disambiguate
+        # by the drone's VELOCITY when it is moving: position-relative-to-gate (to_gate) inverts
+        # the instant the drone crosses the gate plane, so a momentary overshoot before the
+        # mission advances the gate would flip the carrot to the approach side and trigger a
+        # high-speed U-turn back through the gate. Velocity keeps pointing downrange through the
+        # pass; fall back to to_gate only at near-zero speed (takeoff / hover). [red-team 2026-05-30]
+        velocity = np.asarray(nav.velocity_ned, dtype=np.float64)
+        heading_ref = velocity if float(np.linalg.norm(velocity)) > 1e-3 else to_gate
         travel = np.asarray(gate.normal_ned, dtype=np.float64)
-        if travel @ to_gate < 0.0:
+        if travel @ heading_ref < 0.0:
             travel = -travel
         travel = _unit(travel, fallback=_unit(to_gate))
 

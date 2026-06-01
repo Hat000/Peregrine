@@ -162,6 +162,8 @@ def main() -> int:
         recorder.add_meta(
             mavlink_type_counts=dict(type_counts),
             hedge_fields_seen=dict(hedge),
+            track_gates=(len(client.track_gates) if client and client.track_gates else 0),
+            collisions=(len(client.collisions) if client else 0),
         )
         recorder.close()
 
@@ -178,6 +180,16 @@ def main() -> int:
     print("hedge fields present in telemetry (resolves R1):")
     for key, seen in hedge.items():
         print(f"  {key:14s} {'YES' if seen else 'no'}")
+    if client is not None:
+        if client.track_gates:
+            print(f"track map: {len(client.track_gates)} gates provided (TRACK_INFO) -> resolves R4.")
+        if client.race_status is not None:
+            rs = client.race_status
+            print(f"race status: active_gate={rs['active_gate_index']} "
+                  f"started={rs['started']} finished={rs['finished']}")
+        if client.collisions:
+            ids = sorted({c["id"] for c in client.collisions})
+            print(f"collisions: {len(client.collisions)} event(s) (ids {ids}; 1001=gate, 1002=env).")
     if client is not None and client.unknown_msg_types:
         print(f"unparsed message types: {sorted(client.unknown_msg_types)}")
     return 0

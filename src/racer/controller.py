@@ -141,7 +141,19 @@ class Controller:
         q_xyzw = Rotation.from_matrix(R_wb).as_quat()
         q_wxyz = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
 
-        # PLACEHOLDER throttle: proportional to required specific force, anchored so |f|=g -> hover.
-        # Calibrate the real throttle->thrust curve via innerloop_step at first contact (R2).
+        # Throttle from the required specific force. When the tilt was clamped, size the
+        # collective so its VERTICAL (world-up) projection still meets the vertical specific
+        # force the setpoint needs. Otherwise a large horizontal demand keeps the full,
+        # un-clamped magnitude at a clamped 45-deg angle, so the surplus vertical component
+        # (|f| * cos 45) rockets the drone skyward on every hard turn or brake. Altitude
+        # priority: keep exactly what holds us up, sacrifice the horizontal we can't reach.
+        # The formula is an identity when the tilt is NOT clamped (cos_tilt = |f_up|/f_mag),
+        # so the un-clamped path is unchanged. [red-team 2026-05-30]
+        f_up = float(-f_world[2])                    # required upward specific force (world up +)
+        cos_tilt = float(thrust_dir @ _WORLD_UP)     # cos(actual tilt) after any clamp
+        if f_up > 1e-9 and cos_tilt > 1e-6:
+            f_mag = f_up / cos_tilt
+        # PLACEHOLDER throttle scale (linear, anchored so |f|=g -> hover); the real throttle->
+        # thrust curve (TWR, curvature, lag) is the innerloop_step system-ID at first contact (R2).
         thrust = float(np.clip(self.hover_thrust * f_mag / _G, 0.0, 1.0))
         return q_wxyz, thrust

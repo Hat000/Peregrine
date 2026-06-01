@@ -37,19 +37,31 @@ def test_takeoff_climbs_then_switches_to_run():
     m = _mission([_gate([5.0, 0.0, -1.5])])
     m.start()
     assert m.state is MissionState.TAKEOFF
-    cmd = m.step(_nav([0.0, 0.0, -0.4]))                      # below hover altitude
+    cmd = m.step(_nav([0.0, 0.0, 0.0]))                       # on the ground at the start point
     assert m.state is MissionState.TAKEOFF
-    np.testing.assert_allclose(cmd.position_ned, [0.0, 0.0, -1.5])  # climb to hover over the start xy
+    np.testing.assert_allclose(cmd.position_ned, [0.0, 0.0, -1.5])  # climb 1.5 m above the start xy
     # Reaching altitude flips to RUN and immediately produces guidance toward the first gate.
     cmd = m.step(_nav([0.0, 0.0, -1.5]))
     assert m.state is MissionState.RUN
     assert cmd.position_ned[0] > 0.0                          # heading toward the gate (north)
 
 
+def test_takeoff_target_is_relative_to_start_altitude():
+    # [red-team 2026-05-30] If the estimator's z carries an absolute (e.g. MSL) bias so the pad
+    # is not at z=0, an absolute takeoff target would launch to the wrong height. The target
+    # must be takeoff_altitude_m ABOVE wherever the drone actually starts.
+    m = _mission([_gate([5.0, 0.0, -11.5])])
+    m.start()
+    cmd = m.step(_nav([2.0, 3.0, -10.0]))                     # pad sits at z=-10 (uncalibrated baro)
+    assert m.state is MissionState.TAKEOFF
+    np.testing.assert_allclose(cmd.position_ned, [2.0, 3.0, -11.5])  # 1.5 m above start, not absolute -1.5
+
+
 def test_gates_advance_on_proximity_then_finish():
     m = _mission([_gate([5.0, 0.0, -1.5], gate_id=0), _gate([10.0, 0.0, -1.5], gate_id=1)])
     m.start()
-    m.step(_nav([0.0, 0.0, -1.5]))                            # TAKEOFF -> RUN, target gate 0
+    m.step(_nav([0.0, 0.0, 0.0]))                             # on the ground -> capture takeoff origin
+    m.step(_nav([0.0, 0.0, -1.5]))                            # reached altitude -> RUN, target gate 0
     assert m.state is MissionState.RUN and m.gate_index == 0
     m.step(_nav([5.0, 0.0, -1.5]))                            # at gate 0 -> advance to gate 1
     assert m.gate_index == 1 and m.state is MissionState.RUN
@@ -57,9 +69,40 @@ def test_gates_advance_on_proximity_then_finish():
     assert m.state is MissionState.FINISHED
 
 
+def test_fast_flythrough_advances_via_plane_crossing():
+    # [red-team 2026-05-30] At speed the drone can pass cleanly through the 1.5 m opening yet
+    # never sample inside the 1.0 m proximity sphere. A sample just past the gate plane, inside
+    # the opening, must still advance -- otherwise gate_index sticks and the planner U-turns.
+    m = _mission([_gate([5.0, 0.0, -1.5], normal=(1.0, 0.0, 0.0), gate_id=0),
+                  _gate([10.0, 0.0, -1.5], gate_id=1)])
+    m.start()
+    m.step(_nav([0.0, 0.0, 0.0]))                            # on the ground -> capture takeoff origin
+    m.step(_nav([0.0, 0.0, -1.5]))                           # reached altitude -> RUN, target gate 0
+    assert m.gate_index == 0
+    nav = NavState(sim_time_ns=1, position_ned=np.array([6.2, 0.5, -1.5]),
+                   velocity_ned=np.array([6.0, 0.0, 0.0]))    # 1.2 m past plane, 0.5 m off-centre
+    assert float(np.linalg.norm(nav.position_ned - np.array([5.0, 0.0, -1.5]))) > 1.0  # missed the sphere
+    m.step(nav)
+    assert m.gate_index == 1                                  # advanced via the plane crossing
+
+
+def test_no_advance_when_past_plane_but_outside_opening():
+    # Past the gate plane but 2 m off to the side: flew AROUND the gate, not through it. Must
+    # NOT count as passed (a false advance would skip a gate and invalidate the run).
+    m = _mission([_gate([5.0, 0.0, -1.5], normal=(1.0, 0.0, 0.0), gate_id=0)])
+    m.start()
+    m.step(_nav([0.0, 0.0, 0.0]))                             # on the ground -> capture takeoff origin
+    m.step(_nav([0.0, 0.0, -1.5]))                            # reached altitude -> RUN
+    nav = NavState(sim_time_ns=1, position_ned=np.array([6.0, 2.0, -1.5]),
+                   velocity_ned=np.array([6.0, 0.0, 0.0]))
+    m.step(nav)
+    assert m.gate_index == 0                                  # outside the opening -> no advance
+
+
 def test_finished_holds_position():
     m = _mission([])                                          # no gates -> finishes as soon as it runs
     m.start()
+    m.step(_nav([0.0, 0.0, 0.0]))                             # on the ground -> capture takeoff origin
     m.step(_nav([0.0, 0.0, -1.5]))                            # TAKEOFF -> RUN -> FINISHED
     assert m.state is MissionState.FINISHED
     cmd = m.step(_nav([1.0, 2.0, -1.5]))
@@ -107,8 +150,8 @@ def test_run_drives_to_finished_end_to_end():
 
     # A scripted "navigator": pretend the drone follows commands -- climb, then reach each gate.
     script = [
-        _nav([0.0, 0.0, -0.5]),    # climbing
-        _nav([0.0, 0.0, -1.5]),    # at altitude -> RUN
+        _nav([0.0, 0.0, 0.0]),     # on the ground -> capture takeoff origin
+        _nav([0.0, 0.0, -1.5]),    # reached altitude -> RUN
         _nav([5.0, 0.0, -1.5]),    # at gate 0
         _nav([10.0, 0.0, -1.5]),   # at gate 1 -> finish
     ]

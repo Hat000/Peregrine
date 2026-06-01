@@ -29,6 +29,7 @@ from pymavlink import mavutil
 from racer.firstcontact import (
     backend_summary,
     drain_statustexts,
+    mission_summary,
     sample_attitude_bias,
     telemetry_summary,
 )
@@ -77,6 +78,12 @@ def main() -> int:
         print("  R1: position IS in telemetry (LOCAL_POSITION_NED present) -> localisation collapses.")
     else:
         print("  R1: no position telemetry -> vision is the sole position source (as expected).")
+    print(f"  mission:   {mission_summary(client)}")
+    if client.track_gates:
+        print(f"  R4: sim PROVIDES a {len(client.track_gates)}-gate map (TRACK_INFO) -> order + "
+              "positions given; refine with vision (FAQ warns VQ2 may be 'rough').")
+    else:
+        print("  R4: no gate map yet (TRACK_INFO not seen this window; may need the race to start).")
 
     # Attitude-bias check (red-team CRIT-2 / the ESKF decision): at rest the GIVEN attitude
     # should match the gravity-implied tilt; a persistent residual = a static bias the linear
@@ -154,6 +161,7 @@ def main() -> int:
     if bias is not None:
         print(f"  attitude-bias: roll {bias['roll_bias_deg']:+.2f} / pitch {bias['pitch_bias_deg']:+.2f} deg "
               "at rest (>~0.5 deg -> consider ESKF bias-state)")
+    print(f"  mission:      {mission_summary(client)}")
     print(f"  msg types:    {dict(type_counts.most_common())}")
     n = len(client.statustexts)
     print(f"  STATUSTEXT:   {n} message(s)" + (" -- lifecycle clues, read above" if n else ""))

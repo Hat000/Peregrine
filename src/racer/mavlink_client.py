@@ -1,8 +1,12 @@
 """Minimal MAVLink2 UDP client for the AI Grand Prix simulator.
 
-Maintains a heartbeat, parses inbound HEARTBEAT / ATTITUDE / HIGHRES_IMU /
-LOCAL_POSITION_NED / TIMESYNC into an immutable :class:`DroneState` snapshot, and
-translates a :class:`ControlCommand` into the right control message + type_mask.
+Maintains a heartbeat, parses inbound telemetry into an immutable :class:`DroneState`
+snapshot, and translates a :class:`ControlCommand` into the right control message +
+type_mask. Message coverage was confirmed against the official ``PyAIPilotExample`` client
+shipped inside the sim zip: HEARTBEAT, ATTITUDE, HIGHRES_IMU, LOCAL_POSITION_NED, ODOMETRY
+(pose + reset_counter), TIMESYNC, COMMAND_ACK, STATUSTEXT, COLLISION, ACTUATOR_OUTPUT_STATUS,
+and the sim's *repurposed* ENCAPSULATED_DATA carrying RACE_STATUS (active gate + race timing)
+and a chunked TRACK_INFO gate map (announced via DATA_TRANSMISSION_HANDSHAKE).
 
 Spec ref: VADR-TS-002 sec 4. Data contracts: :mod:`racer.contracts`.
 """
@@ -12,6 +16,7 @@ import os
 
 os.environ.setdefault("MAVLINK20", "1")
 
+import struct
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -73,6 +78,60 @@ def _result_name(result: int) -> str:
         return str(result)
 
 
+# -- the sim's custom / repurposed MAVLink payloads ------------------------------------
+# All confirmed from the official PyAIPilotExample shipped inside the sim zip.
+MAV_CMD_SIM_RESET = 31000  # COMMAND_LONG: reset the sim to the start (clean attempt loop)
+
+_ENCAP_RACE_STATUS = 1     # ENCAPSULATED_DATA.data[0] discriminator
+_ENCAP_TRACK_INFO = 2
+# RACE_STATUS payload: data_type(B), sim_boot_ms(Q), race_start_boot_ms(q), race_finish_ns(q),
+#                      active_gate_index(I), last_gate_race_time(q). (<0 = not started / ongoing.)
+_RACE_STATUS_FMT = "<BQqqIq"
+# One gate in a TRACK_INFO payload: id(H), pos NED x/y/z(f), quat w/x/y/z(f), width(f), height(f).
+_TRACK_GATE_FMT = "<Hfffffffff"
+
+
+def parse_race_status(payload: bytes) -> dict | None:
+    """Decode an ENCAPSULATED_DATA RACE_STATUS payload (data_type==1). None if too short."""
+    if len(payload) < struct.calcsize(_RACE_STATUS_FMT):
+        return None
+    (_dt, sim_boot_ms, race_start_boot_ms, race_finish_ns,
+     active_gate_index, last_gate_race_time) = struct.unpack_from(_RACE_STATUS_FMT, payload, 0)
+    return {
+        "sim_boot_time_ms": int(sim_boot_ms),
+        "race_start_boot_time_ms": int(race_start_boot_ms),
+        "race_finish_time_ns": int(race_finish_ns),
+        "active_gate_index": int(active_gate_index),
+        "last_gate_race_time": int(last_gate_race_time),
+        "started": int(race_start_boot_ms) >= 0,
+        "finished": int(race_finish_ns) >= 0,
+    }
+
+
+def parse_track_info(payload: bytes) -> list[dict]:
+    """Decode a reassembled TRACK_INFO gate map: u16 num_gates then that many gate records.
+    Each gate -> {gate_id, position_ned (3,), orientation_ned_wxyz (4,), width_m, height_m}."""
+    gates: list[dict] = []
+    if len(payload) < 2:
+        return gates
+    (num_gates,) = struct.unpack_from("<H", payload, 0)
+    off = 2
+    size = struct.calcsize(_TRACK_GATE_FMT)
+    for _ in range(int(num_gates)):
+        if off + size > len(payload):
+            break
+        gid, px, py, pz, qw, qx, qy, qz, w, h = struct.unpack_from(_TRACK_GATE_FMT, payload, off)
+        gates.append({
+            "gate_id": int(gid),
+            "position_ned": np.array([px, py, pz], dtype=np.float64),
+            "orientation_ned_wxyz": np.array([qw, qx, qy, qz], dtype=np.float64),
+            "width_m": float(w),
+            "height_m": float(h),
+        })
+        off += size
+    return gates
+
+
 class MavlinkClient:
     HEARTBEAT_HZ = 2  # spec minimum
 
@@ -94,6 +153,15 @@ class MavlinkClient:
         self.autopilot: int | None = None            # HEARTBEAT.autopilot (MAV_AUTOPILOT)
         self.vehicle_type: int | None = None         # HEARTBEAT.type (MAV_TYPE)
         self.custom_mode: int | None = None          # HEARTBEAT.custom_mode (autopilot-specific)
+        # Sim-provided race/track state via the repurposed ENCAPSULATED_DATA (see _handle).
+        # Kept off DroneState (map data + events, not steady per-tick telemetry).
+        self.race_status: dict | None = None          # latest RACE_STATUS (active gate + timing)
+        self.track_gates: list[dict] | None = None    # full TRACK_INFO gate map once reassembled
+        self.collisions: list[dict] = []              # COLLISION events (gate 1001 / env 1002)
+        self._max_collisions = 200
+        self.actuator_outputs: dict | None = None     # latest ACTUATOR_OUTPUT_STATUS (motor cmds)
+        self._track_chunks: dict[int, dict[int, bytes]] = {}   # transfer_id -> {seqnr: bytes}
+        self._track_expected: dict[int, int] = {}              # transfer_id -> expected chunk count
 
     def connect(self, wait_heartbeat: bool = True, timeout_s: float = 15.0) -> None:
         self.conn = mavutil.mavlink_connection(
@@ -166,6 +234,17 @@ class MavlinkClient:
                 position_ned=np.array([msg.x, msg.y, msg.z], dtype=np.float64),
                 velocity_ned=np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64),
             )
+        elif t == "ODOMETRY":
+            # Richer pose source than LOCAL_POSITION_NED: full pose + a reset_counter that
+            # ticks when the sim epoch restarts. Capture pos/vel + the counter; leave the
+            # clock to HIGHRES_IMU (isolation) and orientation to ATTITUDE (canonical Euler).
+            self.state = replace(
+                self.state,
+                recv_monotonic_ns=recv,
+                position_ned=np.array([msg.x, msg.y, msg.z], dtype=np.float64),
+                velocity_ned=np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64),
+                reset_counter=int(getattr(msg, "reset_counter", 0)),
+            )
         elif t == "HEARTBEAT":
             armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
             self.state = replace(self.state, armed=armed, status_flags=int(msg.base_mode))
@@ -196,10 +275,71 @@ class MavlinkClient:
             })
             if len(self.statustexts) > self._max_statustexts:
                 self.statustexts.pop(0)
+        elif t == "ENCAPSULATED_DATA":
+            # The sim repurposes this to carry RACE_STATUS + a chunked TRACK_INFO gate map.
+            self._handle_encapsulated(msg)
+        elif t == "DATA_TRANSMISSION_HANDSHAKE":
+            # Announces an incoming chunked TRACK_INFO transfer (width=transfer_id, packets=count).
+            self._track_chunks[int(msg.width)] = {}
+            self._track_expected[int(msg.width)] = int(msg.packets)
+        elif t == "COLLISION":
+            self.collisions.append({
+                "id": int(msg.id),                                       # 1001=gate, 1002=environment
+                "threat_level": int(getattr(msg, "threat_level", 0)),   # 1..2 (2 = harder hit)
+                "impulse": float(getattr(msg, "horizontal_minimum_delta", 0.0)),  # impulse kg*m/s
+                "recv_monotonic_ns": recv,
+                "sim_time_ns": self.state.sim_time_ns,
+            })
+            if len(self.collisions) > self._max_collisions:
+                self.collisions.pop(0)
+        elif t == "ACTUATOR_OUTPUT_STATUS":
+            self.actuator_outputs = {
+                "time_usec": int(getattr(msg, "time_usec", 0)),
+                "motors": [float(x) for x in list(msg.actuator)[:4]],
+            }
         elif t in ("TIMESYNC", "BAD_DATA"):
             pass  # TODO(clock): use TIMESYNC to reconcile sim_time_ns across streams.
         else:
             self.unknown_msg_types.add(t)
+
+    def _handle_encapsulated(self, msg) -> None:
+        """Route a repurposed ENCAPSULATED_DATA payload by its leading discriminator byte."""
+        raw = bytes(msg.data)
+        if not raw:
+            return
+        data_type = raw[0]
+        if data_type == _ENCAP_RACE_STATUS:
+            rs = parse_race_status(raw)
+            if rs is not None:
+                self.race_status = rs
+        elif data_type == _ENCAP_TRACK_INFO:
+            self._ingest_track_chunk(msg, raw)
+
+    def _ingest_track_chunk(self, msg, raw: bytes) -> None:
+        """Reassemble one TRACK_INFO chunk; parse the gate map once all chunks are in.
+
+        Chunk layout: data_type(B), transfer_id(H), then a payload slice. Slices are
+        concatenated by seqnr; only the final chunk is zero-padded, and parse_track_info
+        reads exactly the gates the u16 count promises, so the trailing padding is ignored.
+        """
+        if len(raw) < 3:
+            return
+        _dt, transfer_id = struct.unpack_from("<BH", raw, 0)
+        if transfer_id not in self._track_expected:
+            return  # no DATA_TRANSMISSION_HANDSHAKE announced this transfer yet
+        self._track_chunks.setdefault(transfer_id, {})[int(msg.seqnr)] = raw[3:]
+        if len(self._track_chunks[transfer_id]) < self._track_expected[transfer_id]:
+            return
+        n = self._track_expected[transfer_id]
+        try:
+            full = b"".join(self._track_chunks[transfer_id][i] for i in range(n))
+        except KeyError:
+            return  # a seqnr is still missing (a duplicate filled the count) -> wait for it
+        gates = parse_track_info(full)
+        if gates:
+            self.track_gates = gates
+        self._track_chunks.pop(transfer_id, None)
+        self._track_expected.pop(transfer_id, None)
 
     def _send_heartbeat(self) -> None:
         assert self.conn is not None
@@ -312,6 +452,11 @@ class MavlinkClient:
         self.send_command_long(
             mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0.0, 21196.0 if force else 0.0
         )
+
+    def send_sim_reset(self) -> None:
+        """Reset the sim to the start via the custom MAV_CMD 31000 (from PyAIPilotExample).
+        The course is deterministic, so this is the clean attempt-iteration primitive."""
+        self.send_command_long(MAV_CMD_SIM_RESET)
 
     def wait_command_ack(self, command: int, timeout_s: float = 3.0) -> dict | None:
         """Pump until a COMMAND_ACK for ``command`` arrives; return the ack dict or None on

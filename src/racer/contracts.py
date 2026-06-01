@@ -88,6 +88,10 @@ class DroneState:
     armed: bool = False
     status_flags: int = 0
 
+    # Bumped by the sim (ODOMETRY.reset_counter) when its epoch restarts; a change means the
+    # estimator should reinitialise rather than integrate across the discontinuity.
+    reset_counter: int = 0
+
 
 # ---------------------------------------------------------------------------
 # PERCEPTION

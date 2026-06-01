@@ -90,6 +90,21 @@ def test_tilt_is_clamped():
     assert up[0] > 0.0                                         # still leaning the right way
 
 
+def test_clamped_tilt_preserves_vertical_thrust_no_skyward_launch():
+    # [red-team 2026-05-30] A horizontal accel beyond the tilt budget must NOT keep the full,
+    # un-clamped thrust magnitude at the clamped 45/30-deg angle -- the surplus vertical
+    # component would rocket the drone up on every hard turn/brake. Altitude priority: the
+    # realized thrust's vertical projection still equals the hover requirement (g), and the
+    # command is no longer saturated to 1.0.
+    c = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.5, max_tilt_rad=np.deg2rad(30.0))
+    cmd = c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.array([100.0, 0.0, 0.0]), yaw=0.0))
+    cos_tilt = float(_body_up_world(cmd) @ np.array([0.0, 0.0, -1.0]))
+    # thrust = clip(hover * f_mag / g); reconstruct the vertical specific force it produces.
+    vertical_sf = (cmd.thrust * _G / 0.5) * cos_tilt
+    assert vertical_sf == pytest.approx(_G, rel=1e-6)   # holds altitude, doesn't climb
+    assert cmd.thrust < 1.0                              # old code clipped to 1.0 (over-thrust)
+
+
 def test_position_error_drives_attitude():
     # Attitude mode with a position setpoint north of the drone -> thrust tilts north.
     c = Controller(mode=ControlMode.ATTITUDE)

@@ -1,6 +1,7 @@
 """Tests for the receive-side clock handling in mavlink_client (the send-side type_mask
 helpers are covered in test_contracts). Exercises ``_handle`` directly with fake messages,
 so no socket/connection is needed."""
+import struct
 from types import SimpleNamespace
 
 import numpy as np
@@ -162,3 +163,135 @@ def test_heartbeat_captures_backend_metadata():
     assert c.vehicle_type == mavutil.mavlink.MAV_TYPE_QUADROTOR
     assert c.custom_mode == 7
     assert c.state.armed is True
+
+
+# -- sim-dialect additions: ODOMETRY / ENCAPSULATED_DATA (race + track) / COLLISION ---------
+def _odometry(x=5.0, y=6.0, z=-7.0, vx=1.0, vy=0.0, vz=-0.5, reset_counter=0):
+    m = SimpleNamespace(x=x, y=y, z=z, vx=vx, vy=vy, vz=vz,
+                        q=[1.0, 0.0, 0.0, 0.0], rollspeed=0.0, pitchspeed=0.0, yawspeed=0.0,
+                        time_usec=123, reset_counter=reset_counter)
+    m.get_type = lambda: "ODOMETRY"
+    return m
+
+
+def _collision(cid=1001, threat=2, impulse=3.5):
+    m = SimpleNamespace(id=cid, threat_level=threat, horizontal_minimum_delta=impulse)
+    m.get_type = lambda: "COLLISION"
+    return m
+
+
+def _actuator(motors=(0.1, 0.2, 0.3, 0.4)):
+    m = SimpleNamespace(time_usec=42, actuator=list(motors) + [0.0, 0.0, 0.0, 0.0])
+    m.get_type = lambda: "ACTUATOR_OUTPUT_STATUS"
+    return m
+
+
+def _encap_race_status(active_gate=3, started=True, finished=False):
+    payload = struct.pack("<BQqqIq", 1, 1000,
+                          500 if started else -1,
+                          2000 if finished else -1,
+                          active_gate, 7)
+    m = SimpleNamespace(data=list(payload), seqnr=0)
+    m.get_type = lambda: "ENCAPSULATED_DATA"
+    return m
+
+
+def _handshake(transfer_id, packets):
+    m = SimpleNamespace(width=transfer_id, packets=packets)
+    m.get_type = lambda: "DATA_TRANSMISSION_HANDSHAKE"
+    return m
+
+
+def _encap_track_chunk(transfer_id, seqnr, payload):
+    raw = struct.pack("<BH", 2, transfer_id) + payload
+    m = SimpleNamespace(data=list(raw), seqnr=seqnr)
+    m.get_type = lambda: "ENCAPSULATED_DATA"
+    return m
+
+
+def _gate_map_bytes(n=2):
+    buf = struct.pack("<H", n)
+    for i in range(n):
+        buf += struct.pack("<Hfffffffff", i, float(i), float(i + 1), float(i + 2),
+                           1.0, 0.0, 0.0, 0.0, 1.5, 1.5)
+    return buf
+
+
+def test_odometry_captures_pose_and_reset_counter():
+    c = MavlinkClient()
+    c._handle(_imu(time_usec=1_000_000))
+    c._handle(_odometry(x=5.0, y=6.0, z=-7.0, vx=1.0, vy=0.0, vz=-0.5, reset_counter=4))
+    np.testing.assert_array_equal(c.state.position_ned, [5.0, 6.0, -7.0])
+    np.testing.assert_array_equal(c.state.velocity_ned, [1.0, 0.0, -0.5])
+    assert c.state.reset_counter == 4
+    assert c.state.sim_time_ns == 1_000_000_000   # ODOMETRY must NOT drive the clock
+
+
+def test_encapsulated_race_status_parsed():
+    c = MavlinkClient()
+    c._handle(_encap_race_status(active_gate=3, started=True, finished=False))
+    rs = c.race_status
+    assert rs is not None
+    assert rs["active_gate_index"] == 3
+    assert rs["started"] is True and rs["finished"] is False
+
+
+def test_track_info_reassembled_into_gate_map():
+    c = MavlinkClient()
+    full = _gate_map_bytes(2)
+    c._handle(_handshake(9, packets=2))
+    c._handle(_encap_track_chunk(9, seqnr=0, payload=full[:40]))
+    assert c.track_gates is None                     # incomplete: hold off
+    c._handle(_encap_track_chunk(9, seqnr=1, payload=full[40:]))
+    gates = c.track_gates
+    assert gates is not None and len(gates) == 2
+    assert gates[0]["gate_id"] == 0
+    np.testing.assert_array_equal(gates[1]["position_ned"], [1.0, 2.0, 3.0])
+
+
+def test_track_chunk_without_handshake_is_ignored():
+    c = MavlinkClient()
+    c._handle(_encap_track_chunk(5, seqnr=0, payload=_gate_map_bytes(1)))  # no handshake first
+    assert c.track_gates is None
+
+
+def test_collision_and_actuator_captured():
+    c = MavlinkClient()
+    c._handle(_collision(cid=1001, threat=2, impulse=3.5))
+    c._handle(_collision(cid=1002, threat=1, impulse=0.2))
+    assert len(c.collisions) == 2
+    assert c.collisions[0]["id"] == 1001 and c.collisions[0]["threat_level"] == 2
+    assert abs(c.collisions[0]["impulse"] - 3.5) < 1e-9
+    c._handle(_actuator(motors=(0.1, 0.2, 0.3, 0.4)))
+    assert c.actuator_outputs["motors"] == [0.1, 0.2, 0.3, 0.4]
+
+
+def test_collisions_capped():
+    c = MavlinkClient()
+    c._max_collisions = 3
+    for _ in range(5):
+        c._handle(_collision())
+    assert len(c.collisions) == 3
+
+
+def test_sim_dialect_messages_not_unknown():
+    c = MavlinkClient()
+    for m in (_odometry(), _collision(), _actuator(), _encap_race_status(), _handshake(1, 1)):
+        c._handle(m)
+    assert c.unknown_msg_types == set()
+
+
+def test_send_sim_reset_sends_cmd_31000():
+    from racer.mavlink_client import MAV_CMD_SIM_RESET
+    c = MavlinkClient()
+    c.conn = _FakeConn()
+    c.send_sim_reset()
+    assert c.conn.mav.sent[-1]["command"] == MAV_CMD_SIM_RESET
+
+
+def test_parse_helpers_pure():
+    from racer.mavlink_client import parse_race_status, parse_track_info
+    assert parse_race_status(b"\x00") is None              # too short
+    gates = parse_track_info(_gate_map_bytes(1))
+    assert len(gates) == 1 and gates[0]["gate_id"] == 0
+    assert abs(gates[0]["height_m"] - 1.5) < 1e-6

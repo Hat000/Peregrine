@@ -28,6 +28,8 @@ desktop.ini
 data/runs/
 data/recordings/
 data/synthetic/
+data/preview/
+demo/
 *.log
 .env
 
