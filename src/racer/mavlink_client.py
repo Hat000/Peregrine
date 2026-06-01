@@ -458,6 +458,24 @@ class MavlinkClient:
         The course is deterministic, so this is the clean attempt-iteration primitive."""
         self.send_command_long(MAV_CMD_SIM_RESET)
 
+    def send_actuator_control(self, controls, *, group_mix: int = 0) -> None:
+        """Direct low-level actuator control (SET_ACTUATOR_CONTROL_TARGET) — the official
+        PyAIPilotExample's default control path. ``controls`` = up to 8 per-actuator values
+        (padded to 8). The sim's exact scaling — normalised [-1, 1] vs RPM vs throttle — is a
+        FIRST-CONTACT UNKNOWN (the sample sends near-zero placeholders), so verify before relying
+        on it. Deliberately NOT wired into ControlMode: the floor flies on pos/vel/attitude/rate;
+        this is a VQ2/RL hook (pairs with the ACTUATOR_OUTPUT_STATUS we now read back)."""
+        assert self.conn is not None
+        c = [float(x) for x in controls][:8]
+        c += [0.0] * (8 - len(c))
+        self.conn.mav.set_actuator_control_target_send(
+            int(time.monotonic() * 1e6) & 0xFFFFFFFFFFFFFFFF,
+            int(group_mix),
+            self.conn.target_system,
+            self.conn.target_component,
+            c,
+        )
+
     def wait_command_ack(self, command: int, timeout_s: float = 3.0) -> dict | None:
         """Pump until a COMMAND_ACK for ``command`` arrives; return the ack dict or None on
         timeout. Set ``self.last_command_ack = None`` before sending to avoid a stale match."""

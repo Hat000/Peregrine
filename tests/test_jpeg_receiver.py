@@ -59,6 +59,17 @@ def test_ingest_short_datagram_ignored():
     assert rx._partials == {}
 
 
+def test_ingest_noncontiguous_chunk_id_dropped_not_crash():
+    # Complete-by-count (2 chunks) but chunk_id 2 is outside [0, 2) -> index 1 is missing.
+    # Must drop + count, NOT raise KeyError (which would kill the frames() generator). The
+    # official sample client guards this case; we now do too. [spec/sample cross-check]
+    rx = JpegUdpReceiver()
+    assert rx._ingest(_datagram(11, 0, 2, 10, b"aaaaa", 1)) is None   # chunk 0 of 2
+    assert rx._ingest(_datagram(11, 2, 2, 10, b"bbbbb", 1)) is None   # chunk_id 2 (out of range)
+    assert 11 not in rx._partials                                     # cleaned up, no leak
+    assert rx.metrics.frames_bad_chunkmap == 1
+
+
 def test_evict_stale_removes_only_aged_partials():
     rx = JpegUdpReceiver(stale_after_s=0.5)
     now = time.monotonic()

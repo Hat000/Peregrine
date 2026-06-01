@@ -7,11 +7,13 @@ import numpy as np
 
 from racer.atmosphere import pressure_to_altitude_m
 from racer.firstcontact import (
+    MessageRateTracker,
     attitude_gravity_residual,
     backend_summary,
     baro_altitude_m,
     drain_statustexts,
     gravity_tilt,
+    rate_warnings,
     telemetry_summary,
 )
 from racer.mavlink_client import MavlinkClient
@@ -97,3 +99,34 @@ def test_attitude_gravity_residual_flags_static_bias():
     assert res is not None
     assert abs(np.rad2deg(res[1]) + 2.0) < 0.1         # residual pitch = given(0) - gravity(+2) = -2 deg
     assert abs(np.rad2deg(res[0])) < 0.1               # roll unaffected
+
+
+# -- message-rate characterisation (the 'are we capturing at the right rate?' tooling) -------
+def test_message_rate_tracker_counts_and_measures_hz():
+    t = MessageRateTracker()
+    for i in range(5):
+        t.record("HIGHRES_IMU", i * 10_000_000)        # 5 msgs, 10 ms apart -> 4 gaps / 0.04 s = 100 Hz
+    assert t.count("HIGHRES_IMU") == 5
+    assert abs(t.rate_hz("HIGHRES_IMU") - 100.0) < 1e-6
+    assert t.rate_hz("NEVER_SEEN") == 0.0
+    t.record("HEARTBEAT", 12345)
+    assert t.rate_hz("HEARTBEAT") == 0.0               # a single message has no defined rate
+
+
+def test_message_rate_report_lists_each_type():
+    t = MessageRateTracker()
+    t.record("ATTITUDE", 0)
+    t.record("ATTITUDE", 5_000_000)
+    r = t.report()
+    assert "ATTITUDE" in r and "Hz" in r
+
+
+def test_rate_warnings_flag_slow_heartbeat_only():
+    slow = MessageRateTracker()
+    for i in range(3):
+        slow.record("HEARTBEAT", i * 1_000_000_000)    # 1 Hz -> below the 2 Hz spec minimum
+    assert any("HEARTBEAT" in w for w in rate_warnings(slow))
+    fast = MessageRateTracker()
+    for i in range(6):
+        fast.record("HEARTBEAT", i * 200_000_000)      # 5 Hz -> fine
+    assert rate_warnings(fast) == []

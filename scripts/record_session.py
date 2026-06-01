@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from racer.firstcontact import MessageRateTracker, rate_warnings
 from racer.mavlink_client import MavlinkClient
 from racer.recording import Recorder, session_stamp
 from racer.vision.jpeg_receiver import VIDEO_PORT, JpegUdpReceiver
@@ -61,10 +62,12 @@ def main() -> int:
     session = Path(args.out_dir) / f"{session_stamp()}_{args.label}"
     stop = threading.Event()
     type_counts: Counter = Counter()
+    rates = MessageRateTracker()
     hedge = {"position_ned": False, "velocity_ned": False, "mag_body": False, "baro": False}
 
     recorder = Recorder(session)
     recorder.start()
+    t_start = time.monotonic()
     recorder.add_meta(
         endpoint=args.endpoint, video_port=args.video_port,
         label=args.label, git_commit=_git_commit(),
@@ -112,6 +115,7 @@ def main() -> int:
             if buf:
                 recorder.record_mavlink(bytes(buf))
                 type_counts[t] += 1
+                rates.record(t, time.monotonic_ns())
         client.on_message = on_message
 
         def mav_loop() -> None:
@@ -173,10 +177,16 @@ def main() -> int:
         f"done: {recorder.n_mavlink} mavlink records, {recorder.n_frames} frames, "
         f"{recorder.n_dropped} dropped -> {session}"
     )
+    dur_s = max(time.monotonic() - t_start, 1e-9)
+    if recorder.n_frames:
+        fps = recorder.n_frames / dur_s
+        flag = "" if fps >= 25.0 else "   ! well below the spec 30 Hz camera rate"
+        print(f"video: {recorder.n_frames} frames over {dur_s:.1f}s = {fps:.1f} fps{flag}")
     if type_counts:
-        print("MAVLink message types seen:")
-        for name, count in type_counts.most_common():
-            print(f"  {name:24s} {count}")
+        print("MAVLink message types + measured rates (resolves R1 + the rate question):")
+        print(rates.report())
+        for w in rate_warnings(rates):
+            print(f"  ! {w}")
     print("hedge fields present in telemetry (resolves R1):")
     for key, seen in hedge.items():
         print(f"  {key:14s} {'YES' if seen else 'no'}")

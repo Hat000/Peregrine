@@ -168,3 +168,64 @@ def stream_setpoint(client, command, seconds: float, metric=None, rate_hz: float
                 samples.append(float(v))
         time.sleep(dt)
     return samples
+
+
+# -- message-rate characterisation -----------------------------------------------------------
+# First contact: are we capturing every stream, and at the rates the spec implies? VADR-TS-002
+# sec 4.4 pins HEARTBEAT >= 2 Hz; sec 4.6 camera = 30 Hz; physics = 120 Hz. The ATTITUDE /
+# HIGHRES_IMU / LOCAL_POSITION_NED / ODOMETRY rates are UNSPECIFIED -> measured here, reported,
+# not asserted.
+class MessageRateTracker:
+    """Per-message-type arrival rate + count over the observation window.
+
+    Feed each inbound message's ``(type, recv_monotonic_ns)``; query per-type Hz / count.
+    Rate = (count - 1) / span, i.e. the mean inter-arrival cadence (a lone message has no
+    defined rate -> 0.0). Pure (no I/O), so it unit-tests cleanly and can also be driven from a
+    recording replay. Stamp with ``time.monotonic_ns()`` at RECEIVE time (not sim time, so a sim
+    clock reset cannot skew it)."""
+
+    def __init__(self) -> None:
+        self._first: dict[str, int] = {}
+        self._last: dict[str, int] = {}
+        self._count: dict[str, int] = {}
+
+    def record(self, msg_type: str, recv_monotonic_ns: int) -> None:
+        if msg_type not in self._first:
+            self._first[msg_type] = recv_monotonic_ns
+        self._last[msg_type] = recv_monotonic_ns
+        self._count[msg_type] = self._count.get(msg_type, 0) + 1
+
+    def count(self, msg_type: str) -> int:
+        return self._count.get(msg_type, 0)
+
+    def rate_hz(self, msg_type: str) -> float:
+        n = self._count.get(msg_type, 0)
+        span_ns = self._last.get(msg_type, 0) - self._first.get(msg_type, 0)
+        return (n - 1) / (span_ns / 1e9) if (n > 1 and span_ns > 0) else 0.0
+
+    def rates(self) -> dict[str, dict]:
+        """``{type: {count, hz}}`` ordered by descending count."""
+        return {
+            t: {"count": self._count[t], "hz": self.rate_hz(t)}
+            for t in sorted(self._count, key=lambda k: (-self._count[k], k))
+        }
+
+    def report(self) -> str:
+        rows = self.rates()
+        if not rows:
+            return "  (no messages)"
+        return "\n".join(f"  {t:28s} {r['count']:7d}  {r['hz']:7.1f} Hz" for t, r in rows.items())
+
+
+# Only HEARTBEAT has a spec-pinned MAVLink minimum rate (sec 4.4). Camera (30 Hz, sec 4.6) is
+# checked on the video stream (frames/duration), not here.
+SPEC_MIN_RATES_HZ = {"HEARTBEAT": 2.0}
+
+
+def rate_warnings(tracker: MessageRateTracker) -> list[str]:
+    """Flag any message type measured below its spec-pinned minimum rate."""
+    out: list[str] = []
+    for t, lo in SPEC_MIN_RATES_HZ.items():
+        if tracker.count(t) > 1 and tracker.rate_hz(t) < lo:
+            out.append(f"{t} {tracker.rate_hz(t):.1f} Hz < spec minimum {lo:g} Hz")
+    return out

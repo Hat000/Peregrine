@@ -51,6 +51,7 @@ class ReceiverMetrics:
     frames_completed: int = 0
     frames_decode_failed: int = 0
     frames_size_mismatch: int = 0
+    frames_bad_chunkmap: int = 0       # complete-by-count but a chunk_id was outside [0,total)
     partials_evicted: int = 0          # incomplete frames dropped as stale = lost chunk(s)
     min_datagram_bytes: int = 0
     max_datagram_bytes: int = 0
@@ -158,8 +159,15 @@ class JpegUdpReceiver:
         partial.chunks[chunk_id] = payload
         if len(partial.chunks) != partial.total_chunks:
             return None
-        jpeg_bytes = b"".join(partial.chunks[i] for i in range(partial.total_chunks))
         self._partials.pop(frame_id, None)
+        try:
+            jpeg_bytes = b"".join(partial.chunks[i] for i in range(partial.total_chunks))
+        except KeyError:
+            # Complete by count, but a chunk_id fell outside [0, total_chunks) -> a non-contiguous
+            # map we can't reassemble. Drop it (count as loss) instead of raising and killing the
+            # frames() generator. The sample client guards this case too.
+            m.frames_bad_chunkmap += 1
+            return None
         if len(jpeg_bytes) != partial.jpeg_size:
             m.frames_size_mismatch += 1
             return None

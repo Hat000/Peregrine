@@ -91,6 +91,10 @@ class _FakeMav:
         self.sent.append(dict(command=command, confirmation=confirmation,
                               p1=p1, p2=p2, p3=p3, p4=p4, p5=p5, p6=p6, p7=p7))
 
+    def set_actuator_control_target_send(self, time_usec, group_mlx, target_system,
+                                         target_component, controls):
+        self.sent.append(dict(kind="actuator", group=group_mlx, controls=list(controls)))
+
 
 class _FakeConn:
     def __init__(self):
@@ -295,3 +299,45 @@ def test_parse_helpers_pure():
     gates = parse_track_info(_gate_map_bytes(1))
     assert len(gates) == 1 and gates[0]["gate_id"] == 0
     assert abs(gates[0]["height_m"] - 1.5) < 1e-6
+
+
+# -- capture completeness + control-surface alignment with the sample client ----------------
+class _FakePumpConn:
+    """recv_match() yields queued messages then None -- enough surface to exercise pump()."""
+
+    def __init__(self, msgs):
+        self._msgs = list(msgs)
+        self.mav = SimpleNamespace(heartbeat_send=lambda *a, **k: None)
+        self.target_system = 1
+        self.target_component = 1
+
+    def recv_match(self, blocking=False):
+        return self._msgs.pop(0) if self._msgs else None
+
+
+def test_pump_drains_all_available_messages_in_one_call():
+    # The capture guarantee: a single pump() must process EVERY queued message (no per-pump loss
+    # -- a slow pump that handled one msg per call would silently lag a 120 Hz stream).
+    c = MavlinkClient()
+    c.conn = _FakePumpConn([
+        _imu(time_usec=1_000_000),
+        _attitude(time_boot_ms=5, roll=0.1),
+        _heartbeat(mavutil.mavlink.MAV_AUTOPILOT_PX4, mavutil.mavlink.MAV_TYPE_QUADROTOR),
+    ])
+    seen = []
+    c.on_message = lambda m: seen.append(m.get_type())
+    c.pump()
+    assert seen == ["HIGHRES_IMU", "ATTITUDE", "HEARTBEAT"]   # all drained, in order
+    assert c.state.sim_time_ns == 1_000_000_000              # and each was handled
+    assert abs(c.state.roll - 0.1) < 1e-9
+
+
+def test_send_actuator_control_emits_padded_8_controls():
+    c = MavlinkClient()
+    c.conn = _FakeConn()
+    c.send_actuator_control([0.1, 0.2, 0.3, 0.4])
+    s = c.conn.mav.sent[-1]
+    assert s["kind"] == "actuator"
+    assert len(s["controls"]) == 8                           # padded to 8 actuators
+    assert s["controls"][:4] == [0.1, 0.2, 0.3, 0.4]
+    assert s["controls"][4:] == [0.0, 0.0, 0.0, 0.0]

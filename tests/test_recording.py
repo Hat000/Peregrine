@@ -139,6 +139,32 @@ def test_mixed_session_and_throughput(tmp_path):
     assert len(list(reader.frames())) == n_frame
 
 
+def test_recorder_no_loss_at_scale(tmp_path):
+    """No telemetry record is lost across a realistic multi-second burst, and it all reads back
+    -- the 'we capture every message' guarantee at volume. (Sustained logging over a full 8-min
+    run further relies on the background writer's throughput >> arrival, which is disk-bound;
+    the design keeps disk I/O off the hot receive loop via the queue + writer thread.)"""
+    mav = _mav()
+    img = _gradient_img()
+    jpeg = _jpeg(img)
+    n_mav = 6000
+    expected_frames = 0
+    with Recorder(tmp_path / "s") as rec:
+        for i in range(n_mav):
+            rec.record_mavlink(mav.attitude_encode(i, 0.0, 0.0, 0.0, 0, 0, 0).pack(mav))
+            if i % 12 == 0:
+                rec.record_frame(Frame(i, 1000 * i, img, i + 1, jpeg))
+                expected_frames += 1
+        assert rec.n_dropped == 0
+
+    reader = RecordingReader(tmp_path / "s")
+    assert reader.meta["mavlink_records"] == n_mav
+    assert reader.meta["video_frames"] == expected_frames
+    assert reader.meta["dropped"] == 0
+    assert len(list(reader.iter_mavlink())) == n_mav        # every record re-parses
+    assert len(list(reader.frames())) == expected_frames
+
+
 def test_reader_handles_video_only_and_mavlink_only(tmp_path):
     # video-only: empty tlog must iterate to nothing, not raise
     img = _gradient_img()

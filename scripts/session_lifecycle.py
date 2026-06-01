@@ -27,9 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from pymavlink import mavutil
 
 from racer.firstcontact import (
+    MessageRateTracker,
     backend_summary,
     drain_statustexts,
     mission_summary,
+    rate_warnings,
     sample_attitude_bias,
     telemetry_summary,
 )
@@ -50,7 +52,14 @@ def main() -> int:
 
     client = MavlinkClient(args.endpoint)
     type_counts: Counter = Counter()
-    client.on_message = lambda msg: type_counts.update([msg.get_type()])
+    rates = MessageRateTracker()
+
+    def _tap(msg) -> None:
+        t = msg.get_type()
+        type_counts.update([t])
+        rates.record(t, time.monotonic_ns())
+
+    client.on_message = _tap
 
     print(f"connecting MAVLink {args.endpoint} (waiting for heartbeat) ...")
     try:
@@ -162,7 +171,10 @@ def main() -> int:
         print(f"  attitude-bias: roll {bias['roll_bias_deg']:+.2f} / pitch {bias['pitch_bias_deg']:+.2f} deg "
               "at rest (>~0.5 deg -> consider ESKF bias-state)")
     print(f"  mission:      {mission_summary(client)}")
-    print(f"  msg types:    {dict(type_counts.most_common())}")
+    print("  msg rates (count, Hz):")
+    print(rates.report())
+    for w in rate_warnings(rates):
+        print(f"    ! {w}")
     n = len(client.statustexts)
     print(f"  STATUSTEXT:   {n} message(s)" + (" -- lifecycle clues, read above" if n else ""))
     print("  NOTE: Elodin is NOT the source of truth; this characterised the spec MAVLink sim.")

@@ -5,6 +5,33 @@ measures, the pass/fail read, and which open risk (R1–R11) / red-team unknown 
 Goal: come out of the first session with R1/R2 resolved, the control plant system-ID'd, and
 the two deferred-rebuild decisions (ESKF, delayed-vision) settled by **data**, not guesswork.
 
+## Sim interface — CONFIRMED from the shipped PyAIPilotExample (2026-06-01)
+The sim zip (`AI-GP Simulator v1.0.3364.zip`) ships `FlightSim.exe` + a reference client
+`PyAIPilotExample` (extracted on the dev laptop at `C:\Users\Fengy\Downloads\AIGP_sim\`). Our
+client was cross-checked against it + VADR-TS-002 and aligned (on `red-team-tier-a`). Wire facts:
+- MAVLink `udpin:127.0.0.1:14550` (client binds); video JPEG-UDP `:5600`, header `<IHHIIQ`
+  (byte-for-byte match). Everything NED.
+- The sim sends MORE than spec §4.3 lists: also `LOCAL_POSITION_NED`, `ODOMETRY`
+  (pose + vel + reset_counter), `ENCAPSULATED_DATA` (RACE_STATUS = active_gate_index + race
+  timing; TRACK_INFO = full gate map id/NED-pose/dims, chunked via DATA_TRANSMISSION_HANDSHAKE),
+  `COLLISION` (1001 gate / 1002 env + impulse), `ACTUATOR_OUTPUT_STATUS`. Control: SET_POSITION_
+  TARGET (pos/vel), SET_ATTITUDE_TARGET (attitude / CTBR), SET_ACTUATOR_CONTROL_TARGET (direct
+  motor — the sample's default), arm, and `MAV_CMD 31000` = sim reset. **Trust the sample for
+  wire reality; the spec message table is thinner/older.**
+
+MUST-VERIFY live (the cross-check surfaced these — settle them in the first session):
+1. Is `LOCAL_POSITION_NED` / `ODOMETRY` actually POPULATED (real ground-truth) or zero/absent?
+   STRATEGY-DEFINING — if real, localization collapses (but keep vision→KF in-loop per the
+   walking-skeleton directive); spec §3.3 + README say "vision-only / no absolute position".
+2. `TRACK_INFO` width/height = INNER (1.5 m) or OUTER (2.7 m)? PnP needs the inner square.
+   Also: is the provided map full or "rough" (FAQ), and does it arrive automatically?
+3. Per-type RATES — now auto-reported by `session_lifecycle` / `record_session`. Expect camera
+   30 Hz, heartbeat ≥2 Hz, physics 120 Hz; ATTITUDE/IMU/ODOMETRY rates are unspecified. And the
+   COMMAND-RATE truth: spec §4.4 says <100 Hz but the sample streams setpoints at 250 Hz.
+4. `SET_ACTUATOR_CONTROL_TARGET` scaling: normalized [-1,1] vs RPM vs throttle.
+5. Does arming need a mode switch (OFFBOARD/GUIDED) or a pre-arm setpoint stream?
+   (`session_lifecycle` + `control_mode_probe` reveal it.)
+
 ## Ground rules
 - **Co-locate the Python client ON the sim box** (localhost MAVLink/UDP). A remote client
   blows the <50 ms latency budget. (project-hardware-constraint.)
@@ -102,3 +129,86 @@ This recording feeds offline mapping / system-ID / racing-line / detector auto-l
 - **Hard coast + innovation gating** ← belongs in the navigator loop + mapper (not a probe).
 
 See [[project-red-team-pass-2]] for the full triage; the Tier-A fixes are on branch `red-team-tier-a`.
+
+---
+
+# INFORMATION TO EXTRACT FROM THE SIM — master checklist (there are a lot)
+
+The single source of "what we still don't know and must measure." Most rows fall out of steps 1–5 +
+the recording above; the rest need a follow-up probe or the organizers. Tonight's additions: the
+**perception noise/latency/dropout model** (the RL speed ceiling) and the **per-corner confidence
+distribution** (sets the weighted-PnP adapter-relax cutoff). Tick each off the first session(s).
+
+### A. Connection & protocol
+- [ ] Exact MAVLink endpoint(s) + video port (then override `--endpoint` / `--video-port`).
+- [ ] Backend / autopilot (PX4 / ArduPilot / Betaflight-ish) + custom_mode semantics (HEARTBEAT).
+- [ ] **MAVLink vs Betaflight/RC-UDP authority** — spec says MAVLink is authoritative; confirm the elodin/RC path isn't the real control channel.
+- [ ] MAVLink 1 vs 2, dialect, any custom messages; full message-type histogram + per-type rate (`msg_audit`).
+
+### B. Telemetry contents — R1 (the big hedge; per field: present? rate? units? frame? quality?)
+- [ ] `position_ned` (LOCAL_POSITION_NED / GLOBAL) — **if present, localization collapses** (still run vision→KF in-loop per the walking-skeleton directive; use given pos as a cross-check only).
+- [ ] `velocity_ned` — feed `kf.update_velocity`, else derive (IMU + vision finite-diff).
+- [ ] Attitude (quat/euler) — rate; TRUE vs noisy/biased (drives the ESKF-bias decision).
+- [ ] Angular rate (body); accel/specific-force (IMU predict); `mag_body` (free yaw?); `baro` (free z?).
+- [ ] GPS / global fix? RC channels? battery? Anything else "for free."
+- [ ] Attitude BIAS at rest: given attitude vs gravity-implied tilt (>~0.5° persistent ⇒ ESKF trigger).
+
+### C. Clocks & timing
+- [ ] sim_time epochs: HIGHRES_IMU.time_usec monotonic? ATTITUDE.time_boot_ms a *different* epoch? (clock-isolation assumption.)
+- [ ] **Video↔IMU clock alignment** (offset mean + spread) — gates the delayed-vision ring buffer.
+- [ ] TIMESYNC present? (cross-stream clock bridge.)
+- [ ] End-to-end LATENCIES: command→observed-response, frame-capture→arrival, telemetry age (the <50 ms budget).
+- [ ] Achievable loop rate: telemetry rate + setpoint accept rate.
+
+### D. Video stream
+- [ ] Format (JPEG/MJPEG?), resolution (confirm 640×360), color order, bit depth, frame rate (steady/variable).
+- [ ] **FOV**: confirm HFoV 90° / **VFoV≈58.7°** (spec mislabels VFoV) + the 20° up-tilt sign — `projection_check --from-recording` on a real frame.
+- [ ] MTU / datagram size / packet-loss / chunks-per-frame (frame loss at speed?).
+- [ ] Camera intrinsics K — does the sim match our assumed K? (known-gate PnP residual.)
+- [ ] Appearance: VQ1 clean/desaturated/aids-on **vs** VQ2 photoreal/cluttered/aids-off — characterize BOTH (DR validation).
+- [ ] Motion blur / exposure / rolling-shutter at speed (detector robustness).
+
+### E. Control interface — R2
+- [ ] Which setpoint modes ACTUATE: POSITION / VELOCITY / ATTITUDE / BODY_RATE.
+- [ ] Arming + mode handshake: OFFBOARD/GUIDED needed? pre-arm setpoint stream? COMMAND_ACK results + STATUSTEXT.
+- [ ] type_mask honored? partial setpoints (vel-only, pos+yaw) accepted? required stream RATE (dropout → failsafe?).
+- [ ] **Position "easy mode"** — does position control track well enough for a VQ1 floor?
+- [ ] Thrust scaling: normalized [0,1] → what (hover_thrust calibrates). Yaw: absolute vs rate.
+
+### F. Plant / dynamics — system-ID (control floor + the RL twin's dynamics spec; CAPTURE EVERYTHING)
+- [ ] hover_thrust (retire the 0.5 placeholder); thrust→vertical-accel slope; TWR.
+- [ ] Attitude loop: delay, time-constant τ, overshoot, settling. Body-rate tracking + max rate (if BODY_RATE works).
+- [ ] Max accel / max tilt / max speed envelope (cap the planner). Drag / damping (coast-down).
+- [ ] Actuator/motor latency + first-order lag → the RL randomization spec (motor τ±30%, thrust±20%, latency).
+
+### G. Perception fidelity — the RL SPEED CEILING + weighted-PnP tuning (NEW tonight)
+- [ ] **Detector per-corner CONFIDENCE distribution on REAL frames** → sets the weighted-PnP adapter-relax `kpt_conf_thresh` cutoff (the deferred decision).
+- [ ] Detector accuracy on real gates: corner error / detection rate / the tail (re-run `eval_detector`/`diagnose_tail` logic on real recordings + auto-labels).
+- [ ] PnP residual / pose noise on real gates (vs our ~2 px synthetic median); vision LATENCY (frame→pose) + frame DROPOUT at speed.
+- [ ] **The perception NOISE/LATENCY/DROPOUT model to inject into the RL policy's observations** — else a state→action policy trained on perfect sim state CRASHES on real YOLO→PnP→KF. Measure from first-contact recordings.
+- [ ] Sim-to-real transfer of the synthetic-chaos detector: does it hold on VQ1 clean? on VQ2 photoreal? (don't fine-tune on clean VQ1 — would collapse DR before the ranked round.)
+
+### H. Course / gates — R4
+- [ ] HOW are gate positions/order communicated? a MAVLink message? a file? on-screen only? "rough" per the FAQ?
+- [ ] Gate count / layout / lap structure / start-finish. Gate dims — confirm inner 1.5 m, outer, depth 260 mm.
+- [ ] Obstacles: present? mapped or vision-only? Track FIXED/shared across attempts (⇒ map-once-then-race)?
+
+### I. Mission / rules mechanics
+- [ ] How a run STARTS (arm? a "race start" signal / STATUSTEXT?) and ENDS. Reset behavior between attempts (sim_time reset → KF dt-clamp already guards).
+- [ ] Validity: how is a gate-pass detected/scored (the 1.0 m sphere? plane-crossing?). Timing start/stop + penalties.
+- [ ] **Attempts** — unlimited? best valid time counts? **Submission process + VQ1 deadline.** Is offline between-runs compute allowed (our determinism strategy — confirm not a cheat)?
+
+### J. Compute / deploy
+- [ ] Confirm onboard ~100 TOPS edge budget (FAQ) — sizes the detector + the RL policy. Where does the policy run (onboard vs client)? inference budget.
+
+## Questions for the organizers (not sim-discoverable) — info@theaigrandprix.com
+- [ ] Attempts model + best-time scoring + **VQ1 deadline** + submission mechanics.
+- [ ] Gate position/order data format (R4) — exactly how is it given?
+- [ ] MAVLink vs Betaflight/RC-UDP — which is authoritative for control?
+- [ ] Is offline between-runs compute permitted? VQ2 timing/photoreal details; Sept physical-round hardware.
+
+## First contact day-of order (TL;DR)
+1. Stand up the sim on the **Windows VM** (finally working) + co-locate the client (localhost).
+2. `projection_check` offline → `session_lifecycle` (R1 + clock + attitude bias) → `clock_probe` (alignment + video health) → `control_mode_probe` (R2) → `innerloop_step` (plant) → `record_session` (a clean traversal).
+3. Bank the recording (deterministic course ⇒ replays into mapping / system-ID / racing-line / detector auto-labels + the **perception-noise model** + the **confidence distribution**).
+4. Settle the two deferred rebuilds (ESKF, delayed-vision) by DATA via the decision table. Then wire `racer/navigator.py` and bank a VQ1 completion before its deadline.
