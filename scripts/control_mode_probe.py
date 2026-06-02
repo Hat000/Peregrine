@@ -52,6 +52,13 @@ from racer.mavlink_client import MavlinkClient
 _ALL_MODES = ["velocity", "position", "attitude", "body_rate"]
 
 
+def _given_alt_m(client: MavlinkClient) -> float | None:
+    """Altitude (m, up positive) from the GIVEN LOCAL_POSITION_NED z. Baro reads NaN in this sim,
+    so the climb-based verdicts use the provided position instead (R1: position is given)."""
+    p = client.state.position_ned
+    return None if p is None else -float(p[2])
+
+
 def _euler_to_wxyz(roll: float, pitch: float, yaw: float) -> np.ndarray:
     """Body attitude quaternion (w,x,y,z), intrinsic 3-2-1 yaw-pitch-roll (contracts convention)."""
     x, y, z, w = Rotation.from_euler("ZYX", [yaw, pitch, roll]).as_quat()
@@ -103,8 +110,8 @@ def main() -> int:
         time.sleep(0.02)
     print(f"  backend:   {backend_summary(client)}")
     print(f"  telemetry: {telemetry_summary(client)}")
-    if baro_altitude_m(client) is None:
-        print("  WARNING: no baro -> the climb-based velocity/position verdicts will be blind.")
+    if _given_alt_m(client) is None:
+        print("  WARNING: no given position -> the climb-based velocity/position verdicts will be blind.")
 
     results: list[dict] = []
     try:
@@ -144,6 +151,10 @@ def main() -> int:
             print("  pre-arm setpoint stream before it accepts commands. Flag for a follow-up probe.")
         elif "position" in live or "velocity" in live:
             print("  Position/velocity 'easy mode' appears HONOURED -> VQ1 can lean on the stabilizer.")
+    if client.track_gates:
+        print(f"  R4: gate map ARRIVED while active-piloting -> {len(client.track_gates)} gates (TRACK_INFO).")
+    else:
+        print("  R4: still NO gate map (arm + control stream alone did not trigger TRACK_INFO this run).")
     print("  NOTE: Elodin is NOT the source of truth; this characterised the spec MAVLink sim.")
     return 0
 
@@ -156,19 +167,19 @@ def _arm_cmd() -> int:
 
 def _run_mode(client: MavlinkClient, mode: str, args) -> dict:
     print(f"\n[{mode}] actuating {args.hold_s:g}s ...")
-    base_alt = baro_altitude_m(client)
+    base_alt = _given_alt_m(client)
     base_pitch = client.state.pitch
 
     if mode == "velocity":
         cmd = ControlCommand(mode=ControlMode.VELOCITY, velocity_ned=np.array([0.0, 0.0, -args.climb_rate]))
-        alts = _stream(client, cmd, args.hold_s, lambda: baro_altitude_m(client))
+        alts = _stream(client, cmd, args.hold_s, lambda: _given_alt_m(client))
         d = (max(alts) - base_alt) if (alts and base_alt is not None) else float("nan")
         responded = bool(d == d and d > 0.2)  # d==d filters NaN
         return _result(mode, f"vz={-args.climb_rate:+.2f} m/s", f"climb {d:+.2f} m", responded)
 
     if mode == "position":
         cmd = ControlCommand(mode=ControlMode.POSITION, position_ned=np.array([0.0, 0.0, -args.target_alt]))
-        alts = _stream(client, cmd, args.hold_s, lambda: baro_altitude_m(client))
+        alts = _stream(client, cmd, args.hold_s, lambda: _given_alt_m(client))
         d = (max(alts) - base_alt) if (alts and base_alt is not None) else float("nan")
         responded = bool(d == d and d > 0.2)
         return _result(mode, f"z={-args.target_alt:+.2f} m (NED)", f"climb {d:+.2f} m", responded)
