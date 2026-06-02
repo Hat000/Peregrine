@@ -58,7 +58,8 @@ Goal: drive the cluster from the laptop with **one human login**, never touching
   nearer gate's ring. Also = clutter-hardening for the `tail_3` (green-rectangle-grabs-a-corner) failure.
 - **Targeted oversampling** (`--hard`): `high_roll_prob`/`edge_prob` (0.3) bias `sample_gate_pose` toward
   the swap-prone (26–49° roll) + near-edge-clip configs that dominate the tail. Defaults 0.0 keep the
-  legacy RNG draw order bit-identical.
+  legacy RNG draw order bit-identical. **VERDICT 2026-06-02: DON'T re-try — v3 regressed the bulk and did
+  NOT move the swap rate; the swap is geometric aliasing, fix it in the solver/prior (see Status).**
 - **OFF-FRAME keypoints REJECTED**: ultralytics `Instances.clip()` (RandomPerspective/Mosaic/LetterBox,
   every training image) zeros visibility + clamps any out-of-frame keypoint. Can't train YOLO to predict
   off-frame corners → that reasoning belongs in the PnP solver.
@@ -74,9 +75,20 @@ aware, replaces the slow Monte-Carlo path. Constants `WEIGHTED_SIGMA_PX=1.5`, `T
 `CONF_FLOOR=0.1` — tunable at sim contact. **Pairs with the deferred adapter-relax** (lower the detector's
 `kpt_conf_thresh=0.5` so marginal corners reach the now-robust solver; cutoff needs the real conf distribution).
 
-## Status / NEXT (tomorrow, with the user)
-- v1 `models/gate_yolo11s_curriculum.pt` (mAP50-95 0.991). v2 `curriculum_11s_v2` done (~0.986, harder val).
-  v3 `curriculum_11s_v3` (`--hard`) running overnight.
-- **Fixed-set eval v1-vs-v2-vs-v3** (`eval_detector` corner-err = data/detector lever; `diagnose_tail`;
-  pose-err now reflects weighted PnP) → pick the tail-winner → then `racer/navigator.py` integration.
-- 195 tests green; all Anduril + adroit-connector changes uncommitted.
+## Status / VERDICT (2026-06-02, done with the user) — SHIP v2
+All three checkpoints were ALREADY pulled locally (v3 too, Jun 1 02:59 — distinct sha256, complete;
+the "v3 not pulled yet" recollection was stale). Fixed-set eval (`eval_detector` N=200/level, identical
+seeded held-out single-gate frames) + swap diagnosis (`diagnose_tail` N=150/level):
+- **v2 `gate_yolo11s_curriculum_v2.pt` WINS** — corner err well-framed ~2.0 px / overflow ~5.2 px,
+  pose ~9 cm (v1 ~12, v3 ~13); detect ~100%. The v1→v2 step (multi-gate + 2× volume) was the real gain.
+- **v3 (`--hard`) = NEGATIVE result**: regressed bulk + overflow + pose AND did not move the swap rate
+  (v1 0.67% / v2 0.89% / v3 0.67% = 3–4 swaps per 448, pure noise). Targeted oversampling can't fix it.
+- **Swaps are geometric aliasing, not a data gap**: ALL at high roll (37–40° vs ~20° baseline); the same
+  worst frame fails identically across all three (159–197 px). Full-4-corner rotation swaps reproject
+  CLEANLY → the Tukey solver can't catch them; only a temporal/ATTITUDE prior can (roll is observable,
+  attitude is given) — fix lives in the solver via the `prior` already plumbed into `estimate_gate_pose`.
+  (The common non-swap tail — one corner near a clipped edge — IS handled by Tukey downweighting.)
+- Script defaults (`eval_detector`/`diagnose_tail`) now point at v2. Committed `red-team-tier-a` **fc29287**
+  (code only; `*.pt` gitignored → weights move via the connector). 211 tests green.
+- **NEXT**: wire v2 into `racer/navigator.py`; relax the detector `kpt_conf_thresh=0.5` once we have the
+  real confidence distribution (the now-robust weighted solver makes marginal corners safe to admit).

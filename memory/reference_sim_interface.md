@@ -13,7 +13,7 @@ README. Extracted on the dev laptop at `C:\Users\Fengy\Downloads\AIGP_sim\`. The
 reqs: Win10/11, 8 GB RAM, GTX 970 min (RTX 3070 tested), 12 GB disk, **GPU-bound**. The example
 client is authoritative for the WIRE; the spec message table (§4.3) is thinner/older — trust the
 sample. Our `mavlink_client.py` + `jpeg_receiver.py` were cross-checked against both and aligned
-(branch `red-team-tier-a`, commit 5501d43; `main` caught up at cfe7d82).
+(branch `red-team-tier-a`, commit 5501d43). **FIRST CONTACT SUCCEEDED 2026-06-02 on ShadowPC (co-located w/ FlightSim.exe) — the must-verify list is RESOLVED below; the two branches were unified afterward.**
 
 ## Connection
 - MAVLink: `udpin:127.0.0.1:14550` (CLIENT binds; sim connects to it). pymavlink `udp:` == `udpin:` (verified) so our default is fine. `wait_heartbeat()` then `target_system`.
@@ -39,11 +39,23 @@ The sim REPURPOSES `ENCAPSULATED_DATA` (discriminator = `data[0]`):
 - Spec §3.8 "VFoV=90°" is the HFoV; true VFoV≈58.7° (frames.py handles it).
 - §3.3/README say no absolute/global position — but LOCAL_POSITION_NED+ODOMETRY (local NED from arm point) ARE sent. Reconciles (local ≠ global).
 
-## MUST-VERIFY live at first contact (the cross-check surfaced these)
-1. **Is LOCAL_POSITION_NED/ODOMETRY actually POPULATED (real ground-truth) or zero?** STRATEGY-DEFINING — if real, localization collapses (but keep vision→KF in-loop, walking-skeleton). Likely on in VQ1/dev, possibly off in VQ2.
-2. **TRACK_INFO width/height = INNER (1.5 m) or OUTER (2.7 m)?** PnP needs inner. Is the map full or "rough" (FAQ)? Does it arrive automatically?
-3. **Per-type RATES** — now auto-reported by `session_lifecycle`/`record_session` (`MessageRateTracker`). Expect camera 30 Hz, heartbeat ≥2 Hz, physics 120 Hz; ATTITUDE/IMU/ODOMETRY unspecified. + the 250-vs-<100 Hz command-rate truth.
-4. **SET_ACTUATOR_CONTROL_TARGET scaling.**
-5. **Arming handshake** — mode switch (OFFBOARD/GUIDED) or pre-arm setpoint stream needed?
+## FIRST CONTACT 2026-06-02 — SUCCEEDED (ShadowPC). Source: `handoff/shadowpc-firstcontact-2026-06-02/HANDOFF.md`
+The 5 must-verify items, RESOLVED LIVE:
+1. **Position+velocity = GIVEN, pristine ground-truth** (LOCAL_POSITION_NED 97 Hz + ODOMETRY 75 Hz; drone parks at origin, v=0; mag present). Baro FIELD present but VALUE=NaN (unusable) → take z from given position. Localization collapses for VQ1 — but KEEP vision→KF in-loop (walking-skeleton). VQ2 may turn position OFF → then z also vision-only.
+2. **Gate map: width=height=2.72 m = the OUTER square; inner opening ~1.5 m is what PnP uses — do NOT feed 2.72 to inner-corner PnP.** Full ordered map, 6 gates, deterministic course (capture once, reuse). Sample: g0~(-23.3,-0.4,0), g1(-46.9,-2.5,+5.1), g2(-74.6,+1.2,+13.7)… (descending/curving; NED +z=down). Saved to `handoff/.../track_map.json`. **Trigger (R4):** broadcast ONCE at race/level LOAD to clients ALREADY connected (single ~230 B chunk, packets=1, re-sent ~4×; HANDSHAKE then ENCAPSULATED_DATA data[0]==2). PROCEDURE: connect at the HOME PAGE (`wait_heartbeat=False`), THEN navigate home→waiting→Race. `scripts/capture_track_map.py` banks it.
+3. **Rates:** ATTITUDE/IMU 120, LOCAL_POS/ACTUATOR 97, ODOMETRY 75, HEARTBEAT 10, RACE_STATUS 4 Hz. **Video: true ~28.6 fps but the sim RE-SENDS each frame ~14× (~395/s) → DEDUP by frame_id** (TODO — not yet done). Command rate: 250 Hz is the sample's USED value, real max still unprobed.
+4. **SET_ACTUATOR_CONTROL_TARGET scaling still UNPROBED** (8 ch = [FL,FR,BL,BR,0,0,0,0]).
+5. **Arming = plain `MAV_CMD_COMPONENT_ARM_DISARM` p1=1** — ACCEPTED in 83 ms, NO force, NO OFFBOARD/GUIDED switch, NO pre-arm setpoint stream. TIMESYNC is client-initiated (`timesync_send` ts1=0 @10 Hz; sim DOES respond).
 
-Runbook with the ordered sweep: `docs/first_contact.md`. Related: [[project-master-plan]], [[reference-competition-materials]], [[project-red-team-pass-2]] (deferred ESKF/delayed-vision triggers).
+### New first-contact findings (capture — hard to re-derive)
+- **🚩 ATTITUDE.pitch is SIGN-INVERTED.** ODOMETRY-quat = accel-gravity = FPV view all agree nose-DOWN; ATTITUDE Euler disagrees. **Orientation now driven SOLELY from the ODOMETRY quaternion** (`mavlink_client._handle`, commit 2b81fc1; roll maybe also flipped — confirm in-flight). The 35.6° "attitude bias" the probe flagged = THIS, **NOT an ESKF-bias trigger — do NOT enable the bias-state.**
+- **Control mode FOLLOWS the setpoint type:** body-rate→ACRO, attitude-quat→ANGLE. Live in ACRO: velocity→no climb; **position→VIOLENT 57 m runaway for a 1 m cmd** (acro has no position loop → misinterpreted, NOT a position controller); attitude + body_rate respond. ⇒ **fly on CTBR**; RE-TEST position/velocity easy-mode in ANGLE mode (send an attitude-quat first to enter angle).
+- **Clocks INDEPENDENT:** video `sim_time_ns` = server UNIX-epoch ns; IMU sim_time = sim-boot-relative. Cross-stream align on `recv_monotonic` (delayed-vision = SUSPECT branch; fine for VQ1 localhost).
+- **Sim PAUSES physics off-race** (home page / after the ~8-min cap): MAVLink keeps streaming but `sim_time` FREEZES → live control + system-ID need an ACTIVE running race.
+- **Course (VQ1 FPV):** desaturated/high-contrast; red square gates receding (active brightest); blue racing-line aids ON (OFF in VQ2); gray block-wall corridor = obstacles. Real frames at `data/runs/20260602_000538_firstcontact_race1` (944 MB / 1797 unique frames — on ShadowPC, NOT pushed/gitignored).
+- **R8 sim-reset (MAV_CMD 31000) still MURKY** — did NOT visibly reset race state (started stayed True), did NOT re-broadcast the map.
+
+### Probes added (committed, `scripts/`): `capture_track_map.py` (connect-at-home → saves map JSON; RUN to bank), `timesync_probe.py`, `gatemap_probe.py`, `control_mode_probe.py` (patched: climb from position.z since baro NaN).
+### Apply-before-vision/control TODOs: jpeg dedup by frame_id · re-test pos/vel in ANGLE mode · probe real max setpoint rate · `innerloop_step` system-ID (needs a running race).
+
+Runbook: `docs/first_contact.md`. Related: [[project-master-plan]], [[reference-competition-materials]], [[project-detector-training-pipeline]], [[project-red-team-pass-2]] (deferred ESKF/delayed-vision triggers).
