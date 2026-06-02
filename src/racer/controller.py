@@ -73,6 +73,10 @@ class Controller:
     # attitude + thrust as the ATTITUDE path; only the final actuation differs.
     kp_att: float = 4.0              # 1/s, attitude-error -> commanded body-rate
     max_body_rate_rps: float = 2.0   # rad/s, clamp on the commanded body rate (safety)
+    kd_att: float = 0.0              # rate damping: omega -= kd_att * current body rate. This sim's
+                                     # ACRO rate loop is very underdamped (measured rates overshoot the
+                                     # command ~2.7x -> a pure-P attitude loop tumbles), so subtract the
+                                     # measured body rate to curb the overshoot. 0 = off (legacy).
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -149,7 +153,10 @@ class Controller:
         ).as_matrix()
         R_cur = R_world_from_body(nav.roll, nav.pitch, nav.yaw)
         rotvec = Rotation.from_matrix(R_cur.T @ R_des).as_rotvec()   # body-frame axis-angle error
-        omega = _clip_norm(self.kp_att * rotvec, self.max_body_rate_rps)
+        omega = self.kp_att * rotvec
+        if self.kd_att > 0.0:                                        # damp the underdamped rate loop
+            omega = omega - self.kd_att * np.asarray(nav.angular_rate_body, dtype=np.float64)
+        omega = _clip_norm(omega, self.max_body_rate_rps)
         return ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=sp.sim_time_ns,
