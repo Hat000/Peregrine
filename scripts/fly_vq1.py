@@ -90,29 +90,61 @@ def _load_map(client: MavlinkClient, args) -> list:
 
 
 def _wait_for_race(client: MavlinkClient, frames: _LatestFrame, args) -> bool:
-    """Pump until the race is active (started + position telemetry live), grabbing the map if it
-    arrives. Returns True if telemetry is live enough to fly."""
-    print(">>> Navigate the sim now: home -> waiting room -> Race!  (map loads with the level)")
+    """Pump until a FRESH race GO. Observed mechanics (2026-06-02): clicking Race sets
+    ``started=True`` and ``race_start_boot_time_ms`` to a FUTURE time = (now + ~2.8 s) = the GO;
+    the countdown is ``race_start_boot - sim_boot`` ticking to 0; controlling before GO = DQ. So
+    wait until ``sim_boot >= race_start_boot + start_margin``. We only accept a GENUINELY FRESH
+    countdown (GO within the last ~2 s, not a stale race whose GO was minutes ago) and REFUSE to
+    fly if the drone isn't reset to the origin -- the two traps that bit the early runs. Connect
+    at the home page so the level-load map + the countdown are both caught."""
+    print(">>> Reset for a FRESH race: home page -> waiting room -> Race.  (~3 s countdown; map loads with the level)")
     deadline = time.monotonic() + args.wait_seconds
+    margin_ms = args.start_margin_s * 1000.0
     last_print = 0.0
     while time.monotonic() < deadline:
         client.pump()
         s = client.state
         rs = client.race_status
         live = s.position_ned is not None and s.sim_time_ns > 0
-        started = bool(rs and rs["started"])
-        if live and (started or args.no_wait_start):
-            print(f"\n  race live: started={started} {telemetry_summary(client)}")
-            return True
         now = time.monotonic()
+
+        if args.no_wait_start and live:
+            print(f"\n  (--no-wait-start) proceeding without the countdown: {telemetry_summary(client)}")
+            return True
+
+        if rs and rs["started"] and live:
+            to_go_ms = rs["race_start_boot_time_ms"] - rs["sim_boot_time_ms"]   # >0 = countdown remaining
+            fresh = rs["race_start_boot_time_ms"] >= 0 and to_go_ms > -2000.0   # a current GO, not a stale race
+            if not fresh:
+                if now - last_print >= 1.0:
+                    print(f"  STALE race (GO was {-to_go_ms / 1000:.0f}s ago) -> waiting for a fresh reset (home->Race)   ",
+                          end="\r", flush=True)
+                    last_print = now
+                time.sleep(0.01)
+                continue
+            pos_off = float(np.linalg.norm(s.position_ned))
+            if to_go_ms <= -margin_ms:                                         # GO elapsed (+ margin)
+                if pos_off > args.max_start_offset_m:
+                    print(f"\n  REFUSING: at GO the drone is {pos_off:.0f} m from the origin (corrupt start). "
+                          f"Reset (home->Race).", file=sys.stderr)
+                    return False
+                print(f"\n  GO! countdown elapsed, drone at origin (pos_off={pos_off:.2f} m). {telemetry_summary(client)}")
+                return True
+            if now - last_print >= 0.25:
+                print(f"  countdown {to_go_ms / 1000:+.2f}s to GO  pos_off={pos_off:.1f}m "
+                      f"map={len(client.track_gates or [])}   ", end="\r", flush=True)
+                last_print = now
+            time.sleep(0.005)
+            continue
+
         if now - last_print >= 2.0:
             have_map = len(client.track_gates) if client.track_gates else 0
-            print(f"  waiting: started={started} pos={'yes' if s.position_ned is not None else 'no'} "
+            print(f"  waiting: started={bool(rs and rs['started'])} pos={'yes' if s.position_ned is not None else 'no'} "
                   f"map={have_map} frame={'yes' if frames.get() else 'no'}   ", end="\r", flush=True)
             last_print = now
         time.sleep(0.005)
-    print("\n  timed out waiting for an active race.", file=sys.stderr)
-    return bool(client.state.position_ned is not None and client.state.sim_time_ns > 0)
+    print("\n  timed out waiting for a fresh race GO.", file=sys.stderr)
+    return False
 
 
 def main() -> int:
@@ -138,6 +170,10 @@ def main() -> int:
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
+    ap.add_argument("--start-margin-s", type=float, default=0.3,
+                    help="wait this long PAST the race GO before any control (avoid early-start DQ)")
+    ap.add_argument("--max-start-offset-m", type=float, default=5.0,
+                    help="refuse to fly if, at GO, the drone is farther than this from the origin (corrupt start)")
     ap.add_argument("--vision", action="store_true", help="run the detector -> KF vision path (needs weights)")
     ap.add_argument("--weights", default="models/gate_yolo11s_curriculum_v2.pt")
     ap.add_argument("--no-given-position", action="store_true", help="VQ2 sim: ignore given pos (vision-only)")
