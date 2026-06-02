@@ -4,6 +4,12 @@ The simulator streams a 30 Hz, 640x360 video as JPEG frames fragmented across
 multiple UDP datagrams on port 5600. Each datagram has a 24-byte little-endian
 metadata header followed by a JPEG slice; chunks are reassembled by frame_id.
 
+DEDUP [first contact 2026-06-02]: the sim re-sends every frame's chunk set ~14x (the
+"~395 fps" illusion; the true frame rate is ~28.6 fps). We emit each frame_id exactly
+ONCE — re-sends after a frame completes are dropped — so perception runs once per real
+frame. Crucially the suppression triggers only AFTER completion, so re-sent copies that
+arrive *before* a frame is whole still fill chunks lost to UDP drops (free redundancy).
+
 Spec ref: VADR-TS-002 sec 4.6.
 """
 from __future__ import annotations
@@ -12,6 +18,7 @@ import select
 import socket
 import struct
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -52,6 +59,7 @@ class ReceiverMetrics:
     frames_decode_failed: int = 0
     frames_size_mismatch: int = 0
     partials_evicted: int = 0          # incomplete frames dropped as stale = lost chunk(s)
+    duplicate_datagrams: int = 0       # datagrams for an already-emitted frame_id (sim's ~14x re-send)
     min_datagram_bytes: int = 0
     max_datagram_bytes: int = 0
     max_total_chunks: int = 0
@@ -71,6 +79,10 @@ class JpegUdpReceiver:
         self.stale_after_s = stale_after_s
         self._sock: socket.socket | None = None
         self._partials: dict[int, _PartialFrame] = {}
+        # FIFO set of recently-emitted frame_ids, to drop the sim's ~14x re-sends. Capped well
+        # above any reorder/re-send window (512 ids ~= 18 s at 28.6 fps); memory is trivial.
+        self._completed: OrderedDict[int, None] = OrderedDict()
+        self._completed_cap = 512
         self.metrics = ReceiverMetrics()
 
     def __enter__(self):
@@ -144,6 +156,12 @@ class JpegUdpReceiver:
             sim_time_ns,
         ) = struct.unpack_from(HEADER_FMT, data, 0)
         m.max_total_chunks = max(m.max_total_chunks, total_chunks)
+        # Drop the sim's re-sends of a frame we've already emitted (dedup). Checked only
+        # against COMPLETED frame_ids, so re-sent copies of a still-incomplete frame are not
+        # suppressed here — they fall through and may supply chunks lost to UDP drops.
+        if frame_id in self._completed:
+            m.duplicate_datagrams += 1
+            return None
         payload = data[HEADER_SIZE:HEADER_SIZE + payload_size]
         partial = self._partials.get(frame_id)
         if partial is None:
@@ -168,6 +186,10 @@ class JpegUdpReceiver:
             m.frames_decode_failed += 1
             return None
         m.frames_completed += 1
+        # Mark emitted so subsequent re-sends of this frame_id are dropped (FIFO-capped).
+        self._completed[frame_id] = None
+        if len(self._completed) > self._completed_cap:
+            self._completed.popitem(last=False)
         return Frame(
             frame_id=frame_id,
             sim_time_ns=partial.sim_time_ns,

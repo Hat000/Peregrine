@@ -36,6 +36,44 @@ def test_ingest_reassembles_valid_jpeg_across_chunks():
     assert 7 not in rx._partials                 # completed frame is removed
 
 
+def test_ingest_dedups_resent_frame_id():
+    # [first contact] the sim re-sends each frame's chunks ~14x. After a frame_id completes
+    # once, further datagrams for it are dropped (not re-emitted, no new partial), so
+    # perception runs exactly once per real frame.
+    rx = JpegUdpReceiver()
+    img = np.full((360, 640, 3), 127, np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    jpeg = buf.tobytes()
+    dg = _datagram(7, 0, 1, len(jpeg), jpeg, 99)     # single-chunk frame
+    assert rx._ingest(dg) is not None                 # first copy -> emitted
+    assert rx._ingest(dg) is None                     # re-send -> dropped
+    assert rx._ingest(dg) is None                     # ...every re-send
+    assert rx.metrics.frames_completed == 1           # emitted exactly once
+    assert rx.metrics.duplicate_datagrams == 2
+    assert rx._partials == {}                          # re-sends never created a partial
+
+
+def test_resent_chunks_complete_frame_before_dedup_kicks_in():
+    # Dedup must NOT block re-sends of a still-INCOMPLETE frame: a chunk lost to a UDP drop is
+    # recovered from a later re-sent copy. Suppression starts only once the frame has completed.
+    rx = JpegUdpReceiver()
+    img = np.full((360, 640, 3), 64, np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    jpeg = buf.tobytes()
+    half = len(jpeg) // 2
+    c0 = _datagram(9, 0, 2, len(jpeg), jpeg[:half], 77)
+    c1 = _datagram(9, 1, 2, len(jpeg), jpeg[half:], 77)
+    assert rx._ingest(c0) is None                      # copy A: chunk 0 (chunk 1 dropped)
+    assert rx._ingest(c0) is None                      # copy B: chunk 0 again -> still incomplete, NOT deduped
+    frame = rx._ingest(c1)                             # copy B: chunk 1 -> completes
+    assert frame is not None and frame.frame_id == 9
+    assert rx.metrics.duplicate_datagrams == 0         # nothing dropped before completion
+    assert rx._ingest(c0) is None                      # now a later re-send IS deduped
+    assert rx.metrics.duplicate_datagrams == 1
+
+
 def test_ingest_corrupt_complete_frame_returns_none_and_pops():
     # [review 4A] A complete-but-undecodable frame returns None AND drops its partial (no
     # leak), without raising. This is the path that previously skipped eviction.
