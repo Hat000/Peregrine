@@ -65,19 +65,35 @@ class SyntheticSample:
     visibility: np.ndarray = field(default_factory=lambda: np.full(4, V_VIS, dtype=int))  # (4,) per-corner flag
 
 
-def sample_gate_pose(rng: np.random.Generator, min_dist: float = _MIN_DIST_M, max_dist: float = _MAX_DIST_M):
-    """A random gate pose in the camera frame whose centre projects inside the image."""
-    u = rng.uniform(0.12 * IMAGE_WIDTH, 0.88 * IMAGE_WIDTH)
-    v = rng.uniform(0.12 * IMAGE_HEIGHT, 0.88 * IMAGE_HEIGHT)
+def sample_gate_pose(rng: np.random.Generator, min_dist: float = _MIN_DIST_M, max_dist: float = _MAX_DIST_M,
+                     *, high_roll_prob: float = 0.0, edge_prob: float = 0.0):
+    """A random gate pose in the camera frame whose centre projects inside the image.
+
+    ``edge_prob``: chance of biasing the centre toward a frame edge so a corner clips (the
+    near-edge troublemaker). ``high_roll_prob``: chance of forcing a large |roll| (26-49 deg,
+    where the rare corner-identity swaps live). Both default 0 -> the original distribution, and
+    with both 0 the RNG draw order is unchanged (existing seeded samples reproduce exactly)."""
+    if edge_prob and rng.random() < edge_prob:
+        if rng.random() < 0.5:                                    # clip on a left/right edge
+            lo, hi = (0.02, 0.14) if rng.random() < 0.5 else (0.86, 0.98)
+            u, v = rng.uniform(lo, hi) * IMAGE_WIDTH, rng.uniform(0.12, 0.88) * IMAGE_HEIGHT
+        else:                                                     # clip on a top/bottom edge
+            lo, hi = (0.02, 0.14) if rng.random() < 0.5 else (0.86, 0.98)
+            u, v = rng.uniform(0.12, 0.88) * IMAGE_WIDTH, rng.uniform(lo, hi) * IMAGE_HEIGHT
+    else:
+        u = rng.uniform(0.12 * IMAGE_WIDTH, 0.88 * IMAGE_WIDTH)
+        v = rng.uniform(0.12 * IMAGE_HEIGHT, 0.88 * IMAGE_HEIGHT)
     d = min_dist + (max_dist - min_dist) * rng.random() ** 2      # squared -> skew toward close
     ray = np.linalg.inv(CAMERA_INTRINSICS_K) @ np.array([u, v, 1.0])
     ray /= ray[2]
     t = d * ray                                                   # gate centre at depth ~d through (u, v)
-    tilt = Rotation.from_euler("xyz", [
-        rng.uniform(-_PITCH_RAD, _PITCH_RAD),
-        rng.uniform(-_YAW_RAD, _YAW_RAD),
-        rng.uniform(-_ROLL_RAD, _ROLL_RAD),
-    ])
+    pitch = rng.uniform(-_PITCH_RAD, _PITCH_RAD)
+    yaw = rng.uniform(-_YAW_RAD, _YAW_RAD)
+    if high_roll_prob and rng.random() < high_roll_prob:
+        roll = float(rng.choice((-1.0, 1.0))) * float(rng.uniform(0.45, 0.85))
+    else:
+        roll = rng.uniform(-_ROLL_RAD, _ROLL_RAD)
+    tilt = Rotation.from_euler("xyz", [pitch, yaw, roll])
     return tilt.as_matrix(), t                                    # base orientation I = facing camera (IPPE native)
 
 
@@ -271,6 +287,28 @@ def _in_frame(pts: np.ndarray) -> bool:
     )
 
 
+def _in_ring(pt, outer_px: np.ndarray, inner_px: np.ndarray) -> bool:
+    """True if ``pt`` falls on a gate's opaque ring (inside the outer square, outside the inner
+    hole) -- i.e. a nearer gate at ``pt`` would occlude whatever is behind it there, while a point
+    seen through the inner hole stays visible."""
+    outer = outer_px.astype(np.float32).reshape(-1, 1, 2)
+    if cv2.pointPolygonTest(outer, pt, False) < 0:
+        return False
+    inner = inner_px.astype(np.float32).reshape(-1, 1, 2)
+    return cv2.pointPolygonTest(inner, pt, False) < 0
+
+
+def _sample_n_gates(rng: np.random.Generator, level: int, max_gates: int) -> int:
+    """How many gates to place in one scene. Real frames show the next gate(s) beyond the current
+    one, so single-gate dominates but multi-gate appears (light at L1, common at L2+) to teach
+    instance separation and 'real gate vs gate-coloured clutter'."""
+    if max_gates <= 1:
+        return 1
+    pool = [1, 1, 1, 1, 2] if level <= 1 else [1, 1, 2, 2, 3]
+    pool = [k for k in pool if k <= max_gates]
+    return int(rng.choice(pool))
+
+
 def render_gate_sample(rng: np.random.Generator, level: int = 2, pose=None) -> SyntheticSample:
     R, t = sample_gate_pose(rng) if pose is None else pose
     blank = np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH, 3), dtype=np.uint8)
@@ -293,6 +331,57 @@ def render_gate_sample(rng: np.random.Generator, level: int = 2, pose=None) -> S
     # Keep 3- or 4-corner gates: at least 3 corners clearly visible, gate centre in view.
     visible = bool(int((visibility == V_VIS).sum()) >= 3 and centre_in)
     return SyntheticSample(img, inner_px, _bbox(outer_px), visible, R, t, visibility)
+
+
+def render_scene(rng: np.random.Generator, level: int = 2, max_gates: int = 3,
+                 *, high_roll_prob: float = 0.0, edge_prob: float = 0.0):
+    """Render a scene with 1..N gates sharing one image; return ``(image, [SyntheticSample,...])``.
+
+    Gates are painted far->near so a nearer gate occludes a farther one; each gate's corners are
+    flagged V_OCC when they fall on a nearer gate's ring (or the occluder), V_OFF when off-frame.
+    Every sample carries the SAME image (write it once, one label row per visible gate).
+    ``high_roll_prob`` / ``edge_prob`` oversample the hard configs (see ``sample_gate_pose``)."""
+    n = _sample_n_gates(rng, level, max_gates)
+    img = _background(rng, level)
+    placed = []   # (R, t, inner_px, outer_px)
+    attempts = 0
+    while len(placed) < n and attempts < 4 * n:
+        attempts += 1
+        R, t = sample_gate_pose(rng, high_roll_prob=high_roll_prob, edge_prob=edge_prob)
+        try:
+            inner = project_gate_corners(R, t, GATE_INNER_SIZE_M)
+            outer = project_gate_corners(R, t, GATE_OUTER_SIZE_M)
+        except ValueError:
+            continue
+        c = inner.mean(axis=0)
+        if any(np.linalg.norm(c - p[2].mean(axis=0)) < 60.0 for p in placed):
+            continue   # keep gate centres visually distinct
+        placed.append((R, t, inner, outer))
+    if not placed:
+        return img, []
+
+    placed.sort(key=lambda p: -float(np.linalg.norm(p[1])))   # far first -> near drawn on top
+    for _, _, inner, outer in placed:
+        _draw_gate(img, inner, outer, rng, level)
+    occ_mask = None
+    if level >= 2 and rng.random() < _OCCLUSION_PROB:
+        _, _, inner, _ = placed[int(rng.integers(0, len(placed)))]
+        occ_mask = _draw_occluder(img, inner, rng)
+    img = _augment(img, rng, level)
+
+    samples = []
+    for i, (R, t, inner, outer) in enumerate(placed):
+        vis = _corner_visibility(inner, occ_mask)
+        for j in range(i + 1, len(placed)):          # nearer gates occlude this one's corners
+            _, _, inner_j, outer_j = placed[j]
+            for c in range(4):
+                if vis[c] != V_OFF and _in_ring((float(inner[c][0]), float(inner[c][1])), outer_j, inner_j):
+                    vis[c] = V_OCC
+        centre = inner.mean(axis=0)
+        centre_in = 0.0 <= centre[0] <= IMAGE_WIDTH and 0.0 <= centre[1] <= IMAGE_HEIGHT
+        visible = bool(int((vis == V_VIS).sum()) >= 3 and centre_in)
+        samples.append(SyntheticSample(img, inner, _bbox(outer), visible, R, t, vis))
+    return img, samples
 
 
 def to_yolo_pose_label(sample: SyntheticSample, class_id: int = 0) -> str | None:
@@ -324,12 +413,18 @@ flip_idx: [1, 0, 3, 2]   # horizontal flip swaps left<->right corners
 """
 
 
-def write_dataset(out_dir, n_train: int, n_val: int, level=2, seed: int = 0) -> Path:
+def write_dataset(out_dir, n_train: int, n_val: int, level=2, seed: int = 0,
+                  max_gates: int = 3, high_roll_prob: float = 0.0, edge_prob: float = 0.0) -> Path:
     """Generate a YOLO-pose dataset (images + labels + data.yaml). Returns the data.yaml path.
 
     ``level`` is the curriculum level (1/2/3). Pass a SEQUENCE of levels (e.g. ``[1, 2, 2, 3, 3]``)
     to generate a MIXED-difficulty set, one level drawn per image -- the model then sees clean
-    geometry through full chaos every epoch (a curriculum without catastrophic forgetting)."""
+    geometry through full chaos every epoch (a curriculum without catastrophic forgetting).
+
+    ``max_gates`` caps gates-per-image: >1 (default) renders multi-gate scenes (a label row per
+    visible gate) so the detector learns instance separation and real-gate-vs-clutter; pass 1 for
+    the legacy single-gate behaviour. ``high_roll_prob`` / ``edge_prob`` oversample the high-roll
+    and near-edge configs that dominate the corner-error tail."""
     out = Path(out_dir)
     rng = np.random.default_rng(seed)
     levels = list(level) if isinstance(level, (list, tuple, np.ndarray)) else None
@@ -341,12 +436,13 @@ def write_dataset(out_dir, n_train: int, n_val: int, level=2, seed: int = 0) -> 
         made = 0
         while made < n:
             lvl = int(rng.choice(levels)) if levels else level
-            sample = render_gate_sample(rng, level=lvl)
-            label = to_yolo_pose_label(sample)
-            if label is None:
+            img, samples = render_scene(rng, level=lvl, max_gates=max_gates,
+                                        high_roll_prob=high_roll_prob, edge_prob=edge_prob)
+            rows = [r for r in (to_yolo_pose_label(s) for s in samples) if r is not None]
+            if not rows:
                 continue
-            cv2.imwrite(str(img_dir / f"{made:06d}.png"), sample.image_bgr)
-            (lbl_dir / f"{made:06d}.txt").write_text(label + "\n")
+            cv2.imwrite(str(img_dir / f"{made:06d}.png"), img)
+            (lbl_dir / f"{made:06d}.txt").write_text("\n".join(rows) + "\n")
             made += 1
     yaml_path = out / "data.yaml"
     yaml_path.write_text(DATA_YAML.format(path=str(out.resolve())))

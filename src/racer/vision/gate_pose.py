@@ -67,6 +67,18 @@ PRIOR_DISAMBIG_MAX_RATIO = 5.0
 # ratio (unambiguous, trust reprojection). [red-team 2026-05-30]
 AMBIGUITY_EPS_PX = 0.1
 
+# Robust weighted-PnP refinement. Each corner is whitened by sigma_i = WEIGHTED_SIGMA_PX /
+# clip(confidence_i, CONF_FLOOR, 1): a less-confident corner gets a looser sigma -> lower weight
+# (a confidence ~0 can't blow up its weight). On top, a REDESCENDING Tukey biweight on the
+# reprojection residual drives a confident-but-mislocalised corner (the tail failure) to ZERO
+# weight -- fully rejecting it rather than merely down-weighting (as a convex Huber would). The
+# knee is ANNEALED from lenient to strict across iterations (graduated non-convexity) so the
+# estimator converges stably from the IPPE init. Tunable at first sim contact.
+WEIGHTED_SIGMA_PX = 1.5
+TUKEY_C_HI_PX = 40.0   # robust knee at iter 0 (lenient: every corner participates)
+TUKEY_C_LO_PX = 8.0    # annealed to here (a corner reprojecting beyond this -> zero weight)
+CONF_FLOOR = 0.1
+
 
 def gate_object_points(inner_size_m: float = GATE_INNER_SIZE_M) -> np.ndarray:
     """The 4 inner-square corners in the gate's own frame, IPPE_SQUARE order. Shape (4,3)."""
@@ -161,13 +173,15 @@ def _solve_p3p(obj_pts: np.ndarray, img_pts: np.ndarray, K: np.ndarray):
     return out
 
 
-def _ordered_corners(obs: GateObservation) -> tuple[np.ndarray, np.ndarray]:
-    """Return (corners, ids) sorted by canonical corner index, so rows match object points."""
+def _ordered_corners(obs: GateObservation) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Return (corners, ids, conf) sorted by canonical corner index, so rows match object points.
+    ``conf`` is the per-corner confidence in the same order, or None if the obs carries none."""
     corners = np.ascontiguousarray(obs.corners_px, dtype=np.float64)
     n = corners.shape[0]
     ids = np.arange(n) if obs.corner_ids is None else np.asarray(obs.corner_ids).astype(int)
     order = np.argsort(ids, kind="stable")
-    return corners[order], ids[order]
+    conf = None if obs.corner_confidence is None else np.asarray(obs.corner_confidence, dtype=np.float64)[order]
+    return corners[order], ids[order], conf
 
 
 def _estimate_ippe(obj: np.ndarray, img: np.ndarray, K: np.ndarray, prior: GatePose | None):
@@ -221,6 +235,71 @@ def _estimate_p3p(obj: np.ndarray, img: np.ndarray, K: np.ndarray, prior: GatePo
     return R, t, _reproj_rms(obj, img, R, t, K), None
 
 
+def _refine_pose(obj: np.ndarray, img: np.ndarray, K: np.ndarray, R0: np.ndarray, t0: np.ndarray,
+                 conf: np.ndarray, sigma_px: float = WEIGHTED_SIGMA_PX, iters: int = 10):
+    """Robust, confidence-weighted Gauss-Newton refinement of (R0, t0) over all corners.
+
+    Minimises a per-corner-whitened reprojection error: corner i is whitened by
+    ``sigma_i = sigma_px / clip(conf_i)`` (less confident -> looser -> lower weight) and reweighted
+    each iteration by an annealed Tukey biweight on its residual -- a confident-but-wrong corner
+    redescends to ZERO weight (fully rejected, not merely down-weighted). Initialised from the
+    analytic IPPE/P3P pose so it refines locally without crossing the planar ambiguity. Returns
+    ``(R, t, cov)`` with ``cov`` the (6,6) parameter covariance in ``[t(3), rvec(3)]`` layout from
+    the effective (confidence x robust) weights (Fisher information), or ``cov=None``.
+    """
+    obj_c = np.ascontiguousarray(obj, dtype=np.float64).reshape(-1, 1, 3)
+    img = np.ascontiguousarray(img, dtype=np.float64).reshape(-1, 2)
+    rvec = cv2.Rodrigues(np.ascontiguousarray(R0, dtype=np.float64))[0].reshape(3, 1)
+    tvec = np.asarray(t0, dtype=np.float64).reshape(3, 1)
+    w_conf = 1.0 / (sigma_px / np.clip(np.asarray(conf, dtype=np.float64), CONF_FLOOR, 1.0)) ** 2
+    robust = np.ones(obj_c.shape[0])
+
+    for it in range(iters):
+        c = TUKEY_C_HI_PX + (TUKEY_C_LO_PX - TUKEY_C_HI_PX) * (it / max(iters - 1, 1))  # anneal hi->lo
+        proj, jac = cv2.projectPoints(obj_c, rvec, tvec, K, _NO_DISTORTION)
+        resid = proj.reshape(-1, 2) - img                                   # (N, 2)
+        u = np.linalg.norm(resid, axis=1) / c                               # normalised residual
+        robust = np.where(u < 1.0, (1.0 - u * u) ** 2, 0.0)                 # Tukey biweight (redescending)
+        if int((robust > 0).sum()) < 3:                                     # too few inliers to solve
+            break
+        w2 = np.repeat(w_conf * robust, 2)                                  # (2N,) per residual coord
+        J = np.asarray(jac, dtype=np.float64)[:, 0:6]                       # d[u,v] / d[rvec, tvec]
+        JtW = J.T * w2
+        try:
+            dp = np.linalg.solve(JtW @ J, JtW @ resid.reshape(-1))
+        except np.linalg.LinAlgError:
+            break
+        rvec = rvec - dp[0:3].reshape(3, 1)
+        tvec = tvec - dp[3:6].reshape(3, 1)
+        if float(np.linalg.norm(dp)) < 1e-9:
+            break
+
+    R, t = cv2.Rodrigues(rvec)[0], tvec.reshape(3)
+    cov = None
+    try:                                                                    # Fisher info -> covariance
+        _, jac = cv2.projectPoints(obj_c, rvec, tvec, K, _NO_DISTORTION)
+        J = np.asarray(jac, dtype=np.float64)[:, 0:6]
+        cov_rt = np.linalg.inv((J.T * np.repeat(w_conf * robust, 2)) @ J)   # effective inliers, [rvec, tvec]
+        swap = np.zeros((6, 6))
+        swap[0:3, 3:6] = swap[3:6, 0:3] = np.eye(3)
+        cov = swap @ cov_rt @ swap.T                                        # -> [t, rvec]
+    except np.linalg.LinAlgError:
+        cov = None
+    return R, t, cov
+
+
+def _refine_ok(R: np.ndarray, t: np.ndarray, R0: np.ndarray, t0: np.ndarray, obj: np.ndarray) -> bool:
+    """Accept a refinement only if it stayed valid (gate in front, finite) and didn't wander far
+    from the PnP init -- a diverged GN step is discarded in favour of the analytic IPPE/P3P pose."""
+    if not (np.all(np.isfinite(t)) and np.all(np.isfinite(R))):
+        return False
+    if np.any(((R @ obj.T).T + t)[:, 2] <= 0):
+        return False
+    if _rotation_geodesic(R, R0) > 0.5:
+        return False
+    return bool(np.linalg.norm(t - t0) <= 0.5 * (np.linalg.norm(t0) + 1e-9))
+
+
 def estimate_gate_pose(
     obs: GateObservation,
     camera_matrix: np.ndarray | None = None,
@@ -230,21 +309,28 @@ def estimate_gate_pose(
     corner_sigma_px: float = 1.5,
     n_samples: int = 24,
     rng: np.random.Generator | None = None,
+    weighted_refine: bool = True,
 ) -> GatePose | None:
     """Estimate the gate pose from an observation. Returns ``None`` if PnP fails.
 
     With 4 corners, uses IPPE_SQUARE; with 3 (a clipped gate at transit), falls back to
     P3P over the matching corners. ``prior`` disambiguates the planar 2-fold ambiguity
     (IPPE, only when the geometry is near-frontal) and the P3P solutions (always, since
-    they are otherwise indistinguishable). With ``compute_covariance`` (4-corner only), a
-    (6,6) measurement covariance over ``[t(3), rvec(3)]`` is estimated by perturbing the
-    corners (``n_samples`` x, std ``corner_sigma_px``); 3-corner fixes return ``None``
-    covariance and ``n_corners=3`` so callers inflate their measurement noise.
+    they are otherwise indistinguishable).
+
+    With ``weighted_refine`` (default; 4-corner, requires ``obs.corner_confidence``), the
+    IPPE pose is refined by a robust confidence-weighted Gauss-Newton over all corners: each
+    corner is weighted by its confidence and Huber-reweighted by its residual, so a weak or
+    mislocalised corner is downweighted instead of trusted equally -- and the per-corner weights
+    give the pose covariance directly. With ``compute_covariance`` (4-corner only), that analytic
+    covariance over ``[t(3), rvec(3)]`` is returned (falling back to Monte-Carlo corner perturbation
+    -- ``n_samples`` x, std ``corner_sigma_px`` -- when no confidences are present); 3-corner fixes
+    return ``None`` covariance and ``n_corners=3`` so callers inflate their measurement noise.
     """
     if not np.isfinite(obs.corners_px).all():
         return None
     K = CAMERA_INTRINSICS_K if camera_matrix is None else camera_matrix
-    corners, ids = _ordered_corners(obs)
+    corners, ids, conf = _ordered_corners(obs)
     obj_full = gate_object_points(inner_size_m)
     n = corners.shape[0]
 
@@ -261,9 +347,19 @@ def estimate_gate_pose(
         return None
     R, t, reproj, ambiguity_ratio = result
 
+    # Robust confidence-weighted refinement over all 4 corners: downweights a weak/wrong corner
+    # instead of trusting it equally (or hard-dropping it), and yields the pose covariance. Only
+    # when the detector supplied per-corner confidences; guarded against a diverged GN step.
+    analytic_cov = None
+    if weighted_refine and conf is not None and n_corners == 4:
+        R_r, t_r, cov_r = _refine_pose(obj_full, corners, K, R, t, conf, corner_sigma_px)
+        if _refine_ok(R_r, t_r, R, t, obj_full):
+            R, t, analytic_cov = R_r, t_r, cov_r
+            reproj = _reproj_rms(obj_full, corners, R, t, K)
+
     covariance = None
     if compute_covariance and n_corners == 4:
-        covariance = _corner_perturbation_covariance(
+        covariance = analytic_cov if analytic_cov is not None else _corner_perturbation_covariance(
             obj_full, corners, K, R, corner_sigma_px, n_samples, rng
         )
 

@@ -20,6 +20,7 @@ INCLUDE = [   # what to ship to the cluster
     "cluster/yolo_fetch.sh",
     "cluster/yolo_smoke.sbatch",
     "cluster/yolo_train.sbatch",
+    "cluster/yolo_train_v3.sbatch",
 ]
 CHUNK = 20000
 

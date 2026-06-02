@@ -33,20 +33,33 @@ def main() -> int:
                     help="write l1/ l2/ l3/ subdatasets under <out> for curriculum training")
     ap.add_argument("--mix", action="store_true",
                     help="ONE mixed-difficulty set: L1/L2/L3 sampled per image (weighted to harder)")
+    ap.add_argument("--max-gates", type=int, default=3,
+                    help="max gates per image (>1 = multi-gate scenes; 1 = legacy single-gate)")
+    ap.add_argument("--high-roll-prob", type=float, default=0.0,
+                    help="fraction of gates forced to large |roll| (26-49 deg) -- the swap-prone tail")
+    ap.add_argument("--edge-prob", type=float, default=0.0,
+                    help="fraction of gates biased to a frame edge (a corner clips) -- the near-edge tail")
+    ap.add_argument("--hard", action="store_true",
+                    help="shortcut: --high-roll-prob 0.3 --edge-prob 0.3 (oversample the tail configs)")
     args = ap.parse_args()
+
+    hr = 0.3 if args.hard else args.high_roll_prob
+    ep = 0.3 if args.hard else args.edge_prob
+    kw = dict(max_gates=args.max_gates, high_roll_prob=hr, edge_prob=ep)
+    tag = f"<= {args.max_gates} gates, roll+{hr:.0%}, edge+{ep:.0%}"
 
     if args.mix:
         weights = [1, 2, 2, 3, 3]   # L1 x1, L2 x2, L3 x2 -> mostly realistic + chaos
-        print(f"[mix] generating {args.n_train} train + {args.n_val} val (L1/L2/L3) -> {args.out}")
-        yaml_path = write_dataset(args.out, args.n_train, args.n_val, level=weights, seed=args.seed)
+        print(f"[mix] generating {args.n_train} train + {args.n_val} val (L1/L2/L3, {tag}) -> {args.out}")
+        yaml_path = write_dataset(args.out, args.n_train, args.n_val, level=weights, seed=args.seed, **kw)
         print(f"   data.yaml -> {yaml_path}")
         return 0
 
     levels = (1, 2, 3) if args.all_levels else (args.level,)
     for lvl in levels:
         out = str(Path(args.out) / f"l{lvl}") if args.all_levels else args.out
-        print(f"[L{lvl}] generating {args.n_train} train + {args.n_val} val -> {out}")
-        yaml_path = write_dataset(out, args.n_train, args.n_val, level=lvl, seed=args.seed + lvl)
+        print(f"[L{lvl}] generating {args.n_train} train + {args.n_val} val ({tag}) -> {out}")
+        yaml_path = write_dataset(out, args.n_train, args.n_val, level=lvl, seed=args.seed + lvl, **kw)
         print(f"   data.yaml -> {yaml_path}")
     return 0
 

@@ -9,6 +9,7 @@ from racer.vision.synthetic import (
     SyntheticSample,
     _in_frame,
     render_gate_sample,
+    sample_gate_pose,
     to_yolo_pose_label,
     write_dataset,
 )
@@ -188,7 +189,8 @@ def test_write_dataset_respects_level(tmp_path):
         lbls = list((d / "labels" / "train").glob("*.txt"))
         assert len(lbls) == 3
         for lbl in lbls:
-            assert len(lbl.read_text().split()) == 17
+            lines = lbl.read_text().splitlines()
+            assert lines and all(len(line.split()) == 17 for line in lines)  # 1+ gates, 17 fields each
 
 
 def test_write_dataset(tmp_path):
@@ -198,8 +200,64 @@ def test_write_dataset(tmp_path):
     lbls = list((tmp_path / "labels" / "train").glob("*.txt"))
     assert len(imgs) == 4 and len(lbls) == 4
     assert len(list((tmp_path / "images" / "val").glob("*.png"))) == 2
-    # Every label is a well-formed 17-field YOLO-pose row.
+    # Every label LINE is a well-formed 17-field YOLO-pose row (>=1 gate per file).
     for lbl in lbls:
-        assert len(lbl.read_text().split()) == 17
+        lines = lbl.read_text().splitlines()
+        assert lines and all(len(line.split()) == 17 for line in lines)
     assert "kpt_shape: [4, 3]" in yaml_path.read_text()
     assert "flip_idx: [1, 0, 3, 2]" in yaml_path.read_text()
+
+
+def test_write_dataset_multigate(tmp_path):
+    # Default max_gates>1 must actually produce some multi-gate frames (>1 label row),
+    # and every row stays a valid 17-field pose label.
+    write_dataset(tmp_path, n_train=60, n_val=1, level=2, seed=1)
+    counts = [len(p.read_text().splitlines())
+              for p in (tmp_path / "labels" / "train").glob("*.txt")]
+    assert max(counts) >= 2                      # multi-gate scenes appear
+    for p in (tmp_path / "labels" / "train").glob("*.txt"):
+        for line in p.read_text().splitlines():
+            assert len(line.split()) == 17
+
+
+def test_write_dataset_single_gate_mode(tmp_path):
+    # max_gates=1 reproduces the legacy one-row-per-file behaviour.
+    write_dataset(tmp_path, n_train=12, n_val=1, level=2, seed=2, max_gates=1)
+    for p in (tmp_path / "labels" / "train").glob("*.txt"):
+        assert len(p.read_text().splitlines()) == 1
+
+
+def test_high_roll_prob_forces_high_roll():
+    # high_roll_prob=1.0 -> every gate lands in the 26-49 deg roll band (the swap-prone tail).
+    rng = np.random.default_rng(0)
+    rolls = [abs(Rotation.from_matrix(sample_gate_pose(rng, high_roll_prob=1.0)[0]).as_euler("xyz")[2])
+             for _ in range(25)]
+    assert min(rolls) >= 0.44
+
+
+def test_default_pose_sampling_unchanged():
+    # With both knobs 0 the RNG draw order is preserved -> bit-identical to a baseline draw.
+    a = sample_gate_pose(np.random.default_rng(5))
+    b = sample_gate_pose(np.random.default_rng(5), high_roll_prob=0.0, edge_prob=0.0)
+    assert np.allclose(a[0], b[0]) and np.allclose(a[1], b[1])
+
+
+def test_edge_prob_increases_clipped_corners():
+    from racer.frames import IMAGE_HEIGHT as H, IMAGE_WIDTH as W
+    from racer.vision.gate_pose import GATE_INNER_SIZE_M, project_gate_corners
+
+    def clipped(edge_prob):
+        rng = np.random.default_rng(1)
+        n = 0
+        for _ in range(150):
+            R, t = sample_gate_pose(rng, edge_prob=edge_prob)
+            try:
+                px = project_gate_corners(R, t, GATE_INNER_SIZE_M)
+            except ValueError:
+                continue
+            if not ((px[:, 0] >= 0).all() and (px[:, 0] <= W - 1).all()
+                    and (px[:, 1] >= 0).all() and (px[:, 1] <= H - 1).all()):
+                n += 1
+        return n
+
+    assert clipped(1.0) > clipped(0.0)
