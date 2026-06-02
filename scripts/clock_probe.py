@@ -114,9 +114,13 @@ def main() -> int:
     lost = metrics.partials_evicted
     seen_frames = metrics.frames_completed + lost
     loss_pct = 100.0 * lost / seen_frames if seen_frames else 0.0
+    dup = metrics.duplicate_datagrams
+    resend_factor = (metrics.datagrams / metrics.frames_completed) if metrics.frames_completed else float("nan")
     print(f"    datagrams={metrics.datagrams}  completed={metrics.frames_completed}  "
           f"lost_to_missing_chunks={lost} ({loss_pct:.1f}%)  "
           f"decode_fail={metrics.frames_decode_failed}  size_mismatch={metrics.frames_size_mismatch}")
+    print(f"    dedup: dropped {dup} re-sent datagrams  (~{resend_factor:.1f} datagrams/frame; "
+          "the sim re-sends each frame — the '~395 fps' illusion, true rate is arrival_fps above)")
     print(f"    datagram bytes: min={metrics.min_datagram_bytes} max={metrics.max_datagram_bytes} "
           f"(MTU~{_MTU})  chunks/frame max={metrics.max_total_chunks}")
     if metrics.max_datagram_bytes > _MTU:
