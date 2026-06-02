@@ -342,15 +342,17 @@ def test_pump_drains_all_available_messages_in_one_call():
     c = MavlinkClient()
     c.conn = _FakePumpConn([
         _imu(time_usec=1_000_000),
-        _attitude(time_boot_ms=5, roll=0.1),
+        _attitude(time_boot_ms=5, roll=0.1),      # liveness only -- must drain but NOT drive orientation
+        _odometry(x=5.0, y=6.0, z=-7.0),           # the canonical pose/orientation source
         _heartbeat(mavutil.mavlink.MAV_AUTOPILOT_PX4, mavutil.mavlink.MAV_TYPE_QUADROTOR),
     ])
     seen = []
     c.on_message = lambda m: seen.append(m.get_type())
     c.pump()
-    assert seen == ["HIGHRES_IMU", "ATTITUDE", "HEARTBEAT"]   # all drained, in order
-    assert c.state.sim_time_ns == 1_000_000_000              # and each was handled
-    assert abs(c.state.roll - 0.1) < 1e-9
+    assert seen == ["HIGHRES_IMU", "ATTITUDE", "ODOMETRY", "HEARTBEAT"]   # all drained, in order
+    assert c.state.sim_time_ns == 1_000_000_000              # IMU handled (drives the clock)
+    np.testing.assert_array_equal(c.state.position_ned, [5.0, 6.0, -7.0])  # ODOMETRY handled (pose)
+    assert abs(c.state.roll) < 1e-9                          # ATTITUDE drained, but its sign-inverted Euler ignored
 
 
 def test_send_actuator_control_emits_padded_8_controls():
