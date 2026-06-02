@@ -59,7 +59,8 @@ class Frame:
 class DroneState:
     """Latest sim telemetry as an immutable snapshot. Produced by ``mavlink_client``.
 
-    Orientation + angular rate come from ATTITUDE; accel/mag/baro from HIGHRES_IMU;
+    Orientation + angular rate come from ODOMETRY (the sim's ATTITUDE Euler has an inverted
+    pitch sign, confirmed at first contact); accel/mag/baro from HIGHRES_IMU;
     ``armed`` from HEARTBEAT. ``position_ned`` / ``velocity_ned`` are populated ONLY if the
     sim emits a bearing message (e.g. LOCAL_POSITION_NED) — normally ``None`` (derive them).
     Fields may originate from different messages at slightly different sim-times;
@@ -69,11 +70,15 @@ class DroneState:
     sim_time_ns: int = 0
     recv_monotonic_ns: int = 0
 
-    # Orientation — GIVEN by the sim (NED Euler, radians). The estimator trusts these.
+    # Orientation — from the ODOMETRY quaternion (body FRD -> world NED, scalar-first w,x,y,z).
+    # This is the canonical source; roll/pitch/yaw below are DERIVED from it via
+    # frames.euler_from_quat_wxyz. The sim's ATTITUDE Euler is NOT used (its pitch sign is
+    # inverted vs the accel-gravity vector + FPV view — first-contact 2026-06-02).
+    orientation_ned_wxyz: np.ndarray | None = None
     roll: float = 0.0
     pitch: float = 0.0
     yaw: float = 0.0
-    angular_rate_body: np.ndarray = _vec(3)   # (rollspeed, pitchspeed, yawspeed) rad/s, FRD
+    angular_rate_body: np.ndarray = _vec(3)   # (rollspeed, pitchspeed, yawspeed) rad/s FRD, from ODOMETRY
 
     # HIGHRES_IMU
     accel_body: np.ndarray = _vec(3)          # m/s^2, FRD; specific force (incl. gravity reaction)

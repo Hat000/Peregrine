@@ -41,6 +41,23 @@ def R_world_from_body(roll: float, pitch: float, yaw: float) -> np.ndarray:
     return Rotation.from_euler("ZYX", [yaw, pitch, roll]).as_matrix()
 
 
+def euler_from_quat_wxyz(q_wxyz) -> tuple[float, float, float]:
+    """Body(FRD)->world(NED) quaternion (w, x, y, z; scalar-FIRST MAVLink order) -> aerospace
+    3-2-1 Euler ``(roll, pitch, yaw)`` in radians. Exact inverse of ``R_world_from_body``'s
+    'ZYX' convention, so the controller's command (``_euler_to_wxyz``) and the feedback share
+    ONE convention -- the property that keeps a PD attitude loop sign-consistent.
+
+    This is the canonical orientation extraction: the sim's ATTITUDE Euler has an inverted
+    pitch sign (confirmed at first contact against the accel-gravity vector + the FPV view),
+    so orientation is taken from the ODOMETRY quaternion and decoded here instead. A degenerate
+    (near-zero-norm) quaternion returns zeros rather than raising."""
+    w, x, y, z = (float(v) for v in q_wxyz)
+    if (w * w + x * x + y * y + z * z) < 1e-12:
+        return 0.0, 0.0, 0.0
+    yaw, pitch, roll = Rotation.from_quat([x, y, z, w]).as_euler("ZYX")
+    return float(roll), float(pitch), float(yaw)
+
+
 def R_camera_from_body() -> np.ndarray:
     # Passive rotation by +20 deg about body Y (frame rotated, vector representation changes oppositely).
     R_tilted_from_body = Rotation.from_euler("Y", -CAMERA_PITCH_RAD).as_matrix()

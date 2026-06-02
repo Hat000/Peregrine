@@ -36,14 +36,34 @@ def test_sim_time_driven_only_by_highres_imu():
     c = MavlinkClient()
     c._handle(_imu(time_usec=1_000_000))                  # 1.0 s in usec -> 1e9 ns
     assert c.state.sim_time_ns == 1_000_000_000
-    # An interleaved ATTITUDE on a wildly different boot-ms clock must not change the stamp,
-    # but must still update orientation.
+    # An interleaved ATTITUDE on a wildly different boot-ms clock must not change the stamp.
+    # It must ALSO not touch orientation: ATTITUDE was retired as the orientation source
+    # (its pitch sign is inverted); ODOMETRY owns orientation now.
     c._handle(_attitude(time_boot_ms=50, roll=0.1, pitch=0.2, yaw=0.3))
     assert c.state.sim_time_ns == 1_000_000_000
-    assert (c.state.roll, c.state.pitch, c.state.yaw) == (0.1, 0.2, 0.3)
+    assert (c.state.roll, c.state.pitch, c.state.yaw) == (0.0, 0.0, 0.0)   # ATTITUDE no longer writes
     # The next IMU advances the clock.
     c._handle(_imu(time_usec=1_033_000))
     assert c.state.sim_time_ns == 1_033_000_000
+
+
+def test_odometry_drives_orientation_from_quaternion():
+    # The sim's ATTITUDE Euler has an INVERTED pitch sign; ODOMETRY.q is the canonical
+    # orientation. A nose-DOWN body->NED quaternion must decode to NEGATIVE pitch (aerospace
+    # 3-2-1), agreeing with the accel-gravity vector + the FPV view. Orientation, the raw
+    # quaternion, and the body rates all come from ODOMETRY (one self-consistent frame).
+    from scipy.spatial.transform import Rotation
+
+    c = MavlinkClient()
+    roll_cmd, pitch_cmd, yaw_cmd = 0.1, np.deg2rad(-17.8), 0.3   # nose-down pitch
+    x, y, z, w = Rotation.from_euler("ZYX", [yaw_cmd, pitch_cmd, roll_cmd]).as_quat()
+    c._handle(_odometry(q=[w, x, y, z], rollspeed=0.05, pitchspeed=-0.1, yawspeed=0.2))
+    assert c.state.pitch < 0.0                              # nose-down is negative (the sign we fixed)
+    assert abs(c.state.roll - roll_cmd) < 1e-6
+    assert abs(c.state.pitch - pitch_cmd) < 1e-6
+    assert abs(c.state.yaw - yaw_cmd) < 1e-6
+    np.testing.assert_allclose(c.state.orientation_ned_wxyz, [w, x, y, z], atol=1e-9)
+    np.testing.assert_allclose(c.state.angular_rate_body, [0.05, -0.1, 0.2], atol=1e-9)
 
 
 def test_sim_time_monotonic_under_interleaving():
@@ -166,9 +186,10 @@ def test_heartbeat_captures_backend_metadata():
 
 
 # -- sim-dialect additions: ODOMETRY / ENCAPSULATED_DATA (race + track) / COLLISION ---------
-def _odometry(x=5.0, y=6.0, z=-7.0, vx=1.0, vy=0.0, vz=-0.5, reset_counter=0):
+def _odometry(x=5.0, y=6.0, z=-7.0, vx=1.0, vy=0.0, vz=-0.5, reset_counter=0,
+              q=(1.0, 0.0, 0.0, 0.0), rollspeed=0.0, pitchspeed=0.0, yawspeed=0.0):
     m = SimpleNamespace(x=x, y=y, z=z, vx=vx, vy=vy, vz=vz,
-                        q=[1.0, 0.0, 0.0, 0.0], rollspeed=0.0, pitchspeed=0.0, yawspeed=0.0,
+                        q=list(q), rollspeed=rollspeed, pitchspeed=pitchspeed, yawspeed=yawspeed,
                         time_usec=123, reset_counter=reset_counter)
     m.get_type = lambda: "ODOMETRY"
     return m
