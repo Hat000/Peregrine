@@ -17,9 +17,9 @@ metadata:
 - Princeton OIT docs: search "Princeton Research Computing Adroit"
 
 **Role in this project (VQ2 ML training only):**
-- Cannot host the DCL simulator — Linux blocks it per spec sec 5.1.
-- Used for: training a YOLO-style gate detector for VQ2's harder course.
-- Workflow: collect frames on the Azure Windows VM during sim runs → upload to Adroit `/scratch` → train via Slurm jobs → download model weights → deploy on Azure VM for inference.
+- Cannot host the sim — Linux blocks it (sim is Windows-only). Sim host = ShadowPC (Azure + TensorDock both retired).
+- Used for: training the YOLO-pose gate detector (detector v2 shipped 2026-06-02).
+- Workflow: collect frames on the sim host (ShadowPC) during sim runs → upload to Adroit `/scratch/network/fl3689` → train via Slurm → pull weights (via the adroit-connector) → deploy on the sim host. Detail: [[project-detector-training-pipeline]].
 - All training is offline / asynchronous — no real-time control loop touches Adroit.
 
 **Access caveats to confirm:**

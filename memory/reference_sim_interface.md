@@ -43,7 +43,7 @@ The sim REPURPOSES `ENCAPSULATED_DATA` (discriminator = `data[0]`):
 The 5 must-verify items, RESOLVED LIVE:
 1. **Position+velocity = GIVEN, pristine ground-truth** (LOCAL_POSITION_NED 97 Hz + ODOMETRY 75 Hz; drone parks at origin, v=0; mag present). Baro FIELD present but VALUE=NaN (unusable) → take z from given position. Localization collapses for VQ1 — but KEEP vision→KF in-loop (walking-skeleton). VQ2 may turn position OFF → then z also vision-only.
 2. **Gate map: width=height=2.72 m = the OUTER square; inner opening ~1.5 m is what PnP uses — do NOT feed 2.72 to inner-corner PnP.** Full ordered map, 6 gates, deterministic course (capture once, reuse). Sample: g0~(-23.3,-0.4,0), g1(-46.9,-2.5,+5.1), g2(-74.6,+1.2,+13.7)… (descending/curving; NED +z=down). Saved to `handoff/.../track_map.json`. **Trigger (R4):** broadcast ONCE at race/level LOAD to clients ALREADY connected (single ~230 B chunk, packets=1, re-sent ~4×; HANDSHAKE then ENCAPSULATED_DATA data[0]==2). PROCEDURE: connect at the HOME PAGE (`wait_heartbeat=False`), THEN navigate home→waiting→Race. `scripts/capture_track_map.py` banks it.
-3. **Rates:** ATTITUDE/IMU 120, LOCAL_POS/ACTUATOR 97, ODOMETRY 75, HEARTBEAT 10, RACE_STATUS 4 Hz. **Video: true ~28.6 fps but the sim RE-SENDS each frame ~14× (~395/s) → DEDUP by frame_id** (TODO — not yet done). Command rate: 250 Hz is the sample's USED value, real max still unprobed.
+3. **Rates:** ATTITUDE/IMU 120, LOCAL_POS/ACTUATOR 97, ODOMETRY 75, HEARTBEAT 10, RACE_STATUS 4 Hz. **Video: true ~28.6 fps but the sim RE-SENDS each frame ~14× (~395/s) → DEDUP by frame_id (DONE, `jpeg_receiver`, commit 04a4bc8).** Command rate: 250 Hz is the sample's USED value, real max still unprobed.
 4. **SET_ACTUATOR_CONTROL_TARGET scaling still UNPROBED** (8 ch = [FL,FR,BL,BR,0,0,0,0]).
 5. **Arming = plain `MAV_CMD_COMPONENT_ARM_DISARM` p1=1** — ACCEPTED in 83 ms, NO force, NO OFFBOARD/GUIDED switch, NO pre-arm setpoint stream. TIMESYNC is client-initiated (`timesync_send` ts1=0 @10 Hz; sim DOES respond).
 
@@ -56,6 +56,6 @@ The 5 must-verify items, RESOLVED LIVE:
 - **R8 sim-reset (MAV_CMD 31000) still MURKY** — did NOT visibly reset race state (started stayed True), did NOT re-broadcast the map.
 
 ### Probes added (committed, `scripts/`): `capture_track_map.py` (connect-at-home → saves map JSON; RUN to bank), `timesync_probe.py`, `gatemap_probe.py`, `control_mode_probe.py` (patched: climb from position.z since baro NaN).
-### Apply-before-vision/control TODOs: jpeg dedup by frame_id · re-test pos/vel in ANGLE mode · probe real max setpoint rate · `innerloop_step` system-ID (needs a running race).
+### Apply-before-vision/control TODOs: ✅ jpeg dedup by frame_id (DONE, 04a4bc8) · re-test pos/vel in ANGLE mode · probe real max setpoint rate · SET_ACTUATOR_CONTROL_TARGET scaling · `innerloop_step` system-ID (needs a running race).
 
 Runbook: `docs/first_contact.md`. Related: [[project-master-plan]], [[reference-competition-materials]], [[project-detector-training-pipeline]], [[project-red-team-pass-2]] (deferred ESKF/delayed-vision triggers).
