@@ -37,6 +37,14 @@ _WORLD_UP = np.array([0.0, 0.0, -1.0])      # NED up
 _IDENTITY_QUAT_WXYZ = np.array([1.0, 0.0, 0.0, 0.0])
 
 
+def _clip_norm(v: np.ndarray, max_norm: float) -> np.ndarray:
+    """Scale ``v`` down so its norm is at most ``max_norm`` (direction preserved)."""
+    n = float(np.linalg.norm(v))
+    if n > max_norm > 0.0:
+        return v * (max_norm / n)
+    return v
+
+
 @dataclass
 class Controller:
     """Setpoint + NavState -> ControlCommand. See module docstring for the two modes."""
@@ -45,9 +53,18 @@ class Controller:
     # Attitude-path tracking gains (the sim stabilizer owns this loop in POSITION/VELOCITY).
     kp_pos: float = 1.5            # 1/s^2, position-error -> accel
     kd_vel: float = 2.0           # 1/s,   velocity-error -> accel
-    # Plant/thrust model for the attitude path — PLACEHOLDER, system-ID at first contact (R2).
-    hover_thrust: float = 0.5      # normalized throttle that holds a hover
+    hover_thrust: float = 0.5      # normalized throttle that holds a hover (innerloop_step: ~0.489)
     max_tilt_rad: float = np.deg2rad(45.0)
+    # Measured throttle map (innerloop_step): up-accel ~ slope*(thrust - hover), so
+    # thrust = hover + (|f| - g)/slope. More accurate than the |f|/g placeholder, which
+    # over-thrusts ~30% on climbs/maneuvers. None => fall back to the placeholder.
+    thrust_slope_mps2: float | None = None
+    # Safety bounds for the attitude path (the position/velocity easy-mode runs away on this
+    # sim, so the geometric attitude law is the floor and must be tamed for far gate carrots):
+    # cap the demanded acceleration (=> bounds tilt) and clamp the position-error fed to kp_pos
+    # (=> bounded pure-pursuit, so a 24 m-away carrot doesn't saturate to 45 deg). None => off.
+    max_accel_mps2: float | None = None
+    max_pos_error_m: float | None = None
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -79,11 +96,16 @@ class Controller:
         if sp.accel_ned is not None:
             a = a + np.asarray(sp.accel_ned, dtype=np.float64)
         if sp.position_ned is not None:
-            a = a + self.kp_pos * (np.asarray(sp.position_ned, dtype=np.float64) - nav.position_ned)
+            err = np.asarray(sp.position_ned, dtype=np.float64) - nav.position_ned
+            if self.max_pos_error_m is not None:               # bounded pure-pursuit: a far gate
+                err = _clip_norm(err, self.max_pos_error_m)     # carrot can't saturate the tilt
+            a = a + self.kp_pos * err
         if sp.velocity_ned is not None:
             a = a + self.kd_vel * (np.asarray(sp.velocity_ned, dtype=np.float64) - nav.velocity_ned)
         elif sp.position_ned is not None:
             a = a - self.kd_vel * np.asarray(nav.velocity_ned, dtype=np.float64)  # damp when only position is given
+        if self.max_accel_mps2 is not None:                     # cap the maneuver accel -> bounds tilt
+            a = _clip_norm(a, self.max_accel_mps2)
         return a
 
     def _attitude_command(self, nav: NavState, sp: Setpoint) -> ControlCommand:
@@ -153,7 +175,12 @@ class Controller:
         cos_tilt = float(thrust_dir @ _WORLD_UP)     # cos(actual tilt) after any clamp
         if f_up > 1e-9 and cos_tilt > 1e-6:
             f_mag = f_up / cos_tilt
-        # PLACEHOLDER throttle scale (linear, anchored so |f|=g -> hover); the real throttle->
-        # thrust curve (TWR, curvature, lag) is the innerloop_step system-ID at first contact (R2).
-        thrust = float(np.clip(self.hover_thrust * f_mag / _G, 0.0, 1.0))
-        return q_wxyz, thrust
+        if self.thrust_slope_mps2 is not None and self.thrust_slope_mps2 > 0.0:
+            # Measured affine throttle map (innerloop_step): |f| = g at hover, slope m/s^2 per
+            # unit thrust => thrust = hover + (|f| - g)/slope. Passes through (g, hover) like the
+            # placeholder but uses the real slope (the placeholder's |f|/g over-thrusts ~30%).
+            thrust = self.hover_thrust + (f_mag - _G) / self.thrust_slope_mps2
+        else:
+            # PLACEHOLDER throttle scale (linear, anchored so |f|=g -> hover) until system-ID.
+            thrust = self.hover_thrust * f_mag / _G
+        return q_wxyz, float(np.clip(thrust, 0.0, 1.0))

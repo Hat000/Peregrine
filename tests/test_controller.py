@@ -148,3 +148,37 @@ def test_horizontal_thrust_aligned_with_heading_no_nan():
     assert np.all(np.isfinite(q))                            # no NaNs from the zero cross product
     assert np.linalg.norm(q) == pytest.approx(1.0)          # a well-formed unit quaternion
     assert np.all(np.isfinite(_body_up_world(cmd)))         # ...and a usable thrust direction
+
+
+# -- measured throttle map + safety bounds (innerloop_step 2026-06-02) ------
+def test_measured_thrust_slope_affine_map():
+    # innerloop_step: hover_thrust=0.489, slope=25.9 (m/s^2)/thrust. A 2 m/s^2 climb demand
+    # => thrust = hover + a_up/slope. The placeholder |f|/g would over-thrust.
+    c = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.489, thrust_slope_mps2=25.9)
+    hover = c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.zeros(3)))
+    assert hover.thrust == pytest.approx(0.489, abs=1e-6)            # hover unchanged
+    climb = c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.array([0.0, 0.0, -2.0])))
+    assert climb.thrust == pytest.approx(0.489 + 2.0 / 25.9, abs=1e-3)
+    placeholder = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.489).command(
+        NavState(sim_time_ns=0), Setpoint(accel_ned=np.array([0.0, 0.0, -2.0])))
+    assert placeholder.thrust > climb.thrust                        # placeholder over-thrusts
+
+
+def test_max_accel_caps_tilt():
+    # A huge position error must not saturate to the tilt clamp: with max_accel 3 m/s^2 the
+    # realized lean corresponds to a 3 m/s^2 horizontal demand (atan(3/g)~17 deg), NOT 45 deg.
+    c = Controller(mode=ControlMode.ATTITUDE, kp_pos=1.5, max_accel_mps2=3.0)
+    nav = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    up = _body_up_world(c.command(nav, Setpoint(position_ned=np.array([1000.0, 0.0, 0.0]), yaw=0.0)))
+    assert up[0] / (-up[2]) == pytest.approx(3.0 / _G, rel=1e-3)     # capped to 3, not clamped to 45 deg
+
+
+def test_max_pos_error_bounds_pursuit():
+    # The position-error clamp makes a far carrot and a near-but-still-far carrot demand the SAME
+    # (bounded) acceleration -> a 24 m gate carrot can't drive a violent tilt.
+    c = Controller(mode=ControlMode.ATTITUDE, kp_pos=1.0, max_pos_error_m=2.0)
+    nav = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    far = _body_up_world(c.command(nav, Setpoint(position_ned=np.array([100.0, 0.0, 0.0]), yaw=0.0)))
+    near = _body_up_world(c.command(nav, Setpoint(position_ned=np.array([10.0, 0.0, 0.0]), yaw=0.0)))
+    np.testing.assert_allclose(far, near, atol=1e-9)                 # both clamped to 2 m error
+    assert far[0] / (-far[2]) == pytest.approx(2.0 / _G, rel=1e-3)   # demand = kp*2 = 2 m/s^2
