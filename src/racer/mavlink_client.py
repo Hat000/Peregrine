@@ -3,8 +3,9 @@
 Maintains a heartbeat, parses inbound telemetry into an immutable :class:`DroneState`
 snapshot, and translates a :class:`ControlCommand` into the right control message +
 type_mask. Message coverage was confirmed against the official ``PyAIPilotExample`` client
-shipped inside the sim zip: HEARTBEAT, ATTITUDE, HIGHRES_IMU, LOCAL_POSITION_NED, ODOMETRY
-(pose + reset_counter), TIMESYNC, COMMAND_ACK, STATUSTEXT, COLLISION, ACTUATOR_OUTPUT_STATUS,
+shipped inside the sim zip: HEARTBEAT, ATTITUDE (liveness only — its Euler pitch sign is
+inverted), HIGHRES_IMU, LOCAL_POSITION_NED, ODOMETRY (canonical pose + orientation quaternion
++ reset_counter), TIMESYNC, COMMAND_ACK, STATUSTEXT, COLLISION, ACTUATOR_OUTPUT_STATUS,
 and the sim's *repurposed* ENCAPSULATED_DATA carrying RACE_STATUS (active gate + race timing)
 and a chunked TRACK_INFO gate map (announced via DATA_TRANSMISSION_HANDSHAKE).
 
@@ -26,6 +27,7 @@ import numpy as np
 from pymavlink import mavutil
 
 from racer.contracts import ControlCommand, ControlMode, DroneState
+from racer.frames import euler_from_quat_wxyz
 
 # SET_POSITION_TARGET_LOCAL_NED type_mask bits (1 = ignore the corresponding input).
 _POS_IGNORE_PX = 1 << 0
@@ -197,24 +199,15 @@ class MavlinkClient:
         t = msg.get_type()
         recv = time.monotonic_ns()
         if t == "ATTITUDE":
-            # CLOCK ISOLATION [review 2A]: ATTITUDE.time_boot_ms and HIGHRES_IMU.time_usec
-            # run on DIFFERENT epochs. If both wrote sim_time_ns, it would oscillate as the
-            # streams interleave, and any dt computed from it would flip negative/huge and
-            # diverge the estimator. So HIGHRES_IMU is the SOLE driver of sim_time_ns (its
-            # high-rate usec clock is our master timeline); ATTITUDE updates orientation
-            # only. recv_monotonic_ns still advances for liveness/latency. The attitude
-            # then carries the most-recent IMU sim-time (sub-IMU-period stale, monotonic).
-            # TODO(clock): reconcile the two epochs via TIMESYNC, then fuse a single stamp.
-            self.state = replace(
-                self.state,
-                recv_monotonic_ns=recv,
-                roll=msg.roll,
-                pitch=msg.pitch,
-                yaw=msg.yaw,
-                angular_rate_body=np.array(
-                    [msg.rollspeed, msg.pitchspeed, msg.yawspeed], dtype=np.float64
-                ),
-            )
+            # ORIENTATION RETIRED [first-contact 2026-06-02]: the sim's ATTITUDE Euler is
+            # sign-inconsistent — its pitch is inverted vs the ODOMETRY quaternion, the
+            # accel-gravity vector, AND the FPV view. So orientation + body rate now come
+            # SOLELY from ODOMETRY (one self-consistent frame; see that branch). ATTITUDE is
+            # kept only for liveness/rate-stats (recv_monotonic_ns).
+            # CLOCK ISOLATION [review 2A]: ATTITUDE.time_boot_ms is a DIFFERENT epoch than
+            # HIGHRES_IMU.time_usec, so it must never drive sim_time_ns (that made the timeline
+            # oscillate and diverged the estimator). HIGHRES_IMU is the sole clock driver.
+            self.state = replace(self.state, recv_monotonic_ns=recv)
         elif t == "HIGHRES_IMU":
             # Sole driver of sim_time_ns — the master sim timeline (see ATTITUDE above).
             self.state = replace(
@@ -235,14 +228,26 @@ class MavlinkClient:
                 velocity_ned=np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64),
             )
         elif t == "ODOMETRY":
-            # Richer pose source than LOCAL_POSITION_NED: full pose + a reset_counter that
-            # ticks when the sim epoch restarts. Capture pos/vel + the counter; leave the
-            # clock to HIGHRES_IMU (isolation) and orientation to ATTITUDE (canonical Euler).
+            # The CANONICAL pose+orientation source: full pose (pos/vel + quaternion) plus a
+            # reset_counter that ticks when the sim epoch restarts. Orientation comes from the
+            # quaternion (q = w,x,y,z, body FRD -> world NED) — NOT the sign-inverted ATTITUDE
+            # Euler — and roll/pitch/yaw are DERIVED from it in the one convention the
+            # controller commands in (frames). Body rate is taken here too, so orientation and
+            # its derivative share one self-consistent frame. Clock stays with HIGHRES_IMU.
+            q = np.array([float(v) for v in msg.q], dtype=np.float64)
+            roll, pitch, yaw = euler_from_quat_wxyz(q)
             self.state = replace(
                 self.state,
                 recv_monotonic_ns=recv,
                 position_ned=np.array([msg.x, msg.y, msg.z], dtype=np.float64),
                 velocity_ned=np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64),
+                orientation_ned_wxyz=q,
+                roll=roll,
+                pitch=pitch,
+                yaw=yaw,
+                angular_rate_body=np.array(
+                    [msg.rollspeed, msg.pitchspeed, msg.yawspeed], dtype=np.float64
+                ),
                 reset_counter=int(getattr(msg, "reset_counter", 0)),
             )
         elif t == "HEARTBEAT":

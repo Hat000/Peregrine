@@ -1,12 +1,34 @@
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from racer.frames import (
     CAMERA_PITCH_RAD,
     R_camera_from_body,
     R_world_from_body,
+    euler_from_quat_wxyz,
     project_camera_point,
     world_point_in_camera,
 )
+
+
+def test_euler_from_quat_wxyz_inverts_R_world_from_body():
+    # euler_from_quat_wxyz must be the exact inverse of R_world_from_body's 'ZYX' convention,
+    # so the controller's commanded attitude (_euler_to_wxyz) and the ODOMETRY feedback share
+    # ONE convention. Round-trips for several attitudes incl. a nose-down (negative pitch).
+    for roll, pitch, yaw in [(0.1, -0.3, 1.2), (-0.2, 0.4, -2.0), (0.0, np.deg2rad(-17.8), 0.0)]:
+        x, y, z, w = Rotation.from_euler("ZYX", [yaw, pitch, roll]).as_quat()
+        r, p, yw = euler_from_quat_wxyz([w, x, y, z])
+        assert abs(r - roll) < 1e-9
+        assert abs(p - pitch) < 1e-9
+        assert abs(yw - yaw) < 1e-9
+        np.testing.assert_allclose(
+            R_world_from_body(r, p, yw), Rotation.from_quat([x, y, z, w]).as_matrix(), atol=1e-9
+        )
+
+
+def test_euler_from_quat_wxyz_degenerate_returns_zeros():
+    # A zero-norm quaternion (an unpopulated field) must return zeros, not raise.
+    assert euler_from_quat_wxyz([0.0, 0.0, 0.0, 0.0]) == (0.0, 0.0, 0.0)
 
 
 def test_body_forward_projects_below_principal_point():
