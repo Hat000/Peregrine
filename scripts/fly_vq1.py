@@ -130,8 +130,10 @@ def main() -> int:
     ap.add_argument("--thrust-slope", type=float, default=None, help="attitude: measured up-accel/thrust (innerloop_step ~25.9)")
     ap.add_argument("--max-accel", type=float, default=None, help="attitude: cap |desired accel| m/s^2 (bounds tilt; e.g. 3)")
     ap.add_argument("--max-pos-error", type=float, default=None, help="attitude: clamp position-error (m) fed to kp_pos (e.g. 2)")
-    ap.add_argument("--kp-pos", type=float, default=1.5, help="attitude: position gain")
-    ap.add_argument("--kd-vel", type=float, default=2.0, help="attitude: velocity gain")
+    ap.add_argument("--kp-pos", type=float, default=1.5, help="attitude/CTBR: position gain")
+    ap.add_argument("--kd-vel", type=float, default=2.0, help="attitude/CTBR: velocity gain")
+    ap.add_argument("--kp-att", type=float, default=4.0, help="CTBR: attitude-error -> body-rate gain")
+    ap.add_argument("--max-body-rate", type=float, default=2.0, help="CTBR: body-rate clamp (rad/s)")
     ap.add_argument("--max-gates", type=int, default=None, help="fly only the first N gates (staged bring-up)")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
@@ -223,7 +225,8 @@ def main() -> int:
             planner=ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead),
             controller=Controller(mode=_MODE[args.mode], hover_thrust=args.hover_thrust,
                                    thrust_slope_mps2=args.thrust_slope, max_accel_mps2=args.max_accel,
-                                   max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel),
+                                   max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel,
+                                   kp_att=args.kp_att, max_body_rate_rps=args.max_body_rate),
             config=MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
                                  gate_pass_radius_m=args.gate_radius),
         )

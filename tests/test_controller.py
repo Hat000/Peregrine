@@ -120,10 +120,50 @@ def test_freefall_setpoint_gives_zero_thrust():
     assert Rotation.from_quat([*cmd.attitude_quat_wxyz[1:], cmd.attitude_quat_wxyz[0]]).magnitude() < 1e-6
 
 
-def test_body_rate_mode_not_implemented_yet():
-    c = Controller(mode=ControlMode.BODY_RATE)
-    with pytest.raises(NotImplementedError):
-        c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.zeros(3)))
+# -- CTBR / BODY_RATE (the ACRO control path, 2026-06-02) ------------------
+def _R_wb_from_nav(nav):
+    from racer.frames import R_world_from_body
+
+    return R_world_from_body(nav.roll, nav.pitch, nav.yaw)
+
+
+def test_body_rate_hover_is_zero_rate():
+    # Already level + at the desired heading with a zero-accel setpoint -> no rotation needed.
+    c = Controller(mode=ControlMode.BODY_RATE, hover_thrust=0.489)
+    cmd = c.command(NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0),
+                    Setpoint(accel_ned=np.zeros(3), yaw=0.0))
+    assert cmd.mode is ControlMode.BODY_RATE
+    np.testing.assert_allclose(cmd.body_rate, np.zeros(3), atol=1e-9)
+    assert cmd.thrust == pytest.approx(0.489)
+
+
+def test_body_rate_reduces_attitude_error():
+    # A tilted/yawed drone commanded to level: integrating the commanded body-rate forward must
+    # SHRINK the geodesic attitude error (the definitive sign/frame check for the inner loop).
+    c = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0)
+    nav = NavState(sim_time_ns=0, roll=0.1, pitch=0.3, yaw=0.2)
+    cmd = c.command(nav, Setpoint(accel_ned=np.zeros(3), yaw=0.0))   # desired = level, yaw 0 (R_des=I)
+    R_cur = _R_wb_from_nav(nav)
+    R_next = R_cur @ Rotation.from_rotvec(cmd.body_rate * 0.02).as_matrix()  # body-rate integration
+    before = Rotation.from_matrix(R_cur).magnitude()
+    after = Rotation.from_matrix(R_next).magnitude()
+    assert after < before                                            # error shrank
+
+
+def test_body_rate_thrust_matches_attitude_path():
+    # CTBR reuses the same desired attitude + collective thrust as the ATTITUDE law.
+    sp = Setpoint(accel_ned=np.array([2.0, -1.0, -1.0]), yaw=0.3)
+    nav = NavState(sim_time_ns=0, roll=0.05, pitch=-0.1, yaw=0.3)
+    br = Controller(mode=ControlMode.BODY_RATE, hover_thrust=0.489, thrust_slope_mps2=25.9)
+    at = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.489, thrust_slope_mps2=25.9)
+    assert br.command(nav, sp).thrust == pytest.approx(at.command(nav, sp).thrust)
+
+
+def test_body_rate_is_clamped():
+    # A large heading error must not demand an unbounded rate.
+    c = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0, max_body_rate_rps=2.0)
+    cmd = c.command(NavState(sim_time_ns=0, yaw=0.0), Setpoint(accel_ned=np.zeros(3), yaw=3.0))
+    assert np.linalg.norm(cmd.body_rate) == pytest.approx(2.0, rel=1e-6)
 
 
 # -- singularity guards [red-team 2026-05-30] ------------------------------

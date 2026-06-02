@@ -30,6 +30,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from racer.contracts import ControlCommand, ControlMode, NavState, Setpoint
+from racer.frames import R_world_from_body
 
 _G = 9.80665
 _GRAVITY_NED = np.array([0.0, 0.0, _G])     # NED: gravity points +z (down)
@@ -65,6 +66,13 @@ class Controller:
     # (=> bounded pure-pursuit, so a 24 m-away carrot doesn't saturate to 45 deg). None => off.
     max_accel_mps2: float | None = None
     max_pos_error_m: float | None = None
+    # CTBR (BODY_RATE) inner loop -- the control path for ACRO. This sim stays in ACRO: the
+    # attitude-quat setpoint does NOT switch it to ANGLE, and position/velocity run away (first
+    # contact 2026-06-02). A proportional attitude->body-rate law: omega = kp_att *
+    # axis-angle(R_cur^T R_des), which the sim's fast (~48 ms) rate loop tracks. Same desired
+    # attitude + thrust as the ATTITUDE path; only the final actuation differs.
+    kp_att: float = 4.0              # 1/s, attitude-error -> commanded body-rate
+    max_body_rate_rps: float = 2.0   # rad/s, clamp on the commanded body rate (safety)
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -72,8 +80,9 @@ class Controller:
             return self._setpoint_passthrough(setpoint)
         if self.mode == ControlMode.ATTITUDE:
             return self._attitude_command(nav, setpoint)
-        # BODY_RATE (true CTBR) needs the inner-loop rate model — the documented speed upgrade.
-        raise NotImplementedError(f"controller mode {self.mode!r} not implemented yet (CTBR is future work)")
+        if self.mode == ControlMode.BODY_RATE:
+            return self._body_rate_command(nav, setpoint)
+        raise ValueError(f"unknown control mode: {self.mode!r}")
 
     # -- floor: lean on the sim's stabilized controller ---------------------
     def _setpoint_passthrough(self, sp: Setpoint) -> ControlCommand:
@@ -116,6 +125,35 @@ class Controller:
             mode=ControlMode.ATTITUDE,
             sim_time_ns=sp.sim_time_ns,
             attitude_quat_wxyz=q_wxyz,
+            thrust=thrust,
+        )
+
+    # -- CTBR: body-rate + thrust (the ACRO control path) -------------------
+    def _body_rate_command(self, nav: NavState, sp: Setpoint) -> ControlCommand:
+        """Geometric attitude->body-rate law for ACRO (collective-thrust + body-rate).
+
+        Same desired attitude + collective thrust as the ATTITUDE path, but instead of sending
+        the attitude (which this sim ignores -- it stays in ACRO), command the BODY RATE that
+        rotates the current attitude toward the desired one. With R_cur, R_des = world<-body
+        rotations, the error rotation in the body frame is ``R_e = R_cur^T R_des``; its axis-angle
+        ``rotvec(R_e)`` is the small-rotation that aligns them, so ``omega = kp_att * rotvec(R_e)``
+        drives the error to zero (the sim's fast rate loop tracks omega). Thrust rides along the
+        current body -z; a_des is bounded (max_accel_mps2) so the attitude error -- hence the
+        transient thrust-mispointing -- stays small.
+        """
+        a_des = self._desired_acceleration(nav, sp)
+        yaw = sp.yaw if sp.yaw is not None else nav.yaw
+        q_des_wxyz, thrust = self._accel_to_attitude(a_des, yaw)
+        R_des = Rotation.from_quat(
+            [q_des_wxyz[1], q_des_wxyz[2], q_des_wxyz[3], q_des_wxyz[0]]
+        ).as_matrix()
+        R_cur = R_world_from_body(nav.roll, nav.pitch, nav.yaw)
+        rotvec = Rotation.from_matrix(R_cur.T @ R_des).as_rotvec()   # body-frame axis-angle error
+        omega = _clip_norm(self.kp_att * rotvec, self.max_body_rate_rps)
+        return ControlCommand(
+            mode=ControlMode.BODY_RATE,
+            sim_time_ns=sp.sim_time_ns,
+            body_rate=omega,
             thrust=thrust,
         )
 
