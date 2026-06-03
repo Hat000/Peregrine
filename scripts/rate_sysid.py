@@ -102,14 +102,15 @@ def main() -> int:
     ap.add_argument("--hold-s", type=float, default=1.0, help="re-level hold between steps")
     ap.add_argument("--init-hold-s", type=float, default=2.0, help="initial level-hold (kills the resting tilt)")
     # hover sweep
-    ap.add_argument("--thrust-levels", default="0.42,0.45,0.48,0.51", help="hover mode: thrust sweep")
-    ap.add_argument("--dwell-s", type=float, default=1.2, help="hover mode: hold per thrust level")
+    ap.add_argument("--thrust-levels", default="0.22,0.25,0.28", help="hover mode: thrust sweep (~hover 0.25)")
+    ap.add_argument("--dwell-s", type=float, default=0.9, help="hover mode: hold per thrust level")
     # control
-    ap.add_argument("--thrust", type=float, default=0.46, help="collective thrust during rate steps + holds")
-    ap.add_argument("--kp-hold", type=float, default=2.0, help="level-hold attitude gain")
-    ap.add_argument("--kd-hold", type=float, default=1.5, help="level-hold rate damping (ratio ~0.5 at ff-gain)")
+    ap.add_argument("--thrust", type=float, default=0.25, help="collective thrust during rate steps + holds (~hover)")
+    ap.add_argument("--kp-hold", type=float, default=1.0, help="level-hold attitude gain (low BW = delay-tolerant)")
+    ap.add_argument("--kd-hold", type=float, default=1.0, help="level-hold rate damping")
     ap.add_argument("--ff-gain", type=float, default=2.7, help="divide hold cmd by the measured rate scaling (~2.7x)")
-    ap.add_argument("--max-hold-rate", type=float, default=2.0, help="clamp on the level-hold body rate")
+    ap.add_argument("--rate-ema", type=float, default=0.5, help="EMA weight on the finite-diff rate (lower=smoother)")
+    ap.add_argument("--max-hold-rate", type=float, default=1.5, help="clamp on the level-hold body rate")
     ap.add_argument("--rate-sign", default="-1,1,-1", help="sim body-rate sign for the HOLD (measured)")
     ap.add_argument("--rate", type=float, default=50.0, help="control/log loop Hz")
     # safety bounds / abort
@@ -235,8 +236,9 @@ def main() -> int:
                 client.pump()
                 s = client.state
                 if s.orientation_ned_wxyz is not None and int(s.sim_time_ns) > prev_t and prev_q is not None:
-                    trusted_rate = body_rate_from_quats(prev_q, s.orientation_ned_wxyz,
-                                                        (int(s.sim_time_ns) - prev_t) / 1e9)
+                    new_rate = body_rate_from_quats(prev_q, s.orientation_ned_wxyz,
+                                                    (int(s.sim_time_ns) - prev_t) / 1e9)
+                    trusted_rate = args.rate_ema * new_rate + (1.0 - args.rate_ema) * trusted_rate
                     prev_q = np.asarray(s.orientation_ned_wxyz, dtype=np.float64).copy()
                     prev_t = int(s.sim_time_ns)
                 omega = level_hold_body_rate(
