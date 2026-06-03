@@ -90,8 +90,83 @@ The sim is up but at the HOME PAGE (physics PAUSED: `sim_t=0`, no pos/vel, no ma
   (position/velocity easy-mode if honoured, else the geometric attitude law with a calibrated
   hover_thrust). Implementing + system-ID'ing CTBR is the speed lever after a banked VQ1.
 
+## LIVE FLY SESSION (2026-06-02/03) — control findings (the meat; hard-won)
+Flew ~10 live runs. Navigation + lifecycle are SOLVED; control is partway. Every finding below
+is from the real sim, cross-checked against the shipped `PyAIPilotExample` (the wire authority).
+
+**1. Position/velocity setpoints RUN AWAY — the sim is ACRO-only (Betaflight-style).**
+`control_mode_probe` (attitude,velocity,position): a velocity cmd of −0.5 m/s -> +44.5 m climb; a
+position cmd z=−1 -> +44.9 m. NOT a tracked response — a runaway (the probe's "RESPONDED" verdict is
+a false positive of its crude climb>0.2 m threshold). The USER confirmed via the sim UI: the drone
+**never leaves ACRO**, and resets don't change it. So position/velocity "easy-mode" is DEAD. The
+reference client agrees: its only working control paths are CTBR (`SET_ATTITUDE_TARGET` with
+`ATTITUDE_IGNORE` = body-rate) and velocity (`SET_POSITION_TARGET`); there is **no attitude-quat /
+ANGLE path**. => the VQ1 control path is **CTBR (body-rate + collective thrust)**, as the durable
+directive always said.
+
+**2. The race COUNTDOWN — settled (was the early-start DQ).** Clicking Race sets `started=True` AND
+`race_start_boot_time_ms = sim_boot_time_ms + ~2.8 s` (a FUTURE time = the GO). The countdown is
+`race_start_boot − sim_boot` ticking to 0. **Controlling before GO = DQ.** `fly_vq1._wait_for_race`
+now waits until `sim_boot ≥ race_start_boot + start_margin`, only accepts a FRESH countdown (GO within
+the last ~2 s, not a stale race whose GO was minutes ago), and REFUSES to fly unless the drone is at
+the origin (the two traps that bit early runs: a stale race + a corrupted 164 m / −8273 m start from
+the earlier pos/vel runaways which the sim does NOT auto-reset). Tool: `scripts/race_observe.py`
+(read-only) captured the mechanics. Reset protocol: home page clears the race + resets the drone to
+(0,0,0) at the resting pose (pitch −17.8°, yaw −180°, facing down-course); navigating in re-broadcasts
+the map; the drone HOLDS at the origin through the countdown AND after GO (no fall) so there's time to
+take over. The drone is auto-armed at race start.
+
+**3. 🚩 BODY-RATE SIGN: the sim INVERTS roll + yaw rate commands (pitch is correct).** THE
+breakthrough. Found by OFFLINE command-vs-response replay (`scripts/analyze_run.py` extracts the
+attitude/position trajectory from a run's tlog; then re-run the planner+controller on the recorded
+states and compare commanded vs actual ODOMETRY rates): at the divergence onset my commanded roll/yaw
+were small + POSITIVE but the drone's actual rates were NEGATIVE — a +roll/+yaw command rotates the
+drone the OTHER way, so a pure-P loop has POSITIVE feedback and spirals/tumbles inverted (roll→±180°).
+Pitch leveled fine because its sign is right. Fix: `Controller.body_rate_sign` (roll,pitch,yaw) maps
+the trusted-FRD geometric command to the sim's actuation convention; **measured = [−1, 1, −1]**
+(fly_vq1 default). Cousin of the known ATTITUDE pitch-sign inversion. After this, roll+yaw are stable
+and the drone flies the RIGHT direction (one run reached x=−19 of the gate-0 x=−23 before other axes
+diverged).
+
+**4. RATE LOOP is VERY underdamped — the REMAINING blocker.** The drone's measured body rates
+overshoot my commanded (clamped) rates by ~2.7× (commanded ≤1.0–2.0 rad/s, ODOMETRY shows 4–6 rad/s),
+and `innerloop_step`'s attitude step showed ~90% overshoot. So a pure-P attitude→rate law oscillates:
+with the sign fixed, pitch oscillates ±25°/±4 rad/s (and that oscillation PUMPS the drone upward — the
+climb); give altitude/lateral more authority (`--max-accel`) and the lateral (roll→y) axis re-excites
+and diverges. It's whack-a-mole because the inner rate loop is uncharacterized. Added `kd_att` rate
+damping (`omega −= kd_att·measured_rate`) — helps but heavy damping then prevents the drone pitching
+to fly forward. **This needs a clean rate-loop sysid, not more blind gain-tuning.**
+
+**5. hover_thrust is MIS-CALIBRATED.** `innerloop_step` measured 0.489 — but in ACRO the level
+attitude command it sent was IGNORED, so the sweep happened at the −17.8° resting tilt. The true LEVEL
+hover is lower (~0.46), and even there the drone climbs, so it's still uncertain. Needs a clean level
+hover measurement (command zero body-rate at a held level attitude + sweep thrust).
+
+### THE unlock (do this next, before more flying)
+A clean **body-rate STEP sysid** on a running race (post-GO): command a fixed small rate on ONE axis
+(e.g. +0.3 rad/s roll, then pitch, then yaw) for ~1 s with brief level-holds between, and measure the
+STEADY actual rate (ODOMETRY) + the response shape. That gives (a) the per-axis sign (confirm
+[−1,1,−1]), (b) the rate SCALING (is the ~2.7× a steady gain or a transient overshoot?), and (c) the
+damping. Then EITHER feedforward the scaling (so my commanded rate matches the sim's actual) OR design
+a properly damped attitude controller — and the existing CTBR + sign fix should fly. Pair with a level
+hover-thrust sweep. The `analyze_run.py` replay makes all of this offline-checkable from one recording.
+
+### Recordings (data/runs/, gitignored) — the progression
+`*_ctbr_gate0` (tumble, pre-sign-fix) · `*_ctbr_signfix` (roll/yaw FIXED, pitch oscillates + climbs) ·
+`*_ctbr_damped` / `*_ctbr_alt` (altitude-authority experiments) · `innerloop_20260602_153048.json`
+(hover/attitude sysid). These ARE the rate-loop + perception data — feed the rate sysid + the RL twin.
+
 ## Next levers (in order)
-1. Land weights + `ultralytics` -> `--vision` -> confirm vision->KF live (watch `vfix`/`vrej`).
-2. `innerloop_step` -> calibrate `hover_thrust` -> attitude mode (then CTBR).
-3. Build the BODY_RATE (CTBR) controller law for VQ2 speed.
+1. **Body-rate STEP sysid** (above) -> rate scaling/sign/damping -> a matched CTBR controller -> a
+   stable hover -> gate 0 -> full VQ1. (THE current blocker; everything else is ready behind it.)
+2. Clean LEVEL hover-thrust sweep (retire the tilted innerloop_step value).
+3. Land weights + `ultralytics` (weights staged at `models/`; torch NOT installed) -> `--vision` ->
+   confirm vision->KF live (watch `vfix`/`vrej`).
 4. Cross-check the sim gate quaternion against the geometry-derived through-direction.
+
+## Code state (all committed + pushed, branch red-team-tier-a, 236 tests green)
+navigator + tests (58d3bc7) · fly_vq1 (0bf1936) · handoff (16f6594) · controller bounds
+(0a17c28) · CTBR (8b46b67) · countdown + race_observe (263a309) · CTBR rate damping + analyze_run
+(2fdfe96) · body_rate_sign (c73dd0a). New scripts: `fly_vq1.py`, `race_observe.py`, `analyze_run.py`.
+Controller knobs for THIS sim: `body_rate_sign=[-1,1,-1]`, `kp_att`/`kd_att`/`max_body_rate_rps`,
+`thrust_slope_mps2`, `max_accel_mps2`, `max_pos_error_m`, `hover_thrust`.
