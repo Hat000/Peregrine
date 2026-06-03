@@ -166,6 +166,17 @@ def test_body_rate_is_clamped():
     assert np.linalg.norm(cmd.body_rate) == pytest.approx(2.0, rel=1e-6)
 
 
+def test_body_rate_sign_maps_to_sim_convention():
+    # This sim inverts roll+yaw body-rate commands (first contact). The body_rate_sign
+    # calibration flips them on output; identity (default) leaves the pure law unchanged.
+    nav = NavState(sim_time_ns=0, roll=0.1, pitch=0.3, yaw=0.2)
+    sp = Setpoint(accel_ned=np.array([1.0, -0.5, 0.0]), yaw=0.0)
+    base = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0).command(nav, sp).body_rate
+    flipped = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0,
+                         body_rate_sign=np.array([-1.0, 1.0, -1.0])).command(nav, sp).body_rate
+    np.testing.assert_allclose(flipped, base * np.array([-1.0, 1.0, -1.0]))
+
+
 # -- singularity guards [red-team 2026-05-30] ------------------------------
 def test_straight_down_accel_recovers_upright_not_inverted():
     # A desired accel pointing straight down past gravity makes the required thrust point

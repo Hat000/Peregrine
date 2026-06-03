@@ -24,7 +24,7 @@ and tested; only the thrust MAGNITUDE awaits system-ID.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -77,6 +77,13 @@ class Controller:
                                      # ACRO rate loop is very underdamped (measured rates overshoot the
                                      # command ~2.7x -> a pure-P attitude loop tumbles), so subtract the
                                      # measured body rate to curb the overshoot. 0 = off (legacy).
+    # Per-axis sign of the body-rate COMMAND the sim expects, in (roll, pitch, yaw). The pure
+    # geometric law above is computed in trusted FRD; this maps it to the sim's actuation
+    # convention. MEASURED at first contact (2026-06-02, offline command-vs-response replay):
+    # this sim INVERTS roll + yaw body-rate commands (pitch is correct) -- a +roll/+yaw command
+    # rotates the drone the other way, so a pure-P loop spirals. The default is the identity
+    # (sim-agnostic, the pure law that the tests check); fly_vq1 passes the measured [-1,1,-1].
+    body_rate_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -157,6 +164,7 @@ class Controller:
         if self.kd_att > 0.0:                                        # damp the underdamped rate loop
             omega = omega - self.kd_att * np.asarray(nav.angular_rate_body, dtype=np.float64)
         omega = _clip_norm(omega, self.max_body_rate_rps)
+        omega = omega * np.asarray(self.body_rate_sign, dtype=np.float64)   # -> sim actuation convention
         return ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=sp.sim_time_ns,

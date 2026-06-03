@@ -167,6 +167,8 @@ def main() -> int:
     ap.add_argument("--kp-att", type=float, default=4.0, help="CTBR: attitude-error -> body-rate gain")
     ap.add_argument("--kd-att", type=float, default=0.0, help="CTBR: rate damping (omega -= kd_att*body_rate); curbs tumble")
     ap.add_argument("--max-body-rate", type=float, default=2.0, help="CTBR: body-rate clamp (rad/s)")
+    ap.add_argument("--rate-sign", default="-1,1,-1",
+                    help="CTBR body-rate sign (roll,pitch,yaw) for this sim's convention (measured: roll+yaw inverted)")
     ap.add_argument("--max-gates", type=int, default=None, help="fly only the first N gates (staged bring-up)")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
@@ -263,7 +265,8 @@ def main() -> int:
             controller=Controller(mode=_MODE[args.mode], hover_thrust=args.hover_thrust,
                                    thrust_slope_mps2=args.thrust_slope, max_accel_mps2=args.max_accel,
                                    max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel,
-                                   kp_att=args.kp_att, kd_att=args.kd_att, max_body_rate_rps=args.max_body_rate),
+                                   kp_att=args.kp_att, kd_att=args.kd_att, max_body_rate_rps=args.max_body_rate,
+                                   body_rate_sign=np.array([float(x) for x in args.rate_sign.split(",")])),
             config=MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
                                  gate_pass_radius_m=args.gate_radius),
         )
