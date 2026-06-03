@@ -29,6 +29,7 @@ data/runs/
 data/recordings/
 data/synthetic/
 data/preview/
+data/_frames/
 demo/
 *.log
 .env

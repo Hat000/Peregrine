@@ -120,10 +120,61 @@ def test_freefall_setpoint_gives_zero_thrust():
     assert Rotation.from_quat([*cmd.attitude_quat_wxyz[1:], cmd.attitude_quat_wxyz[0]]).magnitude() < 1e-6
 
 
-def test_body_rate_mode_not_implemented_yet():
-    c = Controller(mode=ControlMode.BODY_RATE)
-    with pytest.raises(NotImplementedError):
-        c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.zeros(3)))
+# -- CTBR / BODY_RATE (the ACRO control path, 2026-06-02) ------------------
+def _R_wb_from_nav(nav):
+    from racer.frames import R_world_from_body
+
+    return R_world_from_body(nav.roll, nav.pitch, nav.yaw)
+
+
+def test_body_rate_hover_is_zero_rate():
+    # Already level + at the desired heading with a zero-accel setpoint -> no rotation needed.
+    c = Controller(mode=ControlMode.BODY_RATE, hover_thrust=0.489)
+    cmd = c.command(NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0),
+                    Setpoint(accel_ned=np.zeros(3), yaw=0.0))
+    assert cmd.mode is ControlMode.BODY_RATE
+    np.testing.assert_allclose(cmd.body_rate, np.zeros(3), atol=1e-9)
+    assert cmd.thrust == pytest.approx(0.489)
+
+
+def test_body_rate_reduces_attitude_error():
+    # A tilted/yawed drone commanded to level: integrating the commanded body-rate forward must
+    # SHRINK the geodesic attitude error (the definitive sign/frame check for the inner loop).
+    c = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0)
+    nav = NavState(sim_time_ns=0, roll=0.1, pitch=0.3, yaw=0.2)
+    cmd = c.command(nav, Setpoint(accel_ned=np.zeros(3), yaw=0.0))   # desired = level, yaw 0 (R_des=I)
+    R_cur = _R_wb_from_nav(nav)
+    R_next = R_cur @ Rotation.from_rotvec(cmd.body_rate * 0.02).as_matrix()  # body-rate integration
+    before = Rotation.from_matrix(R_cur).magnitude()
+    after = Rotation.from_matrix(R_next).magnitude()
+    assert after < before                                            # error shrank
+
+
+def test_body_rate_thrust_matches_attitude_path():
+    # CTBR reuses the same desired attitude + collective thrust as the ATTITUDE law.
+    sp = Setpoint(accel_ned=np.array([2.0, -1.0, -1.0]), yaw=0.3)
+    nav = NavState(sim_time_ns=0, roll=0.05, pitch=-0.1, yaw=0.3)
+    br = Controller(mode=ControlMode.BODY_RATE, hover_thrust=0.489, thrust_slope_mps2=25.9)
+    at = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.489, thrust_slope_mps2=25.9)
+    assert br.command(nav, sp).thrust == pytest.approx(at.command(nav, sp).thrust)
+
+
+def test_body_rate_is_clamped():
+    # A large heading error must not demand an unbounded rate.
+    c = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0, max_body_rate_rps=2.0)
+    cmd = c.command(NavState(sim_time_ns=0, yaw=0.0), Setpoint(accel_ned=np.zeros(3), yaw=3.0))
+    assert np.linalg.norm(cmd.body_rate) == pytest.approx(2.0, rel=1e-6)
+
+
+def test_body_rate_sign_maps_to_sim_convention():
+    # This sim inverts roll+yaw body-rate commands (first contact). The body_rate_sign
+    # calibration flips them on output; identity (default) leaves the pure law unchanged.
+    nav = NavState(sim_time_ns=0, roll=0.1, pitch=0.3, yaw=0.2)
+    sp = Setpoint(accel_ned=np.array([1.0, -0.5, 0.0]), yaw=0.0)
+    base = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0).command(nav, sp).body_rate
+    flipped = Controller(mode=ControlMode.BODY_RATE, kp_att=4.0,
+                         body_rate_sign=np.array([-1.0, 1.0, -1.0])).command(nav, sp).body_rate
+    np.testing.assert_allclose(flipped, base * np.array([-1.0, 1.0, -1.0]))
 
 
 # -- singularity guards [red-team 2026-05-30] ------------------------------
@@ -148,3 +199,37 @@ def test_horizontal_thrust_aligned_with_heading_no_nan():
     assert np.all(np.isfinite(q))                            # no NaNs from the zero cross product
     assert np.linalg.norm(q) == pytest.approx(1.0)          # a well-formed unit quaternion
     assert np.all(np.isfinite(_body_up_world(cmd)))         # ...and a usable thrust direction
+
+
+# -- measured throttle map + safety bounds (innerloop_step 2026-06-02) ------
+def test_measured_thrust_slope_affine_map():
+    # innerloop_step: hover_thrust=0.489, slope=25.9 (m/s^2)/thrust. A 2 m/s^2 climb demand
+    # => thrust = hover + a_up/slope. The placeholder |f|/g would over-thrust.
+    c = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.489, thrust_slope_mps2=25.9)
+    hover = c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.zeros(3)))
+    assert hover.thrust == pytest.approx(0.489, abs=1e-6)            # hover unchanged
+    climb = c.command(NavState(sim_time_ns=0), Setpoint(accel_ned=np.array([0.0, 0.0, -2.0])))
+    assert climb.thrust == pytest.approx(0.489 + 2.0 / 25.9, abs=1e-3)
+    placeholder = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.489).command(
+        NavState(sim_time_ns=0), Setpoint(accel_ned=np.array([0.0, 0.0, -2.0])))
+    assert placeholder.thrust > climb.thrust                        # placeholder over-thrusts
+
+
+def test_max_accel_caps_tilt():
+    # A huge position error must not saturate to the tilt clamp: with max_accel 3 m/s^2 the
+    # realized lean corresponds to a 3 m/s^2 horizontal demand (atan(3/g)~17 deg), NOT 45 deg.
+    c = Controller(mode=ControlMode.ATTITUDE, kp_pos=1.5, max_accel_mps2=3.0)
+    nav = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    up = _body_up_world(c.command(nav, Setpoint(position_ned=np.array([1000.0, 0.0, 0.0]), yaw=0.0)))
+    assert up[0] / (-up[2]) == pytest.approx(3.0 / _G, rel=1e-3)     # capped to 3, not clamped to 45 deg
+
+
+def test_max_pos_error_bounds_pursuit():
+    # The position-error clamp makes a far carrot and a near-but-still-far carrot demand the SAME
+    # (bounded) acceleration -> a 24 m gate carrot can't drive a violent tilt.
+    c = Controller(mode=ControlMode.ATTITUDE, kp_pos=1.0, max_pos_error_m=2.0)
+    nav = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    far = _body_up_world(c.command(nav, Setpoint(position_ned=np.array([100.0, 0.0, 0.0]), yaw=0.0)))
+    near = _body_up_world(c.command(nav, Setpoint(position_ned=np.array([10.0, 0.0, 0.0]), yaw=0.0)))
+    np.testing.assert_allclose(far, near, atol=1e-9)                 # both clamped to 2 m error
+    assert far[0] / (-far[2]) == pytest.approx(2.0 / _G, rel=1e-3)   # demand = kp*2 = 2 m/s^2
