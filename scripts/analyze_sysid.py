@@ -60,54 +60,65 @@ def _arr(rows, lo, hi, key, idx=None):
 
 def analyze_rate(rows, segs, settle_frac: float) -> dict:
     result = {"axes": {}}
-    print(f"\n{'axis':>6} {'cmd':>7} {'meas_steady':>12} {'gain':>7} {'overshoot':>10} {'tau_s':>7}")
+    # gain is COMMAND (raw wire) -> TRUE angle rate (finite-diff quaternion). The ODOMETRY rate is
+    # logged too and its sign vs the true rate is reported (it is inverted on >=1 axis).
+    print(f"\n{'axis':>6} {'cmd':>7} {'true_steady':>12} {'gain':>7} {'odo/true':>9} {'overshoot':>10} {'tau_s':>7}")
     for axis in (0, 1, 2):
         steps = [s for s in segs if s["kind"] == "step" and s["axis"] == axis]
         if not steps:
             continue
-        cmd_pts, meas_pts = [], []
+        cmd_pts, true_pts = [], []
+        odo_ratios = []
         per_dir = []
         for s in steps:
             t = _arr(rows, s["i0"], s["i1"], "t")
             cmd = _arr(rows, s["i0"], s["i1"], "cmd", axis)
-            meas = _arr(rows, s["i0"], s["i1"], "meas_rate", axis)
+            true = _arr(rows, s["i0"], s["i1"], "true_rate", axis)
+            odo = _arr(rows, s["i0"], s["i1"], "meas_rate", axis)
             cmd_const = float(np.median(cmd))
-            # steady samples: last settle_frac of the step by time
-            t_cut = s["t1"] - settle_frac * (s["t1"] - s["t0"])
+            t_cut = s["t1"] - settle_frac * (s["t1"] - s["t0"])     # steady = last settle_frac
             sel = t >= t_cut
-            meas_steady = float(np.mean(meas[sel])) if sel.any() else float("nan")
+            true_steady = float(np.mean(true[sel])) if sel.any() else float("nan")
+            odo_steady = float(np.mean(odo[sel])) if sel.any() else float("nan")
             cmd_pts.extend(cmd[sel].tolist())
-            meas_pts.extend(meas[sel].tolist())
-            # transient: window from baseline (0.3s before) through the step
-            t0a = s["t0"]
+            true_pts.extend(true[sel].tolist())
+            if abs(true_steady) > 0.2:
+                odo_ratios.append(odo_steady / true_steady)
+            t0a = s["t0"]                                            # transient window from baseline
             base_lo = next((j for j in range(s["i0"], -1, -1) if rows[j]["t"] < t0a - 0.3), s["i0"])
             tw = _arr(rows, base_lo, s["i1"], "t")
-            yw = _arr(rows, base_lo, s["i1"], "meas_rate", axis)
+            yw = _arr(rows, base_lo, s["i1"], "true_rate", axis)
             m = step_response_metrics(tw, yw, t_step=t0a, settle_frac=settle_frac)
-            gain_dir = (meas_steady / cmd_const) if abs(cmd_const) > 1e-6 else float("nan")
-            per_dir.append({"cmd": cmd_const, "meas_steady": meas_steady, "gain": gain_dir,
+            gain_dir = (true_steady / cmd_const) if abs(cmd_const) > 1e-6 else float("nan")
+            odo_ratio = (odo_steady / true_steady) if abs(true_steady) > 0.2 else float("nan")
+            per_dir.append({"cmd": cmd_const, "true_steady": true_steady, "gain": gain_dir,
+                            "odo_over_true": odo_ratio,
                             "overshoot": m["overshoot"], "tau_s": m["tau_s"], "delay_s": m["delay_s"]})
-            print(f"{_AXIS_NAME[axis]:>6} {cmd_const:+7.2f} {meas_steady:+12.3f} {gain_dir:+7.2f} "
-                  f"{m['overshoot']:10.0%} {m['tau_s']:7.3f}")
-        fit = fit_rate_gain(cmd_pts, meas_pts)
+            print(f"{_AXIS_NAME[axis]:>6} {cmd_const:+7.2f} {true_steady:+12.3f} {gain_dir:+7.2f} "
+                  f"{odo_ratio:+9.2f} {m['overshoot']:10.0%} {m['tau_s']:7.3f}")
+        fit = fit_rate_gain(cmd_pts, true_pts)
         sign = int(np.sign(fit["gain"])) if fit["gain"] == fit["gain"] else 0
         ok = "OK" if sign == _EXPECTED_SIGN[axis] else "!! UNEXPECTED"
         overs = [d["overshoot"] for d in per_dir if d["overshoot"] == d["overshoot"]]
+        odo_sign = int(np.sign(np.mean(odo_ratios))) if odo_ratios else 0
         result["axes"][_AXIS_NAME[axis]] = {
             "gain": fit["gain"], "offset": fit["offset"], "r2": fit["r2"],
             "sign": sign, "expected_sign": _EXPECTED_SIGN[axis],
             "abs_gain": abs(fit["gain"]) if fit["gain"] == fit["gain"] else float("nan"),
+            "odo_rate_sign": odo_sign,        # ODOMETRY rate sign vs the true angle rate
             "mean_overshoot": float(np.mean(overs)) if overs else float("nan"),
             "directions": per_dir,
         }
         print(f"  -> {_AXIS_NAME[axis]:>5}: gain={fit['gain']:+.2f} (|gain|={abs(fit['gain']):.2f}, "
               f"sign={sign:+d} expect {_EXPECTED_SIGN[axis]:+d} {ok})  r2={fit['r2']:.3f}  "
-              f"overshoot~{np.mean(overs) if overs else float('nan'):.0%}")
+              f"overshoot~{np.mean(overs) if overs else float('nan'):.0%}  odo_rate_sign={odo_sign:+d}")
     # the headline numbers the controller needs
     g = {a: result["axes"][a]["abs_gain"] for a in result["axes"]}
     s = {a: result["axes"][a]["sign"] for a in result["axes"]}
+    od = {a: result["axes"][a]["odo_rate_sign"] for a in result["axes"]}
     result["summary"] = {
         "body_rate_sign": [s.get("roll", -1), s.get("pitch", 1), s.get("yaw", -1)],
+        "odo_rate_sign": [od.get("roll", 1), od.get("pitch", -1), od.get("yaw", 1)],
         "abs_gain": g,
         "verdict": ("STEADY GAIN" if any(v > 1.4 for v in g.values() if v == v) and
                     all((result["axes"][a]["mean_overshoot"] < 0.6)
@@ -161,9 +172,10 @@ def main() -> int:
     else:
         result = {"mode": "rate", **analyze_rate(rows, segs, args.settle_frac)}
         s = result["summary"]
-        print(f"\n  body_rate_sign (measured) = {s['body_rate_sign']}")
-        print(f"  |gain| per axis           = { {k: round(v,2) for k,v in s['abs_gain'].items()} }")
-        print(f"  verdict                   = {s['verdict']}")
+        print(f"\n  body_rate_sign (cmd->true) = {s['body_rate_sign']}")
+        print(f"  odo_rate_sign (odo vs true)= {s['odo_rate_sign']}")
+        print(f"  |gain| per axis            = { {k: round(v,2) for k,v in s['abs_gain'].items()} }")
+        print(f"  verdict                    = {s['verdict']}")
 
     (session / "sysid_result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(f"\nsaved -> {session / 'sysid_result.json'}")

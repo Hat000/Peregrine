@@ -50,6 +50,7 @@ def level_hold_body_rate(
     roll: float, pitch: float, yaw: float, yaw_hold: float,
     angular_rate_body: np.ndarray, *,
     kp: float, kd: float, body_rate_sign: np.ndarray, max_rate: float,
+    ff_gain: float = 1.0,
 ) -> np.ndarray:
     """Body-rate command (sim actuation convention) that drives the attitude toward LEVEL at
     ``yaw_hold`` with rate damping. The same rotvec error + sign mapping the CTBR controller
@@ -60,11 +61,17 @@ def level_hold_body_rate(
     does NOT re-level (body-rate is a rate, not an attitude, command), so a closed level-hold is
     needed to undo each step's attitude excursion and to cancel the −17.8° resting tilt that
     would otherwise drift the drone forward at ~g·tan(17.8°). The damping uses the trusted
-    ODOMETRY rate BEFORE the sign map (the convention the stable damped run validated)."""
+    ODOMETRY rate BEFORE the sign map (the convention the stable damped run validated).
+
+    ``ff_gain`` divides the commanded rate by the MEASURED inner-loop rate scaling (~2.7×): the
+    sim amplifies a commanded body rate ~2.7×, so a naive kp on the attitude error overshoots and
+    oscillates (the first live hover-sweep). Dividing by the gain makes the realised rate equal
+    (kp·err − kd·rate) on a unity plant, so kp/kd tune as a normal attitude loop. ff_gain=1 keeps
+    the legacy (un-fed-forward) behaviour."""
     R_cur = R_world_from_body(roll, pitch, yaw)
     R_des = R_world_from_body(0.0, 0.0, yaw_hold)
     rotvec = Rotation.from_matrix(R_cur.T @ R_des).as_rotvec()    # trusted-FRD attitude error
-    omega = kp * rotvec - kd * np.asarray(angular_rate_body, dtype=np.float64)
+    omega = (kp * rotvec - kd * np.asarray(angular_rate_body, dtype=np.float64)) / max(ff_gain, 1e-6)
     omega = _clip_norm(omega, max_rate)
     return omega * np.asarray(body_rate_sign, dtype=np.float64)   # -> sim actuation convention
 
@@ -251,6 +258,14 @@ class Controller:
         cos_tilt = float(thrust_dir @ _WORLD_UP)     # cos(actual tilt) after any clamp
         if f_up > 1e-9 and cos_tilt > 1e-6:
             f_mag = f_up / cos_tilt
+        elif f_up <= 0.0:
+            # Dive demanded FASTER than gravity (a_des down > g) while the tilt clamp holds us
+            # upright: an upright quad cannot thrust downward, so the most it can do is CUT the
+            # throttle and free-fall at g. Without this the old code skipped the rescale and kept
+            # the full |f_world| magnitude at an upright attitude -> a positive thrust that rockets
+            # the drone SKYWARD on every hard brake/dive (a runaway positive-feedback loop into the
+            # ceiling). [2026-06-03 teammate red-team; reproduced live]
+            f_mag = 0.0
         if self.thrust_slope_mps2 is not None and self.thrust_slope_mps2 > 0.0:
             # Measured affine throttle map (innerloop_step): |f| = g at hover, slope m/s^2 per
             # unit thrust => thrust = hover + (|f| - g)/slope. Passes through (g, hover) like the

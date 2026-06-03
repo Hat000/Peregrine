@@ -45,6 +45,7 @@ from fly_vq1 import _LatestFrame, _arm_cmd, _wait_for_race
 
 from racer.contracts import ControlCommand, ControlMode
 from racer.controller import level_hold_body_rate
+from racer.frames import body_rate_from_quats
 from racer.firstcontact import backend_summary, telemetry_summary
 from racer.mavlink_client import MavlinkClient
 from racer.recording import Recorder, session_stamp
@@ -105,8 +106,9 @@ def main() -> int:
     ap.add_argument("--dwell-s", type=float, default=1.2, help="hover mode: hold per thrust level")
     # control
     ap.add_argument("--thrust", type=float, default=0.46, help="collective thrust during rate steps + holds")
-    ap.add_argument("--kp-hold", type=float, default=2.0, help="level-hold attitude gain (conservative)")
-    ap.add_argument("--kd-hold", type=float, default=0.4, help="level-hold rate damping")
+    ap.add_argument("--kp-hold", type=float, default=2.0, help="level-hold attitude gain")
+    ap.add_argument("--kd-hold", type=float, default=1.5, help="level-hold rate damping (ratio ~0.5 at ff-gain)")
+    ap.add_argument("--ff-gain", type=float, default=2.7, help="divide hold cmd by the measured rate scaling (~2.7x)")
     ap.add_argument("--max-hold-rate", type=float, default=2.0, help="clamp on the level-hold body rate")
     ap.add_argument("--rate-sign", default="-1,1,-1", help="sim body-rate sign for the HOLD (measured)")
     ap.add_argument("--rate", type=float, default=50.0, help="control/log loop Hz")
@@ -198,6 +200,12 @@ def main() -> int:
         yaw_hold = float(client.state.yaw)        # hold the start heading throughout
         origin = np.asarray(client.state.position_ned, dtype=np.float64).copy()
         print(f"  yaw_hold={np.degrees(yaw_hold):+.1f} deg  origin={np.round(origin,2)}")
+        # trusted body rate = finite-diff of the ODOMETRY quaternion (the ODOMETRY angular_rate is
+        # sign-inverted vs the true attitude derivative -> using it for damping is anti-damping).
+        prev_q = (np.asarray(client.state.orientation_ned_wxyz, dtype=np.float64).copy()
+                  if client.state.orientation_ned_wxyz is not None else None)
+        prev_t = int(client.state.sim_time_ns)
+        trusted_rate = np.zeros(3)
 
         tick = 1.0 / args.rate
         t0 = time.monotonic()
@@ -226,10 +234,15 @@ def main() -> int:
             while time.monotonic() < phase_end:
                 client.pump()
                 s = client.state
+                if s.orientation_ned_wxyz is not None and int(s.sim_time_ns) > prev_t and prev_q is not None:
+                    trusted_rate = body_rate_from_quats(prev_q, s.orientation_ned_wxyz,
+                                                        (int(s.sim_time_ns) - prev_t) / 1e9)
+                    prev_q = np.asarray(s.orientation_ned_wxyz, dtype=np.float64).copy()
+                    prev_t = int(s.sim_time_ns)
                 omega = level_hold_body_rate(
-                    s.roll, s.pitch, s.yaw, yaw_hold, s.angular_rate_body,
+                    s.roll, s.pitch, s.yaw, yaw_hold, trusted_rate,    # trusted (sign-correct) rate
                     kp=args.kp_hold, kd=args.kd_hold, body_rate_sign=sign,
-                    max_rate=args.max_hold_rate,
+                    max_rate=args.max_hold_rate, ff_gain=args.ff_gain,
                 )
                 if phase.kind == "step":
                     omega = omega.copy()
@@ -246,7 +259,8 @@ def main() -> int:
                     "phase": phase.name, "kind": phase.kind,
                     "axis": (-1 if phase.axis is None else int(phase.axis)),
                     "cmd": [round(float(v), 5) for v in omega], "thrust": float(thr),
-                    "meas_rate": [round(float(v), 5) for v in mr],
+                    "meas_rate": [round(float(v), 5) for v in mr],        # ODOMETRY (sign-suspect)
+                    "true_rate": [round(float(v), 5) for v in trusted_rate],  # finite-diff (sign-correct)
                     "rpy": [round(float(s.roll), 5), round(float(s.pitch), 5), round(float(s.yaw), 5)],
                     "pos": [round(float(v), 3) for v in pos],
                     "vel": [round(float(v), 4) for v in vel],

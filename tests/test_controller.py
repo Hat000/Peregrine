@@ -106,6 +106,17 @@ def test_clamped_tilt_preserves_vertical_thrust_no_skyward_launch():
     assert cmd.thrust < 1.0                              # old code clipped to 1.0 (over-thrust)
 
 
+def test_hard_dive_cuts_throttle_no_skyward_runaway():
+    # [2026-06-03 teammate red-team] A dive demanded FASTER than gravity (a_des down > g) while
+    # the tilt clamp keeps the drone upright must CUT throttle (free-fall at g), not retain the
+    # full force magnitude at an upright attitude (which thrusts the drone skyward). The old code
+    # skipped the rescale when f_up <= 0 and left a large positive thrust.
+    c = Controller(mode=ControlMode.ATTITUDE, hover_thrust=0.25, max_tilt_rad=np.deg2rad(45.0))
+    nav = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    cmd = c.command(nav, Setpoint(accel_ned=np.array([0.0, 0.0, 15.0]), yaw=0.0))  # 15 m/s^2 DOWN
+    assert cmd.thrust == pytest.approx(0.0)          # throttle cut, not a skyward push
+
+
 def test_position_error_drives_attitude():
     # Attitude mode with a position setpoint north of the drone -> thrust tilts north.
     c = Controller(mode=ControlMode.ATTITUDE)
@@ -273,6 +284,16 @@ def test_level_hold_damping_opposes_measured_rate():
     # damping subtracts kd*meas in the trusted frame (before the sign map). Pitch sign is +1,
     # so a positive measured pitch rate lowers the commanded pitch magnitude.
     assert abs(damped[1]) < abs(undamped[1])
+
+
+def test_level_hold_ff_gain_divides_command():
+    # ff_gain compensates the ~2.7x inner-loop amplification: the sent command shrinks by the
+    # gain so the REALISED rate (gain * sent) matches the un-fed-forward intent. Below the clamp,
+    # the output scales as 1/ff_gain.
+    args = dict(kp=2.0, kd=0.0, body_rate_sign=_SIM_SIGN, max_rate=10.0)
+    base = level_hold_body_rate(0.0, -0.2, 0.0, 0.0, np.zeros(3), ff_gain=1.0, **args)
+    fed = level_hold_body_rate(0.0, -0.2, 0.0, 0.0, np.zeros(3), ff_gain=2.7, **args)
+    np.testing.assert_allclose(fed, base / 2.7, atol=1e-9)
 
 
 def test_level_hold_clamps_to_max_rate():

@@ -58,6 +58,25 @@ def euler_from_quat_wxyz(q_wxyz) -> tuple[float, float, float]:
     return float(roll), float(pitch), float(yaw)
 
 
+def body_rate_from_quats(q_prev_wxyz, q_cur_wxyz, dt: float) -> np.ndarray:
+    """Body-frame angular velocity (rad/s, FRD) from two consecutive body->world attitude
+    quaternions (w,x,y,z) and the time between them.
+
+    ``R_cur = R_prev @ exp(omega_body * dt)`` => ``omega_body = rotvec(R_prev^T R_cur) / dt``.
+    Same body-frame convention as the controller's attitude-error rotvec, so it is a drop-in,
+    SIGN-CORRECT body rate. Needed because the sim's ODOMETRY angular_rate (rollspeed/pitchspeed/
+    yawspeed) is sign-inverted vs the true attitude derivative on at least pitch (measured
+    2026-06-03), which turns a ``-kd*rate`` damping term into anti-damping. Differencing the
+    trusted quaternion sidesteps that entirely. Returns zeros for a non-positive dt."""
+    if dt <= 0.0:
+        return np.zeros(3)
+    qp = np.asarray(q_prev_wxyz, dtype=np.float64)
+    qc = np.asarray(q_cur_wxyz, dtype=np.float64)
+    R_prev = Rotation.from_quat([qp[1], qp[2], qp[3], qp[0]])
+    R_cur = Rotation.from_quat([qc[1], qc[2], qc[3], qc[0]])
+    return (R_prev.inv() * R_cur).as_rotvec() / dt
+
+
 def R_camera_from_body() -> np.ndarray:
     # Passive rotation by +20 deg about body Y (frame rotated, vector representation changes oppositely).
     R_tilted_from_body = Rotation.from_euler("Y", -CAMERA_PITCH_RAD).as_matrix()
