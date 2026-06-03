@@ -4,7 +4,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from racer.sysid import fit_hover_thrust, fit_thrust_curve, step_response_metrics
+from racer.sysid import (
+    fit_hover_thrust,
+    fit_rate_gain,
+    fit_thrust_curve,
+    step_response_metrics,
+)
 
 
 def test_fit_hover_thrust_recovers_known_line():
@@ -48,6 +53,48 @@ def test_fit_thrust_curve_linear_plant_reports_linear():
 def test_fit_thrust_curve_degenerate_is_nan():
     out = fit_thrust_curve([0.5, 0.5], [1.0, 2.0])    # <3 points / no spread
     assert np.isnan(out["hover_thrust"])
+
+
+def test_fit_rate_gain_recovers_steady_gain():
+    # Open-loop rate STEP probe: command +/-c, the plant settles to gain*c. The fitter must
+    # recover the steady scaling that distinguishes a real gain from a transient overshoot.
+    gain = 2.5
+    commanded = [0.0, 0.3, -0.3, 0.5, -0.5]
+    measured = [gain * c for c in commanded]
+    out = fit_rate_gain(commanded, measured)
+    assert out["gain"] == pytest.approx(gain, abs=1e-6)
+    assert out["offset"] == pytest.approx(0.0, abs=1e-6)
+    assert out["r2"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_fit_rate_gain_detects_sign_inversion():
+    # The sim INVERTS roll + yaw rate commands: a +command yields a NEGATIVE measured rate.
+    # The fitter must report a negative gain (the [-1, ...] in body_rate_sign), with the
+    # measured-from-command magnitude preserved.
+    commanded = [0.0, 0.2, 0.4, -0.2, -0.4]
+    measured = [-2.7 * c for c in commanded]
+    out = fit_rate_gain(commanded, measured)
+    assert out["gain"] == pytest.approx(-2.7, abs=1e-6)
+    assert out["gain"] < 0.0
+
+
+def test_fit_rate_gain_with_offset_and_noise():
+    rng = np.random.default_rng(0)
+    gain, offset = 1.8, 0.05
+    commanded = np.repeat([0.0, 0.25, -0.25, 0.5, -0.5], 4)
+    measured = gain * commanded + offset + rng.normal(0, 0.01, commanded.size)
+    out = fit_rate_gain(commanded, measured)
+    assert out["gain"] == pytest.approx(gain, abs=0.05)
+    assert out["offset"] == pytest.approx(offset, abs=0.02)
+    assert out["r2"] > 0.99
+    assert out["n"] == commanded.size
+
+
+def test_fit_rate_gain_degenerate_is_nan():
+    out = fit_rate_gain([0.3, 0.3, 0.3], [0.8, 0.8, 0.8])   # one magnitude, no spread
+    assert np.isnan(out["gain"]) and np.isnan(out["offset"])
+    out2 = fit_rate_gain([0.3], [0.8])                       # single point
+    assert np.isnan(out2["gain"])
 
 
 def test_step_metrics_first_order():

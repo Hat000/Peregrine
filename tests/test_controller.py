@@ -3,7 +3,8 @@ import pytest
 from scipy.spatial.transform import Rotation
 
 from racer.contracts import ControlCommand, ControlMode, NavState, Setpoint
-from racer.controller import _G, Controller
+from racer.controller import _G, Controller, level_hold_body_rate
+from racer.frames import R_world_from_body
 from racer.mavlink_client import _POS_IGNORE_PX, _POS_IGNORE_VX, _pos_type_mask
 
 
@@ -233,3 +234,48 @@ def test_max_pos_error_bounds_pursuit():
     near = _body_up_world(c.command(nav, Setpoint(position_ned=np.array([10.0, 0.0, 0.0]), yaw=0.0)))
     np.testing.assert_allclose(far, near, atol=1e-9)                 # both clamped to 2 m error
     assert far[0] / (-far[2]) == pytest.approx(2.0 / _G, rel=1e-3)   # demand = kp*2 = 2 m/s^2
+
+
+# -- level_hold_body_rate: the re-level primitive used by the rate-step sysid probe --------
+_SIM_SIGN = np.array([-1.0, 1.0, -1.0])   # measured sim actuation convention (roll+yaw inverted)
+
+
+def test_level_hold_zero_error_commands_zero_rate():
+    yaw = -3.10
+    sent = level_hold_body_rate(0.0, 0.0, yaw, yaw, np.zeros(3),
+                                kp=2.0, kd=0.4, body_rate_sign=_SIM_SIGN, max_rate=5.0)
+    np.testing.assert_allclose(sent, np.zeros(3), atol=1e-9)
+
+
+def test_level_hold_is_negative_feedback_toward_level():
+    # THE safety-critical property: the TRUE body rate the sim would produce (= body_rate_sign *
+    # sent, under the inversion + unit gain) must point along the attitude error toward level,
+    # i.e. it reduces the tilt. A wrong sign here makes the hold DIVERGE (the early tumbles).
+    yaw = -3.10
+    roll, pitch = 0.12, -0.31      # rolled right + nose-down (the −17.8° resting pitch)
+    kp = 2.0
+    sent = level_hold_body_rate(roll, pitch, yaw, yaw, np.zeros(3),
+                                kp=kp, kd=0.0, body_rate_sign=_SIM_SIGN, max_rate=10.0)
+    actual_true = _SIM_SIGN * sent     # what the sim actually rotates at (sign inversion, unit gain)
+    R_err = R_world_from_body(roll, pitch, yaw).T @ R_world_from_body(0.0, 0.0, yaw)
+    err = Rotation.from_matrix(R_err).as_rotvec()
+    np.testing.assert_allclose(actual_true, kp * err, atol=1e-9)   # rate ∝ error-to-level
+    assert actual_true[1] > 0.0        # nose-down -> true pitch-up rate (re-levels)
+
+
+def test_level_hold_damping_opposes_measured_rate():
+    yaw = 0.0
+    meas = np.array([0.0, 1.5, 0.0])   # spinning in pitch
+    undamped = level_hold_body_rate(0.0, -0.2, yaw, yaw, np.zeros(3),
+                                    kp=2.0, kd=0.0, body_rate_sign=_SIM_SIGN, max_rate=10.0)
+    damped = level_hold_body_rate(0.0, -0.2, yaw, yaw, meas,
+                                  kp=2.0, kd=0.5, body_rate_sign=_SIM_SIGN, max_rate=10.0)
+    # damping subtracts kd*meas in the trusted frame (before the sign map). Pitch sign is +1,
+    # so a positive measured pitch rate lowers the commanded pitch magnitude.
+    assert abs(damped[1]) < abs(undamped[1])
+
+
+def test_level_hold_clamps_to_max_rate():
+    sent = level_hold_body_rate(0.0, 1.2, 0.0, 0.0, np.zeros(3),     # huge tilt -> would saturate
+                                kp=10.0, kd=0.0, body_rate_sign=_SIM_SIGN, max_rate=2.0)
+    assert np.linalg.norm(sent) == pytest.approx(2.0, abs=1e-9)

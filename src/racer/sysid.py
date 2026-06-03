@@ -30,6 +30,39 @@ def fit_hover_thrust(thrusts, up_accels) -> tuple[float, float]:
     return float(hover), float(slope)
 
 
+def fit_rate_gain(commanded, measured) -> dict:
+    """Linear-fit the inner rate loop: measured body rate vs COMMANDED body rate, on one axis.
+
+    For an open-loop body-rate STEP probe (a fixed rate held until the response settles), feed
+    the per-step (commanded constant, STEADY measured rate) pairs across both signs / several
+    magnitudes. Fits ``measured = gain * commanded + offset`` and returns
+    ``{gain, offset, r2, n}``:
+
+      gain    steady-state rate scaling. ``gain ~ 1`` means the sim tracks the commanded rate;
+              ``gain > 1`` means it rotates FASTER than commanded (feedforward 1/gain to match);
+              ``gain < 0`` means the sim INVERTS this axis (the measured roll+yaw sign flip).
+      offset  rate at zero command (a trim/bias; should be ~0 for a clean plant).
+      r2      goodness of fit (1 = perfectly linear); low r2 => the steady rate is not a clean
+              linear function of the command (saturation / a bad measurement window).
+
+    This is the STEADY-state companion to ``step_response_metrics`` (which reports the transient
+    overshoot/tau): together they answer whether an observed command-vs-actual ratio is a steady
+    GAIN (shows up here) or a transient OVERSHOOT (shows up there with gain ~ 1). ``gain``/``offset``
+    are NaN if the command has no spread (a single magnitude+sign can't separate gain from offset).
+    """
+    c = np.asarray(commanded, dtype=np.float64)
+    m = np.asarray(measured, dtype=np.float64)
+    nan = float("nan")
+    if c.size < 2 or np.ptp(c) < 1e-9:
+        return {"gain": nan, "offset": nan, "r2": nan, "n": int(c.size)}
+    gain, offset = (float(v) for v in np.polyfit(c, m, 1))
+    resid = m - (gain * c + offset)
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((m - np.mean(m)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else nan
+    return {"gain": gain, "offset": offset, "r2": r2, "n": int(c.size)}
+
+
 def fit_thrust_curve(thrusts, up_accels) -> dict:
     """Fit net upward acceleration vs normalized thrust with a QUADRATIC, and report how
     non-linear the plant is.

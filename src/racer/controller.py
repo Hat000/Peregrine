@@ -46,6 +46,29 @@ def _clip_norm(v: np.ndarray, max_norm: float) -> np.ndarray:
     return v
 
 
+def level_hold_body_rate(
+    roll: float, pitch: float, yaw: float, yaw_hold: float,
+    angular_rate_body: np.ndarray, *,
+    kp: float, kd: float, body_rate_sign: np.ndarray, max_rate: float,
+) -> np.ndarray:
+    """Body-rate command (sim actuation convention) that drives the attitude toward LEVEL at
+    ``yaw_hold`` with rate damping. The same rotvec error + sign mapping the CTBR controller
+    uses, specialised to a level target and a FIXED collective thrust (no position/thrust
+    coupling) — so it can't pump altitude the way the full position loop does.
+
+    Used by the open-loop rate-STEP sysid probe as the 're-level' between steps: zero rate
+    does NOT re-level (body-rate is a rate, not an attitude, command), so a closed level-hold is
+    needed to undo each step's attitude excursion and to cancel the −17.8° resting tilt that
+    would otherwise drift the drone forward at ~g·tan(17.8°). The damping uses the trusted
+    ODOMETRY rate BEFORE the sign map (the convention the stable damped run validated)."""
+    R_cur = R_world_from_body(roll, pitch, yaw)
+    R_des = R_world_from_body(0.0, 0.0, yaw_hold)
+    rotvec = Rotation.from_matrix(R_cur.T @ R_des).as_rotvec()    # trusted-FRD attitude error
+    omega = kp * rotvec - kd * np.asarray(angular_rate_body, dtype=np.float64)
+    omega = _clip_norm(omega, max_rate)
+    return omega * np.asarray(body_rate_sign, dtype=np.float64)   # -> sim actuation convention
+
+
 @dataclass
 class Controller:
     """Setpoint + NavState -> ControlCommand. See module docstring for the two modes."""
