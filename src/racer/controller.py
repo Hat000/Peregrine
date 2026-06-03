@@ -115,6 +115,29 @@ class Controller:
     # (sim-agnostic, the pure law that the tests check); fly_vq1 passes the measured [-1,1,-1].
     body_rate_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
 
+    # -- DECOUPLED CTBR (the plant-matched controller, system-ID'd 2026-06-03) ----------------
+    # The sim is ACRO-only for control (any setpoint type either runs away or the keepalive forces
+    # ACRO); CTBR (body-rate + EXPLICIT thrust) is the only clean full-3-axis path. Set
+    # ``decoupled=True`` to fly the matched law: vertical = a velocity-damped altitude hold around
+    # ``hover_thrust`` (the sim's auto-thrust is broken, so WE own thrust); horizontal = a PD on the
+    # xy error -> a tilt DIRECTION (reusing the tested _accel_to_attitude geometry, vertical zeroed);
+    # attitude->rate = the rotvec law with the MEASURED feedforward + sign-correct damping.
+    decoupled: bool = False
+    # Steady inner-loop rate gain (MEASURED: roll 2.73, pitch 2.68, yaw 2.38 -> ~2.6). The sim
+    # amplifies a commanded body rate ~2.6x at steady state, so divide the commanded rate by it to
+    # get a unity-gain attitude loop (a naive kp overshoots + tumbles). 1.0 = no feedforward.
+    ff_gain: float = 1.0
+    # Sign of the ODOMETRY angular_rate vs the TRUE attitude derivative, per axis (MEASURED:
+    # [+1,-1,+1] -- only PITCH's rate is inverted, same quirk as the ATTITUDE Euler). Multiply the
+    # measured rate by this BEFORE the -kd_att damping, else pitch damping is anti-damping (tumble).
+    odo_rate_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
+    # Altitude-hold (vertical thrust) channel: thrust = hover + kp_alt*(z - z_target) +
+    # kd_alt*(vz - vz_target), clamped. NED z+ = down, so a SINK (z>target / vz>0) -> more thrust.
+    kp_alt: float = 0.0
+    kd_alt: float = 0.0
+    alt_thrust_lo: float = 0.0
+    alt_thrust_hi: float = 1.0
+
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
         if self.mode in (ControlMode.POSITION, ControlMode.VELOCITY):
@@ -182,6 +205,8 @@ class Controller:
         current body -z; a_des is bounded (max_accel_mps2) so the attitude error -- hence the
         transient thrust-mispointing -- stays small.
         """
+        if self.decoupled:
+            return self._decoupled_body_rate(nav, sp)
         a_des = self._desired_acceleration(nav, sp)
         yaw = sp.yaw if sp.yaw is not None else nav.yaw
         q_des_wxyz, thrust = self._accel_to_attitude(a_des, yaw)
@@ -195,6 +220,61 @@ class Controller:
             omega = omega - self.kd_att * np.asarray(nav.angular_rate_body, dtype=np.float64)
         omega = _clip_norm(omega, self.max_body_rate_rps)
         omega = omega * np.asarray(self.body_rate_sign, dtype=np.float64)   # -> sim actuation convention
+        return ControlCommand(
+            mode=ControlMode.BODY_RATE,
+            sim_time_ns=sp.sim_time_ns,
+            body_rate=omega,
+            thrust=thrust,
+        )
+
+    def _decoupled_body_rate(self, nav: NavState, sp: Setpoint) -> ControlCommand:
+        """Plant-matched CTBR (system-ID'd 2026-06-03). Decoupled cascade:
+
+        VERTICAL  velocity-damped altitude hold around ``hover_thrust`` -- WE own thrust because the
+                  sim's auto-thrust (velocity/position modes) climbs away. NED z+ down.
+        HORIZONTAL PD on the xy position/velocity error -> a desired horizontal acceleration ->
+                  a tilt DIRECTION via the tested ``_accel_to_attitude`` geometry (vertical zeroed,
+                  so the tilt is purely for translation; the alt-hold owns the collective).
+        ATTITUDE  omega = (kp_att*rotvec(R_cur^T R_des) - kd_att*corrected_rate)/ff_gain, clamped,
+                  then * body_rate_sign. ``ff_gain`` undoes the ~2.6x inner-loop amplification;
+                  ``odo_rate_sign`` fixes the inverted-pitch ODOMETRY rate so damping is real."""
+        pos = np.asarray(nav.position_ned, dtype=np.float64)
+        vel = np.asarray(nav.velocity_ned, dtype=np.float64)
+        # -- vertical: altitude hold -> collective thrust --
+        z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
+        vz_t = float(sp.velocity_ned[2]) if sp.velocity_ned is not None else 0.0
+        thrust = self.hover_thrust + self.kp_alt * (pos[2] - z_t) + self.kd_alt * (vel[2] - vz_t)
+        thrust = float(np.clip(thrust, self.alt_thrust_lo, self.alt_thrust_hi))
+        # -- horizontal: PD on xy error -> desired horizontal accel (vertical zeroed) --
+        a_h = np.zeros(3)
+        if sp.accel_ned is not None:
+            a_h = a_h + np.asarray(sp.accel_ned, dtype=np.float64)
+        if sp.position_ned is not None:
+            err = np.asarray(sp.position_ned, dtype=np.float64) - pos
+            err[2] = 0.0
+            if self.max_pos_error_m is not None:
+                err = _clip_norm(err, self.max_pos_error_m)
+            a_h = a_h + self.kp_pos * err
+        if sp.velocity_ned is not None:
+            dv = np.asarray(sp.velocity_ned, dtype=np.float64) - vel
+            a_h = a_h + self.kd_vel * dv
+        elif sp.position_ned is not None:
+            a_h = a_h - self.kd_vel * vel
+        a_h[2] = 0.0                                  # the alt-hold owns vertical
+        if self.max_accel_mps2 is not None:
+            a_h = _clip_norm(a_h, self.max_accel_mps2)
+        # -- attitude: tilt direction from a_h, then rotvec -> body rate (matched) --
+        yaw = sp.yaw if sp.yaw is not None else nav.yaw
+        q_des_wxyz, _ = self._accel_to_attitude(a_h, yaw)            # direction only (ignore its thrust)
+        R_des = Rotation.from_quat(
+            [q_des_wxyz[1], q_des_wxyz[2], q_des_wxyz[3], q_des_wxyz[0]]
+        ).as_matrix()
+        R_cur = R_world_from_body(nav.roll, nav.pitch, nav.yaw)
+        rotvec = Rotation.from_matrix(R_cur.T @ R_des).as_rotvec()
+        rate = np.asarray(nav.angular_rate_body, dtype=np.float64) * np.asarray(self.odo_rate_sign, dtype=np.float64)
+        omega = (self.kp_att * rotvec - self.kd_att * rate) / max(self.ff_gain, 1e-6)
+        omega = _clip_norm(omega, self.max_body_rate_rps)
+        omega = omega * np.asarray(self.body_rate_sign, dtype=np.float64)
         return ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=sp.sim_time_ns,

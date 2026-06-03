@@ -105,7 +105,12 @@ def main() -> int:
     ap.add_argument("--thrust-levels", default="0.22,0.25,0.28", help="hover mode: thrust sweep (~hover 0.25)")
     ap.add_argument("--dwell-s", type=float, default=0.9, help="hover mode: hold per thrust level")
     # control
-    ap.add_argument("--thrust", type=float, default=0.25, help="collective thrust during rate steps + holds (~hover)")
+    ap.add_argument("--thrust", type=float, default=0.26, help="base collective thrust (~hover)")
+    ap.add_argument("--alt-hold", action="store_true", help="hold altitude via velocity-damped thrust (keeps z bounded)")
+    ap.add_argument("--kp-alt", type=float, default=0.010, help="alt-hold: thrust per metre of sink (NED z error)")
+    ap.add_argument("--kd-alt", type=float, default=0.025, help="alt-hold: thrust per m/s descent (vz damping)")
+    ap.add_argument("--alt-thr-lo", type=float, default=0.18, help="alt-hold thrust clamp low")
+    ap.add_argument("--alt-thr-hi", type=float, default=0.34, help="alt-hold thrust clamp high")
     ap.add_argument("--kp-hold", type=float, default=1.0, help="level-hold attitude gain (low BW = delay-tolerant)")
     ap.add_argument("--kd-hold", type=float, default=1.0, help="level-hold rate damping")
     ap.add_argument("--ff-gain", type=float, default=2.7, help="divide hold cmd by the measured rate scaling (~2.7x)")
@@ -228,9 +233,18 @@ def main() -> int:
                 return f"attitude runaway ({np.degrees(max(abs(s.roll), abs(s.pitch))):.0f} deg)"
             return None
 
+        origin_z = float(origin[2])
+
+        def hold_thrust(s) -> float:
+            """Velocity-damped altitude hold around base thrust (the controller's alt channel).
+            NED: z+ = down, vz+ = descending; sink/descent -> more thrust."""
+            z = float(s.position_ned[2]) if s.position_ned is not None else origin_z
+            vz = float(s.velocity_ned[2]) if s.velocity_ned is not None else 0.0
+            thr = args.thrust + args.kp_alt * (z - origin_z) + args.kd_alt * vz
+            return float(np.clip(thr, args.alt_thr_lo, args.alt_thr_hi))
+
         print(f"\n[run] {args.mode} sysid, ~{total_s:.0f}s. Ctrl-C to stop.")
         for phase in schedule:
-            thr = args.thrust if phase.thrust is None else phase.thrust
             phase_end = time.monotonic() + phase.dur
             while time.monotonic() < phase_end:
                 client.pump()
@@ -249,6 +263,12 @@ def main() -> int:
                 if phase.kind == "step":
                     omega = omega.copy()
                     omega[phase.axis] = phase.value          # RAW open-loop override (measures sign)
+                if phase.thrust is not None:
+                    thr = phase.thrust                       # hover-sweep: explicit per-phase thrust
+                elif args.alt_hold:
+                    thr = hold_thrust(s)                     # rate mode: hold altitude
+                else:
+                    thr = args.thrust
                 cmd = ControlCommand(mode=ControlMode.BODY_RATE, sim_time_ns=int(s.sim_time_ns),
                                      body_rate=omega, thrust=float(thr))
                 client.send_command(cmd)

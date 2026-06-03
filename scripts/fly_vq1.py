@@ -169,7 +169,17 @@ def main() -> int:
     ap.add_argument("--max-body-rate", type=float, default=2.0, help="CTBR: body-rate clamp (rad/s)")
     ap.add_argument("--rate-sign", default="-1,1,-1",
                     help="CTBR body-rate sign (roll,pitch,yaw) for this sim's convention (measured: roll+yaw inverted)")
+    # -- decoupled (plant-matched) CTBR, system-ID'd 2026-06-03 --
+    ap.add_argument("--decoupled", action="store_true", help="use the plant-matched decoupled CTBR law")
+    ap.add_argument("--ff-gain", type=float, default=2.6, help="decoupled: rate feedforward divisor (measured ~2.6x)")
+    ap.add_argument("--odo-rate-sign", default="1,-1,1", help="decoupled: ODOMETRY rate sign vs true (pitch inverted)")
+    ap.add_argument("--kp-alt", type=float, default=0.010, help="decoupled: alt-hold thrust per metre sink")
+    ap.add_argument("--kd-alt", type=float, default=0.025, help="decoupled: alt-hold thrust per m/s descent")
+    ap.add_argument("--alt-thrust-lo", type=float, default=0.18, help="decoupled: alt-hold thrust clamp low")
+    ap.add_argument("--alt-thrust-hi", type=float, default=0.36, help="decoupled: alt-hold thrust clamp high")
     ap.add_argument("--max-gates", type=int, default=None, help="fly only the first N gates (staged bring-up)")
+    ap.add_argument("--geofence-m", type=float, default=None, help="abort if horiz dist from start exceeds (safety)")
+    ap.add_argument("--max-climb-m", type=float, default=None, help="abort if |z-start| exceeds (safety)")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
@@ -266,7 +276,11 @@ def main() -> int:
                                    thrust_slope_mps2=args.thrust_slope, max_accel_mps2=args.max_accel,
                                    max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel,
                                    kp_att=args.kp_att, kd_att=args.kd_att, max_body_rate_rps=args.max_body_rate,
-                                   body_rate_sign=np.array([float(x) for x in args.rate_sign.split(",")])),
+                                   body_rate_sign=np.array([float(x) for x in args.rate_sign.split(",")]),
+                                   decoupled=args.decoupled, ff_gain=args.ff_gain,
+                                   odo_rate_sign=np.array([float(x) for x in args.odo_rate_sign.split(",")]),
+                                   kp_alt=args.kp_alt, kd_alt=args.kd_alt,
+                                   alt_thrust_lo=args.alt_thrust_lo, alt_thrust_hi=args.alt_thrust_hi),
             config=MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
                                  gate_pass_radius_m=args.gate_radius),
         )
@@ -351,6 +365,18 @@ def main() -> int:
                 print("\n  estimator diverged (non-finite) -> abort.")
                 mission.abort()
                 return True
+            if ns is not None:                                   # safety geofence (bounded bring-up)
+                if st.get("start_pos") is None:
+                    st["start_pos"] = np.asarray(ns.position_ned, dtype=np.float64).copy()
+                rel = np.asarray(ns.position_ned, dtype=np.float64) - st["start_pos"]
+                if args.geofence_m is not None and float(np.hypot(rel[0], rel[1])) > args.geofence_m:
+                    print(f"\n  GEOFENCE: {np.hypot(rel[0],rel[1]):.0f} m from start -> abort.")
+                    mission.abort()
+                    return True
+                if args.max_climb_m is not None and abs(float(rel[2])) > args.max_climb_m:
+                    print(f"\n  ALTITUDE: {rel[2]:+.0f} m from start -> abort.")
+                    mission.abort()
+                    return True
             return False
 
         print(f"\n[run] flying up to {args.max_seconds:g}s / {len(gates)} gates "

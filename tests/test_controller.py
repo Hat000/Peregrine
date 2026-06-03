@@ -300,3 +300,92 @@ def test_level_hold_clamps_to_max_rate():
     sent = level_hold_body_rate(0.0, 1.2, 0.0, 0.0, np.zeros(3),     # huge tilt -> would saturate
                                 kp=10.0, kd=0.0, body_rate_sign=_SIM_SIGN, max_rate=2.0)
     assert np.linalg.norm(sent) == pytest.approx(2.0, abs=1e-9)
+
+
+# -- DECOUPLED CTBR (plant-matched, system-ID'd 2026-06-03) -----------------
+def _decoupled(**kw):
+    base = dict(mode=ControlMode.BODY_RATE, decoupled=True, hover_thrust=0.26,
+                kp_alt=0.01, kd_alt=0.025, ff_gain=2.6, kp_pos=1.5, kd_vel=2.0,
+                odo_rate_sign=np.array([1.0, -1.0, 1.0]), body_rate_sign=np.array([-1.0, 1.0, -1.0]),
+                max_body_rate_rps=2.0, alt_thrust_lo=0.1, alt_thrust_hi=0.5)
+    base.update(kw)
+    return Controller(**base)
+
+
+def test_decoupled_hover_hold_is_zero_rate_at_hover_thrust():
+    c = _decoupled()
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.3,
+                   position_ned=np.array([1.0, 2.0, -1.0]), velocity_ned=np.zeros(3))
+    sp = Setpoint(position_ned=np.array([1.0, 2.0, -1.0]), yaw=0.3)   # hold here
+    cmd = c.command(nav, sp)
+    assert cmd.mode is ControlMode.BODY_RATE
+    np.testing.assert_allclose(cmd.body_rate, np.zeros(3), atol=1e-9)   # already level + on target
+    assert cmd.thrust == pytest.approx(0.26)                            # exactly hover (z=target, vz=0)
+
+
+def test_decoupled_altitude_hold_adds_thrust_when_sunk():
+    c = _decoupled()
+    # NED z+ = down; drone at z=0 is BELOW a target of z=-1 (sank 1 m) -> more thrust to climb.
+    nav = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, 0.0]), velocity_ned=np.zeros(3))
+    cmd = c.command(nav, Setpoint(position_ned=np.array([0.0, 0.0, -1.0]), yaw=0.0))
+    assert cmd.thrust == pytest.approx(0.26 + 0.01 * 1.0)               # hover + kp_alt*(0 - (-1))
+    # descending (vz>0) also adds thrust
+    nav2 = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, -1.0]),
+                    velocity_ned=np.array([0.0, 0.0, 2.0]))
+    cmd2 = c.command(nav2, Setpoint(position_ned=np.array([0.0, 0.0, -1.0]), yaw=0.0))
+    assert cmd2.thrust == pytest.approx(0.26 + 0.025 * 2.0)             # hover + kd_alt*vz
+
+
+def test_decoupled_horizontal_error_tilts_thrust_toward_target():
+    c = _decoupled()
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    cmd = c.command(nav, Setpoint(position_ned=np.array([10.0, 0.0, 0.0]), yaw=0.0))   # target north
+    # body-up in world should lean north (+x) to accelerate that way; thrust stays the hover channel
+    up = _body_up_world(ControlCommand(mode=ControlMode.ATTITUDE,
+                                       attitude_quat_wxyz=_des_quat(c, nav, Setpoint(
+                                           position_ned=np.array([10.0, 0.0, 0.0]), yaw=0.0))))
+    assert up[0] > 0.0 and up[2] < 0.0                                  # leans north, still mostly up
+    assert np.linalg.norm(cmd.body_rate) > 0.0                          # commands a rate to get there
+
+
+def test_decoupled_ff_gain_scales_down_the_rate():
+    nav = NavState(sim_time_ns=0, roll=0.2, pitch=0.3, yaw=0.0,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    sp = Setpoint(position_ned=np.zeros(3), yaw=0.0)
+    base = _decoupled(ff_gain=1.0).command(nav, sp).body_rate
+    fed = _decoupled(ff_gain=2.6).command(nav, sp).body_rate
+    np.testing.assert_allclose(fed, base / 2.6, atol=1e-9)              # below the clamp -> exact 1/ff
+
+
+def test_decoupled_odo_rate_sign_flips_pitch_damping():
+    # A positive ODOMETRY pitch rate means a NEGATIVE true pitch rate (pitch odo is inverted).
+    # With odo_rate_sign=[1,-1,1] the damping uses the corrected (negative) rate, so the pitch
+    # damping contribution flips vs the naive (uncorrected) sign.
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3),
+                   angular_rate_body=np.array([0.0, 1.0, 0.0]))     # ODOMETRY pitch rate +1
+    sp = Setpoint(position_ned=np.zeros(3), yaw=0.0)
+    naive = _decoupled(kd_att=0.5, odo_rate_sign=np.array([1.0, 1.0, 1.0])).command(nav, sp).body_rate
+    fixed = _decoupled(kd_att=0.5, odo_rate_sign=np.array([1.0, -1.0, 1.0])).command(nav, sp).body_rate
+    assert np.sign(naive[1]) == -np.sign(fixed[1]) or abs(naive[1] - fixed[1]) > 1e-6
+
+
+def test_decoupled_thrust_is_clamped():
+    c = _decoupled(alt_thrust_hi=0.30)
+    nav = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, 50.0]),   # sank 50 m -> huge demand
+                   velocity_ned=np.zeros(3))
+    cmd = c.command(nav, Setpoint(position_ned=np.array([0.0, 0.0, 0.0]), yaw=0.0))
+    assert cmd.thrust == pytest.approx(0.30)                            # clamped to hi
+
+
+def _des_quat(c, nav, sp):
+    # helper: extract the desired attitude quaternion the decoupled law builds (for the tilt test)
+    import numpy as _np
+    a_h = c.kp_pos * (_np.asarray(sp.position_ned, float) - _np.asarray(nav.position_ned, float))
+    a_h[2] = 0.0
+    if c.max_accel_mps2 is not None:
+        from racer.controller import _clip_norm
+        a_h = _clip_norm(a_h, c.max_accel_mps2)
+    q, _ = c._accel_to_attitude(a_h, sp.yaw)
+    return q
