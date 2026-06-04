@@ -157,7 +157,7 @@ def main() -> int:
     ap.add_argument("--cruise", type=float, default=2.5, help="planner cruise speed m/s (bounded; start slow)")
     ap.add_argument("--lookahead", type=float, default=2.0, help="carrot distance beyond the gate (m)")
     ap.add_argument("--takeoff-alt", type=float, default=1.5, help="hover altitude above the start (m)")
-    ap.add_argument("--gate-radius", type=float, default=1.2, help="proximity gate-pass radius (m)")
+    ap.add_argument("--gate-radius", type=float, default=0.75, help="proximity gate-pass radius (m); MUST be <= inner half-opening (~0.75) or a wide miss false-scores a pass")
     ap.add_argument("--hover-thrust", type=float, default=0.5, help="attitude mode: calibrated hover throttle (innerloop_step ~0.489)")
     ap.add_argument("--thrust-slope", type=float, default=None, help="attitude: measured up-accel/thrust (innerloop_step ~25.9)")
     ap.add_argument("--max-accel", type=float, default=None, help="attitude: cap |desired accel| m/s^2 (bounds tilt; e.g. 3)")
