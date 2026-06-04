@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, NavState
 from racer.frames import CAMERA_INTRINSICS_K, R_camera_from_body, R_world_from_body
@@ -91,14 +92,24 @@ def gates_from_track_records(
         R = _frame_from_through(seg)
         pos = positions[i]
         if corner_to_center:
-            # The map's position is the gate's bottom-LEFT corner, not the opening centre (visually
-            # confirmed on gate 0, 2026-06-04: aiming at it flew into the left post). In the gate
-            # frame X=right, Y=down, the centre is half a gate up-and-right of the bottom-left
-            # corner: + (width/2)*X (toward right) - (height/2)*Y (toward up). Use the OUTER size
-            # (width_m/height_m ~2.72), the square the corner belongs to.
+            # The map's position is the gate's CORNER, not the opening centre (visually confirmed on
+            # gate 0, 2026-06-04: aiming at the segment-frame "centre" flew into the gate panels).
+            # Use the gate's TRUE orientation quaternion for the offset -- the segment-derived frame
+            # had the width axis pointing the WRONG way in y (it sent the drone ~2.7 m off-centre).
+            # Verified convention (all 6 gates, identical quat): col0 = +width, col1 = normal,
+            # col2 = +height(down). Opening centre = corner + (w/2)*col0 - (h/2)*col2 (toward +width,
+            # toward up). For gate 0: (-23.30,-0.40,-0.03) -> (-23.30,+0.96,-1.39).
             w = float(r.get("width_m") or 2.72)
             h = float(r.get("height_m") or 2.72)
-            pos = pos + 0.5 * w * R[:, 0] - 0.5 * h * R[:, 1]
+            q = r.get("orientation_ned_wxyz")
+            if q is not None:
+                Rq = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
+                col2 = Rq[:, 2]
+                if col2[2] < 0.0:                  # orient the height axis DOWN so -col2 is up
+                    col2 = -col2
+                pos = pos + 0.5 * w * Rq[:, 0] - 0.5 * h * col2
+            else:                                  # fallback: segment frame (may mis-sign the width)
+                pos = pos + 0.5 * w * R[:, 0] - 0.5 * h * R[:, 1]
         gates.append(
             Gate(
                 gate_id=int(r["gate_id"]),

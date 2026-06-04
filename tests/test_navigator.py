@@ -114,15 +114,17 @@ def test_gates_from_records_geometry_matches_input():
         np.testing.assert_allclose(g.normal_ned, [1.0, 0.0, 0.0], atol=1e-9)
 
 
-def test_corner_to_center_offsets_position_up_and_right():
-    # The map position is the gate's bottom-left CORNER; corner_to_center moves it to the opening
-    # centre: + (w/2)*X (right) - (h/2)*Y (up). For a +X-facing gate the frame is X=+y(right),
-    # Y=+z(down), so the centre is at +1.36 in y (right) and -1.36 in z (up) of a 2.72 m gate.
-    recs = _records([[5, 0, 0], [10, 0, 0], [15, 0, 0]])      # width_m=height_m=2.72
+def test_corner_to_center_uses_quaternion_not_segment_sign():
+    # The map position is the gate's CORNER; corner_to_center moves it to the opening centre using
+    # the gate's TRUE quaternion (col0=+width, col2=+height-down): centre = corner + (w/2)*col0 -
+    # (h/2)*col2. The _records quat is Rz(90): col0=+y, col2=+z. For a -X course (the real map), the
+    # segment frame's width axis would point -y, so this guards the SIGN: centre must be +y (+1.36),
+    # not -y. z goes up (-1.36). 2.72 m gate.
+    recs = _records([[-5, 0, 0], [-10, 0, 0], [-15, 0, 0]])   # course runs -X like the real track
     corner = gates_from_track_records(recs, corner_to_center=False)
     center = gates_from_track_records(recs, corner_to_center=True)
-    np.testing.assert_allclose(corner[0].position_ned, [5, 0, 0], atol=1e-9)
-    np.testing.assert_allclose(center[0].position_ned, [5.0, 1.36, -1.36], atol=1e-6)
+    np.testing.assert_allclose(corner[0].position_ned, [-5, 0, 0], atol=1e-9)
+    np.testing.assert_allclose(center[0].position_ned, [-5.0, 1.36, -1.36], atol=1e-6)  # +y, NOT -y
     for c, k in zip(corner, center):                          # frame + through-dir unchanged
         np.testing.assert_allclose(c.R_world_gate, k.R_world_gate, atol=1e-9)
 
