@@ -52,6 +52,18 @@ def test_off_axis_pursuit_points_at_carrot():
     assert sp.yaw == pytest.approx(np.arctan2(-5.0, 12.0))
 
 
+def test_course_yaw_mode_faces_gate_axis_not_carrot():
+    # Same off-axis geometry, but yaw_mode='course' must hold the nose down the gate's
+    # through-direction (north => yaw 0), NOT swing toward the off-axis carrot. This is the
+    # drift-insensitive heading the decoupled CTBR controller wants (it translates via world tilt).
+    gate = _gate([10.0, 0.0, 0.0], normal=[1.0, 0.0, 0.0])
+    nav = NavState(sim_time_ns=0, position_ned=np.array([0.0, 5.0, 0.0]),
+                   velocity_ned=np.array([1.0, 0.0, 0.0]))            # moving north (disambiguates travel)
+    sp = ReactivePlanner(cruise_speed=3.0, lookahead_m=2.0, yaw_mode="course").plan(nav, gate)
+    assert sp.yaw == pytest.approx(0.0)                               # faces the gate axis, not atan2(-5,12)
+    np.testing.assert_allclose(sp.position_ned, [12.0, 0.0, 0.0])     # carrot placement unchanged
+
+
 def test_yaw_faces_a_gate_to_the_east():
     gate = _gate([0.0, 8.0, 0.0], normal=[0.0, 1.0, 0.0])          # gate due east, facing east
     sp = ReactivePlanner().plan(_nav([0.0, 0.0, 0.0]), gate)

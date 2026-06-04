@@ -157,6 +157,7 @@ def main() -> int:
     ap.add_argument("--mode", choices=list(_MODE), default="position")
     ap.add_argument("--cruise", type=float, default=2.5, help="planner cruise speed m/s (bounded; start slow)")
     ap.add_argument("--lookahead", type=float, default=2.0, help="carrot distance beyond the gate (m)")
+    ap.add_argument("--yaw-mode", choices=("carrot", "course"), default="carrot", help="planner yaw: 'course' holds the nose down the gate axis (drift-insensitive; for decoupled CTBR); 'carrot' faces the line-of-sight")
     ap.add_argument("--takeoff-alt", type=float, default=1.5, help="hover altitude above the start (m)")
     ap.add_argument("--gate-radius", type=float, default=0.75, help="proximity gate-pass radius (m); MUST be <= inner half-opening (~0.75) or a wide miss false-scores a pass")
     ap.add_argument("--hover-thrust", type=float, default=0.5, help="attitude mode: calibrated hover throttle (innerloop_step ~0.489)")
@@ -276,7 +277,7 @@ def main() -> int:
                                                use_given_position=not args.no_given_position))
         mission = Mission(
             gates=gates,
-            planner=ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead),
+            planner=ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead, yaw_mode=args.yaw_mode),
             controller=Controller(mode=_MODE[args.mode], hover_thrust=args.hover_thrust,
                                    thrust_slope_mps2=args.thrust_slope, max_accel_mps2=args.max_accel,
                                    max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel,
