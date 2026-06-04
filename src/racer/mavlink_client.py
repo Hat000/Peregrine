@@ -135,7 +135,8 @@ def parse_track_info(payload: bytes) -> list[dict]:
 
 
 class MavlinkClient:
-    HEARTBEAT_HZ = 2  # spec minimum
+    HEARTBEAT_HZ = 2   # spec minimum
+    TIMESYNC_HZ = 10   # the reference client's keepalive rate (no heartbeat)
 
     def __init__(self, endpoint: str = "udp:127.0.0.1:14550"):
         self.endpoint = endpoint
@@ -143,6 +144,13 @@ class MavlinkClient:
         self.state = DroneState()
         self.unknown_msg_types: set[str] = set()
         self._last_heartbeat_tx_s = 0.0
+        self.send_heartbeats = True   # set False to stay silent (probe ANGLE-mode; see pump())
+        # The reference client keeps the link alive with TIMESYNC@10Hz and sends NO heartbeat.
+        # Our heartbeat appears to force the sim into ACRO (MANUAL_INPUT). To stay in ANGLE while
+        # still receiving telemetry (the sim may stop sending if it hears nothing), mirror the
+        # reference: send_heartbeats=False + send_timesync=True. [2026-06-03]
+        self.send_timesync = False
+        self._last_timesync_tx_s = 0.0
         # Optional raw-message tap, called with each inbound pymavlink message BEFORE
         # parsing. The recorder sets this to capture msg.get_msgbuf() (raw wire bytes).
         # Kept orthogonal so recording never perturbs the parse/state path.
@@ -179,7 +187,12 @@ class MavlinkClient:
                 )
 
     def pump(self) -> None:
-        """Drain inbound MAVLink and emit a heartbeat if due. Call frequently."""
+        """Drain inbound MAVLink and emit a heartbeat if due. Call frequently.
+
+        ``send_heartbeats=False`` suppresses our 2 Hz GCS heartbeat: the sim appears to default
+        to ANGLE mode and flip to ACRO once a client heartbeat arrives (the heartbeat sets the
+        MANUAL_INPUT flag); the reference client sends NO heartbeat. Turn it off to probe whether
+        ANGLE / position control is reachable. [2026-06-03 teammate observation]"""
         assert self.conn is not None
         now = time.monotonic()
         while True:
@@ -189,9 +202,12 @@ class MavlinkClient:
             if self.on_message is not None:
                 self.on_message(msg)
             self._handle(msg)
-        if now - self._last_heartbeat_tx_s >= 1.0 / self.HEARTBEAT_HZ:
+        if self.send_heartbeats and now - self._last_heartbeat_tx_s >= 1.0 / self.HEARTBEAT_HZ:
             self._send_heartbeat()
             self._last_heartbeat_tx_s = now
+        if self.send_timesync and now - self._last_timesync_tx_s >= 1.0 / self.TIMESYNC_HZ:
+            self._send_timesync()
+            self._last_timesync_tx_s = now
 
     def _handle(self, msg) -> None:
         # Update the immutable snapshot wholesale (replace) so concurrent readers never
@@ -353,6 +369,12 @@ class MavlinkClient:
             mavutil.mavlink.MAV_AUTOPILOT_INVALID,
             0, 0, 0,
         )
+
+    def _send_timesync(self) -> None:
+        """Mirror the reference client's keepalive: timesync_send(tc1=now_ns, ts1=0). Keeps the
+        sim sending telemetry WITHOUT a GCS heartbeat (which seems to force ACRO)."""
+        assert self.conn is not None
+        self.conn.mav.timesync_send(int(time.time_ns()), 0)
 
     def _now_ms(self) -> int:
         return int(time.monotonic() * 1000) & 0xFFFFFFFF

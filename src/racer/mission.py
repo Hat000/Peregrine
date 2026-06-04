@@ -40,7 +40,12 @@ class MissionState(IntEnum):
 class MissionConfig:
     takeoff_altitude_m: float = 1.5   # hover target; NED z = -altitude
     takeoff_tol_m: float = 0.3        # within this of target altitude -> start the run
-    gate_pass_radius_m: float = 1.0   # within this of a gate centre -> count it passed, advance
+    # Proximity pass radius. MUST be <= the inner half-opening (~0.75 m) or it FALSE-POSITIVES a
+    # miss: a drone that flies 1.3 m wide of the gate is still within a 1.8 m sphere and scores a
+    # bogus "pass" (measured 2026-06-04 -- a visually-confirmed miss read as gate_index=1). The
+    # honest fast-pass test is path (2), plane-crossing INSIDE the inner square; this sphere is
+    # only the slow-centred backup, so keep it tight.
+    gate_pass_radius_m: float = 0.75
 
 
 @dataclass

@@ -5,10 +5,40 @@ from racer.frames import (
     CAMERA_PITCH_RAD,
     R_camera_from_body,
     R_world_from_body,
+    body_rate_from_quats,
     euler_from_quat_wxyz,
     project_camera_point,
     world_point_in_camera,
 )
+
+
+def _quat_wxyz(roll, pitch, yaw):
+    x, y, z, w = Rotation.from_euler("ZYX", [yaw, pitch, roll]).as_quat()
+    return np.array([w, x, y, z])
+
+
+def test_body_rate_from_quats_recovers_known_rate():
+    # Integrate a known body rate forward over dt and recover it (sign-correct, body frame).
+    dt = 0.02
+    for omega in ([0.0, 0.6, 0.0], [0.5, 0.0, 0.0], [0.0, 0.0, -0.4], [0.2, -0.3, 0.1]):
+        q0 = _quat_wxyz(0.1, -0.2, 0.3)
+        R0 = Rotation.from_quat([q0[1], q0[2], q0[3], q0[0]])
+        R1 = R0 * Rotation.from_rotvec(np.array(omega) * dt)
+        q1x = R1.as_quat()
+        q1 = np.array([q1x[3], q1x[0], q1x[1], q1x[2]])
+        np.testing.assert_allclose(body_rate_from_quats(q0, q1, dt), omega, atol=1e-6)
+
+
+def test_body_rate_from_quats_pitch_sign_matches_angle_increase():
+    # A nose-UP pitch (pitch angle increasing) must yield a POSITIVE body pitch rate -- the
+    # property the sim's ODOMETRY pitchspeed violates (it reads negative), which broke damping.
+    q0, q1 = _quat_wxyz(0.0, -0.30, -3.1), _quat_wxyz(0.0, -0.20, -3.1)   # pitch -17 -> -11 deg
+    assert body_rate_from_quats(q0, q1, 0.02)[1] > 0.0
+
+
+def test_body_rate_from_quats_zero_dt_is_zero():
+    np.testing.assert_array_equal(body_rate_from_quats(_quat_wxyz(0, 0, 0), _quat_wxyz(0, 0.1, 0), 0.0),
+                                  np.zeros(3))
 
 
 def test_euler_from_quat_wxyz_inverts_R_world_from_body():
