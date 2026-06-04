@@ -84,16 +84,22 @@ def _arm_cmd() -> int:
 def _load_map(client: MavlinkClient, args) -> list:
     """Prefer the live TRACK_INFO map; fall back to the saved deterministic course."""
     c2c = args.gate_corner_to_center
-    live_ok = bool(client.track_gates) and all(
-        np.max(np.abs(np.asarray(g["position_ned"], dtype=np.float64))) < 500.0
-        for g in client.track_gates
+    saved_raw = [r["position_ned"] for r in json.loads(Path(args.map).read_text())["gates"]]
+    # The course is DETERMINISTIC, so the saved map is ground truth; the chunked TRACK_INFO
+    # reassembly is intermittently corrupt (gate0_straight2 parsed gates km away; gate0_given1
+    # placed one near the start -> a bogus takeoff "pass"). Accept the live map only if it MATCHES
+    # the saved one (every gate within 3 m); else use saved. --force-saved-map skips live entirely.
+    live = client.track_gates
+    live_ok = (not args.force_saved_map) and bool(live) and len(live) == len(saved_raw) and all(
+        float(np.linalg.norm(np.asarray(g["position_ned"], dtype=np.float64) - np.asarray(s, dtype=np.float64))) < 3.0
+        for g, s in zip(live, saved_raw)
     )
-    if client.track_gates and not live_ok:
-        bad = np.asarray(client.track_gates[0]["position_ned"], dtype=np.float64)
-        print(f"  !! LIVE gate map looks CORRUPT (gate0={np.round(bad,1)}; chunk reassembly) -> falling back to SAVED.")
+    if live and not live_ok and not args.force_saved_map:
+        bad = np.asarray(live[0]["position_ned"], dtype=np.float64)
+        print(f"  !! LIVE gate map disagrees with saved (gate0={np.round(bad,1)}; corrupt reassembly) -> using SAVED.")
     if live_ok:
-        print(f"  using LIVE gate map: {len(client.track_gates)} gates (TRACK_INFO; corner->center={c2c}).")
-        return gates_from_track_records(client.track_gates, corner_to_center=c2c)
+        print(f"  using LIVE gate map: {len(live)} gates (matches saved; corner->center={c2c}).")
+        return gates_from_track_records(live, corner_to_center=c2c)
     gates = load_track_map(args.map, corner_to_center=c2c)
     print(f"  using SAVED gate map: {len(gates)} gates ({args.map}; corner->center={c2c}).")
     return gates
@@ -197,6 +203,7 @@ def main() -> int:
     ap.add_argument("--geofence-m", type=float, default=None, help="abort if horiz dist from start exceeds (safety)")
     ap.add_argument("--max-climb-m", type=float, default=None, help="abort if |z-start| exceeds (safety)")
     ap.add_argument("--cmd-log", action="store_true", help="log per-tick (pos,vel,speed,thrust,body_rate) to commands.jsonl for offline tuning diagnosis")
+    ap.add_argument("--force-saved-map", action="store_true", help="ignore the (flaky) live TRACK_INFO map; use the saved deterministic --map")
     ap.add_argument("--use-kf-state", action="store_true", help="control on the KF-estimated pos/vel (default: use the GIVEN pristine pos/vel; the KF velocity lags ~4x and breaks damping)")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
