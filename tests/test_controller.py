@@ -442,3 +442,18 @@ def test_decoupled_velocity_targeting_caps_speed():
     nav_cruise = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.array([1.5, 0.0, 0.0]))
     cruise = c.command(nav_cruise, Setpoint(position_ned=np.array([100.0, 0.0, 0.0]), yaw=0.0))
     assert np.linalg.norm(cruise.body_rate) < np.linalg.norm(far)  # at cruise: ~level, no overshoot
+
+
+def test_decoupled_cross_track_is_corrected_at_full_gain_not_diluted():
+    # A target far along +x but 3 m off-axis in +y. The naive direction-preserving clip would
+    # dilute the cross-track velocity to ~kp*3/100 (noise); the along/cross split (using sp.yaw as
+    # the gate axis) must keep the cross-track at full gain so the drone actually closes the 3 m.
+    c = _decoupled(max_speed=1.5, kp_pos=1.0, kd_vel=2.0, max_accel_mps2=20.0, kp_att=1.6, kd_att=0.0)
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    on_axis = c.command(nav, Setpoint(position_ned=np.array([100.0, 0.0, 0.0]), yaw=0.0)).body_rate
+    off_axis = c.command(nav, Setpoint(position_ned=np.array([100.0, 3.0, 0.0]), yaw=0.0)).body_rate
+    assert abs(on_axis[0]) < 1e-6                                  # on-axis: no roll
+    # off-axis: a STRONG roll toward +y (body_rate_sign roll=-1 -> negative wire). Diluted would be
+    # ~kp*0.045 -> |roll| < 0.02; the full cross-track gives |roll| an order of magnitude bigger.
+    assert off_axis[0] < -0.1

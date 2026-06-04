@@ -275,7 +275,18 @@ class Controller:
             # velocity-targeting: a capped desired velocity toward the target, then damp to it
             err = np.asarray(sp.position_ned, dtype=np.float64) - pos
             err[2] = 0.0
-            des_vel = _clip_norm(self.kp_pos * err, self.max_speed)
+            if sp.yaw is not None:
+                # DECOUPLE along-track (cap SPEED) from cross-track (correct POSITION at full gain).
+                # _clip_norm preserves the error DIRECTION, which the huge along-track component
+                # dominates -> the cross-track velocity target shrinks to noise and a small lateral
+                # disturbance wins (measured: +y drift to +12 m aiming 1.8 m off-axis, gate0_center1).
+                # Split on the gate axis (sp.yaw): cap only the forward target, keep cross-track full.
+                ad = np.array([np.cos(sp.yaw), np.sin(sp.yaw), 0.0])     # along-track (gate-axis) dir
+                along = float(np.clip(self.kp_pos * float(err @ ad), -self.max_speed, self.max_speed))
+                cross = _clip_norm(self.kp_pos * (err - float(err @ ad) * ad), self.max_speed)
+                des_vel = along * ad + cross
+            else:
+                des_vel = _clip_norm(self.kp_pos * err, self.max_speed)
             vh = np.array([vel[0], vel[1], 0.0])
             a_h = a_h + self.kd_vel * (des_vel - vh)
         else:                                          # legacy PD (kept for compatibility)
