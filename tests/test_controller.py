@@ -401,6 +401,21 @@ def test_decoupled_alt_offset_raises_thrust_to_climb_above_gate():
     assert lifted == pytest.approx(0.26 + 0.05 * 0.5)                    # offset -> climb thrust
 
 
+def test_decoupled_odo_att_sign_flips_roll_feedback():
+    # odo_att_sign=[-1,1,1] treats the decoded roll as its negation (the live sim's quaternion roll
+    # is inverted). So a drone reported at roll=+0.2 with the flip must yield the SAME command as a
+    # drone reported at roll=-0.2 without it -- the controller now sees the true (mirrored) attitude.
+    sp = Setpoint(position_ned=np.array([10.0, 0.0, 0.0]), yaw=0.0)
+    flipped = _decoupled(odo_att_sign=np.array([-1.0, 1.0, 1.0]))
+    plain = _decoupled(odo_att_sign=np.array([1.0, 1.0, 1.0]))
+    nav_pos = NavState(sim_time_ns=0, roll=0.2, pitch=0.0, yaw=0.0,
+                       position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    nav_neg = NavState(sim_time_ns=0, roll=-0.2, pitch=0.0, yaw=0.0,
+                       position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    np.testing.assert_allclose(flipped.command(nav_pos, sp).body_rate,
+                               plain.command(nav_neg, sp).body_rate, atol=1e-9)
+
+
 def test_decoupled_tilt_comp_is_noop_when_level():
     nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0,
                    position_ned=np.array([0.0, 0.0, -1.0]), velocity_ned=np.zeros(3))

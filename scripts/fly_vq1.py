@@ -177,6 +177,7 @@ def main() -> int:
     ap.add_argument("--decoupled", action="store_true", help="use the plant-matched decoupled CTBR law")
     ap.add_argument("--ff-gain", type=float, default=2.6, help="decoupled: rate feedforward divisor (measured ~2.6x)")
     ap.add_argument("--odo-rate-sign", default="1,-1,1", help="decoupled: ODOMETRY rate sign vs true (pitch inverted)")
+    ap.add_argument("--odo-att-sign", default="1,1,1", help="decoupled: ODOMETRY-quaternion attitude sign vs true (roll inverted on live sim -> -1,1,1)")
     ap.add_argument("--kp-alt", type=float, default=0.010, help="decoupled: alt-hold thrust per metre sink")
     ap.add_argument("--kd-alt", type=float, default=0.025, help="decoupled: alt-hold thrust per m/s descent")
     ap.add_argument("--alt-thrust-lo", type=float, default=0.18, help="decoupled: alt-hold thrust clamp low")
@@ -288,6 +289,7 @@ def main() -> int:
                                    body_rate_sign=np.array([float(x) for x in args.rate_sign.split(",")]),
                                    decoupled=args.decoupled, ff_gain=args.ff_gain,
                                    odo_rate_sign=np.array([float(x) for x in args.odo_rate_sign.split(",")]),
+                                   odo_att_sign=np.array([float(x) for x in args.odo_att_sign.split(",")]),
                                    kp_alt=args.kp_alt, kd_alt=args.kd_alt,
                                    alt_thrust_lo=args.alt_thrust_lo, alt_thrust_hi=args.alt_thrust_hi,
                                    alt_offset_m=args.alt_offset,
