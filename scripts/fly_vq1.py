@@ -177,6 +177,8 @@ def main() -> int:
     ap.add_argument("--kd-alt", type=float, default=0.025, help="decoupled: alt-hold thrust per m/s descent")
     ap.add_argument("--alt-thrust-lo", type=float, default=0.18, help="decoupled: alt-hold thrust clamp low")
     ap.add_argument("--alt-thrust-hi", type=float, default=0.36, help="decoupled: alt-hold thrust clamp high")
+    ap.add_argument("--max-speed", type=float, default=None, help="decoupled: velocity-targeting speed cap (m/s)")
+    ap.add_argument("--tilt-comp", action="store_true", help="decoupled: tilt-compensate collective (thrust/cos(tilt)) so leaning forward doesn't sag altitude")
     ap.add_argument("--max-gates", type=int, default=None, help="fly only the first N gates (staged bring-up)")
     ap.add_argument("--geofence-m", type=float, default=None, help="abort if horiz dist from start exceeds (safety)")
     ap.add_argument("--max-climb-m", type=float, default=None, help="abort if |z-start| exceeds (safety)")
@@ -280,7 +282,8 @@ def main() -> int:
                                    decoupled=args.decoupled, ff_gain=args.ff_gain,
                                    odo_rate_sign=np.array([float(x) for x in args.odo_rate_sign.split(",")]),
                                    kp_alt=args.kp_alt, kd_alt=args.kd_alt,
-                                   alt_thrust_lo=args.alt_thrust_lo, alt_thrust_hi=args.alt_thrust_hi),
+                                   alt_thrust_lo=args.alt_thrust_lo, alt_thrust_hi=args.alt_thrust_hi,
+                                   max_speed=args.max_speed, tilt_comp=args.tilt_comp),
             config=MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
                                  gate_pass_radius_m=args.gate_radius),
         )

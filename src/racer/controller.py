@@ -137,6 +137,18 @@ class Controller:
     kd_alt: float = 0.0
     alt_thrust_lo: float = 0.0
     alt_thrust_hi: float = 1.0
+    # Tilt-compensate the collective: divide the alt-hold thrust by cos(roll)*cos(pitch) (the
+    # world-vertical fraction of body thrust, R[2,2]) so a forward LEAN doesn't silently sag
+    # altitude. Without it, pitching to fly forward drops the vertical thrust component, the soft
+    # alt PD over-corrects, and the drone balloons UP into the gate (measured: 2 m climb threading
+    # gate 0). Floor at 0.5 (=60 deg) so a near-horizontal attitude can't blow the throttle up.
+    tilt_comp: bool = False
+    # Horizontal: when set, use VELOCITY-TARGETING (cap SPEED, not the position gain). A clamped
+    # position error + unbounded velocity damping (the old PD) lets the position pull dominate, so
+    # the drone overshoots cruise AND under-corrects laterally (it flew 5 m/s and missed the gate
+    # ~1 m sideways). Instead: desired_vel = clip(kp_pos*err, max_speed); a_h = kd_vel*(des_vel -
+    # vel) -- strong position tracking at a bounded speed. None => legacy PD. [teammate red-team]
+    max_speed: float | None = None
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -244,22 +256,32 @@ class Controller:
         z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
         vz_t = float(sp.velocity_ned[2]) if sp.velocity_ned is not None else 0.0
         thrust = self.hover_thrust + self.kp_alt * (pos[2] - z_t) + self.kd_alt * (vel[2] - vz_t)
+        if self.tilt_comp:                             # undo the vertical-thrust loss from leaning
+            cos_tilt = float(np.cos(nav.roll) * np.cos(nav.pitch))   # = R[2,2], world-up fraction
+            thrust = thrust / max(cos_tilt, 0.5)       # floor at 60 deg so it can't blow up
         thrust = float(np.clip(thrust, self.alt_thrust_lo, self.alt_thrust_hi))
-        # -- horizontal: PD on xy error -> desired horizontal accel (vertical zeroed) --
+        # -- horizontal: xy error -> desired horizontal accel (vertical zeroed) --
         a_h = np.zeros(3)
         if sp.accel_ned is not None:
             a_h = a_h + np.asarray(sp.accel_ned, dtype=np.float64)
-        if sp.position_ned is not None:
+        if self.max_speed is not None and sp.position_ned is not None:
+            # velocity-targeting: a capped desired velocity toward the target, then damp to it
             err = np.asarray(sp.position_ned, dtype=np.float64) - pos
             err[2] = 0.0
-            if self.max_pos_error_m is not None:
-                err = _clip_norm(err, self.max_pos_error_m)
-            a_h = a_h + self.kp_pos * err
-        if sp.velocity_ned is not None:
-            dv = np.asarray(sp.velocity_ned, dtype=np.float64) - vel
-            a_h = a_h + self.kd_vel * dv
-        elif sp.position_ned is not None:
-            a_h = a_h - self.kd_vel * vel
+            des_vel = _clip_norm(self.kp_pos * err, self.max_speed)
+            vh = np.array([vel[0], vel[1], 0.0])
+            a_h = a_h + self.kd_vel * (des_vel - vh)
+        else:                                          # legacy PD (kept for compatibility)
+            if sp.position_ned is not None:
+                err = np.asarray(sp.position_ned, dtype=np.float64) - pos
+                err[2] = 0.0
+                if self.max_pos_error_m is not None:
+                    err = _clip_norm(err, self.max_pos_error_m)
+                a_h = a_h + self.kp_pos * err
+            if sp.velocity_ned is not None:
+                a_h = a_h + self.kd_vel * (np.asarray(sp.velocity_ned, dtype=np.float64) - vel)
+            elif sp.position_ned is not None:
+                a_h = a_h - self.kd_vel * vel
         a_h[2] = 0.0                                  # the alt-hold owns vertical
         if self.max_accel_mps2 is not None:
             a_h = _clip_norm(a_h, self.max_accel_mps2)

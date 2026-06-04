@@ -371,6 +371,28 @@ def test_decoupled_odo_rate_sign_flips_pitch_damping():
     assert np.sign(naive[1]) == -np.sign(fixed[1]) or abs(naive[1] - fixed[1]) > 1e-6
 
 
+def test_decoupled_tilt_comp_raises_thrust_when_leaning():
+    # Pitched 30 deg forward, on altitude target (z=target, vz=0): without tilt comp the collective
+    # is exactly hover and the world-vertical component is hover*cos(30) -> it sags. With tilt comp
+    # the collective is hover/cos(30) so the world-vertical thrust is restored to hover.
+    pitch = np.deg2rad(30.0)
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=pitch, yaw=0.0,
+                   position_ned=np.array([0.0, 0.0, -1.0]), velocity_ned=np.zeros(3))
+    sp = Setpoint(position_ned=np.array([0.0, 0.0, -1.0]), yaw=0.0)        # hold altitude
+    plain = _decoupled(tilt_comp=False).command(nav, sp).thrust
+    comp = _decoupled(tilt_comp=True).command(nav, sp).thrust
+    assert plain == pytest.approx(0.26)                                    # no comp -> bare hover (sags)
+    assert comp == pytest.approx(0.26 / np.cos(pitch))                     # comp -> world-vertical restored
+    assert comp * np.cos(pitch) == pytest.approx(0.26)                     # vertical component == hover
+
+
+def test_decoupled_tilt_comp_is_noop_when_level():
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0,
+                   position_ned=np.array([0.0, 0.0, -1.0]), velocity_ned=np.zeros(3))
+    sp = Setpoint(position_ned=np.array([0.0, 0.0, -1.0]), yaw=0.0)
+    assert _decoupled(tilt_comp=True).command(nav, sp).thrust == pytest.approx(0.26)
+
+
 def test_decoupled_thrust_is_clamped():
     c = _decoupled(alt_thrust_hi=0.30)
     nav = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, 50.0]),   # sank 50 m -> huge demand
@@ -389,3 +411,19 @@ def _des_quat(c, nav, sp):
         a_h = _clip_norm(a_h, c.max_accel_mps2)
     q, _ = c._accel_to_attitude(a_h, sp.yaw)
     return q
+
+
+def test_decoupled_velocity_targeting_caps_speed():
+    # [teammate red-team] velocity-targeting: a far and a near target (both past the speed cap)
+    # produce the SAME command (desired velocity is clamped to max_speed, not proportional to
+    # distance) -- so the drone cruises at a bounded speed instead of the position pull running
+    # it to 5 m/s. And once AT the cruise velocity the horizontal demand vanishes (no overshoot).
+    c = _decoupled(max_speed=1.5, kp_pos=0.5, kd_vel=2.0, max_accel_mps2=20.0)
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    far = c.command(nav, Setpoint(position_ned=np.array([100.0, 0.0, 0.0]), yaw=0.0)).body_rate
+    near = c.command(nav, Setpoint(position_ned=np.array([10.0, 0.0, 0.0]), yaw=0.0)).body_rate
+    np.testing.assert_allclose(far, near, atol=1e-9)              # both clamped to max_speed
+    nav_cruise = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.array([1.5, 0.0, 0.0]))
+    cruise = c.command(nav_cruise, Setpoint(position_ned=np.array([100.0, 0.0, 0.0]), yaw=0.0))
+    assert np.linalg.norm(cruise.body_rate) < np.linalg.norm(far)  # at cruise: ~level, no overshoot
