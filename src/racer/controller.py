@@ -137,6 +137,12 @@ class Controller:
     kd_alt: float = 0.0
     alt_thrust_lo: float = 0.0
     alt_thrust_hi: float = 1.0
+    # Fly this many metres ABOVE the setpoint altitude (NED: z_target -= offset, since z+ = down).
+    # The gate map's position may not be the opening CENTRE, and any residual alt droop sits the
+    # drone low -- visually confirmed clipping the BOTTOM bar of gate 0 (2026-06-04). A positive
+    # offset raises the whole vertical target for margin / to calibrate against where the gate
+    # opening actually is.
+    alt_offset_m: float = 0.0
     # Tilt-compensate the collective: divide the alt-hold thrust by cos(roll)*cos(pitch) (the
     # world-vertical fraction of body thrust, R[2,2]) so a forward LEAN doesn't silently sag
     # altitude. Without it, pitching to fly forward drops the vertical thrust component, the soft
@@ -254,6 +260,7 @@ class Controller:
         vel = np.asarray(nav.velocity_ned, dtype=np.float64)
         # -- vertical: altitude hold -> collective thrust --
         z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
+        z_t = z_t - self.alt_offset_m                  # fly above the gate line (NED z+ = down)
         vz_t = float(sp.velocity_ned[2]) if sp.velocity_ned is not None else 0.0
         thrust = self.hover_thrust + self.kp_alt * (pos[2] - z_t) + self.kd_alt * (vel[2] - vz_t)
         if self.tilt_comp:                             # undo the vertical-thrust loss from leaning

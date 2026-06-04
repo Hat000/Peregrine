@@ -389,6 +389,18 @@ def test_decoupled_tilt_comp_raises_thrust_when_leaning():
     assert comp * np.cos(pitch) == pytest.approx(0.26)                     # vertical component == hover
 
 
+def test_decoupled_alt_offset_raises_thrust_to_climb_above_gate():
+    # alt_offset_m flies ABOVE the setpoint altitude (NED z+ = down -> target z decreases). On the
+    # gate line (z = sp z), a positive offset makes the drone "sunk" relative to the raised target,
+    # so the alt-hold adds thrust to climb -- exactly hover + kp_alt*offset.
+    nav = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, 0.0]), velocity_ned=np.zeros(3))
+    sp = Setpoint(position_ned=np.array([0.0, 0.0, 0.0]), yaw=0.0)
+    base = _decoupled(alt_offset_m=0.0).command(nav, sp).thrust
+    lifted = _decoupled(alt_offset_m=0.5, kp_alt=0.05).command(nav, sp).thrust
+    assert base == pytest.approx(0.26)                                   # no offset -> bare hover
+    assert lifted == pytest.approx(0.26 + 0.05 * 0.5)                    # offset -> climb thrust
+
+
 def test_decoupled_tilt_comp_is_noop_when_level():
     nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=0.0,
                    position_ned=np.array([0.0, 0.0, -1.0]), velocity_ned=np.zeros(3))
