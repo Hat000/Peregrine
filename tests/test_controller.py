@@ -368,7 +368,10 @@ def test_decoupled_odo_rate_sign_flips_pitch_damping():
     sp = Setpoint(position_ned=np.zeros(3), yaw=0.0)
     naive = _decoupled(kd_att=0.5, odo_rate_sign=np.array([1.0, 1.0, 1.0])).command(nav, sp).body_rate
     fixed = _decoupled(kd_att=0.5, odo_rate_sign=np.array([1.0, -1.0, 1.0])).command(nav, sp).body_rate
-    assert np.sign(naive[1]) == -np.sign(fixed[1]) or abs(naive[1] - fixed[1]) > 1e-6
+    # Level nav + level target => zero attitude error, so the pitch command is pure damping; the
+    # only difference is the rate sign, so the corrected damping EXACTLY negates the naive one.
+    assert abs(fixed[1]) > 1e-6                        # a real, non-zero pitch damping contribution
+    assert fixed[1] == pytest.approx(-naive[1])        # corrected sign flips it (not merely differs)
 
 
 def test_decoupled_tilt_comp_raises_thrust_when_leaning():
