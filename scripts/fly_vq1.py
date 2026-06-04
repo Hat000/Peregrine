@@ -345,14 +345,17 @@ def main() -> int:
             st["next"] = time.monotonic() + tick
             st["n"] += 1
             ns = nav.update(client.state, frames.get())
-            # CONTROL ON THE GIVEN STATE: the KF velocity lags the truth badly (measured ~4x
-            # underestimate during a lateral move -> the cross-track damping was 4x too weak ->
-            # overshoot/oscillation). Position+velocity are GIVEN and pristine, so feed those to the
-            # controller directly (the KF stays in the loop for vision fusion, which is off here).
+            # CONTROL ON THE GIVEN STATE (per-axis): the KF velocity lags the truth badly (~4x
+            # underestimate during a lateral move -> cross-track damping 4x too weak -> oscillation).
+            # Use the raw given pos + raw HORIZONTAL velocity for the lateral loop. But KEEP the KF
+            # VERTICAL velocity: the raw vz drives the alt thrust to its floor, where the sim's
+            # auto-thrust takes over and climbs away (measured given3/4 ballooned to 8 m). The KF vz
+            # is gently lagged, so the alt thrust stays near hover and holds (proven in roll1).
             gs = client.state
             if not args.use_kf_state and gs.position_ned is not None and gs.velocity_ned is not None:
-                ns = replace(ns, position_ned=np.asarray(gs.position_ned, dtype=np.float64),
-                             velocity_ned=np.asarray(gs.velocity_ned, dtype=np.float64))
+                rawv = np.asarray(gs.velocity_ned, dtype=np.float64)
+                vel = np.array([rawv[0], rawv[1], float(np.asarray(ns.velocity_ned)[2])])
+                ns = replace(ns, position_ned=np.asarray(gs.position_ned, dtype=np.float64), velocity_ned=vel)
             st["nav"] = ns
             return ns
 
