@@ -92,24 +92,22 @@ def gates_from_track_records(
         R = _frame_from_through(seg)
         pos = positions[i]
         if corner_to_center:
-            # The map's position is the gate's CORNER, not the opening centre (visually confirmed on
-            # gate 0, 2026-06-04: aiming at the segment-frame "centre" flew into the gate panels).
-            # Use the gate's TRUE orientation quaternion for the offset -- the segment-derived frame
-            # had the width axis pointing the WRONG way in y (it sent the drone ~2.7 m off-centre).
-            # Verified convention (all 6 gates, identical quat): col0 = +width, col1 = normal,
-            # col2 = +height(down). Opening centre = corner + (w/2)*col0 - (h/2)*col2 (toward +width,
-            # toward up). For gate 0: (-23.30,-0.40,-0.03) -> (-23.30,+0.96,-1.39).
-            w = float(r.get("width_m") or 2.72)
+            # The map's position is the gate's BOTTOM-CENTRE (centred in width, at the base in
+            # height) -- NOT a side corner (visually confirmed gate 0, 2026-06-04: the gate sits
+            # directly ahead, no lateral move needed, but the opening is ~1.36 m UP from the mapped
+            # base). So the only correction is VERTICAL: lift by half the gate height along the gate's
+            # height axis. Keep the mapped y (lateral). An earlier +width offset was wrong and sent
+            # the drone into the panels. col2 = height axis from the true quaternion (all 6 gates
+            # identical: col0=+width, col1=normal, col2=+height-down). gate0 -0.03 -> z=-1.39.
             h = float(r.get("height_m") or 2.72)
             q = r.get("orientation_ned_wxyz")
             if q is not None:
-                Rq = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
-                col2 = Rq[:, 2]
+                col2 = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()[:, 2]
                 if col2[2] < 0.0:                  # orient the height axis DOWN so -col2 is up
                     col2 = -col2
-                pos = pos + 0.5 * w * Rq[:, 0] - 0.5 * h * col2
-            else:                                  # fallback: segment frame (may mis-sign the width)
-                pos = pos + 0.5 * w * R[:, 0] - 0.5 * h * R[:, 1]
+                pos = pos - 0.5 * h * col2         # lift to the opening centre (no lateral shift)
+            else:                                  # fallback: lift straight up (gates ~upright here)
+                pos = pos - np.array([0.0, 0.0, 0.5 * h])
         gates.append(
             Gate(
                 gate_id=int(r["gate_id"]),
