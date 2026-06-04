@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import threading
 import time
@@ -182,6 +183,7 @@ def main() -> int:
     ap.add_argument("--max-gates", type=int, default=None, help="fly only the first N gates (staged bring-up)")
     ap.add_argument("--geofence-m", type=float, default=None, help="abort if horiz dist from start exceeds (safety)")
     ap.add_argument("--max-climb-m", type=float, default=None, help="abort if |z-start| exceeds (safety)")
+    ap.add_argument("--cmd-log", action="store_true", help="log per-tick (pos,vel,speed,thrust,body_rate) to commands.jsonl for offline tuning diagnosis")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
@@ -257,6 +259,7 @@ def main() -> int:
     nav: Navigator | None = None
     mission: Mission | None = None
     final_state = MissionState.IDLE
+    cmd_log = open(session / "commands.jsonl", "w", encoding="utf-8") if args.cmd_log else None
     try:
         ok = _wait_for_race(client, frames, args)
         print(f"  backend: {backend_summary(client)}")
@@ -332,6 +335,21 @@ def main() -> int:
                               f"thr={cmd.thrust}")
                 else:
                     client.send_command(cmd)
+                if cmd_log is not None and not args.dry_run:
+                    ns = st.get("nav")
+                    p = (None if ns is None or ns.position_ned is None
+                         else [round(float(v), 3) for v in ns.position_ned])
+                    v = (None if ns is None or ns.velocity_ned is None
+                         else [round(float(x), 3) for x in ns.velocity_ned])
+                    spd = (None if v is None else round(float(np.hypot(v[0], v[1])), 3))
+                    br = (None if cmd.body_rate is None else [round(float(x), 4) for x in cmd.body_rate])
+                    cmd_log.write(json.dumps({
+                        "sim_t": int(getattr(ns, "sim_time_ns", 0) or 0),
+                        "state": mission.state.name, "pos": p, "vel": v, "hspeed": spd,
+                        "yaw": (None if ns is None else round(float(ns.yaw), 4)),
+                        "thrust": (None if cmd.thrust is None else round(float(cmd.thrust), 4)),
+                        "body_rate": br,
+                    }) + "\n")
 
         def should_stop():
             now = time.monotonic()
@@ -405,6 +423,8 @@ def main() -> int:
             race_status=client.race_status,
         )
         recorder.close()
+        if cmd_log is not None:
+            cmd_log.close()
 
     # -- summary --
     print("\n==== fly_vq1 summary ====")
