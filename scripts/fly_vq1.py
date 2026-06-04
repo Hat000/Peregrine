@@ -34,6 +34,7 @@ import json
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -196,6 +197,7 @@ def main() -> int:
     ap.add_argument("--geofence-m", type=float, default=None, help="abort if horiz dist from start exceeds (safety)")
     ap.add_argument("--max-climb-m", type=float, default=None, help="abort if |z-start| exceeds (safety)")
     ap.add_argument("--cmd-log", action="store_true", help="log per-tick (pos,vel,speed,thrust,body_rate) to commands.jsonl for offline tuning diagnosis")
+    ap.add_argument("--use-kf-state", action="store_true", help="control on the KF-estimated pos/vel (default: use the GIVEN pristine pos/vel; the KF velocity lags ~4x and breaks damping)")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
@@ -336,6 +338,14 @@ def main() -> int:
             st["next"] = time.monotonic() + tick
             st["n"] += 1
             ns = nav.update(client.state, frames.get())
+            # CONTROL ON THE GIVEN STATE: the KF velocity lags the truth badly (measured ~4x
+            # underestimate during a lateral move -> the cross-track damping was 4x too weak ->
+            # overshoot/oscillation). Position+velocity are GIVEN and pristine, so feed those to the
+            # controller directly (the KF stays in the loop for vision fusion, which is off here).
+            gs = client.state
+            if not args.use_kf_state and gs.position_ned is not None and gs.velocity_ned is not None:
+                ns = replace(ns, position_ned=np.asarray(gs.position_ned, dtype=np.float64),
+                             velocity_ned=np.asarray(gs.velocity_ned, dtype=np.float64))
             st["nav"] = ns
             return ns
 
