@@ -114,18 +114,19 @@ def test_gates_from_records_geometry_matches_input():
         np.testing.assert_allclose(g.normal_ned, [1.0, 0.0, 0.0], atol=1e-9)
 
 
-def test_corner_to_center_lifts_vertically_only():
-    # The map position is the gate's BOTTOM-CENTRE: centred in width (keep y), at the base in height.
-    # corner_to_center lifts it by half the gate height along the height axis (col2 of the true
-    # quaternion) and makes NO lateral shift. _records quat is Rz(90): col2=+z, so a 2.72 m gate
-    # lifts z by -1.36 and leaves y untouched.
+def test_corner_to_center_lifts_vertically_and_uses_quat_normal():
+    # corner_to_center uses the gate's TRUE quaternion: position = bottom-centre, so lift half the
+    # height (col2) with NO lateral shift; and the frame normal = the gate's facing (quat col1),
+    # NOT the tilted course segment. _records quat is Rz(90): col1=-x (faces -X), col2=+z.
     recs = _records([[-5, 0, 0], [-10, 0, 0], [-15, 0, 0]])   # course runs -X like the real track
-    corner = gates_from_track_records(recs, corner_to_center=False)
     center = gates_from_track_records(recs, corner_to_center=True)
-    np.testing.assert_allclose(corner[0].position_ned, [-5, 0, 0], atol=1e-9)
-    np.testing.assert_allclose(center[0].position_ned, [-5.0, 0.0, -1.36], atol=1e-6)  # y unchanged, z up
-    for c, k in zip(corner, center):                          # frame + through-dir unchanged
-        np.testing.assert_allclose(c.R_world_gate, k.R_world_gate, atol=1e-9)
+    np.testing.assert_allclose(center[0].position_ned, [-5.0, 0.0, -1.36], atol=1e-6)  # y kept, z up
+    # the gate faces -X (straight), not the tilted segment direction
+    np.testing.assert_allclose(center[0].normal_ned, [-1.0, 0.0, 0.0], atol=1e-6)
+    # an off-axis gate keeps a -X normal too (proves it's the quaternion, not the segment)
+    recs2 = _records([[-5, 0, 0], [-10, 4, 3], [-15, 8, 6]])  # course curves, but gates still face -X
+    center2 = gates_from_track_records(recs2, corner_to_center=True)
+    np.testing.assert_allclose(center2[0].normal_ned, [-1.0, 0.0, 0.0], atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

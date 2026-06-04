@@ -92,21 +92,29 @@ def gates_from_track_records(
         R = _frame_from_through(seg)
         pos = positions[i]
         if corner_to_center:
-            # The map's position is the gate's BOTTOM-CENTRE (centred in width, at the base in
-            # height) -- NOT a side corner (visually confirmed gate 0, 2026-06-04: the gate sits
-            # directly ahead, no lateral move needed, but the opening is ~1.36 m UP from the mapped
-            # base). So the only correction is VERTICAL: lift by half the gate height along the gate's
-            # height axis. Keep the mapped y (lateral). An earlier +width offset was wrong and sent
-            # the drone into the panels. col2 = height axis from the true quaternion (all 6 gates
-            # identical: col0=+width, col1=normal, col2=+height-down). gate0 -0.03 -> z=-1.39.
+            # Use the gate's TRUE orientation quaternion (verified 2026-06-04) for BOTH the frame and
+            # the centre. The segment-derived frame faces along the COURSE PATH (gate-to-gate), which
+            # is tilted; the real gates all face -X. With the tilted frame the cross-track "gate
+            # axis" line, extended back to the start, sits ~1.7 m off to the side, so the controller
+            # detours sideways to reach it then oscillates (measured gate0_front2). The quaternion
+            # gives a straight -X axis -> the gate sits directly ahead, no sideways detour.
+            #   convention: col0 = +width, col1 = normal(-X), col2 = +height(down).
+            # The map position is the gate's BOTTOM-CENTRE (centred in width, base in height), so the
+            # only correction is VERTICAL: lift half the height (no lateral shift). gate0 z -0.03 ->
+            # -1.39.
             h = float(r.get("height_m") or 2.72)
             q = r.get("orientation_ned_wxyz")
             if q is not None:
-                col2 = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()[:, 2]
-                if col2[2] < 0.0:                  # orient the height axis DOWN so -col2 is up
-                    col2 = -col2
-                pos = pos - 0.5 * h * col2         # lift to the opening centre (no lateral shift)
-            else:                                  # fallback: lift straight up (gates ~upright here)
+                Rq = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
+                nrm = Rq[:, 1]                          # gate normal (through-direction)
+                if nrm @ seg < 0.0:                     # orient it down-course (exit side)
+                    nrm = -nrm
+                col2 = Rq[:, 2] if Rq[:, 2][2] >= 0.0 else -Rq[:, 2]  # height axis, pointing down
+                right = Rq[:, 0]
+                down = np.cross(nrm, right)
+                R = np.column_stack([right, down, nrm])
+                pos = pos - 0.5 * h * col2             # lift to the opening centre (no lateral shift)
+            else:                                       # fallback: lift straight up (gates ~upright)
                 pos = pos - np.array([0.0, 0.0, 0.5 * h])
         gates.append(
             Gate(
