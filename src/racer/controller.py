@@ -131,12 +131,25 @@ class Controller:
     # [+1,-1,+1] -- only PITCH's rate is inverted, same quirk as the ATTITUDE Euler). Multiply the
     # measured rate by this BEFORE the -kd_att damping, else pitch damping is anti-damping (tumble).
     odo_rate_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
+    # Sign of the ODOMETRY-quaternion-derived ATTITUDE (roll,pitch,yaw) vs the TRUE physical angle.
+    # The lateral loop ran away (+y drift with +roll, which physically needs -roll -> positive
+    # feedback, measured gate0_center2 2026-06-04): the decoded ROLL is inverted. Multiply the euler
+    # used to build R_cur by this so the attitude error is physical. Pitch reads true (forward
+    # flight works) => [-1, +1, +1] for the live sim. Pair with the matching roll flips in
+    # body_rate_sign (+1) and odo_rate_sign (-1) so command + rate damping are consistent.
+    odo_att_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
     # Altitude-hold (vertical thrust) channel: thrust = hover + kp_alt*(z - z_target) +
     # kd_alt*(vz - vz_target), clamped. NED z+ = down, so a SINK (z>target / vz>0) -> more thrust.
     kp_alt: float = 0.0
     kd_alt: float = 0.0
     alt_thrust_lo: float = 0.0
     alt_thrust_hi: float = 1.0
+    # Fly this many metres ABOVE the setpoint altitude (NED: z_target -= offset, since z+ = down).
+    # The gate map's position may not be the opening CENTRE, and any residual alt droop sits the
+    # drone low -- visually confirmed clipping the BOTTOM bar of gate 0 (2026-06-04). A positive
+    # offset raises the whole vertical target for margin / to calibrate against where the gate
+    # opening actually is.
+    alt_offset_m: float = 0.0
     # Tilt-compensate the collective: divide the alt-hold thrust by cos(roll)*cos(pitch) (the
     # world-vertical fraction of body thrust, R[2,2]) so a forward LEAN doesn't silently sag
     # altitude. Without it, pitching to fly forward drops the vertical thrust component, the soft
@@ -254,6 +267,7 @@ class Controller:
         vel = np.asarray(nav.velocity_ned, dtype=np.float64)
         # -- vertical: altitude hold -> collective thrust --
         z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
+        z_t = z_t - self.alt_offset_m                  # fly above the gate line (NED z+ = down)
         vz_t = float(sp.velocity_ned[2]) if sp.velocity_ned is not None else 0.0
         thrust = self.hover_thrust + self.kp_alt * (pos[2] - z_t) + self.kd_alt * (vel[2] - vz_t)
         if self.tilt_comp:                             # undo the vertical-thrust loss from leaning
@@ -268,7 +282,18 @@ class Controller:
             # velocity-targeting: a capped desired velocity toward the target, then damp to it
             err = np.asarray(sp.position_ned, dtype=np.float64) - pos
             err[2] = 0.0
-            des_vel = _clip_norm(self.kp_pos * err, self.max_speed)
+            if sp.yaw is not None:
+                # DECOUPLE along-track (cap SPEED) from cross-track (correct POSITION at full gain).
+                # _clip_norm preserves the error DIRECTION, which the huge along-track component
+                # dominates -> the cross-track velocity target shrinks to noise and a small lateral
+                # disturbance wins (measured: +y drift to +12 m aiming 1.8 m off-axis, gate0_center1).
+                # Split on the gate axis (sp.yaw): cap only the forward target, keep cross-track full.
+                ad = np.array([np.cos(sp.yaw), np.sin(sp.yaw), 0.0])     # along-track (gate-axis) dir
+                along = float(np.clip(self.kp_pos * float(err @ ad), -self.max_speed, self.max_speed))
+                cross = _clip_norm(self.kp_pos * (err - float(err @ ad) * ad), self.max_speed)
+                des_vel = along * ad + cross
+            else:
+                des_vel = _clip_norm(self.kp_pos * err, self.max_speed)
             vh = np.array([vel[0], vel[1], 0.0])
             a_h = a_h + self.kd_vel * (des_vel - vh)
         else:                                          # legacy PD (kept for compatibility)
@@ -291,7 +316,8 @@ class Controller:
         R_des = Rotation.from_quat(
             [q_des_wxyz[1], q_des_wxyz[2], q_des_wxyz[3], q_des_wxyz[0]]
         ).as_matrix()
-        R_cur = R_world_from_body(nav.roll, nav.pitch, nav.yaw)
+        asign = np.asarray(self.odo_att_sign, dtype=np.float64)
+        R_cur = R_world_from_body(nav.roll * asign[0], nav.pitch * asign[1], nav.yaw * asign[2])
         rotvec = Rotation.from_matrix(R_cur.T @ R_des).as_rotvec()
         rate = np.asarray(nav.angular_rate_body, dtype=np.float64) * np.asarray(self.odo_rate_sign, dtype=np.float64)
         omega = (self.kp_att * rotvec - self.kd_att * rate) / max(self.ff_gain, 1e-6)

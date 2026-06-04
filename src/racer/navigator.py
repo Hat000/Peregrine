@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, NavState
 from racer.frames import CAMERA_INTRINSICS_K, R_camera_from_body, R_world_from_body
@@ -59,7 +60,7 @@ _WORLD_DOWN = np.array([0.0, 0.0, 1.0])   # NED down
 # Map loading: TRACK_INFO / track_map.json records -> ordered list[Gate]
 # ---------------------------------------------------------------------------
 def gates_from_track_records(
-    records: list[dict], inner_size_m: float = GATE_INNER_SIZE_M
+    records: list[dict], inner_size_m: float = GATE_INNER_SIZE_M, corner_to_center: bool = False
 ) -> list[Gate]:
     """Convert TRACK_INFO / track_map.json gate records into ordered :class:`Gate` objects.
 
@@ -88,11 +89,38 @@ def gates_from_track_records(
             seg = positions[j] - positions[i - 1 if j == i else i]
         else:
             seg = np.array([-1.0, 0.0, 0.0])  # lone gate: default to the -X course heading
+        R = _frame_from_through(seg)
+        pos = positions[i]
+        if corner_to_center:
+            # Use the gate's TRUE orientation quaternion (verified 2026-06-04) for BOTH the frame and
+            # the centre. The segment-derived frame faces along the COURSE PATH (gate-to-gate), which
+            # is tilted; the real gates all face -X. With the tilted frame the cross-track "gate
+            # axis" line, extended back to the start, sits ~1.7 m off to the side, so the controller
+            # detours sideways to reach it then oscillates (measured gate0_front2). The quaternion
+            # gives a straight -X axis -> the gate sits directly ahead, no sideways detour.
+            #   convention: col0 = +width, col1 = normal(-X), col2 = +height(down).
+            # The map position is the gate's BOTTOM-CENTRE (centred in width, base in height), so the
+            # only correction is VERTICAL: lift half the height (no lateral shift). gate0 z -0.03 ->
+            # -1.39.
+            h = float(r.get("height_m") or 2.72)
+            q = r.get("orientation_ned_wxyz")
+            if q is not None:
+                Rq = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
+                nrm = Rq[:, 1]                          # gate normal (through-direction)
+                if nrm @ seg < 0.0:                     # orient it down-course (exit side)
+                    nrm = -nrm
+                col2 = Rq[:, 2] if Rq[:, 2][2] >= 0.0 else -Rq[:, 2]  # height axis, pointing down
+                right = Rq[:, 0]
+                down = np.cross(nrm, right)
+                R = np.column_stack([right, down, nrm])
+                pos = pos - 0.5 * h * col2             # lift to the opening centre (no lateral shift)
+            else:                                       # fallback: lift straight up (gates ~upright)
+                pos = pos - np.array([0.0, 0.0, 0.5 * h])
         gates.append(
             Gate(
                 gate_id=int(r["gate_id"]),
-                position_ned=positions[i],
-                R_world_gate=_frame_from_through(seg),
+                position_ned=pos,
+                R_world_gate=R,
                 inner_size_m=float(inner_size_m),
             )
         )
@@ -112,10 +140,12 @@ def _frame_from_through(through: np.ndarray) -> np.ndarray:
     return np.column_stack([x, y, z])
 
 
-def load_track_map(path: str | Path, inner_size_m: float = GATE_INNER_SIZE_M) -> list[Gate]:
+def load_track_map(path: str | Path, inner_size_m: float = GATE_INNER_SIZE_M,
+                   corner_to_center: bool = False) -> list[Gate]:
     """Load the deterministic course map JSON (``capture_track_map.py`` output) into Gates."""
     data = json.loads(Path(path).read_text())
-    return gates_from_track_records(data["gates"], inner_size_m=inner_size_m)
+    return gates_from_track_records(data["gates"], inner_size_m=inner_size_m,
+                                    corner_to_center=corner_to_center)
 
 
 # ---------------------------------------------------------------------------

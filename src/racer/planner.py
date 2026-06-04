@@ -33,6 +33,13 @@ class ReactivePlanner:
 
     cruise_speed: float = 4.0     # m/s along the line of sight (conservative; raise for RACE)
     lookahead_m: float = 2.0      # carrot distance beyond the gate along the through-direction
+    # Yaw target. "carrot": face the line-of-sight to the carrot (good when the nose must track a
+    # camera). "course": face the gate's fixed through-direction. The decoupled CTBR controller
+    # translates via WORLD-frame tilt (yaw is cosmetic), so chasing the carrot's azimuth is pure
+    # downside: any lateral drift swings the carrot bearing, the nose chases it, and past the gate
+    # the bearing flips -> a yaw runaway / U-turn (measured: drift compounded yaw -180deg->-93deg,
+    # gate0_slow1). "course" holds the nose down the gate axis, drift-insensitive. [2026-06-04]
+    yaw_mode: str = "carrot"
 
     def plan(self, nav: NavState, gate: Gate) -> Setpoint:
         position = np.asarray(nav.position_ned, dtype=np.float64)
@@ -47,7 +54,12 @@ class ReactivePlanner:
         # high-speed U-turn back through the gate. Velocity keeps pointing downrange through the
         # pass; fall back to to_gate only at near-zero speed (takeoff / hover). [red-team 2026-05-30]
         velocity = np.asarray(nav.velocity_ned, dtype=np.float64)
-        heading_ref = velocity if float(np.linalg.norm(velocity)) > 1e-3 else to_gate
+        # Disambiguate by velocity only when it is FAST enough to have a trustworthy DIRECTION.
+        # Below ~0.5 m/s the velocity vector is mostly noise, and a momentary speed dip (the
+        # velocity loop braking after a cap overshoot) would flip `travel` -> the course-yaw target
+        # jumps 180deg -> the controller commands a near-max yaw rate and SPINS the drone (measured:
+        # gate0_high2 spun + drifted at a 0.25 m/s dip). Fall back to the stable to_gate there.
+        heading_ref = velocity if float(np.linalg.norm(velocity)) > 0.5 else to_gate
         travel = np.asarray(gate.normal_ned, dtype=np.float64)
         if travel @ heading_ref < 0.0:
             travel = -travel
@@ -55,7 +67,10 @@ class ReactivePlanner:
 
         carrot = gate_pos + self.lookahead_m * travel       # a point just beyond the gate centre
         los_dir = _unit(carrot - position, fallback=travel)
-        yaw = float(np.arctan2(los_dir[1], los_dir[0]))      # NED heading (north->east) toward the carrot
+        # NED heading (north->east). "course" faces the gate's through-direction (fixed, so lateral
+        # drift can't swing the nose); "carrot" faces the moving line-of-sight.
+        heading = travel if self.yaw_mode == "course" else los_dir
+        yaw = float(np.arctan2(heading[1], heading[0]))
         return Setpoint(
             sim_time_ns=nav.sim_time_ns,
             position_ned=carrot,

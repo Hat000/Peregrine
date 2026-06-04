@@ -86,6 +86,21 @@ def test_fast_flythrough_advances_via_plane_crossing():
     assert m.gate_index == 1                                  # advanced via the plane crossing
 
 
+def test_no_false_pass_on_axis_but_far_from_gate():
+    # Regression (gate0_given2): a drone sitting on the gate's AXIS but far away (here ~20 m before
+    # it, on the start line) must NOT pass. With a near-vertical/ambiguous velocity the through-sign
+    # flips, so the old code saw "past the plane + inside the square" and false-advanced during
+    # takeoff. The depth bound rejects it (20 m >> gate_pass_depth_m).
+    m = _mission([_gate([5.0, 0.0, -1.5], normal=(1.0, 0.0, 0.0), gate_id=0)])
+    m.start()
+    m.step(_nav([0.0, 0.0, 0.0]))
+    m.step(_nav([0.0, 0.0, -1.4]))
+    nav = NavState(sim_time_ns=1, position_ned=np.array([-15.0, 0.0, -1.5]),  # 20 m before, on-axis
+                   velocity_ned=np.array([-0.1, 0.0, -1.0]))                  # ambiguous -> flips through
+    m.step(nav)
+    assert m.gate_index == 0                                  # far from the gate -> no advance
+
+
 def test_no_advance_when_past_plane_but_outside_opening():
     # Past the gate plane but 2 m off to the side: flew AROUND the gate, not through it. Must
     # NOT count as passed (a false advance would skip a gate and invalidate the run).

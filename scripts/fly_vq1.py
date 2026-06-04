@@ -30,9 +30,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -81,11 +83,25 @@ def _arm_cmd() -> int:
 
 def _load_map(client: MavlinkClient, args) -> list:
     """Prefer the live TRACK_INFO map; fall back to the saved deterministic course."""
-    if client.track_gates:
-        print(f"  using LIVE gate map: {len(client.track_gates)} gates (TRACK_INFO).")
-        return gates_from_track_records(client.track_gates)
-    gates = load_track_map(args.map)
-    print(f"  using SAVED gate map: {len(gates)} gates ({args.map}).")
+    c2c = args.gate_corner_to_center
+    saved_raw = [r["position_ned"] for r in json.loads(Path(args.map).read_text())["gates"]]
+    # The course is DETERMINISTIC, so the saved map is ground truth; the chunked TRACK_INFO
+    # reassembly is intermittently corrupt (gate0_straight2 parsed gates km away; gate0_given1
+    # placed one near the start -> a bogus takeoff "pass"). Accept the live map only if it MATCHES
+    # the saved one (every gate within 3 m); else use saved. --force-saved-map skips live entirely.
+    live = client.track_gates
+    live_ok = (not args.force_saved_map) and bool(live) and len(live) == len(saved_raw) and all(
+        float(np.linalg.norm(np.asarray(g["position_ned"], dtype=np.float64) - np.asarray(s, dtype=np.float64))) < 3.0
+        for g, s in zip(live, saved_raw)
+    )
+    if live and not live_ok and not args.force_saved_map:
+        bad = np.asarray(live[0]["position_ned"], dtype=np.float64)
+        print(f"  !! LIVE gate map disagrees with saved (gate0={np.round(bad,1)}; corrupt reassembly) -> using SAVED.")
+    if live_ok:
+        print(f"  using LIVE gate map: {len(live)} gates (matches saved; corner->center={c2c}).")
+        return gates_from_track_records(live, corner_to_center=c2c)
+    gates = load_track_map(args.map, corner_to_center=c2c)
+    print(f"  using SAVED gate map: {len(gates)} gates ({args.map}; corner->center={c2c}).")
     return gates
 
 
@@ -156,6 +172,8 @@ def main() -> int:
     ap.add_argument("--mode", choices=list(_MODE), default="position")
     ap.add_argument("--cruise", type=float, default=2.5, help="planner cruise speed m/s (bounded; start slow)")
     ap.add_argument("--lookahead", type=float, default=2.0, help="carrot distance beyond the gate (m)")
+    ap.add_argument("--yaw-mode", choices=("carrot", "course"), default="carrot", help="planner yaw: 'course' holds the nose down the gate axis (drift-insensitive; for decoupled CTBR); 'carrot' faces the line-of-sight")
+    ap.add_argument("--gate-corner-to-center", action="store_true", help="map position is the gate's bottom-left CORNER -> offset to the opening centre (+w/2 right, -h/2 up)")
     ap.add_argument("--takeoff-alt", type=float, default=1.5, help="hover altitude above the start (m)")
     ap.add_argument("--gate-radius", type=float, default=0.75, help="proximity gate-pass radius (m); MUST be <= inner half-opening (~0.75) or a wide miss false-scores a pass")
     ap.add_argument("--hover-thrust", type=float, default=0.5, help="attitude mode: calibrated hover throttle (innerloop_step ~0.489)")
@@ -173,15 +191,20 @@ def main() -> int:
     ap.add_argument("--decoupled", action="store_true", help="use the plant-matched decoupled CTBR law")
     ap.add_argument("--ff-gain", type=float, default=2.6, help="decoupled: rate feedforward divisor (measured ~2.6x)")
     ap.add_argument("--odo-rate-sign", default="1,-1,1", help="decoupled: ODOMETRY rate sign vs true (pitch inverted)")
+    ap.add_argument("--odo-att-sign", default="1,1,1", help="decoupled: ODOMETRY-quaternion attitude sign vs true (roll inverted on live sim -> -1,1,1)")
     ap.add_argument("--kp-alt", type=float, default=0.010, help="decoupled: alt-hold thrust per metre sink")
     ap.add_argument("--kd-alt", type=float, default=0.025, help="decoupled: alt-hold thrust per m/s descent")
     ap.add_argument("--alt-thrust-lo", type=float, default=0.18, help="decoupled: alt-hold thrust clamp low")
     ap.add_argument("--alt-thrust-hi", type=float, default=0.36, help="decoupled: alt-hold thrust clamp high")
+    ap.add_argument("--alt-offset", type=float, default=0.0, help="decoupled: fly this many metres ABOVE the gate line (margin / opening-centre calibration)")
     ap.add_argument("--max-speed", type=float, default=None, help="decoupled: velocity-targeting speed cap (m/s)")
     ap.add_argument("--tilt-comp", action="store_true", help="decoupled: tilt-compensate collective (thrust/cos(tilt)) so leaning forward doesn't sag altitude")
     ap.add_argument("--max-gates", type=int, default=None, help="fly only the first N gates (staged bring-up)")
     ap.add_argument("--geofence-m", type=float, default=None, help="abort if horiz dist from start exceeds (safety)")
     ap.add_argument("--max-climb-m", type=float, default=None, help="abort if |z-start| exceeds (safety)")
+    ap.add_argument("--cmd-log", action="store_true", help="log per-tick (pos,vel,speed,thrust,body_rate) to commands.jsonl for offline tuning diagnosis")
+    ap.add_argument("--force-saved-map", action="store_true", help="ignore the (flaky) live TRACK_INFO map; use the saved deterministic --map")
+    ap.add_argument("--use-kf-state", action="store_true", help="control on the KF-estimated pos/vel (default: use the GIVEN pristine pos/vel; the KF velocity lags ~4x and breaks damping)")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
@@ -257,6 +280,7 @@ def main() -> int:
     nav: Navigator | None = None
     mission: Mission | None = None
     final_state = MissionState.IDLE
+    cmd_log = open(session / "commands.jsonl", "w", encoding="utf-8") if args.cmd_log else None
     try:
         ok = _wait_for_race(client, frames, args)
         print(f"  backend: {backend_summary(client)}")
@@ -273,7 +297,7 @@ def main() -> int:
                                                use_given_position=not args.no_given_position))
         mission = Mission(
             gates=gates,
-            planner=ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead),
+            planner=ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead, yaw_mode=args.yaw_mode),
             controller=Controller(mode=_MODE[args.mode], hover_thrust=args.hover_thrust,
                                    thrust_slope_mps2=args.thrust_slope, max_accel_mps2=args.max_accel,
                                    max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel,
@@ -281,8 +305,10 @@ def main() -> int:
                                    body_rate_sign=np.array([float(x) for x in args.rate_sign.split(",")]),
                                    decoupled=args.decoupled, ff_gain=args.ff_gain,
                                    odo_rate_sign=np.array([float(x) for x in args.odo_rate_sign.split(",")]),
+                                   odo_att_sign=np.array([float(x) for x in args.odo_att_sign.split(",")]),
                                    kp_alt=args.kp_alt, kd_alt=args.kd_alt,
                                    alt_thrust_lo=args.alt_thrust_lo, alt_thrust_hi=args.alt_thrust_hi,
+                                   alt_offset_m=args.alt_offset,
                                    max_speed=args.max_speed, tilt_comp=args.tilt_comp),
             config=MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
                                  gate_pass_radius_m=args.gate_radius),
@@ -319,6 +345,17 @@ def main() -> int:
             st["next"] = time.monotonic() + tick
             st["n"] += 1
             ns = nav.update(client.state, frames.get())
+            # CONTROL ON THE GIVEN STATE (per-axis): the KF velocity lags the truth badly (~4x
+            # underestimate during a lateral move -> cross-track damping 4x too weak -> oscillation).
+            # Use the raw given pos + raw HORIZONTAL velocity for the lateral loop. But KEEP the KF
+            # VERTICAL velocity: the raw vz drives the alt thrust to its floor, where the sim's
+            # auto-thrust takes over and climbs away (measured given3/4 ballooned to 8 m). The KF vz
+            # is gently lagged, so the alt thrust stays near hover and holds (proven in roll1).
+            gs = client.state
+            if not args.use_kf_state and gs.position_ned is not None and gs.velocity_ned is not None:
+                rawv = np.asarray(gs.velocity_ned, dtype=np.float64)
+                vel = np.array([rawv[0], rawv[1], float(np.asarray(ns.velocity_ned)[2])])
+                ns = replace(ns, position_ned=np.asarray(gs.position_ned, dtype=np.float64), velocity_ned=vel)
             st["nav"] = ns
             return ns
 
@@ -332,6 +369,21 @@ def main() -> int:
                               f"thr={cmd.thrust}")
                 else:
                     client.send_command(cmd)
+                if cmd_log is not None and not args.dry_run:
+                    ns = st.get("nav")
+                    p = (None if ns is None or ns.position_ned is None
+                         else [round(float(v), 3) for v in ns.position_ned])
+                    v = (None if ns is None or ns.velocity_ned is None
+                         else [round(float(x), 3) for x in ns.velocity_ned])
+                    spd = (None if v is None else round(float(np.hypot(v[0], v[1])), 3))
+                    br = (None if cmd.body_rate is None else [round(float(x), 4) for x in cmd.body_rate])
+                    cmd_log.write(json.dumps({
+                        "sim_t": int(getattr(ns, "sim_time_ns", 0) or 0),
+                        "state": mission.state.name, "pos": p, "vel": v, "hspeed": spd,
+                        "yaw": (None if ns is None else round(float(ns.yaw), 4)),
+                        "thrust": (None if cmd.thrust is None else round(float(cmd.thrust), 4)),
+                        "body_rate": br,
+                    }) + "\n")
 
         def should_stop():
             now = time.monotonic()
@@ -405,6 +457,8 @@ def main() -> int:
             race_status=client.race_status,
         )
         recorder.close()
+        if cmd_log is not None:
+            cmd_log.close()
 
     # -- summary --
     print("\n==== fly_vq1 summary ====")
