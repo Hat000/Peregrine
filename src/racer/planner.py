@@ -54,7 +54,12 @@ class ReactivePlanner:
         # high-speed U-turn back through the gate. Velocity keeps pointing downrange through the
         # pass; fall back to to_gate only at near-zero speed (takeoff / hover). [red-team 2026-05-30]
         velocity = np.asarray(nav.velocity_ned, dtype=np.float64)
-        heading_ref = velocity if float(np.linalg.norm(velocity)) > 1e-3 else to_gate
+        # Disambiguate by velocity only when it is FAST enough to have a trustworthy DIRECTION.
+        # Below ~0.5 m/s the velocity vector is mostly noise, and a momentary speed dip (the
+        # velocity loop braking after a cap overshoot) would flip `travel` -> the course-yaw target
+        # jumps 180deg -> the controller commands a near-max yaw rate and SPINS the drone (measured:
+        # gate0_high2 spun + drifted at a 0.25 m/s dip). Fall back to the stable to_gate there.
+        heading_ref = velocity if float(np.linalg.norm(velocity)) > 0.5 else to_gate
         travel = np.asarray(gate.normal_ned, dtype=np.float64)
         if travel @ heading_ref < 0.0:
             travel = -travel
