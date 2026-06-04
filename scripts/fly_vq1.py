@@ -82,11 +82,12 @@ def _arm_cmd() -> int:
 
 def _load_map(client: MavlinkClient, args) -> list:
     """Prefer the live TRACK_INFO map; fall back to the saved deterministic course."""
+    c2c = args.gate_corner_to_center
     if client.track_gates:
-        print(f"  using LIVE gate map: {len(client.track_gates)} gates (TRACK_INFO).")
-        return gates_from_track_records(client.track_gates)
-    gates = load_track_map(args.map)
-    print(f"  using SAVED gate map: {len(gates)} gates ({args.map}).")
+        print(f"  using LIVE gate map: {len(client.track_gates)} gates (TRACK_INFO; corner->center={c2c}).")
+        return gates_from_track_records(client.track_gates, corner_to_center=c2c)
+    gates = load_track_map(args.map, corner_to_center=c2c)
+    print(f"  using SAVED gate map: {len(gates)} gates ({args.map}; corner->center={c2c}).")
     return gates
 
 
@@ -158,6 +159,7 @@ def main() -> int:
     ap.add_argument("--cruise", type=float, default=2.5, help="planner cruise speed m/s (bounded; start slow)")
     ap.add_argument("--lookahead", type=float, default=2.0, help="carrot distance beyond the gate (m)")
     ap.add_argument("--yaw-mode", choices=("carrot", "course"), default="carrot", help="planner yaw: 'course' holds the nose down the gate axis (drift-insensitive; for decoupled CTBR); 'carrot' faces the line-of-sight")
+    ap.add_argument("--gate-corner-to-center", action="store_true", help="map position is the gate's bottom-left CORNER -> offset to the opening centre (+w/2 right, -h/2 up)")
     ap.add_argument("--takeoff-alt", type=float, default=1.5, help="hover altitude above the start (m)")
     ap.add_argument("--gate-radius", type=float, default=0.75, help="proximity gate-pass radius (m); MUST be <= inner half-opening (~0.75) or a wide miss false-scores a pass")
     ap.add_argument("--hover-thrust", type=float, default=0.5, help="attitude mode: calibrated hover throttle (innerloop_step ~0.489)")

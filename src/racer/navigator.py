@@ -59,7 +59,7 @@ _WORLD_DOWN = np.array([0.0, 0.0, 1.0])   # NED down
 # Map loading: TRACK_INFO / track_map.json records -> ordered list[Gate]
 # ---------------------------------------------------------------------------
 def gates_from_track_records(
-    records: list[dict], inner_size_m: float = GATE_INNER_SIZE_M
+    records: list[dict], inner_size_m: float = GATE_INNER_SIZE_M, corner_to_center: bool = False
 ) -> list[Gate]:
     """Convert TRACK_INFO / track_map.json gate records into ordered :class:`Gate` objects.
 
@@ -88,11 +88,22 @@ def gates_from_track_records(
             seg = positions[j] - positions[i - 1 if j == i else i]
         else:
             seg = np.array([-1.0, 0.0, 0.0])  # lone gate: default to the -X course heading
+        R = _frame_from_through(seg)
+        pos = positions[i]
+        if corner_to_center:
+            # The map's position is the gate's bottom-LEFT corner, not the opening centre (visually
+            # confirmed on gate 0, 2026-06-04: aiming at it flew into the left post). In the gate
+            # frame X=right, Y=down, the centre is half a gate up-and-right of the bottom-left
+            # corner: + (width/2)*X (toward right) - (height/2)*Y (toward up). Use the OUTER size
+            # (width_m/height_m ~2.72), the square the corner belongs to.
+            w = float(r.get("width_m") or 2.72)
+            h = float(r.get("height_m") or 2.72)
+            pos = pos + 0.5 * w * R[:, 0] - 0.5 * h * R[:, 1]
         gates.append(
             Gate(
                 gate_id=int(r["gate_id"]),
-                position_ned=positions[i],
-                R_world_gate=_frame_from_through(seg),
+                position_ned=pos,
+                R_world_gate=R,
                 inner_size_m=float(inner_size_m),
             )
         )
@@ -112,10 +123,12 @@ def _frame_from_through(through: np.ndarray) -> np.ndarray:
     return np.column_stack([x, y, z])
 
 
-def load_track_map(path: str | Path, inner_size_m: float = GATE_INNER_SIZE_M) -> list[Gate]:
+def load_track_map(path: str | Path, inner_size_m: float = GATE_INNER_SIZE_M,
+                   corner_to_center: bool = False) -> list[Gate]:
     """Load the deterministic course map JSON (``capture_track_map.py`` output) into Gates."""
     data = json.loads(Path(path).read_text())
-    return gates_from_track_records(data["gates"], inner_size_m=inner_size_m)
+    return gates_from_track_records(data["gates"], inner_size_m=inner_size_m,
+                                    corner_to_center=corner_to_center)
 
 
 # ---------------------------------------------------------------------------
