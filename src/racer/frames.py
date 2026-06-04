@@ -67,11 +67,17 @@ def body_rate_from_quats(q_prev_wxyz, q_cur_wxyz, dt: float) -> np.ndarray:
     SIGN-CORRECT body rate. Needed because the sim's ODOMETRY angular_rate (rollspeed/pitchspeed/
     yawspeed) is sign-inverted vs the true attitude derivative on at least pitch (measured
     2026-06-03), which turns a ``-kd*rate`` damping term into anti-damping. Differencing the
-    trusted quaternion sidesteps that entirely. Returns zeros for a non-positive dt."""
+    trusted quaternion sidesteps that entirely. Returns zeros for a non-positive dt or a
+    degenerate (near-zero-norm) quaternion."""
     if dt <= 0.0:
         return np.zeros(3)
     qp = np.asarray(q_prev_wxyz, dtype=np.float64)
     qc = np.asarray(q_cur_wxyz, dtype=np.float64)
+    # Guard degenerate quaternions -- scipy's from_quat RAISES on a zero-norm quat. An
+    # uninitialised orientation (all-zero before the first ODOMETRY) would otherwise crash the
+    # caller mid-loop; match euler_from_quat_wxyz and treat it as no rotation. [review 2026-06-04]
+    if float(qp @ qp) < 1e-12 or float(qc @ qc) < 1e-12:
+        return np.zeros(3)
     R_prev = Rotation.from_quat([qp[1], qp[2], qp[3], qp[0]])
     R_cur = Rotation.from_quat([qc[1], qc[2], qc[3], qc[0]])
     return (R_prev.inv() * R_cur).as_rotvec() / dt

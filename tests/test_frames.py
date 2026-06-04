@@ -41,6 +41,13 @@ def test_body_rate_from_quats_zero_dt_is_zero():
                                   np.zeros(3))
 
 
+def test_body_rate_from_quats_degenerate_quat_is_zero_not_raise():
+    # An all-zero (uninitialised) quaternion must not crash scipy's from_quat -- return no rotation.
+    zero = np.zeros(4)
+    np.testing.assert_array_equal(body_rate_from_quats(zero, _quat_wxyz(0, 0.1, 0), 0.02), np.zeros(3))
+    np.testing.assert_array_equal(body_rate_from_quats(_quat_wxyz(0, 0, 0), zero, 0.02), np.zeros(3))
+
+
 def test_euler_from_quat_wxyz_inverts_R_world_from_body():
     # euler_from_quat_wxyz must be the exact inverse of R_world_from_body's 'ZYX' convention,
     # so the controller's commanded attitude (_euler_to_wxyz) and the ODOMETRY feedback share
