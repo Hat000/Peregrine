@@ -83,7 +83,14 @@ def _arm_cmd() -> int:
 def _load_map(client: MavlinkClient, args) -> list:
     """Prefer the live TRACK_INFO map; fall back to the saved deterministic course."""
     c2c = args.gate_corner_to_center
-    if client.track_gates:
+    live_ok = bool(client.track_gates) and all(
+        np.max(np.abs(np.asarray(g["position_ned"], dtype=np.float64))) < 500.0
+        for g in client.track_gates
+    )
+    if client.track_gates and not live_ok:
+        bad = np.asarray(client.track_gates[0]["position_ned"], dtype=np.float64)
+        print(f"  !! LIVE gate map looks CORRUPT (gate0={np.round(bad,1)}; chunk reassembly) -> falling back to SAVED.")
+    if live_ok:
         print(f"  using LIVE gate map: {len(client.track_gates)} gates (TRACK_INFO; corner->center={c2c}).")
         return gates_from_track_records(client.track_gates, corner_to_center=c2c)
     gates = load_track_map(args.map, corner_to_center=c2c)
