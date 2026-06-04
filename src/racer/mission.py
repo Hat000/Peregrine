@@ -46,6 +46,11 @@ class MissionConfig:
     # honest fast-pass test is path (2), plane-crossing INSIDE the inner square; this sphere is
     # only the slow-centred backup, so keep it tight.
     gate_pass_radius_m: float = 0.75
+    # Plane-crossing pass also requires the drone be within this distance of the gate plane along the
+    # through-axis (not just past it + inside the square) -- else a drone on the gate's AXIS but far
+    # away false-passes when the through-sign flips. Generous enough for a fast fly-through sampled
+    # one frame past the plane.
+    gate_pass_depth_m: float = 2.0
 
 
 @dataclass
@@ -144,7 +149,13 @@ class Mission:
         ref = vel if float(np.linalg.norm(vel)) > 1e-3 else -rel
         if through @ ref < 0.0:
             through = -through
-        if rel @ through < 0.0:            # still on the approach side
+        depth = float(rel @ through)       # signed distance along the through-axis (exit side +)
+        # Must have JUST crossed the plane: on/just past it (0 <= depth) AND still near it
+        # (< depth_tol). The near-bound is essential -- without it a drone sitting on the gate AXIS
+        # but tens of metres away (e.g. on the start line, before the gate) false-passes the instant
+        # the velocity-based through-sign flips at takeoff (measured gate0_given2 at x=-2). A real
+        # fly-through is sampled within depth_tol of the plane at any sane rate.
+        if not (0.0 <= depth <= self.config.gate_pass_depth_m):
             return False
         half = gate.inner_size_m / 2.0
         return abs(float(rel @ R[:, 0])) <= half and abs(float(rel @ R[:, 1])) <= half
