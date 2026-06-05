@@ -58,6 +58,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from racer.contracts import ControlCommand, ControlMode
 from racer.mavlink_client import MavlinkClient, _pos_type_mask
@@ -80,7 +81,8 @@ class Channels:
         self.fd_window_s = fd_window_s
         self.v_lpn: np.ndarray | None = None
         self.pos_lpn: np.ndarray | None = None
-        self.v_odo: np.ndarray | None = None
+        self.v_odo: np.ndarray | None = None       # ODOMETRY twist -- in the BODY frame (FRD), see v_odo_world
+        self.q_odo: np.ndarray | None = None       # ODOMETRY quaternion w,x,y,z (body->world)
         self.pos_odo: np.ndarray | None = None
         self.act: list[float] | None = None
         self._pos_hist: deque[tuple[int, np.ndarray]] = deque(maxlen=64)  # (recv_ns, pos) from LPN
@@ -99,6 +101,7 @@ class Channels:
         elif t == "ODOMETRY":
             self.pos_odo = np.array([m.x, m.y, m.z], dtype=np.float64)
             self.v_odo = np.array([m.vx, m.vy, m.vz], dtype=np.float64)
+            self.q_odo = np.array([m.q[0], m.q[1], m.q[2], m.q[3]], dtype=np.float64)  # w,x,y,z
             self.n_odo += 1
         elif t == "ACTUATOR_OUTPUT_STATUS":
             self.act = [float(x) for x in list(m.actuator)[:4]]
@@ -120,6 +123,17 @@ class Channels:
         if dt <= 1e-4 or old[0] == now:
             return None
         return (p_now - old[1]) / dt
+
+    def v_odo_world(self) -> np.ndarray | None:
+        """ODOMETRY velocity rotated body(FRD) -> world(NED). The sim reports the ODOMETRY twist in
+        the BODY/child frame, whereas LOCAL_POSITION_NED velocity is world NED -- confirmed in
+        hover_250_long1: at yaw=-180 deg, level, v_odo.vx == -v_lpn.vx while vz agreed. So the two
+        sources must be put in a common (world) frame before comparing, else a tilt/yaw produces a
+        spurious 'divergence'. [2026-06-05]"""
+        if self.v_odo is None or self.q_odo is None:
+            return None
+        w, x, y, z = self.q_odo
+        return Rotation.from_quat([x, y, z, w]).apply(self.v_odo)
 
 
 def _tri_disagreement(vs: list[np.ndarray | None]) -> float | None:
@@ -149,10 +163,12 @@ def main() -> int:
     ap.add_argument("--fd-window", type=float, default=0.05,
                     help="finite-difference velocity window (s). SHORT so v_fd tracks fast motion; "
                          "at 0.12 it lagged a violent transient and false-tripped the halt [fixed 2026-06-05]")
-    ap.add_argument("--tri-abort", type=float, default=0.6,
-                    help="sustained v_lpn-vs-v_odo disagreement that HALTS a run (m/s). The two INDEPENDENT "
-                         "sim sources are both ~instantaneous and should always agree, so a gap here = a real "
-                         "telemetry failure -- NOT finite-difference lag. v_fd is cross-checked OFFLINE instead.")
+    ap.add_argument("--tri-abort", type=float, default=1.5,
+                    help="sustained v_lpn-vs-v_odo_WORLD disagreement that HALTS a run (m/s). Compared in a "
+                         "COMMON world frame (ODOMETRY twist is body-frame, rotated first). Set for GROSS faults "
+                         "only (a garbage/dead channel); the ~0.1-0.6 stagger between 97Hz LPN and 75Hz ODO "
+                         "during violent acceleration is tolerated. Real RUNAWAYS are caught by the alt/offset "
+                         "safety aborts instead, so the full shape runs to the ceiling. v_fd cross-checked OFFLINE.")
     ap.add_argument("--tri-abort-ticks", type=int, default=25, help="consecutive divergent ticks before halt")
     ap.add_argument("--wait-live-s", type=float, default=60.0)
     ap.add_argument("--max-offset-m", type=float, default=12.0)
@@ -358,17 +374,18 @@ def main() -> int:
                 c.send_command(ControlCommand(mode=ControlMode.VELOCITY, velocity_ned=vel_cmd, yaw=yaw_cmd))
                 s = c.state
                 v_lpn, v_odo, v_fd = channels.v_lpn, channels.v_odo, channels.v_fd()
+                v_odo_w = channels.v_odo_world()   # ODOMETRY twist rotated body->world (see Channels)
                 pos = channels.pos_lpn if channels.pos_lpn is not None else \
                     (np.asarray(s.position_ned) if s.position_ned is not None else origin)
                 rel = np.asarray(pos, dtype=np.float64) - origin
                 tilt_deg = float(np.degrees(max(abs(s.roll), abs(s.pitch))))
-                tri = _tri_disagreement([v_lpn, v_odo, v_fd])           # 3-way (incl. finite-diff)
-                lpn_odo = _tri_disagreement([v_lpn, v_odo])             # two INDEPENDENT sim sources
+                tri = _tri_disagreement([v_lpn, v_odo_w, v_fd])         # 3-way, all WORLD frame
+                lpn_odo = _tri_disagreement([v_lpn, v_odo_w])           # two sim sources, common (world) frame
                 rec = {
                     "sim_time_ns": int(s.sim_time_ns), "phase": name,
                     "cmd_v": _f3(vel_cmd), "yaw_cmd": (None if yaw_cmd is None else float(yaw_cmd)),
                     "mask": int(expected_mask),
-                    "v_lpn": _f3(v_lpn), "v_odo": _f3(v_odo), "v_fd": _f3(v_fd),
+                    "v_lpn": _f3(v_lpn), "v_odo": _f3(v_odo), "v_odo_world": _f3(v_odo_w), "v_fd": _f3(v_fd),
                     "pos_lpn": _f3(channels.pos_lpn), "pos_odo": _f3(channels.pos_odo),
                     "rel_pos": _f3(rel), "rpy_deg": [float(np.degrees(s.roll)),
                     float(np.degrees(s.pitch)), float(np.degrees(s.yaw))],
