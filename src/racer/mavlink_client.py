@@ -27,7 +27,7 @@ import numpy as np
 from pymavlink import mavutil
 
 from racer.contracts import ControlCommand, ControlMode, DroneState
-from racer.frames import euler_from_quat_wxyz
+from racer.frames import euler_from_quat_wxyz, world_vec_from_body_quat
 
 # SET_POSITION_TARGET_LOCAL_NED type_mask bits (1 = ignore the corresponding input).
 _POS_IGNORE_PX = 1 << 0
@@ -256,7 +256,13 @@ class MavlinkClient:
                 self.state,
                 recv_monotonic_ns=recv,
                 position_ned=np.array([msg.x, msg.y, msg.z], dtype=np.float64),
-                velocity_ned=np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64),
+                # ODOMETRY twist (vx/vy/vz) is in child_frame_id = BODY-FRD, NOT the world
+                # frame_id -- rotate to NED so it matches LOCAL_POSITION_NED's world velocity.
+                # Storing the raw body twist gave a sign-flipped velocity_ned whenever the drone
+                # was yawed+moving (a world/body mix that corrupted the KF + control). [2026-06-04]
+                velocity_ned=world_vec_from_body_quat(
+                    np.array([msg.vx, msg.vy, msg.vz], dtype=np.float64), q
+                ),
                 orientation_ned_wxyz=q,
                 roll=roll,
                 pitch=pitch,

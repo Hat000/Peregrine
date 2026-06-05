@@ -83,6 +83,25 @@ def body_rate_from_quats(q_prev_wxyz, q_cur_wxyz, dt: float) -> np.ndarray:
     return (R_prev.inv() * R_cur).as_rotvec() / dt
 
 
+def world_vec_from_body_quat(v_body, q_wxyz) -> np.ndarray:
+    """Rotate a body-frame (FRD) vector into world (NED) via a body->world attitude quaternion
+    (w, x, y, z; scalar-FIRST MAVLink order): ``v_world = R(q) @ v_body``.
+
+    Needed for the sim's ODOMETRY twist: ``vx/vy/vz`` (and the angular rates) are reported in
+    ``child_frame_id`` = BODY-FRD, NOT the world ``frame_id``. The raw twist must be rotated here
+    to match LOCAL_POSITION_NED's world velocity before either is stored as ``velocity_ned`` --
+    otherwise a yawed+moving drone records a frame-mixed velocity (at yaw=-180deg the body vx is
+    SIGN-FLIPPED vs world), which is the corruption that fed the KF + controller damping + planner.
+    A degenerate (near-zero-norm) quaternion returns the input unchanged rather than raising
+    (matches ``euler_from_quat_wxyz`` / ``body_rate_from_quats``)."""
+    q = np.asarray(q_wxyz, dtype=np.float64)
+    v = np.asarray(v_body, dtype=np.float64)
+    if float(q @ q) < 1e-12:
+        return v.copy()
+    R = Rotation.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
+    return R @ v
+
+
 def R_camera_from_body() -> np.ndarray:
     # Passive rotation by +20 deg about body Y (frame rotated, vector representation changes oppositely).
     R_tilted_from_body = Rotation.from_euler("Y", -CAMERA_PITCH_RAD).as_matrix()
