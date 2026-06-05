@@ -101,3 +101,25 @@ def test_odometry_frame_bug_causes_lateral_oscillation_offline():
     assert not clean["diverged"] and clean["settle_s"] < 3.0          # clean converges
     assert flip["diverged"]                                          # full flip -> anti-damping
     assert mix["settle_s"] > 2.0 * clean["settle_s"]                 # interleave -> slow oscillation
+
+
+def test_offline_course_flight_threads_gates_only_with_the_fix():
+    # The full stack (real Navigator + Mission + Planner + Controller) flies the captured gate map
+    # against the twin. With the FIXED client it threads the course dead-centre; with the frame bug
+    # it stalls on the first real cross-track gate; the worst case diverges off gate 0.
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    from twin_fly_course import fly
+
+    clean = fly(3, velocity_mode="clean", max_s=22.0)
+    assert clean["final"].name == "FINISHED" and clean["gate_index"] == 3   # threads all 3
+    assert max(clean["closest"][:2]) < 0.30                                 # gate 0/1 dead-centre
+
+    bug = fly(3, velocity_mode="mix", max_s=22.0)
+    assert bug["gate_index"] < 3                                            # stalls (misses a gate)
+    assert max(bug["closest"]) > 0.75                                       # a gate is missed wide
+
+    flip = fly(3, velocity_mode="flip", max_s=22.0)
+    assert flip["gate_index"] == 0                                          # diverges off gate 0
