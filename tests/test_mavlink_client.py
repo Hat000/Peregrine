@@ -66,6 +66,30 @@ def test_odometry_drives_orientation_from_quaternion():
     np.testing.assert_allclose(c.state.angular_rate_body, [0.05, -0.1, 0.2], atol=1e-9)
 
 
+def test_odometry_velocity_rotated_body_to_world():
+    # ODOMETRY twist (vx/vy/vz) is reported in child_frame_id = BODY-FRD, not the world
+    # frame_id. _handle must rotate it to NED (like LOCAL_POSITION_NED's velocity) before
+    # storing velocity_ned -- else a yawed+moving drone records a sign-flipped velocity, the
+    # corrupt world/body mix that fed the KF + controller damping + planner heading. (Found
+    # live 2026-06-04: at yaw=-180deg LOCAL_POSITION.vx and ODOMETRY.vx were equal-and-opposite.)
+    from scipy.spatial.transform import Rotation
+
+    c = MavlinkClient()
+    # yaw=180deg, level: body-forward (+x) points to world -x (south).
+    x, y, z, w = Rotation.from_euler("ZYX", [np.pi, 0.0, 0.0]).as_quat()
+    c._handle(_odometry(q=[w, x, y, z], vx=1.0, vy=0.0, vz=0.0))
+    np.testing.assert_allclose(c.state.velocity_ned, [-1.0, 0.0, 0.0], atol=1e-9)
+
+    # yaw=90deg: body-forward (+x) points to world +y (east).
+    x, y, z, w = Rotation.from_euler("ZYX", [np.pi / 2, 0.0, 0.0]).as_quat()
+    c._handle(_odometry(q=[w, x, y, z], vx=1.0, vy=0.0, vz=0.0))
+    np.testing.assert_allclose(c.state.velocity_ned, [0.0, 1.0, 0.0], atol=1e-9)
+
+    # identity quaternion (level, north): rotation is a no-op -> matches LOCAL_POSITION_NED.
+    c._handle(_odometry(q=[1.0, 0.0, 0.0, 0.0], vx=0.3, vy=-0.2, vz=0.7))
+    np.testing.assert_allclose(c.state.velocity_ned, [0.3, -0.2, 0.7], atol=1e-9)
+
+
 def test_sim_time_monotonic_under_interleaving():
     # Interleave the two streams as the network would; sim_time_ns must be non-decreasing
     # with no negative/huge jumps (the failure mode that diverges a dt-based estimator).

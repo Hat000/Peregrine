@@ -1,0 +1,69 @@
+
+############## PHASE 1 / Check 1 — 20260604_025347_gate0_course1 ##############
+[ADD#1] ODOMETRY.frame_id       = 1 (MAV_FRAME_LOCAL_NED)  constant=True
+[ADD#1] ODOMETRY.child_frame_id = 8 (MAV_FRAME_BODY_NED)  constant=True
+        ODOMETRY n=5800  LPN n=7444  IMU n=9221
+[truth x-check] LPN v_world vs robust d(pos)/dt over 615 moving samples (deduped 7444->7444, dropped 2 teleport/edge): median=0.0964  vec-RMS=0.2768  p90=0.2630 m/s
+
+[-180 segment] 482 ODOMETRY samples at |yaw|>170 deg AND moving (|v_body|>0.3)
+  RAW  body-as-world vs LPN truth:  per-axis RMS = [7.4693 0.2504 0.478 ]  vec-RMS = 7.4888 m/s
+  ROT  rotated->world vs LPN truth: per-axis RMS = [0.0031 0.0003 0.0007]  vec-RMS = 0.0032 m/s
+    vx: of 482 samples with |truth|>0.3, RAW body sign-flipped vs truth = 482 (100%)
+    vy: of 61 samples with |truth|>0.3, RAW body sign-flipped vs truth = 40 (66%)
+    sample rows (t, yaw, body->truth->rotated) per axis:
+      yaw=-179  vx: body+0.31 truth-0.31 rot-0.30 | vy: body-0.00 truth+0.00 rot+0.00
+      yaw=-176  vx: body+4.57 truth-4.62 rot-4.62 | vy: body-0.33 truth+0.00 rot+0.00
+      yaw=-175  vx: body+3.73 truth-3.74 rot-3.74 | vy: body-0.19 truth-0.14 rot-0.14
+      yaw=-175  vx: body+3.66 truth-3.63 rot-3.63 | vy: body+0.17 truth-0.49 rot-0.49
+
+[ADD#2] REAL-motion samples (vel corroborated by d(pos)/dt): 475
+  real-motion roll range=[-2,0] deg, pitch range=[-17,2] deg
+    real & |roll|>8          : n=0 (not exercised in this run)
+    real & |pitch|>8         : n=  163  rotated-vs-truth RMS=0.0052  max=0.016  RAW-vs-truth RMS=6.547 m/s
+    real & |roll|>8&|pitch|>5: n=0 (not exercised in this run)
+
+############## PHASE 1 / Check 1 — 20260604_120918_gate0_roll1 ##############
+[ADD#1] ODOMETRY.frame_id       = 1 (MAV_FRAME_LOCAL_NED)  constant=True
+[ADD#1] ODOMETRY.child_frame_id = 8 (MAV_FRAME_BODY_NED)  constant=True
+        ODOMETRY n=1001  LPN n=1285  IMU n=1588
+[truth x-check] LPN v_world vs robust d(pos)/dt over 858 moving samples (deduped 1285->1284, dropped 2 teleport/edge): median=0.0838  vec-RMS=0.2427  p90=0.2240 m/s
+
+[-180 segment] 670 ODOMETRY samples at |yaw|>170 deg AND moving (|v_body|>0.3)
+  RAW  body-as-world vs LPN truth:  per-axis RMS = [5.6846 1.3865 0.1846]  vec-RMS = 5.8542 m/s
+  ROT  rotated->world vs LPN truth: per-axis RMS = [0.0018 0.0022 0.0035]  vec-RMS = 0.0045 m/s
+    vx: of 669 samples with |truth|>0.3, RAW body sign-flipped vs truth = 669 (100%)
+    vy: of 332 samples with |truth|>0.3, RAW body sign-flipped vs truth = 332 (100%)
+    sample rows (t, yaw, body->truth->rotated) per axis:
+      yaw=-180  vx: body+0.16 truth-0.27 rot-0.28 | vy: body+0.00 truth-0.00 rot-0.00
+      yaw=-176  vx: body+2.82 truth-2.84 rot-2.84 | vy: body-0.21 truth+0.03 rot+0.03
+      yaw=-175  vx: body+3.39 truth-3.29 rot-3.29 | vy: body+1.05 truth-1.33 rot-1.33
+      yaw=-174  vx: body+2.47 truth-2.67 rot-2.68 | vy: body-2.16 truth+1.92 rot+1.91
+
+[ADD#2] REAL-motion samples (vel corroborated by d(pos)/dt): 666
+  real-motion roll range=[-4,10] deg, pitch range=[-17,0] deg
+    real & |roll|>8          : n=   85  rotated-vs-truth RMS=0.0059  max=0.038  RAW-vs-truth RMS=6.149 m/s
+    real & |pitch|>8         : n=   36  rotated-vs-truth RMS=0.0111  max=0.038  RAW-vs-truth RMS=2.061 m/s
+    real & |roll|>8&|pitch|>5: n=0 (not exercised in this run)
+
+############## PHASE 1 / Check 1 — 20260604_121555_gate0_roll2 ##############
+[ADD#1] ODOMETRY.frame_id       = 1 (MAV_FRAME_LOCAL_NED)  constant=True
+[ADD#1] ODOMETRY.child_frame_id = 8 (MAV_FRAME_BODY_NED)  constant=True
+        ODOMETRY n=3491  LPN n=4455  IMU n=5500
+[truth x-check] LPN v_world vs robust d(pos)/dt over 3890 moving samples (deduped 4455->4348, dropped 4 teleport/edge): median=25.5079  vec-RMS=19.3258  p90=25.5079 m/s
+
+[-180 segment] 942 ODOMETRY samples at |yaw|>170 deg AND moving (|v_body|>0.3)
+  RAW  body-as-world vs LPN truth:  per-axis RMS = [4.6961 2.8335 0.2223]  vec-RMS = 5.4893 m/s
+  ROT  rotated->world vs LPN truth: per-axis RMS = [0.0018 0.003  0.0036]  vec-RMS = 0.0050 m/s
+    vx: of 941 samples with |truth|>0.3, RAW body sign-flipped vs truth = 941 (100%)
+    vy: of 608 samples with |truth|>0.3, RAW body sign-flipped vs truth = 608 (100%)
+    sample rows (t, yaw, body->truth->rotated) per axis:
+      yaw=-180  vx: body+0.16 truth-0.28 rot-0.28 | vy: body+0.00 truth-0.00 rot-0.00
+      yaw=-176  vx: body+2.88 truth-2.84 rot-2.84 | vy: body+0.46 truth-0.65 rot-0.65
+      yaw=-175  vx: body+2.06 truth-2.31 rot-2.31 | vy: body-2.72 truth+2.55 rot+2.55
+      yaw=+171  vx: body+0.64 truth-0.86 rot-0.86 | vy: body+2.89 truth-2.46 rot-2.47
+
+[ADD#2] REAL-motion samples (vel corroborated by d(pos)/dt): 1181
+  real-motion roll range=[-11,12] deg, pitch range=[-17,10] deg
+    real & |roll|>8          : n=  345  rotated-vs-truth RMS=0.0084  max=0.064  RAW-vs-truth RMS=5.341 m/s
+    real & |pitch|>8         : n=  156  rotated-vs-truth RMS=0.0132  max=0.057  RAW-vs-truth RMS=4.679 m/s
+    real & |roll|>8&|pitch|>5: n=   52  rotated-vs-truth RMS=0.0137  max=0.055  RAW-vs-truth RMS=4.592 m/s
