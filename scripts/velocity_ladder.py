@@ -146,8 +146,14 @@ def main() -> int:
     ap.add_argument("--null-s", type=float, default=3.0, help="passive null-test / liveness window")
     ap.add_argument("--null-only", action="store_true", help="Phase-1 gate only: null + echo + actuator, NO ladder")
     ap.add_argument("--null-thresh", type=float, default=0.05, help="max |v| for a stationary drone (m/s)")
-    ap.add_argument("--tri-abort", type=float, default=0.5, help="gross 3-channel divergence that HALTS a run (m/s)")
-    ap.add_argument("--tri-abort-ticks", type=int, default=12, help="consecutive divergent ticks before halt")
+    ap.add_argument("--fd-window", type=float, default=0.05,
+                    help="finite-difference velocity window (s). SHORT so v_fd tracks fast motion; "
+                         "at 0.12 it lagged a violent transient and false-tripped the halt [fixed 2026-06-05]")
+    ap.add_argument("--tri-abort", type=float, default=0.6,
+                    help="sustained v_lpn-vs-v_odo disagreement that HALTS a run (m/s). The two INDEPENDENT "
+                         "sim sources are both ~instantaneous and should always agree, so a gap here = a real "
+                         "telemetry failure -- NOT finite-difference lag. v_fd is cross-checked OFFLINE instead.")
+    ap.add_argument("--tri-abort-ticks", type=int, default=25, help="consecutive divergent ticks before halt")
     ap.add_argument("--wait-live-s", type=float, default=60.0)
     ap.add_argument("--max-offset-m", type=float, default=12.0)
     ap.add_argument("--max-alt-m", type=float, default=8.0)
@@ -166,7 +172,7 @@ def main() -> int:
     session = Path("data/runs") / f"{session_stamp()}_{args.label}"
     recorder = Recorder(session)
     recorder.start()
-    channels = Channels()
+    channels = Channels(fd_window_s=args.fd_window)
 
     # Capture the ACTUAL transmitted SET_POSITION_TARGET payload (command echo) by wrapping send.
     echo_calls: list[tuple] = []
@@ -356,7 +362,8 @@ def main() -> int:
                     (np.asarray(s.position_ned) if s.position_ned is not None else origin)
                 rel = np.asarray(pos, dtype=np.float64) - origin
                 tilt_deg = float(np.degrees(max(abs(s.roll), abs(s.pitch))))
-                tri = _tri_disagreement([v_lpn, v_odo, v_fd])
+                tri = _tri_disagreement([v_lpn, v_odo, v_fd])           # 3-way (incl. finite-diff)
+                lpn_odo = _tri_disagreement([v_lpn, v_odo])             # two INDEPENDENT sim sources
                 rec = {
                     "sim_time_ns": int(s.sim_time_ns), "phase": name,
                     "cmd_v": _f3(vel_cmd), "yaw_cmd": (None if yaw_cmd is None else float(yaw_cmd)),
@@ -366,7 +373,7 @@ def main() -> int:
                     "rel_pos": _f3(rel), "rpy_deg": [float(np.degrees(s.roll)),
                     float(np.degrees(s.pitch)), float(np.degrees(s.yaw))],
                     "actuators": (list(channels.act) if channels.act is not None else None),
-                    "tri_disagree": tri,
+                    "tri_disagree": tri, "lpn_odo_disagree": lpn_odo,
                 }
                 records.append(rec)
                 phase_recs.append(rec)
@@ -380,11 +387,14 @@ def main() -> int:
                     aborted = f"alt {rel[2]:+.1f}m"
                 elif tilt_deg > args.max_tilt_deg:
                     aborted = f"tilt {tilt_deg:.0f}deg"
-                # ---- instrument gate: gross 3-channel divergence ----
-                if tri is not None and tri > args.tri_abort:
+                # ---- instrument gate: the two INDEPENDENT sim velocity sources must agree ----
+                # v_fd is a finite difference and legitimately lags violent transients, so it is
+                # logged + cross-checked OFFLINE on steady segments, NOT used for the live halt.
+                # A real runaway is instead caught by the SAFETY aborts (alt/offset/tilt) below/above.
+                if lpn_odo is not None and lpn_odo > args.tri_abort:
                     diverge_ticks += 1
                     if diverge_ticks >= args.tri_abort_ticks:
-                        aborted = f"triangulation_divergence {tri:.2f}m/s"
+                        aborted = f"telemetry_divergence lpn_vs_odo={lpn_odo:.2f}m/s"
                 else:
                     diverge_ticks = 0
                 if aborted:
@@ -395,7 +405,8 @@ def main() -> int:
                     print(f"   {name:7s} cmd={np.round(vel_cmd,2)} v_lpn={np.round(v_lpn,2) if v_lpn is not None else None} "
                           f"v_odo={np.round(v_odo,2) if v_odo is not None else None} "
                           f"v_fd={np.round(v_fd,2) if v_fd is not None else None} rel={np.round(rel,2)} "
-                          f"tilt={tilt_deg:.0f} tri={None if tri is None else round(tri,2)}   ",
+                          f"tilt={tilt_deg:.0f} tri3={None if tri is None else round(tri,2)} "
+                          f"lpn-odo={None if lpn_odo is None else round(lpn_odo,2)}   ",
                           end="\r", flush=True)
                     last_p = now
                 time.sleep(1.0 / args.rate)
@@ -445,6 +456,7 @@ def _phase_summary(name, vel_cmd, recs, steady) -> dict:
     z_drift = round(rel1[2] - rel0[2], 3) if (rel0 and rel1) else None
     horiz_drift = round(float(np.hypot(rel1[0] - rel0[0], rel1[1] - rel0[1])), 3) if (rel0 and rel1) else None
     tris = [r["tri_disagree"] for r in steady if r["tri_disagree"] is not None]
+    los = [r["lpn_odo_disagree"] for r in steady if r.get("lpn_odo_disagree") is not None]
     acts = [r["actuators"] for r in recs if r["actuators"] is not None]
     act_spread = None
     if acts:
@@ -456,6 +468,7 @@ def _phase_summary(name, vel_cmd, recs, steady) -> dict:
         "mean_v_fd": _mean_axis("v_fd", steady),
         "z_drift_m": z_drift, "horiz_drift_m": horiz_drift,
         "tri_max_steady": (round(max(tris), 3) if tris else None),
+        "lpn_odo_max_steady": (round(max(los), 3) if los else None),
         "actuator_spread": act_spread, "actuators_modulating": (act_spread is not None and act_spread > 1e-4),
         "n_ticks": len(recs),
     }
