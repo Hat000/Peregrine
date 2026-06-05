@@ -256,8 +256,8 @@ class MavlinkClient:
                 self.state,
                 recv_monotonic_ns=recv,
                 position_ned=np.array([msg.x, msg.y, msg.z], dtype=np.float64),
-                # ODOMETRY twist (vx/vy/vz) is in child_frame_id = BODY-FRD, NOT the world
-                # frame_id -- rotate to NED so it matches LOCAL_POSITION_NED's world velocity.
+                # ODOMETRY twist (vx/vy/vz) is in child_frame_id = MAV_FRAME_BODY_NED (8, body
+                # z-down), NOT the world frame_id -- rotate to NED to match LOCAL_POSITION_NED.
                 # Storing the raw body twist gave a sign-flipped velocity_ned whenever the drone
                 # was yawed+moving (a world/body mix that corrupted the KF + control). [2026-06-04]
                 velocity_ned=world_vec_from_body_quat(

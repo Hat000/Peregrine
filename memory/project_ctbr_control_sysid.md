@@ -7,11 +7,13 @@
 > GUI-confirmed ANGLE. So CTBR is the right path — but now for a *recorded* reason. Full report:
 > `handoff/shadowpc-velocity-fork-2026-06-04/REPORT.md` (also: the velocity controller only ENGAGES at
 > ~250 Hz; a sparse 25 Hz leaves the drone on the pre-control pin).
-> **(2) 🚩 ODOMETRY twist (`vx/vy/vz`) is BODY-FRD but was stored as `velocity_ned`=world** — a
+> **(2) 🚩 ODOMETRY twist (`vx/vy/vz`) is `MAV_FRAME_BODY_NED` (8) but was stored as `velocity_ned`=world** — a
 > world/body mix (sign-flipped vx/vy at the −X/−180° course heading) that fed the KF + controller
 > damping + planner. **FIXED in `c3b5a8e`** (rotate body→world via `frames.world_vec_from_body_quat`,
-> +regression test). STRONG candidate root cause for §5's "KF velocity lags 4×" + the lateral
-> oscillation — **re-validate both against the fix before any more gain-tuning.** The "altitude balloon"
+> +regression test). **CONFIRMED root cause of §5's "KF velocity lags 4×"** (re-validated 2026-06-05
+> offline replay: the mixed measurement read 0.21× truth = the "−0.22 vs −0.92"; the fixed KF tracks
+> truth to 0.05 m/s; rotation validated to ±12° roll/±20° pitch). The "control on raw given velocity"
+> workaround read the SAME corrupted field — a phantom fix. §1 roll + §7 balloon are SEPARATE, still real. The "altitude balloon"
 > (open blocker below) is the SAME broken vertical auto-thrust that ignores velocity setpoints.
 
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched

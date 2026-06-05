@@ -88,7 +88,8 @@ def world_vec_from_body_quat(v_body, q_wxyz) -> np.ndarray:
     (w, x, y, z; scalar-FIRST MAVLink order): ``v_world = R(q) @ v_body``.
 
     Needed for the sim's ODOMETRY twist: ``vx/vy/vz`` (and the angular rates) are reported in
-    ``child_frame_id`` = BODY-FRD, NOT the world ``frame_id``. The raw twist must be rotated here
+    ``child_frame_id`` = MAV_FRAME_BODY_NED (8, body z-down; confirmed from the wire), NOT the
+    world ``frame_id`` (=MAV_FRAME_LOCAL_NED). The raw twist must be rotated here
     to match LOCAL_POSITION_NED's world velocity before either is stored as ``velocity_ned`` --
     otherwise a yawed+moving drone records a frame-mixed velocity (at yaw=-180deg the body vx is
     SIGN-FLIPPED vs world), which is the corruption that fed the KF + controller damping + planner.
