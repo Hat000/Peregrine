@@ -20,9 +20,14 @@ def main() -> int:
     d = json.loads(p.read_text(encoding="utf-8"))
     m, R = d["meta"], d["records"]
     print(f"== {m.get('label')} yaw={m.get('yaw_mode')} rate-target n_rec={len(R)} aborted={m.get('aborted')}")
-    print(f"   null v_lpn/odo/fd max: "
-          f"{m['null_test']['v_lpn']['max']}/{m['null_test']['v_odo']['max']}/{m['null_test']['v_fd']['max']}"
-          f"  telemetry_live={m.get('telemetry_live')}  echo_mask={m.get('command_echo',{}).get('mask')}")
+    nt = m.get("null_test")            # velocity_ladder schema: {axis: {max: ..}}
+    if nt:
+        nl = f"{nt['v_lpn']['max']}/{nt['v_odo']['max']}/{nt['v_fd']['max']}"
+    else:                              # descend_arrest schema: null_max = {axis: float}
+        nm = m.get("null_max", {})
+        nl = f"{nm.get('v_lpn')}/{nm.get('v_odo')}/{nm.get('v_fd')}"
+    print(f"   null v_lpn/odo/fd max: {nl}  telemetry_live={m.get('telemetry_live')}  "
+          f"echo_mask={m.get('command_echo',{}).get('mask')}  verdict={m.get('suggested_verdict')}")
     if not R:
         return 0
     # group by phase
