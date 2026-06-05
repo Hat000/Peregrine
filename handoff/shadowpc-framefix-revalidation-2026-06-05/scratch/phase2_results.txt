@@ -1,0 +1,24 @@
+
+############## PHASE 2 / Check 3 (decisive replay) — 20260604_025347_gate0_course1 ##############
+  -180 moving segment: OLD 754 ticks, NEW 754 ticks
+
+  [OLD (buggy mix)]  over 754 ticks:
+    KF-vel ERROR vs truth: per-axis RMS = [2.403 0.098 0.163]  vec-RMS = 2.410 m/s
+    vx(fwd): truth_mean=-3.658  KF_mean=-1.357  (KF/truth=0.37)  ingested_meas_mean=-0.753   [n=754]
+
+  [NEW (rotated fix)]  over 754 ticks:
+    KF-vel ERROR vs truth: per-axis RMS = [0.011 0.049 0.005]  vec-RMS = 0.051 m/s
+    vx(fwd): truth_mean=-3.658  KF_mean=-3.660  (KF/truth=1.00)  ingested_meas_mean=-3.656   [n=754]
+
+############## PHASE 2 / Check 3 (decisive replay) — 20260604_120918_gate0_roll1 ##############
+  -180 moving segment: OLD 1062 ticks, NEW 1062 ticks
+
+  [OLD (buggy mix)]  over 1062 ticks:
+    KF-vel ERROR vs truth: per-axis RMS = [1.741 0.617 0.058]  vec-RMS = 1.848 m/s
+    vx(fwd): truth_mean=-2.779  KF_mean=-1.109  (KF/truth=0.40)  ingested_meas_mean=-0.688   [n=1059]
+    vy(lat): truth_mean=-0.474  KF_mean=-0.305  (KF/truth=0.64)  ingested_meas_mean=-0.176   [n=450]
+
+  [NEW (rotated fix)]  over 1062 ticks:
+    KF-vel ERROR vs truth: per-axis RMS = [0.003 0.346 0.006]  vec-RMS = 0.346 m/s
+    vx(fwd): truth_mean=-2.779  KF_mean=-2.780  (KF/truth=1.00)  ingested_meas_mean=-2.778   [n=1059]
+    vy(lat): truth_mean=-0.474  KF_mean=-0.581  (KF/truth=1.22)  ingested_meas_mean=-0.476   [n=450]

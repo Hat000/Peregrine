@@ -1,0 +1,28 @@
+
+############## PHASE 3 / Check 0 (data flow) — 20260604_025347_gate0_course1 ##############
+  CODE FACTS (what consumed the velocity):
+   - navigator.py:281-285  KF.update_velocity(ds.velocity_ned, given_vel_std=0.10)
+   - fly_vq1.py:355-358    gs = client.state ; rawv = gs.velocity_ned ;
+                           vel = [rawv[0], rawv[1], KF_vz]   (default, not --use-kf-state)
+   => BOTH the KF and the 'raw given horizontal velocity' workaround read ds.velocity_ned,
+      which IS the interleaved ODOMETRY(body)+LPN(world) mix.
+
+  Over the -180 moving segment (754 ticks) — the field fly_vq1 fed the controller:
+    vx(fwd/along-track)   : truth_mean=-3.658  workaround-fed_mean=-0.753  (fed/truth=0.21)  sign-flipped 40% of samples  [n=754]
+    vy(lat/cross-track)   : truth_mean=-0.384  workaround-fed_mean=-0.220  (fed/truth=0.57)  sign-flipped 25% of samples  [n=96]
+  => the 'pristine raw given velocity' the lateral fix switched TO was the SAME corrupted
+     mix (not pristine); at -180 it was even more cancelled than the KF output.
+
+############## PHASE 3 / Check 0 (data flow) — 20260604_120918_gate0_roll1 ##############
+  CODE FACTS (what consumed the velocity):
+   - navigator.py:281-285  KF.update_velocity(ds.velocity_ned, given_vel_std=0.10)
+   - fly_vq1.py:355-358    gs = client.state ; rawv = gs.velocity_ned ;
+                           vel = [rawv[0], rawv[1], KF_vz]   (default, not --use-kf-state)
+   => BOTH the KF and the 'raw given horizontal velocity' workaround read ds.velocity_ned,
+      which IS the interleaved ODOMETRY(body)+LPN(world) mix.
+
+  Over the -180 moving segment (1062 ticks) — the field fly_vq1 fed the controller:
+    vx(fwd/along-track)   : truth_mean=-2.773  workaround-fed_mean=-0.687  (fed/truth=0.25)  sign-flipped 38% of samples  [n=1062]
+    vy(lat/cross-track)   : truth_mean=-0.439  workaround-fed_mean=-0.172  (fed/truth=0.39)  sign-flipped 37% of samples  [n=526]
+  => the 'pristine raw given velocity' the lateral fix switched TO was the SAME corrupted
+     mix (not pristine); at -180 it was even more cancelled than the KF output.
