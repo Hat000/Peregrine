@@ -276,16 +276,21 @@ def main() -> int:
                 mr = np.asarray(s.angular_rate_body, dtype=np.float64)
                 pos = np.asarray(s.position_ned if s.position_ned is not None else [np.nan]*3, dtype=np.float64)
                 vel = np.asarray(s.velocity_ned if s.velocity_ned is not None else [np.nan]*3, dtype=np.float64)
+                # ACTUATOR_OUTPUT_STATUS = the parser-INDEPENDENT thrust witness (Task-3 discriminator:
+                # do the motors TRACK our commanded collective, or stay pinned = sim auto-thrust?).
+                act = (None if client.actuator_outputs is None
+                       else [round(float(x), 5) for x in client.actuator_outputs["motors"]])
                 cmd_log.write(json.dumps({
                     "t": round(time.monotonic() - t0, 4), "sim_time_ns": int(s.sim_time_ns),
                     "phase": phase.name, "kind": phase.kind,
                     "axis": (-1 if phase.axis is None else int(phase.axis)),
                     "cmd": [round(float(v), 5) for v in omega], "thrust": float(thr),
+                    "actuators": act,                                     # motor outputs [0..1]
                     "meas_rate": [round(float(v), 5) for v in mr],        # ODOMETRY (sign-suspect)
                     "true_rate": [round(float(v), 5) for v in trusted_rate],  # finite-diff (sign-correct)
                     "rpy": [round(float(s.roll), 5), round(float(s.pitch), 5), round(float(s.yaw), 5)],
                     "pos": [round(float(v), 3) for v in pos],
-                    "vel": [round(float(v), 4) for v in vel],
+                    "vel": [round(float(v), 4) for v in vel],             # FIXED world velocity (c3b5a8e)
                 }) + "\n")
                 n_rows += 1
 
@@ -295,10 +300,13 @@ def main() -> int:
                     break
                 now = time.monotonic()
                 if now - last_print >= 0.5:
-                    print(f"  {phase.name:14s} t={now - t0:5.1f}s rpy=({np.degrees(s.roll):+5.0f},"
-                          f"{np.degrees(s.pitch):+5.0f},{np.degrees(s.yaw):+5.0f}) "
-                          f"meas=({mr[0]:+.2f},{mr[1]:+.2f},{mr[2]:+.2f}) "
-                          f"pos=({pos[0]:+.1f},{pos[1]:+.1f},{pos[2]:+.1f})   ", end="\r", flush=True)
+                    mot = (np.mean(act) if act is not None else float("nan"))
+                    # Task-3 discriminator line: commanded collective vs motor witness vs world vz.
+                    print(f"  {phase.name:12s} t={now - t0:4.1f}s cmd_thr={thr:.3f} "
+                          f"mot~{mot:.3f} [{','.join(f'{a:.2f}' for a in (act or []))}] "
+                          f"vz={vel[2]:+5.2f} z={pos[2]:+5.2f} "
+                          f"rpy=({np.degrees(s.roll):+4.0f},{np.degrees(s.pitch):+4.0f},"
+                          f"{np.degrees(s.yaw):+4.0f})   ", end="\r", flush=True)
                     last_print = now
                 time.sleep(tick)
             if aborted_reason is not None:
