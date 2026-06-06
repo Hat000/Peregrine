@@ -33,7 +33,7 @@ import numpy as np
 from racer.contracts import ControlCommand, ControlMode
 from racer.frames import body_rate_from_quats, euler_from_quat_wxyz
 from racer.sysid import fit_hover_thrust, fit_rate_gain, step_response_metrics
-from racer.twin import CtbrPlant, CtbrPlantConfig
+from racer.twin import CtbrPlant, CtbrPlantConfig, _wxyz_from_euler
 
 _G = 9.80665
 _AXES = ("roll", "pitch", "yaw")
@@ -117,7 +117,8 @@ def fit_rate(runs: list[Run], *, settle_frac: float = 0.35) -> dict:
     (the segment plus a few pre-step baseline samples). ``fit_rate_gain`` then regresses steady-vs-
     commanded per axis (pooling +/- magnitudes through 0), giving the SIGNED gain -> magnitude +
     sign. Returns ``{gain(3), sign(3), tau, per_axis, n_segments}``."""
-    pairs: dict[int, list[tuple[float, float]]] = {0: [], 1: [], 2: []}
+    pairs: dict[int, list[tuple[float, float]]] = {0: [], 1: [], 2: []}      # cmd vs quat-FD rate
+    pairs_raw: dict[int, list[tuple[float, float]]] = {0: [], 1: [], 2: []}  # cmd vs RAW odo rate
     taus: list[float] = []
     for run in runs:
         w = realized_rate(run)
@@ -129,15 +130,18 @@ def fit_rate(runs: list[Run], *, settle_frac: float = 0.35) -> dict:
                 continue
             seg = w[i:j, axis]
             k = max(1, int(len(seg) * settle_frac))
-            steady = float(np.mean(seg[-k:]))
-            pairs[axis].append((cmd, steady))
+            pairs[axis].append((cmd, float(np.mean(seg[-k:]))))
+            raw = run.odo_rate[i:j, axis]
+            if np.all(np.isfinite(raw)):
+                pairs_raw[axis].append((cmd, float(np.mean(raw[-k:]))))
             # tau: include a short pre-step baseline so the rise is measured from ~0
             p0 = max(0, i - 5)
             m = step_response_metrics(run.t[p0:j], w[p0:j, axis], t_step=run.t[i])
             if np.isfinite(m["tau_s"]) and m["tau_s"] > 0:
                 taus.append(m["tau_s"])
     gain = np.ones(3)
-    sign = np.ones(3)
+    sign = np.ones(3)              # quaternion-finite-diff (REPORTED-q) composite sign
+    raw_sign = np.ones(3)          # RAW ODOMETRY angular_rate sign (vs command)
     per_axis = {}
     for axis in (0, 1, 2):
         if not pairs[axis]:
@@ -151,8 +155,13 @@ def fit_rate(runs: list[Run], *, settle_frac: float = 0.35) -> dict:
         gain[axis] = abs(g)
         sign[axis] = -1.0 if g < 0 else 1.0
         per_axis[_AXES[axis]] = {"gain": float(g), "r2": fit["r2"], "n": int(fit["n"])}
+        if pairs_raw[axis]:
+            cr = np.asarray([p[0] for p in pairs_raw[axis]])
+            mr = np.asarray([p[1] for p in pairs_raw[axis]])
+            gr = fit_rate_gain(np.append(cr, 0.0), np.append(mr, 0.0))["gain"]
+            raw_sign[axis] = -1.0 if gr < 0 else 1.0
     tau = float(np.median(taus)) if taus else float("nan")
-    return {"gain": gain, "sign": sign, "tau": tau, "per_axis": per_axis,
+    return {"gain": gain, "sign": sign, "raw_sign": raw_sign, "tau": tau, "per_axis": per_axis,
             "n_segments": sum(len(v) for v in pairs.values()), "tau_n": len(taus)}
 
 
@@ -226,24 +235,45 @@ def fit_drag(config: CtbrPlantConfig, course: Run, *, lo: float = 0.0, hi: float
     return best
 
 
-def fit_plant(runs: list[Run], *, drag_run: Run | None = None) -> tuple[CtbrPlantConfig, dict]:
-    """Fit a full faithful :class:`CtbrPlantConfig` from the runs. Returns ``(config, report)``.
+# The ONE telemetry fact the open-loop data CANNOT disambiguate: the ODOMETRY-quaternion ROLL is
+# reported INVERTED vs the true physical roll (measured CLOSED-LOOP -- the Gate-0 saga: the lateral
+# loop was positive feedback until odo_att_sign roll was flipped). Open-loop, "physical roll inversion
+# + true-q" and "no physical inversion + inverted-q" fit identically; the saga picks the latter. With
+# this, the measured composite (quat-FD) sign splits into the PHYSICAL plant + the telemetry report.
+_ODO_ATT_REPORT_SIGN = np.array([-1.0, 1.0, 1.0])     # ODOMETRY-quat roll inverted (saga)
 
-    ``drag_run`` (course1): if given, also estimate ``linear_drag`` from it (see :func:`fit_drag`);
-    else drag stays 0 (an ideal-rotor twin that over-runs in sustained forward flight)."""
+
+def fit_plant(runs: list[Run], *, drag_run: Run | None = None,
+              att_report_sign: np.ndarray | None = None) -> tuple[CtbrPlantConfig, dict]:
+    """Fit a full sim-faithful :class:`CtbrPlantConfig` (physics + telemetry) from the runs.
+
+    The PHYSICS runs in the true frame (correct thrust direction); the emitted state carries the
+    sim's telemetry inversions so the measured live controller signs transfer. Splitting the measured
+    composite by the known ODOMETRY-quat roll inversion (``att_report_sign``, default the saga value):
+      * ``rate_sign`` (PHYSICAL) = quat-FD composite sign x att_report_sign  -> [+1,+1,-1] (yaw only).
+      * ``odo_att_report_sign`` = att_report_sign  -> [-1,1,1] (roll-quat inverted in telemetry).
+      * ``odo_rate_report_sign`` = (raw-odo vs quat-FD sign) x att_report_sign -> [-1,-1,1] (the raw
+        ODOMETRY angular_rate is inverted on roll+pitch vs the true physical rate).
+    ``drag_run`` (course1): also estimate ``linear_drag`` from it (see :func:`fit_drag`)."""
     from dataclasses import replace
 
+    asign = _ODO_ATT_REPORT_SIGN if att_report_sign is None else np.asarray(att_report_sign, float)
     rate_runs = [r for r in runs if r.meta.get("mode") == "rate"]
     rf = fit_rate(rate_runs or runs)
     tf = fit_thrust(runs)
     hover = tf["hover"] if np.isfinite(tf["hover"]) else 0.26
+    phys_rate_sign = rf["sign"] * asign                      # composite (reported-q) -> physical
+    raw_vs_quatfd = rf["raw_sign"] * rf["sign"]              # raw-odo vs quat-FD, per axis (+-1)
+    odo_rate_report = raw_vs_quatfd * asign                  # raw-odo vs PHYSICAL rate
     cfg = CtbrPlantConfig(hover_thrust=float(hover), rate_tau_s=float(rf["tau"]),
-                          rate_gain=rf["gain"].copy(), rate_sign=rf["sign"].copy())
+                          rate_gain=rf["gain"].copy(), rate_sign=phys_rate_sign.copy(),
+                          odo_att_report_sign=asign.copy(), odo_rate_report_sign=odo_rate_report.copy())
     drag = 0.0
     if drag_run is not None:
         drag = fit_drag(cfg, drag_run)
         cfg = replace(cfg, linear_drag=float(drag))
-    return cfg, {"rate": rf, "thrust": tf, "drag": drag}
+    return cfg, {"rate": rf, "thrust": tf, "drag": drag, "phys_rate_sign": phys_rate_sign,
+                 "odo_rate_report_sign": odo_rate_report, "odo_att_report_sign": asign}
 
 
 def validate(config: CtbrPlantConfig, course: Run) -> dict:
@@ -266,9 +296,18 @@ def validate(config: CtbrPlantConfig, course: Run) -> dict:
         return ControlCommand(mode=ControlMode.BODY_RATE, body_rate=course.cmd_rate[k],
                               thrust=float(course.cmd_thrust[k]))
 
+    def _seed_q(k):
+        # The recording is in the TELEMETRY frame (e.g. roll-quat inverted); the twin integrates the
+        # PHYSICAL attitude. Un-apply the report sign so emit(seed) == the recorded q.
+        asign = np.asarray(config.odo_att_report_sign)
+        if np.allclose(asign, 1.0):
+            return course.q[k]
+        r, p, y = euler_from_quat_wxyz(course.q[k])
+        return _wxyz_from_euler(r * asign[0], p * asign[1], y * asign[2])
+
     # -- open-loop: one rollout from the first commanded sample --
     plant = CtbrPlant(config, position_ned=course.pos[k0], velocity_ned=course.vel_world[k0],
-                      q_wxyz=course.q[k0])
+                      q_wxyz=_seed_q(k0))
     att_err, vel_err = [], []
     for k in range(k0, n - 1):
         if not (np.all(np.isfinite(course.cmd_rate[k])) and np.isfinite(course.cmd_thrust[k])):
@@ -285,7 +324,7 @@ def validate(config: CtbrPlantConfig, course: Run) -> dict:
         if k + 1 >= n or not np.all(np.isfinite(course.cmd_rate[k])):
             continue
         p = CtbrPlant(config, position_ned=course.pos[k], velocity_ned=course.vel_world[k],
-                      q_wxyz=course.q[k])
+                      q_wxyz=_seed_q(k))
         p.step(_cmd(k), course.t[k + 1] - course.t[k])
         st = p.state()
         rec = np.array(euler_from_quat_wxyz(course.q[k + 1]))
@@ -316,16 +355,22 @@ def _wrap(a: np.ndarray) -> np.ndarray:
 # (independent of course1); linear_drag is estimated from course1's sustained forward flight (the only
 # run that reveals the sim's terminal velocity). VALIDATED open-loop vs gate0_course1: attitude RMS
 # 0.17/0.44/0.36 deg (roll/pitch/yaw), speed RMS 0.285 m/s; one-step-ahead velocity RMS < 0.006 m/s.
-# rate_sign = the sim's COMMAND inversions (roll & yaw inverted -> controller body_rate_sign=[-1,1,-1]
-# undoes it; ff_gain ~= the |gain| ~2.5 undoes the amplification). The ODOMETRY pitch-rate measurement
-# inversion (raw angular_rate vs the quat finite-diff) is a SEPARATE reporting quirk -- modelled by
-# odo_rate_report_sign for the closed-loop Task-C re-tune, not needed for this open-loop validation.
+# PHYSICS frame (correct thrust direction): rate_sign=[+1,+1,-1] -- only YAW's command is physically
+# inverted (controller body_rate_sign=[1,1,-1] undoes it; ff_gain ~= |gain| ~2.5 undoes the ~2.5x
+# amplification). TELEMETRY frame (what state() emits, undone by the controller's odo signs as live):
+# odo_att_report_sign=[-1,1,1] (ODOMETRY-quat roll inverted), odo_rate_report_sign=[-1,-1,1] (raw
+# ODOMETRY angular_rate inverted on roll+pitch). The reported-q quat-FD COMPOSITE the fit measures is
+# [-1,+1,-1] = physical [+1,+1,-1] x att-report [-1,+1,+1].
 def faithful_config():
-    """The sim-faithful :class:`CtbrPlantConfig` fitted from the ShadowPC sysid extract (Task B)."""
+    """The sim-faithful :class:`CtbrPlantConfig` fitted from the ShadowPC sysid extract (Task B/C):
+    true-frame physics + the sim's ODOMETRY telemetry inversions, so the measured live controller
+    signs transfer. Reproduce with ``scripts/fit_twin.py``."""
     return CtbrPlantConfig(
         hover_thrust=0.2656,
         rate_tau_s=0.0190,
         rate_gain=np.array([2.501, 2.504, 2.231]),
-        rate_sign=np.array([-1.0, 1.0, -1.0]),
+        rate_sign=np.array([1.0, 1.0, -1.0]),              # PHYSICAL: only yaw command inverted
         linear_drag=0.2111,
+        odo_att_report_sign=np.array([-1.0, 1.0, 1.0]),    # telemetry: ODOMETRY-quat roll inverted
+        odo_rate_report_sign=np.array([-1.0, -1.0, 1.0]),  # telemetry: raw rate inverted roll+pitch
     )

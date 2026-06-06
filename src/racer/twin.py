@@ -44,6 +44,13 @@ def _clip_norm(v: np.ndarray, max_norm: float) -> np.ndarray:
     return v
 
 
+def _wxyz_from_euler(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Aerospace 3-2-1 (ZYX) Euler -> body->world quaternion (w,x,y,z). Inverse of
+    ``frames.euler_from_quat_wxyz`` -- used to re-emit a sign-flipped (telemetry-convention) attitude."""
+    x, y, z, w = Rotation.from_euler("ZYX", [yaw, pitch, roll]).as_quat()
+    return np.array([w, x, y, z], dtype=np.float64)
+
+
 @dataclass
 class CtbrPlantConfig:
     """Plant parameters. Defaults are a canonical unity-gain quadrotor; set ``rate_gain`` /
@@ -59,6 +66,15 @@ class CtbrPlantConfig:
     rate_sign: np.ndarray = field(default_factory=lambda: np.ones(3))   # sim sign on the command
     linear_drag: float = 0.0            # optional world-frame linear drag (1/s); 0 = ideal
     max_omega_rps: float = 25.0         # sanity clamp on realized body rate
+    # MEASUREMENT-report signs on the EMITTED ODOMETRY state, vs the TRUE physical attitude/rate the
+    # plant integrates (the PHYSICS always uses the true frame -> correct thrust direction). The real
+    # sim's telemetry inverts the ODOMETRY-quaternion ROLL and the angular_rate on ROLL+PITCH (the
+    # Gate-0 saga + sysid extract), so a faithful twin emits these inversions and the controller's
+    # ``odo_att_sign`` / ``odo_rate_sign`` undo them EXACTLY as live -- making the measured live signs
+    # transfer. Both default [1,1,1] = canonical (emit the true frame). These touch only ``state()``,
+    # never the physics. (att report = euler signs applied to the emitted roll/pitch/yaw + quaternion.)
+    odo_att_report_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
+    odo_rate_report_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
 
 
 class CtbrPlant:
@@ -119,16 +135,21 @@ class CtbrPlant:
 
     def state(self) -> DroneState:
         """Current plant state as a :class:`DroneState` (world pos/vel; ODOMETRY-style attitude)."""
-        roll, pitch, yaw = euler_from_quat_wxyz(self.q)
+        roll, pitch, yaw = euler_from_quat_wxyz(self.q)               # TRUE physical attitude
+        q_out = self.q.copy()
+        asign = np.asarray(self.cfg.odo_att_report_sign)
+        if not np.allclose(asign, 1.0):                              # emit the telemetry convention
+            roll, pitch, yaw = roll * asign[0], pitch * asign[1], yaw * asign[2]
+            q_out = _wxyz_from_euler(roll, pitch, yaw)
         return DroneState(
             sim_time_ns=self.t_ns,
             position_ned=self.pos.copy(),
             velocity_ned=self.vel.copy(),
-            orientation_ned_wxyz=self.q.copy(),
+            orientation_ned_wxyz=q_out,
             roll=roll,
             pitch=pitch,
             yaw=yaw,
-            angular_rate_body=self.omega.copy(),
+            angular_rate_body=self.omega * np.asarray(self.cfg.odo_rate_report_sign),  # ODOMETRY convention
             accel_body=self.accel_body.copy(),
             armed=True,
         )
