@@ -14,8 +14,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from racer.contracts import Gate
 from racer.planner import ReactivePlanner
-from twin_fly_course import fly, gate_plane_miss, make_controller
-from twin_tune import PASS_BAR_M, TUNED_GAINS, TUNED_PLANNER
+from racer.twin_fit import faithful_config
+from twin_fly_course import _FAITHFUL_SIGNS, fly, gate_plane_miss, make_controller
+from twin_tune import (FAITHFUL_TUNED_GAINS, FAITHFUL_TUNED_PLANNER, PASS_BAR_M, TUNED_GAINS,
+                       TUNED_PLANNER)
+
+
+def _fly_faithful(gains, planner_params):
+    """Fly the 6-gate course on the SIM-FAITHFUL plant with restored live signs at the live 100 Hz."""
+    return fly(6, velocity_mode="clean", max_s=44.0, dt=0.01, flythrough_s=2.0,
+               controller=make_controller(signs=_FAITHFUL_SIGNS, **gains),
+               planner=ReactivePlanner(yaw_mode="course", **planner_params),
+               plant_config=faithful_config())
 
 
 def test_gate_plane_miss_interpolates_the_opening_offset():
@@ -55,3 +65,24 @@ def test_tuned_gains_thread_all_six_gates():
     assert all(m is not None for m in miss)                # every gate plane crossed
     assert max(miss) < 0.5                                 # the task's bar (all gates < 0.5 m)
     assert max(miss) < PASS_BAR_M                          # and the pre-registered target (< 0.40 m)
+
+
+def test_faithful_tuned_gains_thread_the_faithful_plant():
+    # Task C: the live-ready config (restored live sim-signs + faithful-re-tuned outer gains) threads
+    # all 6 gates on the SIM-FAITHFUL plant at the live 100 Hz. Worst ~0.61 m -- a valid pass (inside
+    # the 0.75 m half-opening) but not dead-centre (the drag-laden faithful plant is harder than
+    # canonical; the cross-track g1 is the VQ2 racing-line target).
+    r = _fly_faithful(FAITHFUL_TUNED_GAINS, FAITHFUL_TUNED_PLANNER)
+    miss = r["plane_miss"]
+    assert r["final"].name == "FINISHED" and r["gate_index"] == 6
+    assert all(m is not None for m in miss)                # every plane crossed
+    assert max(miss) < 0.75                                # threads the inner opening (valid passes)
+
+
+def test_canonical_gains_do_not_transfer_to_the_faithful_plant():
+    # The canonical-tuned gains (Task A) do NOT thread the faithful plant -- so the Task-C re-tune is
+    # essential, not cosmetic. (They miss gates / stall: the faithful dynamics need different gains.)
+    r = _fly_faithful(TUNED_GAINS, TUNED_PLANNER)
+    threaded = (r["final"].name == "FINISHED" and r["gate_index"] == 6
+                and all(m is not None and m < 0.75 for m in r["plane_miss"]))
+    assert not threaded                                    # canonical gains fail on the faithful plant

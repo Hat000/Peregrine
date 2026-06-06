@@ -79,17 +79,31 @@ _CANONICAL_GAINS = dict(
 )
 
 
-def make_controller(**overrides) -> Controller:
-    """Build the decoupled CTBR controller with NEUTRAL (canonical-twin) sim-signs, applying any
-    gain ``overrides`` (the tuner's search variables, e.g. ``kp_pos=2.0``). Signs stay neutral: the
-    twin is canonical, so no inversion is needed; Task C restores the measured sim-signs for the
-    faithful twin. ``overrides`` must be :class:`Controller` fields (planner params go to the
-    planner, not here)."""
-    gains = dict(_CANONICAL_GAINS)
-    gains.update(overrides)
-    return Controller(
-        body_rate_sign=np.ones(3), odo_att_sign=np.ones(3), odo_rate_sign=np.ones(3), **gains,
-    )
+# Live sim-sign compensation MEASURED on ShadowPC (the fly_vq1 gate-0 command + sysid extract): the
+# faithful twin's quirks require these so the controller transfers to the sim. body_rate_sign undoes
+# the plant's roll/yaw COMMAND inversion; ff_gain undoes the ~2.5x rate amplification; odo_att_sign /
+# odo_rate_sign undo the ODOMETRY roll-quat / pitch-rate reporting inversions. Task A uses NEUTRAL
+# signs (canonical twin); Task C restores these for the faithful twin. See project_ctbr_control_sysid.
+_FAITHFUL_SIGNS = dict(
+    body_rate_sign=np.array([1.0, 1.0, -1.0]),     # flight-correct (gate-0 saga): roll re-flipped +1
+    odo_att_sign=np.array([-1.0, 1.0, 1.0]),       # ODOMETRY-quat roll inverted
+    odo_rate_sign=np.array([-1.0, -1.0, 1.0]),     # ODOMETRY rate: roll + pitch inverted (flight set)
+    ff_gain=2.5,                                   # ~ the fitted rate gain (undoes the amplification)
+    hover_thrust=0.2656,                           # the fitted faithful-plant hover (plant-matched)
+)
+
+
+def make_controller(*, signs: dict | None = None, **overrides) -> Controller:
+    """Build the decoupled CTBR controller, applying gain ``overrides`` (the tuner's search variables,
+    e.g. ``kp_pos=2.0``) and a sim-sign set. ``signs=None`` -> NEUTRAL (canonical twin); pass
+    ``signs=_FAITHFUL_SIGNS`` (Task C) for the measured live compensation the faithful twin needs.
+    ``overrides`` must be :class:`Controller` fields (planner params go to the planner)."""
+    params = dict(_CANONICAL_GAINS)                                       # incl. ff_gain=1.0
+    params.update(body_rate_sign=np.ones(3), odo_att_sign=np.ones(3), odo_rate_sign=np.ones(3))
+    if signs is not None:
+        params.update(signs)                                             # faithful signs (override ff_gain)
+    params.update(overrides)                                             # explicit gain overrides win last
+    return Controller(**params)
 
 
 def _controller() -> Controller:
@@ -98,7 +112,7 @@ def _controller() -> Controller:
 
 def fly(n_gates: int = 2, *, dt: float = 0.01, max_s: float = 30.0, velocity_mode: str = "clean",
         controller: Controller | None = None, planner: ReactivePlanner | None = None,
-        flythrough_s: float = 0.0) -> dict:
+        flythrough_s: float = 0.0, plant_config: CtbrPlantConfig | None = None) -> dict:
     """``velocity_mode``: 'clean' = the fixed client (true world velocity); 'mix' = the ODOMETRY
     frame bug (world/body interleave); 'flip' = pure body-frame velocity (worst case).
 
@@ -118,8 +132,8 @@ def fly(n_gates: int = 2, *, dt: float = 0.01, max_s: float = 30.0, velocity_mod
         controller=controller if controller is not None else _controller(),
         config=MissionConfig(takeoff_altitude_m=1.5, gate_pass_radius_m=0.75),
     )
-    twin = CtbrPlant(CtbrPlantConfig(rate_tau_s=0.05), position_ned=[0.0, 0.0, 0.0],
-                     q_wxyz=_level_quat_wxyz(np.pi))                 # at the pad, facing -X
+    twin = CtbrPlant(plant_config if plant_config is not None else CtbrPlantConfig(rate_tau_s=0.05),
+                     position_ned=[0.0, 0.0, 0.0], q_wxyz=_level_quat_wxyz(np.pi))   # pad, facing -X
     transport = TwinTransport(twin, dt)
     traj: list[np.ndarray] = []
     tick = [0]
