@@ -65,6 +65,13 @@ class CtbrPlantConfig:
     rate_gain: np.ndarray = field(default_factory=lambda: np.ones(3))   # steady realized/commanded
     rate_sign: np.ndarray = field(default_factory=lambda: np.ones(3))   # sim sign on the command
     linear_drag: float = 0.0            # optional world-frame linear drag (1/s); 0 = ideal
+    # Sim-to-real LATENCY the ideal twin lacked -- why kp_alt=4 looked stable offline but relay-
+    # oscillated live (VERIFY rung 1, 2026-06-06): a transport delay on the sense->command->act loop
+    # + a first-order lag on the realized collective (motor spin-up). With the controller's thrust
+    # clips, a too-stiff alt PD + this delay = a relay limit cycle. Both 0 = instantaneous (canonical);
+    # fit to the live limit-cycle period.
+    cmd_latency_s: float = 0.0          # transport delay applied to the whole command (s)
+    thrust_tau_s: float = 0.0           # first-order lag on the realized collective (s)
     max_omega_rps: float = 25.0         # sanity clamp on realized body rate
     # MEASUREMENT-report signs on the EMITTED ODOMETRY state, vs the TRUE physical attitude/rate the
     # plant integrates (the PHYSICS always uses the true frame -> correct thrust direction). The real
@@ -97,6 +104,8 @@ class CtbrPlant:
         self.omega = np.zeros(3)                                   # body rate FRD (rad/s)
         self.accel_body = np.array([0.0, 0.0, -self.cfg.g])        # specific force, body (hover)
         self.t_ns = int(t0_ns)
+        self._cmd_buf: list[ControlCommand] = []                   # transport-delay buffer (cmd_latency_s)
+        self._thrust = float(self.cfg.hover_thrust)                # realized collective (thrust_tau_s lag)
 
     @staticmethod
     def _from_quat(q_wxyz: np.ndarray) -> Rotation:
@@ -112,6 +121,14 @@ class CtbrPlant:
         if dt <= 0.0:
             return
         cfg = self.cfg
+        # --- sense->command->act TRANSPORT DELAY: apply the command from cmd_latency_s ago (the
+        # dynamic the ideal twin lacked; with the thrust clips it turns a too-stiff alt PD into a
+        # relay limit cycle). 0 -> instantaneous (canonical). ---
+        self._cmd_buf.append(cmd)
+        nlag = int(round(cfg.cmd_latency_s / dt)) if cfg.cmd_latency_s > 0.0 else 0
+        cmd = self._cmd_buf[-(nlag + 1)] if len(self._cmd_buf) >= nlag + 1 else self._cmd_buf[0]
+        if len(self._cmd_buf) > nlag + 2:
+            self._cmd_buf.pop(0)
         # --- inner rate loop: first-order lag toward the sim's realized steady rate ---
         cmd_rate = np.zeros(3) if cmd.body_rate is None else np.asarray(cmd.body_rate, dtype=np.float64)
         target = np.asarray(cfg.rate_gain) * np.asarray(cfg.rate_sign) * cmd_rate
@@ -122,8 +139,12 @@ class CtbrPlant:
         R_new = R_cur * Rotation.from_rotvec(self.omega * dt)
         self.q = self._to_wxyz(R_new)
         # --- thrust -> body-up specific force -> world accel + gravity (+ optional drag) ---
-        thrust = 0.0 if cmd.thrust is None else float(cmd.thrust)
-        a_up = cfg.g * (thrust / cfg.hover_thrust)                 # thrust=hover -> g (balances)
+        thrust_cmd = 0.0 if cmd.thrust is None else float(cmd.thrust)
+        if cfg.thrust_tau_s > 0.0:                                 # actuator spin-up lag (0 -> instant)
+            self._thrust += (1.0 - np.exp(-dt / cfg.thrust_tau_s)) * (thrust_cmd - self._thrust)
+        else:
+            self._thrust = thrust_cmd
+        a_up = cfg.g * (self._thrust / cfg.hover_thrust)           # thrust=hover -> g (balances)
         f_world = R_new.as_matrix() @ np.array([0.0, 0.0, -a_up])  # body -Z (up) in world NED
         f_world = f_world - cfg.linear_drag * self.vel             # specific force incl. drag
         accel = f_world + np.array([0.0, 0.0, cfg.g])              # + gravity (NED +Z down)

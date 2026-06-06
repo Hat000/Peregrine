@@ -123,3 +123,37 @@ def test_offline_course_flight_threads_gates_only_with_the_fix():
 
     flip = fly(3, velocity_mode="flip", max_s=22.0)
     assert flip["gate_index"] == 0                                          # diverges off gate 0
+
+
+def test_thrust_tau_lags_the_collective():
+    # actuator spin-up lag: a thrust step produces LESS initial climb than the instant plant.
+    dt = 0.001
+    instant = CtbrPlant(CtbrPlantConfig())                       # thrust_tau_s=0 (default)
+    lagged = CtbrPlant(CtbrPlantConfig(thrust_tau_s=0.05))
+    instant.step(_cmd([0, 0, 0], 0.40), dt)
+    lagged.step(_cmd([0, 0, 0], 0.40), dt)
+    assert abs(lagged.vel[2]) < abs(instant.vel[2])             # lag -> thrust hasn't fully risen
+    assert lagged.vel[2] < 0.0                                  # but it is climbing (vz up = -z)
+
+
+def test_cmd_latency_delays_the_command():
+    # transport delay: after warming the buffer at hover, a climb command takes ~nlag steps to bite.
+    dt = 0.01
+    nlag = 5
+    p = CtbrPlant(CtbrPlantConfig(cmd_latency_s=nlag * dt))     # hover_thrust default 0.26
+    for _ in range(12):                                        # warm the delay line with hover (vz~0)
+        p.step(_cmd([0, 0, 0], 0.26), dt)
+    v_hover = float(p.vel[2])
+    for _ in range(nlag - 1):                                  # command a climb -- still delayed
+        p.step(_cmd([0, 0, 0], 0.55), dt)
+    assert abs(float(p.vel[2]) - v_hover) < 0.05              # climb not yet applied
+    for _ in range(nlag + 6):                                  # let it propagate through the delay
+        p.step(_cmd([0, 0, 0], 0.55), dt)
+    assert float(p.vel[2]) < v_hover - 0.3                    # now climbing (command arrived)
+
+
+def test_latency_default_is_canonical_no_op():
+    # defaults (cmd_latency_s=thrust_tau_s=0) must leave hover identical to the original plant.
+    s = _run(CtbrPlant(), [0, 0, 0], 0.26, seconds=1.0)
+    np.testing.assert_allclose(s.position_ned, [0, 0, 0], atol=1e-6)
+    np.testing.assert_allclose(s.velocity_ned, [0, 0, 0], atol=1e-6)
