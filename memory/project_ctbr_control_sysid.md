@@ -149,3 +149,63 @@ A long teammate-in-the-loop debug (the teammate watching the GUI is ground truth
 - An alt INTEGRATOR (not yet present) to hold hover precisely without the vz-damping cratering thrust.
 - Then: drop `--max-gates`, raise speed, fly the full 6-gate VQ1. (Gate centres for the course are
   now correct via corner_to_center: gate1 (-46.9,-2.5,3.71), gate2 (-74.6,1.2,12.31), … all face -X.)
+
+## Offline twin FIT + CTBR re-tune — Tasks A/B/C (laptop, 2026-06-05, branch `claude/quizzical-payne-a60690`)
+Roadmap B/C done OFFLINE on the plant twin (no sim). `scripts/twin_tune.py` (coordinate-descent
+gain tuner), `src/racer/twin_fit.py` + `scripts/fit_twin.py` (fit a faithful `CtbrPlantConfig` from
+the ShadowPC `handoff/shadowpc-followups-2026-06-05/sysid/` extract), `scripts/twin_fly_course.py`
+(the offline flight + `make_controller`/`fly` seams). **285 tests green.**
+
+### Task A — canonical-twin gain tuner (`twin_tune.py`)
+- **🚩 The "closest-approach to gate CENTRE" metric is MISLEADING for the LAST gate.** `mission.run`
+  stops at FINISHED, which the proximity sphere (radius 0.75 m) triggers ~0.75 m BEFORE the plane for
+  a dead-centre approach → the trajectory is truncated short → the final gate reads ~the radius
+  (g5 "0.74 m") though the drone is dead-centre IN THE OPENING. Fix: measure the **in-plane opening
+  miss at the plane crossing** (`gate_plane_miss`) and **fly THROUGH the final gate** (`fly(...,
+  flythrough_s=2.0)`). With that, the existing gains already thread all 6 (worst 0.09 m). [Possible
+  LIVE concern: the mission may declare the final gate passed 0.75 m short and brake — verify the
+  drone actually crosses the last plane; momentum likely carries it, but flag it.]
+- Tuned (sum-of-squared in-plane miss; time only a tiebreak so margin is never traded for speed):
+  **kp_pos 1.2→2.0, kd_vel 3.0→4.0, max_speed 5.0→6.0** → worst 0.092→**0.069 m**, t 34.6→29.3 s,
+  all 6 gates <0.07 m. `TUNED_GAINS`/`TUNED_PLANNER` in `twin_tune.py`.
+
+### Task B — faithful `CtbrPlantConfig` fit (`twin_fit.faithful_config()`), VALIDATED
+Fit from the rate doublets (`rate1/2`) + thrust holds + `gate0_course1`:
+- **rate_gain = [2.50, 2.50, 2.23]** (|steady realized/commanded|, r²=1.00). **NB this extract's
+  settled-tail fit gives ~2.5, not the memo's ~2.7** — 2.5 is what REPRODUCES course1; trust it.
+- **PHYSICAL `rate_sign = [+1, +1, -1]`** — only **YAW**'s command is physically inverted. The
+  ROLL "inversion" is **TELEMETRY, not plant**: the ODOMETRY-quat reports roll inverted (the saga's
+  closed-loop finding — open-loop data can't tell physical-roll-flip from inverted-q-report apart;
+  the saga picks inverted-q). So the measured quat-FD COMPOSITE [-1,+1,-1] = physical [+1,+1,-1] ×
+  att-report [-1,+1,+1].
+- **hover_thrust = 0.2656** (from the reliable near-hover level holds; hsweep vz is unreliable during
+  the fast vertical aborts — manifest-confirmed, reads physically-impossible net-up).
+- **🚩 NEW: linear_drag = 0.21 /s** — the real sim has a terminal velocity (~4 m/s in level-ish
+  forward flight) the ideal-rotor twin LACKED (drag-free twin over-ran course1 to −8.5 vs −4 m/s at
+  matching pitch). Fit from course1's sustained forward flight.
+- **rate_tau_s = 0.019** (fast inner loop — needs the live 100 Hz control dt; dt=0.02 mis-ranks).
+- TELEMETRY layer on the twin (`CtbrPlantConfig.odo_att_report_sign=[-1,1,1]`,
+  `odo_rate_report_sign=[-1,-1,1]`): the twin does PHYSICS in the true frame (correct thrust) and
+  EMITS the sim's ODOMETRY inversions (roll-quat; raw rate on roll+pitch) so the measured live
+  controller signs undo them as live. (Without this split the reported-frame fit did WRONG roll
+  physics — only hidden because course1 is straight.)
+- **VALIDATION vs course1** (drive the twin with recorded commands): one-step-ahead att RMS
+  0.02/0.11/0.03°, vel RMS <0.006 m/s (model structure correct per-step); open-loop att
+  0.17/0.41/0.24° (pitch/yaw; roll weakly excited), **speed RMS 0.62 m/s** (drag closes the drift).
+
+### Task C — live-ready config (re-tune on the faithful twin, `twin_tune.py --faithful`)
+- Restored **live sim-signs** (`_FAITHFUL_SIGNS`): `body_rate_sign=[1,1,-1]`, `odo_att_sign=[-1,1,1]`,
+  `odo_rate_sign=[-1,-1,1]`, `ff_gain=2.5`, `hover=0.2656`. Re-tuned outer gains at dt=0.01:
+  **kp_pos 0.6, kd_vel 2.0, max_speed 6.0, kp_att 10, kd_att 0.15, kp_alt 4.0, kd_alt 2.0,
+  lookahead 5.0, cruise 8.0** (`FAITHFUL_TUNED_GAINS`/`FAITHFUL_TUNED_PLANNER`). **THIS is the config
+  the live VERIFY flight uses.**
+- **THREADS all 6 gates** — in-plane miss [0.13 0.61 0.14 0.26 0.14 0.05], worst **0.61 m** < 0.75 m
+  half-opening = valid passes, t 31.9 s.
+- **HONEST caveats:** (1) the canonical-tuned gains do **NOT** transfer (1/6) — the faithful re-tune
+  is essential. (2) The faithful plant threads **~9× less tight** than canonical (0.61 vs 0.069) —
+  its drag + fast τ make the reactive lateral loop a **delicate optimum** (gentler kp_pos + longer
+  lookahead tame a cross-track oscillation; more lateral authority re-oscillates). **g1** (first
+  cross-track) is marginal at 0.61 m → a VQ2 racing-line / RL target. (3) **§7 balloon is NOT
+  modelled** (ShadowPC characterising separately) — transfer-confidence is from the fit+validation;
+  the live VERIFY still has to clear the balloon. (4) Branch `claude/quizzical-payne-a60690` —
+  merge to `red-team-tier-a` + push.
