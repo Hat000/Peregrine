@@ -17,16 +17,20 @@
 > (open blocker below) is the SAME broken vertical auto-thrust that ignores velocity setpoints.
 >
 > **[2026-06-07 UPDATE — supersedes the §7 "altitude balloon" blocker below]** The balloon/limit-cycle
-> is OURS (Task 3: no sim auto-thrust in CTBR), and the live VERIFY rung-1 cycle is now ROOT-CAUSED +
-> FIXED. The live alt loop damped `kd_alt·(vz)` on the **KF (Navigator) vz, which LAGS** (~0.8 m/s in a
-> sustained descent) → a relay limit cycle at a static hover (true vz ±0.5, ~6 Hz). The course is a
-> **26 m DESCENT** so the alt loop NEEDS kd_alt damping to track the drop, and — PROVEN by a joint
-> sweep — with the lagged KF vz **no (kp_alt,kd_alt) both threads the descent AND holds hover** (they
-> conflict through kd_alt). **FIX: damp on RAW given vz** (`fly_vq1` default now; `--alt-kf-vz` = A/B
-> back to KF). Re-tuned `FAITHFUL_TUNED_GAINS` **kp_alt 4.0→3.0, kd_alt 2.0→1.75** then threads
-> (0.44–0.59) AND holds. `hover_thrust 0.2656` VALIDATED by the two-sided climb+sink vprobe (hover
-> 0.265–0.267, vertical drag ~0; the rung-1 0.32 mean thrust was a relay clip-duty artifact). Re-derive
-> with `scripts/fit_vertical.py` + `scripts/twin_hover.py`. Detail: `handoff/shadowpc-verify-2026-06-06/`.
+> is OURS (Task 3: no sim auto-thrust in CTBR). The live VERIFY rung-1 cycle (true vz ±0.5, ~6 Hz) is a
+> **relay driven by the LOOP TRANSPORT DELAY ~40 ms** (= cycle period ÷4), NOT the vz source: the
+> raw-vz fix (`dd16091`) flew but the cycle PERSISTED unchanged (re-VERIFY ×2,
+> `handoff/shadowpc-reverify-2026-06-07/`) → the KF-vz-lag premise was WRONG. The conflict is
+> FUNDAMENTAL: the **26 m descent** needs `kd_alt≥1.75` to track but a static hover needs `kd_alt≤0.5`
+> to not relay — no pure-PD pair does both, and a thrust rate-limit makes it worse. **But the cycle is
+> position-harmless** (alt held to ±2–3 cm, zero drift) and **static-only** (the race never
+> static-hovers — the alt target is always the moving descending carrot), and the cycling gains thread
+> the descending course offline (0.46). **USER DECISION: accept it for VQ1, verify the MOVING course
+> (rung 2/3); defer the clean-hover fix (gain-schedule kd_alt low-at-hover/high-at-descent) to post-VQ1
+> — the RL pivot may replace this PD loop.** `hover_thrust 0.2656` VALIDATED by the two-sided vprobe
+> (0.265–0.267, vertical drag ~0). Config stays `kp_alt 3.0/kd_alt 1.75` + raw vz. **🚩 The twin
+> under-models live latency by ~25% even calibrated to 40 ms (0.19 vs live 0.29) — do not trust offline
+> "holds" claims.** Re-derive: `scripts/fit_vertical.py`, `scripts/twin_hover.py`.
 
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the
