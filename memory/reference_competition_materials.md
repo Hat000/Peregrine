@@ -26,6 +26,14 @@ metadata:
 - Software: external libraries/compilers/acceleration layers permitted; gen-AI coding tools allowed. FLOSS allowed BUT must be disclosed in writing to organizers + must not violate third-party license terms. ⇒ YOLO (AGPL) is usable; obligation is disclosure + AGPL compliance (trivial for internal/non-distributed use).
 - IP: team retains ownership during + after; competition gets limited run/judge license ending by 2026 finals.
 
+**🚩 VQ1 SUBMISSION MECHANICS (2026-06-07, from the authoritative spec §5–8 + the updates/rules pages):**
+- **VQ1 (Round One) = PASS/FAIL completion, NOT a ranked time.** Spec §8.1: "Round One verifies that contestant software can successfully navigate the racecourse" (start→intermediate→finish gates), §8.3 **max run 8 minutes**. The time-trial RANKING is VQ2 ("fastest valid time counts"). ⇒ our 6/6 valid finish MEETS the VQ1 bar; start-transient reliability + speed are VQ2 concerns, not VQ1 blockers.
+- **🚩 The submission is our PYTHON AUTONOMY STACK, which THEY run** — updates page: "Prepare a Python-based autonomy stack, which will be **integrated into the simulator and executed in a controlled evaluation environment**. Exact submission instructions and interface specifications will be provided in coming weeks." ⇒ our ShadowPC runs are DEV/PRACTICE; the real VQ1 = package the stack to their (forthcoming) interface, they execute it unattended. **The submission interface is NOT yet published** — registered teams receive it + deadlines by EMAIL.
+- **§7 COMPLIANCE: human interaction during a submitted timed run = immediate DQ.** ⇒ the submitted stack must run FULLY AUTONOMOUS end-to-end (arm itself → fly → finish), no human GO/disarm (our dev runs use a human GO + force-disarm — must be removed for submission).
+- **§5: the DCL sim runs on Windows 11 + a decent GPU (8 GB VRAM); Linux NOT supported.** ⇒ our ShadowPC (Windows, co-located sim) IS the competition setup; our run is on the official VQ1 track ("course geometry identical for all participants", §3.5).
+- **Attempts: "unlimited attempts within the qualification window"; VQ1 opens May, open until VQ2 closes (~mid/late July).** Registration opened 2026-04-21; sim package released May. ⇒ a dice-roll start is tolerable IF eval re-runs are unlimited (CONFIRM).
+- **OPEN (ask info@theaigrandprix.com / await the email): the exact submission interface + how/where to submit; whether eval re-runs are unlimited; the precise VQ1 deadline; confirm team registration is active (the interface arrives by email).**
+
 **Genuinely UNKNOWN (not published — must verify at first sim contact, do NOT assume):**
 - How gate order is communicated; fidelity of any provided gate positions.
 - What guidance aids actually do (next-gate? path? just highlighting?).
