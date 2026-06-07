@@ -25,10 +25,11 @@ amplitude; it is not the cause. The ideal twin can't reproduce this (it holds ta
 controller's, clean vz, no latency).
 
 ## Offline plan (the next session)
-1. **Fit the real vertical plant** from `vprobe_sink_extract.json`: hover thrust (vz=0 crossing) + thrust→accel
-   slope (drag-corrected d(vz)/dt vs collective). We have the **sink side** (0.24 sinks hard, 0.26 still sinks →
-   **hover > 0.26**, above the twin's 0.2656); request a complementary **descending** probe (0.32→0.28) next
-   session if the climb-side slope is needed.
+1. **Fit the real vertical plant** from `vprobe_sink_extract.json` + `vprobe_climb_extract.json` (BOTH sides):
+   hover thrust (vz=0 crossing) + the two-sided thrust→accel slope (drag-corrected d(vz)/dt vs collective).
+   **Hover is bracketed in (0.26, 0.28) ≈ 0.27** — 0.26 sinks, 0.28 climbs — i.e. ~the twin's 0.2656 (the
+   rung-1 0.32 mean was the clip-duty-cycle artifact, confirmed). Open-loop climbs/sinks are SMOOTH (GUI:
+   "very constant, barely any lurch") → the plant is fine; the limit cycle is purely the closed alt loop.
 2. **Fit `cmd_latency_s`** from the **~0.16–0.20 s (~6 Hz)** limit-cycle period in `rung1_hover_run1/run2_extract.json`
    (full-rate vz + thrust series — resolves the 6 Hz cycle).
 3. **Add both to the twin's vertical channel** (real hover/slope + a control/measurement latency) so it
@@ -41,7 +42,8 @@ controller's, clean vz, no latency).
 - `UNDERSTANDING.md`, `RUNG1_HOVER.md`, `VPROBE.md`
 - `rung1_hover_run1_extract.json`, `rung1_hover_run2_extract.json` — hover-hold, FULL-rate (commanded
   thrust/body-rate + KF vz, TRUE LOCAL_POSITION_NED vz, ACTUATOR motors) + summary. **For the cmd_latency fit.**
-- `vprobe_sink_extract.json` — open-loop probe, per-phase collective/world-vz/motor series. **For the hover+slope fit.**
+- `vprobe_sink_extract.json` + `vprobe_climb_extract.json` — open-loop probe, both sides (collective/world-vz/motor
+  per-phase series). **For the hover (≈0.27, bracketed 0.26–0.28) + two-sided thrust-slope fit.**
 
 ## Live wiring added this session (`red-team-tier-a`)
 - `scripts/fly_vq1.py`: `--faithful` (single-source-of-truth controller/planner via `make_controller` +
