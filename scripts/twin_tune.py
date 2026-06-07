@@ -179,14 +179,26 @@ TUNED_PLANNER = {"lookahead_m": 3.0, "cruise_speed": 5.0}  # planner fields (Rea
 # (racer.twin_fit.faithful_config) with the restored live sim-sign compensation (_FAITHFUL_SIGNS:
 # body_rate_sign=[1,1,-1], odo_att_sign=[-1,1,1], odo_rate_sign=[-1,-1,1], ff_gain=2.5, hover=0.2656).
 # THIS IS THE CONFIG THE LIVE VERIFY FLIGHT USES (the outer gains transfer; the signs are measured).
-# Result: THREADS all 6 gates (worst in-plane miss 0.61 m at g1 < 0.75 m half-opening = valid passes;
-# per-gate [0.13, 0.61, 0.14, 0.26, 0.14, 0.05]), t 31.9 s. HONEST caveat: ~9x less tight than the
-# canonical twin (0.61 vs 0.069) -- the faithful plant's drag + fast tau make the reactive lateral
-# loop a delicate optimum (kp_pos 1.2->0.6, lookahead 3->5 to tame the cross-track oscillation; more
-# lateral authority re-oscillates). g1 (first cross-track) is marginal -> a VQ2 racing-line/RL target.
-# The canonical-tuned gains do NOT transfer (1/6) -- the faithful re-tune is essential.
+# Result: THREADS all 6 gates (worst in-plane miss 0.59 m at g1 < 0.75 m half-opening = valid passes;
+# per-gate [0.13, 0.59, 0.25, 0.22, 0.16, 0.06]), t 31.9 s. HONEST caveat: ~8x less tight than the
+# canonical twin -- the faithful plant's drag + fast tau make the reactive lateral loop a delicate
+# optimum (kp_pos 1.2->0.6, lookahead 3->5 to tame the cross-track oscillation; more lateral authority
+# re-oscillates). g1 (first cross-track) is marginal -> a VQ2 racing-line/RL target. The canonical-
+# tuned gains do NOT transfer (1/6) -- the faithful re-tune is essential.
+#
+# ALT LOOP (kp_alt/kd_alt) RE-TUNED 2026-06-06 after the live VERIFY rung-1 limit cycle (handoff
+# shadowpc-verify-2026-06-06; analysis scripts/twin_hover.py). The course is a 26 m DESCENT (g0 +1.4 m
+# -> g5 -24.6 m), so the alt loop's main job is descent tracking -- which needs kd_alt damping. But the
+# original kp_alt=4/kd_alt=2 acting on the live LAGGED KF vz (Navigator vz lags ~0.8 m/s in a sustained
+# descent) relay-oscillated a STATIC hover-hold (rung 1: true vz +-0.5, 6 Hz). Offline-proven: with the
+# KF-lagged vz NO (kp_alt,kd_alt) both threads the descent AND holds hover. The fix is STRUCTURAL --
+# fly_vq1 now damps the alt loop on the RAW given vz (no lag) -- which lets the threading-capable
+# damping also hold (twin: kp_alt 3/kd_alt 1.75 threads 0.44-0.59 AND holds static hover, vz_rms ~0 at
+# <=15 ms residual transport, vs 0.5-1.0 on KF vz). hover_thrust 0.2656 VALIDATED by the two-sided
+# climb+sink vprobe (hover 0.265-0.267, vertical drag ~0). Run rung-1 with --alt-thrust-hi 0.45 (gentle
+# takeoff). kd_alt 1.5 is a more transport-robust fallback (threads 0.53-0.61).
 FAITHFUL_TUNED_GAINS = {"kp_pos": 0.6, "kd_vel": 2.0, "max_speed": 6.0, "kp_att": 10.0,
-                        "kd_att": 0.15, "kp_alt": 4.0, "kd_alt": 2.0}
+                        "kd_att": 0.15, "kp_alt": 3.0, "kd_alt": 1.75}
 FAITHFUL_TUNED_PLANNER = {"lookahead_m": 5.0, "cruise_speed": 8.0}
 
 

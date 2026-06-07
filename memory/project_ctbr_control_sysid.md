@@ -15,6 +15,18 @@
 > truth to 0.05 m/s; rotation validated to ±12° roll/±20° pitch). The "control on raw given velocity"
 > workaround read the SAME corrupted field — a phantom fix. §1 roll + §7 balloon are SEPARATE, still real. The "altitude balloon"
 > (open blocker below) is the SAME broken vertical auto-thrust that ignores velocity setpoints.
+>
+> **[2026-06-07 UPDATE — supersedes the §7 "altitude balloon" blocker below]** The balloon/limit-cycle
+> is OURS (Task 3: no sim auto-thrust in CTBR), and the live VERIFY rung-1 cycle is now ROOT-CAUSED +
+> FIXED. The live alt loop damped `kd_alt·(vz)` on the **KF (Navigator) vz, which LAGS** (~0.8 m/s in a
+> sustained descent) → a relay limit cycle at a static hover (true vz ±0.5, ~6 Hz). The course is a
+> **26 m DESCENT** so the alt loop NEEDS kd_alt damping to track the drop, and — PROVEN by a joint
+> sweep — with the lagged KF vz **no (kp_alt,kd_alt) both threads the descent AND holds hover** (they
+> conflict through kd_alt). **FIX: damp on RAW given vz** (`fly_vq1` default now; `--alt-kf-vz` = A/B
+> back to KF). Re-tuned `FAITHFUL_TUNED_GAINS` **kp_alt 4.0→3.0, kd_alt 2.0→1.75** then threads
+> (0.44–0.59) AND holds. `hover_thrust 0.2656` VALIDATED by the two-sided climb+sink vprobe (hover
+> 0.265–0.267, vertical drag ~0; the rung-1 0.32 mean thrust was a relay clip-duty artifact). Re-derive
+> with `scripts/fit_vertical.py` + `scripts/twin_hover.py`. Detail: `handoff/shadowpc-verify-2026-06-06/`.
 
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the

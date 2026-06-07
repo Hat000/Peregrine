@@ -295,6 +295,7 @@ def main() -> int:
     ap.add_argument("--cmd-log", action="store_true", help="log per-tick (pos,vel,speed,thrust,body_rate) to commands.jsonl for offline tuning diagnosis")
     ap.add_argument("--force-saved-map", action="store_true", help="ignore the (flaky) live TRACK_INFO map; use the saved deterministic --map")
     ap.add_argument("--use-kf-state", action="store_true", help="control on the KF-estimated pos/vel (default: use the GIVEN pristine pos/vel; the KF velocity lags ~4x and breaks damping)")
+    ap.add_argument("--alt-kf-vz", action="store_true", help="alt loop damps on the KF (lagged) vz instead of the raw given vz. Default OFF (raw): the lagged KF vz caused the VERIFY rung-1 limit cycle; raw vz removes it (Task-3 debunked the balloon rationale for KF vz). Flag = A/B back to the old behaviour.")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
@@ -440,16 +441,20 @@ def main() -> int:
             st["next"] = time.monotonic() + tick
             st["n"] += 1
             ns = nav.update(client.state, frames.get())
-            # CONTROL ON THE GIVEN STATE (per-axis): the KF velocity lags the truth badly (~4x
-            # underestimate during a lateral move -> cross-track damping 4x too weak -> oscillation).
-            # Use the raw given pos + raw HORIZONTAL velocity for the lateral loop. But KEEP the KF
-            # VERTICAL velocity: the raw vz drives the alt thrust to its floor, where the sim's
-            # auto-thrust takes over and climbs away (measured given3/4 ballooned to 8 m). The KF vz
-            # is gently lagged, so the alt thrust stays near hover and holds (proven in roll1).
+            # CONTROL ON THE GIVEN STATE: the KF velocity lags the truth badly (the twin's Navigator
+            # KF lags vz up to ~0.8 m/s in a sustained descent, tau ~0.4 s) -> cross-track damping
+            # too weak AND -- the VERIFY rung-1 finding -- the alt loop's kd_alt acting on that LAGGED
+            # vz is what relay-oscillates the altitude (a static-hover limit cycle; offline-confirmed
+            # no gain pair both threads the descent and holds on KF vz). So use the RAW given pos +
+            # RAW velocity on ALL axes (vz too). The old rationale for keeping KF vz -- "raw vz floors
+            # the thrust -> sim auto-thrust balloons" -- was DEBUNKED by Task 3 (we own thrust in CTBR;
+            # no sim auto-thrust on this path) + the climb-vprobe (hover ~0.266, the plant climbs
+            # smoothly open-loop). ``--alt-kf-vz`` restores the old KF-vz vertical for an A/B.
             gs = client.state
             if not args.use_kf_state and gs.position_ned is not None and gs.velocity_ned is not None:
                 rawv = np.asarray(gs.velocity_ned, dtype=np.float64)
-                vel = np.array([rawv[0], rawv[1], float(np.asarray(ns.velocity_ned)[2])])
+                vz = float(np.asarray(ns.velocity_ned)[2]) if args.alt_kf_vz else float(rawv[2])
+                vel = np.array([rawv[0], rawv[1], vz])
                 ns = replace(ns, position_ned=np.asarray(gs.position_ned, dtype=np.float64), velocity_ned=vel)
             st["nav"] = ns
             return ns
