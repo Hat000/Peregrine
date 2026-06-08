@@ -50,10 +50,23 @@ differentiable sims that ALSO supply the infra:
 - **Decisive criterion = PLANT FIDELITY.** The twin MUST match the system-ID'd VQ1 plant (inverted-yaw
   cmd, rate_gain ~2.5, τ=0.019, hover 0.2656, drag 0.219, ~40 ms latency) for transfer. The substrate is a
   vehicle; **our plant is the payload, injected regardless of tool.**
-- **STAGE-0 BAKE-OFF — source-read DONE 2026-06-08 → DiffAero adopted (above).** Remaining = the Adroit
-  install smoke test (Duo): clone + `pip install -e .` (conda py3.11 + torch cu121 like the detector env;
-  watch pytorch3d/open3d — try WITHOUT them for state-only), run a tiny `env/racing.py` PPO/SHAC headless,
-  report GPU + throughput. THEN write our plant as a `dynamics/base_dynamics.py` subclass.
+- **STAGE-0 BAKE-OFF — RUN LIVE ON ADROIT 2026-06-08 → DiffAero CONFIRMED (PASS).** Installs standalone
+  (NO Isaac), torch cu121 + CUDA verified on a GPU node (the `gpu` partition has BOTH A100 [4/node,
+  adroit-h11g1..3] and V100-32GB), `import diffaero` works, configs `cfg/env/racing.yaml` +
+  `cfg/algo/{ppo,shac,sha2c,apg}.yaml` present, action space = **body-rate + collective = our exact CTBR**,
+  **plant-injection point = `dynamics/base_dynamics.py`** (+ `quadrotor.py`, `controller.py`). BSD-3.
+  - **ONE remaining env step: `pytorch3d`** (required by `diffaero/env` transforms — NOT skippable; the
+    "skip rendering deps" guess was wrong). **🚩 Adroit COMPUTE NODES HAVE NO INTERNET → install on the
+    LOGIN node.** pytorch3d builds from source → needs the CUDA toolchain ON PATH: the naive
+    `module load cudatoolkit/12.6` did NOT put `nvcc`/`ninja`/proper `gcc` on PATH in a non-login shell, so
+    the build failed fast. NEXT: set `CUDA_HOME`+PATH explicitly, `pip install ninja`, ensure a compatible
+    gcc — OR (preferred) grab a prebuilt wheel (miropsota/torch_packages_builder) matching torch-cu121-py311
+    to skip compiling entirely. (Consider asking Princeton RC for the sanctioned CUDA-build module combo.)
+  - **Flat-layout gotcha:** clone dir is `diffaero_repo` but code imports `diffaero` → fix with
+    `ln -sfn diffaero_repo diffaero` + `PYTHONPATH=<parent>` (or repair the editable install). Footprint:
+    `~/.conda/envs/diffaero` (6.4 GB, home), code/logs in `/scratch/network/fl3689` (our dirs only).
+  - THEN: tiny racing PPO/SHAC for a throughput number, then write our system-ID'd plant as a
+    `base_dynamics` subclass. Smoke sbatch + install scripts are staged in `/scratch/network/fl3689/`.
 
 ## Vision = serious investment (user: "train it into something unbeatable") — TWO distinct workstreams
 Do NOT conflate them:
