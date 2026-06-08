@@ -1,0 +1,89 @@
+{
+ "meta": {
+  "probe": "velocity_ladder",
+  "label": "gate3_homereset",
+  "yaw_mode": "ignore",
+  "keepalive": "none",
+  "note": "",
+  "ned_z_is_down": true,
+  "speed_mps": 1.0,
+  "climb_mps": 0.5,
+  "safety": {
+   "max_offset_m": 12.0,
+   "max_alt_m": 8.0,
+   "max_tilt_deg": 80.0
+  },
+  "origin_ned": [
+   -0.00046874998952262104,
+   6.83593752910383e-05,
+   0.020546874031424522
+  ],
+  "yaw0_deg": -179.93904513353277,
+  "forward_ned": [
+   -0.9999994340976897,
+   -0.0010638629142856735,
+   0.0
+  ],
+  "initial_rpy_deg": [
+   -0.014680977547660243,
+   -17.801576980145413,
+   -179.93904513353277
+  ],
+  "sim_time_start_ns": 2432155049000,
+  "reset_counter": 0,
+  "null_test": {
+   "v_lpn": {
+    "n": 120,
+    "mean": 0.0,
+    "max": 0.0
+   },
+   "v_odo": {
+    "n": 120,
+    "mean": 0.0,
+    "max": 0.0
+   },
+   "v_fd": {
+    "n": 120,
+    "mean": 0.0,
+    "max": 0.0
+   }
+  },
+  "telemetry_hz": {
+   "local_pos": 95.2,
+   "odometry": 74.6,
+   "actuator": 95.4
+  },
+  "telemetry_live": true,
+  "actuator_rest": [
+   0.05000000074505806,
+   0.05000000074505806,
+   0.05000000074505806,
+   0.05000000074505806
+  ],
+  "null_pass": true,
+  "command_echo": {
+   "mask": 3527,
+   "pos": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "vel": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "accel": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "yaw": 0.0,
+   "yaw_rate": 0.0
+  },
+  "expected_mask": 3527,
+  "reference_mask": 3527,
+  "echo_mask_ok": true
+ },
+ "records": []
+}

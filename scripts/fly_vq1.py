@@ -38,10 +38,11 @@ from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # twin_fly_course / twin_tune (sibling scripts)
 
 import numpy as np
 
-from racer.contracts import ControlMode
+from racer.contracts import ControlMode, Setpoint
 from racer.controller import Controller
 from racer.firstcontact import backend_summary, telemetry_summary
 from racer.mavlink_client import MavlinkClient
@@ -163,6 +164,84 @@ def _wait_for_race(client: MavlinkClient, frames: _LatestFrame, args) -> bool:
     return False
 
 
+def _build_planner(args) -> ReactivePlanner:
+    """The planner. ``--faithful`` => the single-source-of-truth FAITHFUL_TUNED_PLANNER + course yaw."""
+    if args.faithful:
+        from twin_tune import FAITHFUL_TUNED_PLANNER
+
+        return ReactivePlanner(yaw_mode="course", **FAITHFUL_TUNED_PLANNER)
+    return ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead, yaw_mode=args.yaw_mode)
+
+
+def _build_controller(args) -> Controller:
+    """The controller. ``--faithful`` builds it via ``make_controller(signs=_FAITHFUL_SIGNS,
+    **FAITHFUL_TUNED_GAINS)`` (no hand-copied gains) so the live law is identical to the twin-tuned
+    one; ``--alt-thrust-lo/-hi`` still override the saturation clip (rung-1 takeoff gentling). The
+    legacy branch is the prior per-flag construction unchanged (alt clip defaults 0.18/0.36)."""
+    if args.faithful:
+        from twin_fly_course import _FAITHFUL_SIGNS, make_controller
+        from twin_tune import FAITHFUL_TUNED_GAINS
+
+        overrides = dict(FAITHFUL_TUNED_GAINS)
+        if args.alt_thrust_lo is not None:
+            overrides["alt_thrust_lo"] = args.alt_thrust_lo
+        if args.alt_thrust_hi is not None:
+            overrides["alt_thrust_hi"] = args.alt_thrust_hi
+        return make_controller(signs=_FAITHFUL_SIGNS, **overrides)
+    alt_lo = args.alt_thrust_lo if args.alt_thrust_lo is not None else 0.18
+    alt_hi = args.alt_thrust_hi if args.alt_thrust_hi is not None else 0.36
+    return Controller(mode=_MODE[args.mode], hover_thrust=args.hover_thrust,
+                      thrust_slope_mps2=args.thrust_slope, max_accel_mps2=args.max_accel,
+                      max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel,
+                      kp_att=args.kp_att, kd_att=args.kd_att, max_body_rate_rps=args.max_body_rate,
+                      body_rate_sign=np.array([float(x) for x in args.rate_sign.split(",")]),
+                      decoupled=args.decoupled, ff_gain=args.ff_gain,
+                      odo_rate_sign=np.array([float(x) for x in args.odo_rate_sign.split(",")]),
+                      odo_att_sign=np.array([float(x) for x in args.odo_att_sign.split(",")]),
+                      kp_alt=args.kp_alt, kd_alt=args.kd_alt,
+                      alt_thrust_lo=alt_lo, alt_thrust_hi=alt_hi, alt_offset_m=args.alt_offset,
+                      max_speed=args.max_speed, tilt_comp=args.tilt_comp)
+
+
+def _controller_config(ctrl: Controller, planner: ReactivePlanner) -> dict:
+    """A compact, recordable dict of the wired law (-> meta.json; the laptop's live-vs-twin key)."""
+    def arr(a):
+        return [float(x) for x in np.asarray(a, dtype=np.float64)]
+    return {
+        "mode": ctrl.mode.name, "decoupled": bool(ctrl.decoupled), "tilt_comp": bool(ctrl.tilt_comp),
+        "hover_thrust": float(ctrl.hover_thrust), "kp_pos": float(ctrl.kp_pos),
+        "kd_vel": float(ctrl.kd_vel), "max_speed": (None if ctrl.max_speed is None else float(ctrl.max_speed)),
+        "kp_att": float(ctrl.kp_att), "kd_att": float(ctrl.kd_att), "ff_gain": float(ctrl.ff_gain),
+        "kp_alt": float(ctrl.kp_alt), "kd_alt": float(ctrl.kd_alt),
+        "alt_thrust_lo": float(ctrl.alt_thrust_lo), "alt_thrust_hi": float(ctrl.alt_thrust_hi),
+        "alt_offset_m": float(ctrl.alt_offset_m), "max_accel_mps2": (None if ctrl.max_accel_mps2 is None else float(ctrl.max_accel_mps2)),
+        "max_body_rate_rps": float(ctrl.max_body_rate_rps),
+        "body_rate_sign": arr(ctrl.body_rate_sign), "odo_att_sign": arr(ctrl.odo_att_sign),
+        "odo_rate_sign": arr(ctrl.odo_rate_sign),
+        "planner_lookahead_m": float(planner.lookahead_m), "planner_cruise_speed": float(planner.cruise_speed),
+        "planner_yaw_mode": planner.yaw_mode,
+    }
+
+
+def _format_controller(ctrl: Controller, planner: ReactivePlanner) -> str:
+    def arr(a):
+        return "[" + ",".join(f"{float(x):g}" for x in np.asarray(a, dtype=np.float64)) + "]"
+
+    def g(x):
+        return "None" if x is None else f"{float(x):g}"
+    return (
+        f"  {ctrl.mode.name} | decoupled {ctrl.decoupled} | tilt_comp {ctrl.tilt_comp}\n"
+        f"  hover {g(ctrl.hover_thrust)} | kp_pos {g(ctrl.kp_pos)} kd_vel {g(ctrl.kd_vel)} "
+        f"max_speed {g(ctrl.max_speed)} | kp_att {g(ctrl.kp_att)} kd_att {g(ctrl.kd_att)} ff_gain {g(ctrl.ff_gain)}\n"
+        f"  kp_alt {g(ctrl.kp_alt)} kd_alt {g(ctrl.kd_alt)} tilt_comp | "
+        f"alt_clip [{g(ctrl.alt_thrust_lo)},{g(ctrl.alt_thrust_hi)}] alt_offset {g(ctrl.alt_offset_m)} "
+        f"max_accel {g(ctrl.max_accel_mps2)} max_body_rate {g(ctrl.max_body_rate_rps)}\n"
+        f"  body_rate_sign {arr(ctrl.body_rate_sign)} odo_att_sign {arr(ctrl.odo_att_sign)} "
+        f"odo_rate_sign {arr(ctrl.odo_rate_sign)}\n"
+        f"  planner: lookahead {g(planner.lookahead_m)} cruise {g(planner.cruise_speed)} yaw_mode {planner.yaw_mode}"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--endpoint", default="udp:127.0.0.1:14550")
@@ -188,23 +267,35 @@ def main() -> int:
     ap.add_argument("--rate-sign", default="-1,1,-1",
                     help="CTBR body-rate sign (roll,pitch,yaw) for this sim's convention (measured: roll+yaw inverted)")
     # -- decoupled (plant-matched) CTBR, system-ID'd 2026-06-03 --
+    ap.add_argument("--faithful", action="store_true",
+                    help="LIVE VERIFY: build the controller from make_controller(signs=_FAITHFUL_SIGNS, "
+                         "**FAITHFUL_TUNED_GAINS) + ReactivePlanner(**FAITHFUL_TUNED_PLANNER, yaw_mode='course') "
+                         "-- the single source of truth (overrides --mode/--cruise/--lookahead/--yaw-mode and all "
+                         "the per-flag gains). --alt-thrust-lo/-hi still apply if given (rung-1 takeoff gentling).")
     ap.add_argument("--decoupled", action="store_true", help="use the plant-matched decoupled CTBR law")
     ap.add_argument("--ff-gain", type=float, default=2.6, help="decoupled: rate feedforward divisor (measured ~2.6x)")
     ap.add_argument("--odo-rate-sign", default="1,-1,1", help="decoupled: ODOMETRY rate sign vs true (pitch inverted)")
     ap.add_argument("--odo-att-sign", default="1,1,1", help="decoupled: ODOMETRY-quaternion attitude sign vs true (roll inverted on live sim -> -1,1,1)")
     ap.add_argument("--kp-alt", type=float, default=0.010, help="decoupled: alt-hold thrust per metre sink")
     ap.add_argument("--kd-alt", type=float, default=0.025, help="decoupled: alt-hold thrust per m/s descent")
-    ap.add_argument("--alt-thrust-lo", type=float, default=0.18, help="decoupled: alt-hold thrust clamp low")
-    ap.add_argument("--alt-thrust-hi", type=float, default=0.36, help="decoupled: alt-hold thrust clamp high")
+    ap.add_argument("--alt-thrust-lo", type=float, default=None, help="decoupled: alt-hold thrust clamp low (default: legacy 0.18 / faithful 0.05)")
+    ap.add_argument("--alt-thrust-hi", type=float, default=None, help="decoupled: alt-hold thrust clamp high (default: legacy 0.36 / faithful 0.6). Cap to gentle the takeoff transient (rung 1: 0.40)")
     ap.add_argument("--alt-offset", type=float, default=0.0, help="decoupled: fly this many metres ABOVE the gate line (margin / opening-centre calibration)")
     ap.add_argument("--max-speed", type=float, default=None, help="decoupled: velocity-targeting speed cap (m/s)")
     ap.add_argument("--tilt-comp", action="store_true", help="decoupled: tilt-compensate collective (thrust/cos(tilt)) so leaning forward doesn't sag altitude")
     ap.add_argument("--max-gates", type=int, default=None, help="fly only the first N gates (staged bring-up)")
+    ap.add_argument("--hover-hold", action="store_true",
+                    help="rung-1 balloon test: command a FIXED position target at --takeoff-alt above the "
+                         "start for the whole run (NO gates). Isolates the vertical alt-hold + attitude sign "
+                         "sanity from any forward flight. Duration = --max-seconds; bounded by --max-climb-m / "
+                         "--max-tilt-deg / --geofence-m.")
     ap.add_argument("--geofence-m", type=float, default=None, help="abort if horiz dist from start exceeds (safety)")
     ap.add_argument("--max-climb-m", type=float, default=None, help="abort if |z-start| exceeds (safety)")
+    ap.add_argument("--max-tilt-deg", type=float, default=None, help="abort if tilt (arccos(cos roll*cos pitch)) exceeds (safety; hard guard for the attitude rungs)")
     ap.add_argument("--cmd-log", action="store_true", help="log per-tick (pos,vel,speed,thrust,body_rate) to commands.jsonl for offline tuning diagnosis")
     ap.add_argument("--force-saved-map", action="store_true", help="ignore the (flaky) live TRACK_INFO map; use the saved deterministic --map")
     ap.add_argument("--use-kf-state", action="store_true", help="control on the KF-estimated pos/vel (default: use the GIVEN pristine pos/vel; the KF velocity lags ~4x and breaks damping)")
+    ap.add_argument("--alt-kf-vz", action="store_true", help="alt loop damps on the KF (lagged) vz instead of the raw given vz. Default OFF (raw): the lagged KF vz caused the VERIFY rung-1 limit cycle; raw vz removes it (Task-3 debunked the balloon rationale for KF vz). Flag = A/B back to the old behaviour.")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
@@ -216,10 +307,20 @@ def main() -> int:
     ap.add_argument("--weights", default="models/gate_yolo11s_curriculum_v2.pt")
     ap.add_argument("--no-given-position", action="store_true", help="VQ2 sim: ignore given pos (vision-only)")
     ap.add_argument("--dry-run", action="store_true", help="run the full loop but NEVER arm or send (safe)")
+    ap.add_argument("--print-config", action="store_true", help="build + print the wired controller/planner and exit (no connect, no arm) -- the wiring-check artifact")
     ap.add_argument("--no-wait-start", action="store_true", help="fly as soon as position is live (skip 'started')")
     ap.add_argument("--label", default="vq1")
     ap.add_argument("--connect-timeout", type=float, default=15.0)
     args = ap.parse_args()
+
+    # -- build the control law (single source of truth under --faithful) --
+    controller = _build_controller(args)
+    planner = _build_planner(args)
+    if args.print_config:
+        print("WIRED CONTROLLER (%s):" % ("faithful: make_controller(_FAITHFUL_SIGNS, **FAITHFUL_TUNED_GAINS)"
+                                          if args.faithful else "legacy per-flag construction"))
+        print(_format_controller(controller, planner))
+        return 0
 
     # -- detector (optional; the safe bring-up flies on the given state first) --
     detector = None
@@ -247,8 +348,13 @@ def main() -> int:
     session = Path("data/runs") / f"{session_stamp()}_{args.label}"
     recorder = Recorder(session)
     recorder.start()
-    recorder.add_meta(endpoint=args.endpoint, mode=args.mode, cruise=args.cruise,
-                      dry_run=args.dry_run, vision=bool(detector), label=args.label)
+    recorder.add_meta(endpoint=args.endpoint, mode=controller.mode.name, cruise=planner.cruise_speed,
+                      dry_run=args.dry_run, vision=bool(detector), label=args.label,
+                      faithful=bool(args.faithful), rate_hz=args.rate, hover_hold=bool(args.hover_hold),
+                      max_gates=args.max_gates, takeoff_alt_m=args.takeoff_alt,
+                      bounds={"max_climb_m": args.max_climb_m, "max_tilt_deg": args.max_tilt_deg,
+                              "geofence_m": args.geofence_m, "max_seconds": args.max_seconds},
+                      controller_config=_controller_config(controller, planner))
     print(f"recording -> {session}")
 
     # video thread: latest-frame + record (separate socket, no MAVLink contention)
@@ -297,26 +403,16 @@ def main() -> int:
                                                use_given_position=not args.no_given_position))
         mission = Mission(
             gates=gates,
-            planner=ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead, yaw_mode=args.yaw_mode),
-            controller=Controller(mode=_MODE[args.mode], hover_thrust=args.hover_thrust,
-                                   thrust_slope_mps2=args.thrust_slope, max_accel_mps2=args.max_accel,
-                                   max_pos_error_m=args.max_pos_error, kp_pos=args.kp_pos, kd_vel=args.kd_vel,
-                                   kp_att=args.kp_att, kd_att=args.kd_att, max_body_rate_rps=args.max_body_rate,
-                                   body_rate_sign=np.array([float(x) for x in args.rate_sign.split(",")]),
-                                   decoupled=args.decoupled, ff_gain=args.ff_gain,
-                                   odo_rate_sign=np.array([float(x) for x in args.odo_rate_sign.split(",")]),
-                                   odo_att_sign=np.array([float(x) for x in args.odo_att_sign.split(",")]),
-                                   kp_alt=args.kp_alt, kd_alt=args.kd_alt,
-                                   alt_thrust_lo=args.alt_thrust_lo, alt_thrust_hi=args.alt_thrust_hi,
-                                   alt_offset_m=args.alt_offset,
-                                   max_speed=args.max_speed, tilt_comp=args.tilt_comp),
+            planner=planner,
+            controller=controller,
             config=MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
                                  gate_pass_radius_m=args.gate_radius),
         )
 
         # -- arm (unless dry-run) --
         if not args.dry_run:
-            print(f"\n[arm] mode={args.mode} cruise={args.cruise} m/s ...")
+            print(f"\n[arm] {controller.mode.name}{' faithful' if args.faithful else ''} "
+                  f"cruise={planner.cruise_speed:g} m/s alt_clip=[{controller.alt_thrust_lo:g},{controller.alt_thrust_hi:g}] ...")
             client.last_command_ack = None
             client.arm()
             ack = client.wait_command_ack(_arm_cmd(), timeout_s=3.0)
@@ -345,16 +441,20 @@ def main() -> int:
             st["next"] = time.monotonic() + tick
             st["n"] += 1
             ns = nav.update(client.state, frames.get())
-            # CONTROL ON THE GIVEN STATE (per-axis): the KF velocity lags the truth badly (~4x
-            # underestimate during a lateral move -> cross-track damping 4x too weak -> oscillation).
-            # Use the raw given pos + raw HORIZONTAL velocity for the lateral loop. But KEEP the KF
-            # VERTICAL velocity: the raw vz drives the alt thrust to its floor, where the sim's
-            # auto-thrust takes over and climbs away (measured given3/4 ballooned to 8 m). The KF vz
-            # is gently lagged, so the alt thrust stays near hover and holds (proven in roll1).
+            # CONTROL ON THE GIVEN STATE: the KF velocity lags the truth badly (the twin's Navigator
+            # KF lags vz up to ~0.8 m/s in a sustained descent, tau ~0.4 s) -> cross-track damping
+            # too weak AND -- the VERIFY rung-1 finding -- the alt loop's kd_alt acting on that LAGGED
+            # vz is what relay-oscillates the altitude (a static-hover limit cycle; offline-confirmed
+            # no gain pair both threads the descent and holds on KF vz). So use the RAW given pos +
+            # RAW velocity on ALL axes (vz too). The old rationale for keeping KF vz -- "raw vz floors
+            # the thrust -> sim auto-thrust balloons" -- was DEBUNKED by Task 3 (we own thrust in CTBR;
+            # no sim auto-thrust on this path) + the climb-vprobe (hover ~0.266, the plant climbs
+            # smoothly open-loop). ``--alt-kf-vz`` restores the old KF-vz vertical for an A/B.
             gs = client.state
             if not args.use_kf_state and gs.position_ned is not None and gs.velocity_ned is not None:
                 rawv = np.asarray(gs.velocity_ned, dtype=np.float64)
-                vel = np.array([rawv[0], rawv[1], float(np.asarray(ns.velocity_ned)[2])])
+                vz = float(np.asarray(ns.velocity_ned)[2]) if args.alt_kf_vz else float(rawv[2])
+                vel = np.array([rawv[0], rawv[1], vz])
                 ns = replace(ns, position_ned=np.asarray(gs.position_ned, dtype=np.float64), velocity_ned=vel)
             st["nav"] = ns
             return ns
@@ -380,6 +480,8 @@ def main() -> int:
                     cmd_log.write(json.dumps({
                         "sim_t": int(getattr(ns, "sim_time_ns", 0) or 0),
                         "state": mission.state.name, "pos": p, "vel": v, "hspeed": spd,
+                        "roll": (None if ns is None else round(float(ns.roll), 4)),
+                        "pitch": (None if ns is None else round(float(ns.pitch), 4)),
                         "yaw": (None if ns is None else round(float(ns.yaw), 4)),
                         "thrust": (None if cmd.thrust is None else round(float(cmd.thrust), 4)),
                         "body_rate": br,
@@ -432,11 +534,40 @@ def main() -> int:
                     print(f"\n  ALTITUDE: {rel[2]:+.0f} m from start -> abort.")
                     mission.abort()
                     return True
+                if args.max_tilt_deg is not None:                # hard tilt guard (attitude rungs)
+                    tilt_deg = float(np.degrees(np.arccos(
+                        np.clip(np.cos(float(ns.roll)) * np.cos(float(ns.pitch)), -1.0, 1.0))))
+                    if tilt_deg > args.max_tilt_deg:
+                        print(f"\n  TILT: {tilt_deg:.0f} deg > {args.max_tilt_deg:.0f} deg -> abort.")
+                        mission.abort()
+                        return True
             return False
 
-        print(f"\n[run] flying up to {args.max_seconds:g}s / {len(gates)} gates "
-              f"({'DRY-RUN' if args.dry_run else 'LIVE'}). Ctrl-C to stop.")
-        final_state = mission.run(navigator, _Transport(), max_steps=max_steps, should_stop=should_stop)
+        if args.hover_hold:
+            # RUNG 1 (balloon test): hold a FIXED target at takeoff-alt above the start for the whole
+            # run. Reuses the same navigator() (state processing) + _Transport (send + cmd-log) +
+            # should_stop (bounds incl. --max-seconds time-cap + climb/tilt/geofence/collision aborts).
+            print(f"\n[run] HOVER-HOLD (rung 1): fixed target {args.takeoff_alt:g} m above start, no gates, "
+                  f"up to {args.max_seconds:g}s ({'DRY-RUN' if args.dry_run else 'LIVE'}). Ctrl-C to stop.")
+            mission.start()                                  # state -> TAKEOFF (cmd-log label; we don't step it)
+            transport = _Transport()
+            hold = {"target": None, "yaw": 0.0}
+            while True:
+                ns = navigator()
+                if hold["target"] is None:
+                    p0 = np.asarray(ns.position_ned, dtype=np.float64).copy()
+                    hold["target"] = p0 + np.array([0.0, 0.0, -args.takeoff_alt])
+                    hold["yaw"] = float(ns.yaw)
+                cmd = mission.controller.command(
+                    ns, Setpoint(sim_time_ns=ns.sim_time_ns, position_ned=hold["target"], yaw=hold["yaw"]))
+                transport.send_command(cmd)
+                if should_stop():
+                    break
+            final_state = mission.state if mission.state == MissionState.ABORT else MissionState.FINISHED
+        else:
+            print(f"\n[run] flying up to {args.max_seconds:g}s / {len(gates)} gates "
+                  f"({'DRY-RUN' if args.dry_run else 'LIVE'}). Ctrl-C to stop.")
+            final_state = mission.run(navigator, _Transport(), max_steps=max_steps, should_stop=should_stop)
     except KeyboardInterrupt:
         print("\nstopping (Ctrl-C) ...")
     finally:

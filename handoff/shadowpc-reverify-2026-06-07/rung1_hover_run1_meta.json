@@ -1,0 +1,80 @@
+{
+  "schema": "racer.recording/v1",
+  "t0_unix_ns": 1780857882849211800,
+  "t0_monotonic_ns": 1421540043700,
+  "created_utc": "2026-06-07T18:44:42Z",
+  "endpoint": "udp:127.0.0.1:14550",
+  "mode": "BODY_RATE",
+  "cruise": 8.0,
+  "dry_run": false,
+  "vision": false,
+  "label": "rung1_hover",
+  "faithful": true,
+  "rate_hz": 100.0,
+  "hover_hold": true,
+  "max_gates": null,
+  "takeoff_alt_m": 1.5,
+  "bounds": {
+    "max_climb_m": 6.0,
+    "max_tilt_deg": 60.0,
+    "geofence_m": 4.0,
+    "max_seconds": 12.0
+  },
+  "controller_config": {
+    "mode": "BODY_RATE",
+    "decoupled": true,
+    "tilt_comp": true,
+    "hover_thrust": 0.2656,
+    "kp_pos": 0.6,
+    "kd_vel": 2.0,
+    "max_speed": 6.0,
+    "kp_att": 10.0,
+    "kd_att": 0.15,
+    "ff_gain": 2.5,
+    "kp_alt": 3.0,
+    "kd_alt": 1.75,
+    "alt_thrust_lo": 0.05,
+    "alt_thrust_hi": 0.45,
+    "alt_offset_m": 0.0,
+    "max_accel_mps2": 12.0,
+    "max_body_rate_rps": 8.0,
+    "body_rate_sign": [
+      1.0,
+      1.0,
+      -1.0
+    ],
+    "odo_att_sign": [
+      -1.0,
+      1.0,
+      1.0
+    ],
+    "odo_rate_sign": [
+      -1.0,
+      -1.0,
+      1.0
+    ],
+    "planner_lookahead_m": 5.0,
+    "planner_cruise_speed": 8.0,
+    "planner_yaw_mode": "course"
+  },
+  "final_state": "FINISHED",
+  "gate_index": 0,
+  "n_vision_fixes": 0,
+  "n_vision_rejected": 0,
+  "collisions": 0,
+  "race_status": {
+    "sim_boot_time_ms": 28546,
+    "race_start_boot_time_ms": 16111,
+    "race_finish_time_ns": -1,
+    "active_gate_index": 0,
+    "last_gate_race_time": -1,
+    "started": true,
+    "finished": false
+  },
+  "duration_s": 21.5497831,
+  "mavlink_records": 9565,
+  "mavlink_bytes": 744873,
+  "video_frames": 571,
+  "video_bytes": 19361172,
+  "dropped": 0
+}

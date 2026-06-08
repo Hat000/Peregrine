@@ -1,5 +1,37 @@
 # CTBR control + inner-rate system-ID (live, ShadowPC 2026-06-03/04)
 
+> **[2026-06-05 UPDATE — read first]** Two things resolved after this file was written:
+> **(1)** The velocity-setpoint "easy-mode" was definitively RE-TESTED with a recording (not a GUI
+> glance) → **World A confirmed**: velocity-in-ANGLE @ 250 Hz drives a `vz=0` setpoint to collective
+> MAX and climbs away, and a corrective `vz=+2` is ignored (motors pinned); reproduced ×3,
+> GUI-confirmed ANGLE. So CTBR is the right path — but now for a *recorded* reason. Full report:
+> `handoff/shadowpc-velocity-fork-2026-06-04/REPORT.md` (also: the velocity controller only ENGAGES at
+> ~250 Hz; a sparse 25 Hz leaves the drone on the pre-control pin).
+> **(2) 🚩 ODOMETRY twist (`vx/vy/vz`) is `MAV_FRAME_BODY_NED` (8) but was stored as `velocity_ned`=world** — a
+> world/body mix (sign-flipped vx/vy at the −X/−180° course heading) that fed the KF + controller
+> damping + planner. **FIXED in `c3b5a8e`** (rotate body→world via `frames.world_vec_from_body_quat`,
+> +regression test). **CONFIRMED root cause of §5's "KF velocity lags 4×"** (re-validated 2026-06-05
+> offline replay: the mixed measurement read 0.21× truth = the "−0.22 vs −0.92"; the fixed KF tracks
+> truth to 0.05 m/s; rotation validated to ±12° roll/±20° pitch). The "control on raw given velocity"
+> workaround read the SAME corrupted field — a phantom fix. §1 roll + §7 balloon are SEPARATE, still real. The "altitude balloon"
+> (open blocker below) is the SAME broken vertical auto-thrust that ignores velocity setpoints.
+>
+> **[2026-06-07 UPDATE — supersedes the §7 "altitude balloon" blocker below]** The balloon/limit-cycle
+> is OURS (Task 3: no sim auto-thrust in CTBR). The live VERIFY rung-1 cycle (true vz ±0.5, ~6 Hz) is a
+> **relay driven by the LOOP TRANSPORT DELAY ~40 ms** (= cycle period ÷4), NOT the vz source: the
+> raw-vz fix (`dd16091`) flew but the cycle PERSISTED unchanged (re-VERIFY ×2,
+> `handoff/shadowpc-reverify-2026-06-07/`) → the KF-vz-lag premise was WRONG. The conflict is
+> FUNDAMENTAL: the **26 m descent** needs `kd_alt≥1.75` to track but a static hover needs `kd_alt≤0.5`
+> to not relay — no pure-PD pair does both, and a thrust rate-limit makes it worse. **But the cycle is
+> position-harmless** (alt held to ±2–3 cm, zero drift) and **static-only** (the race never
+> static-hovers — the alt target is always the moving descending carrot), and the cycling gains thread
+> the descending course offline (0.46). **USER DECISION: accept it for VQ1, verify the MOVING course
+> (rung 2/3); defer the clean-hover fix (gain-schedule kd_alt low-at-hover/high-at-descent) to post-VQ1
+> — the RL pivot may replace this PD loop.** `hover_thrust 0.2656` VALIDATED by the two-sided vprobe
+> (0.265–0.267, vertical drag ~0). Config stays `kp_alt 3.0/kd_alt 1.75` + raw vz. **🚩 The twin
+> under-models live latency by ~25% even calibrated to 40 ms (0.19 vs live 0.29) — do not trust offline
+> "holds" claims.** Re-derive: `scripts/fit_vertical.py`, `scripts/twin_hover.py`.
+
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the
 "Fly on CTBR" bullet in [[reference-sim-interface]]; raw run data in `data/runs/*_gate0_*`,
@@ -99,7 +131,11 @@ A long teammate-in-the-loop debug (the teammate watching the GUI is ground truth
    else fall back; `--force-saved-map` skips live entirely. (Saved gate0 = -23.298,-0.400,-0.032.)
 
 5. **KF velocity LAGS the truth ~4×** (during a lateral move the drone truly did -0.92 m/s, KF
-   reported -0.22) → cross-track damping 4× too weak → growing lateral oscillation. **Control on the
+   reported -0.22) → cross-track damping 4× too weak → growing lateral oscillation. **[2026-06-05:
+   this is very likely NOT lag but the ODOMETRY body-frame velocity bug — `velocity_ned` interleaved a
+   sign-flipped body-frame velocity into the KF measurement at the −180° heading, so contradictory
+   measurements partially cancelled to a small magnitude (−0.22 vs −0.92). FIXED `c3b5a8e`; re-run this
+   measurement against the fix.]** **Control on the
    raw GIVEN horizontal velocity** (pristine), not the KF estimate. This KILLED the lateral
    oscillation (y stayed ~0). fly_vq1 does this per-axis by default (`--use-kf-state` to opt out).
 

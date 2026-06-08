@@ -1,0 +1,204 @@
+{
+  "schema": "racer.sysid_extract_manifest/v1",
+  "created_for": "laptop CTBR twin fit (rate_gain, rate_sign, rate_tau, thrust hover/slope) + validation",
+  "source_commit": "f137432",
+  "sim_host": "ShadowPC",
+  "extractor": "scripts/extract_sysid.py",
+  "per_sample_fields": [
+    "t_ns (sim clock = time_usec*1000; ODOMETRY/ACTUATOR/commands share it)",
+    "t_s (relative seconds)",
+    "odo_q_wxyz (body->world quat, scalar-first)",
+    "odo_angular_rate (BODY FRD rad/s, RAW; sign-inverted on pitch -- prefer quaternion finite-diff)",
+    "odo_vel_body (BODY FRD m/s, raw twist)",
+    "odo_vel_world (WORLD NED m/s = c3b5a8e fix rotation -- the CORRECTED velocity)",
+    "odo_pos (WORLD NED m)",
+    "lpn_pos / lpn_vel (WORLD NED, LOCAL_POSITION_NED, independent; lpn_vel cross-checks odo_vel_world)",
+    "actuators[4] (ACTUATOR_OUTPUT_STATUS motor outputs 0..1)",
+    "cmd_body_rate (OUR commanded body rate rad/s, ZOH), cmd_thrust (OUR collective 0..1, ZOH)",
+    "cmd_age_ms (staleness of the held command), ctx (phase/kind/axis or mission state)"
+  ],
+  "notes": [
+    "Velocity is the FIXED (rotated) world velocity in odo_vel_world; odo_vel_body is the raw body twist; lpn_vel is the independent world reference. validation.rot_odo_vs_lpn_vel_rms_mps confirms the fix per run (tiny on clean runs; inflated on hsweeps by 75/97Hz stagger during fast vertical accel).",
+    "All commands WERE logged (commands.jsonl) -- no controller replay needed; actuators included anyway.",
+    "Rate-gain SIGNS recovered from these extracts: roll -, pitch +, yaw - (memo-consistent). Use a settled-tail fit (analyze_sysid.py method) for the ~2.4-2.7 steady magnitude.",
+    "hsweeps are NOT clean multi-level sweeps (aborted early); POOL the discrete thrust levels {0.25,0.30,0.48} with the rate runs (0.25) and course1 (~0.26-0.27) to fit hover/slope.",
+    "t_ns is absolute sim ns and joins natively with each run's commands.jsonl sim_time_ns/sim_t."
+  ],
+  "runs": [
+    {
+      "file": "rate1.json",
+      "run": "20260603_160653_rate1",
+      "purpose": "open-loop body-rate doublets (pitch,roll,yaw @0.25 thrust); aborted +8m",
+      "command_schema": "rate_sysid",
+      "n_samples": 224,
+      "rate_hz": 50.0,
+      "meta": {
+        "label": "rate1",
+        "mode": "rate",
+        "probe": "rate_sysid",
+        "thrust": 0.25,
+        "mag": "0.3",
+        "axes": "pitch,roll,yaw",
+        "aborted": "altitude +8m",
+        "yaw_hold_deg": -179.93894951463872,
+        "duration_s": 31.1350314,
+        "created_utc": "2026-06-03T16:06:53Z"
+      },
+      "validation": {
+        "n_samples": 224,
+        "window_s": 4.482,
+        "rot_odo_vs_lpn_vel_rms_mps": 0.0108,
+        "rot_odo_vs_lpn_vel_max_mps": 0.0545,
+        "lpn_pair_gap_ms_med": 0.17,
+        "lpn_pair_gap_ms_max": 5.66,
+        "act_pair_gap_ms_max": 6.98
+      },
+      "size_kb": 118
+    },
+    {
+      "file": "rate2.json",
+      "run": "20260603_160940_rate2",
+      "purpose": "open-loop body-rate doublets, RICHEST (11s); best for rate_gain/sign/tau",
+      "command_schema": "rate_sysid",
+      "n_samples": 562,
+      "rate_hz": 50.0,
+      "meta": {
+        "label": "rate2",
+        "mode": "rate",
+        "probe": "rate_sysid",
+        "thrust": 0.26,
+        "mag": "0.3",
+        "axes": "pitch,roll,yaw",
+        "aborted": "drifted 20m from origin",
+        "yaw_hold_deg": -179.9390656253195,
+        "duration_s": 164.0275257,
+        "created_utc": "2026-06-03T16:09:40Z"
+      },
+      "validation": {
+        "n_samples": 562,
+        "window_s": 11.239,
+        "rot_odo_vs_lpn_vel_rms_mps": 0.0111,
+        "rot_odo_vs_lpn_vel_max_mps": 0.0404,
+        "lpn_pair_gap_ms_med": 0.14,
+        "lpn_pair_gap_ms_max": 5.52,
+        "act_pair_gap_ms_max": 6.97
+      },
+      "size_kb": 297
+    },
+    {
+      "file": "hsweep1.json",
+      "run": "20260603_022630_hsweep1",
+      "purpose": "thrust held 0.48 only (climb-away, aborted +8m) -> one vertical-accel point",
+      "command_schema": "rate_sysid",
+      "n_samples": 68,
+      "rate_hz": 50.0,
+      "meta": {
+        "label": "hsweep1",
+        "mode": "hover",
+        "probe": "rate_sysid",
+        "thrust": 0.48,
+        "mag": "0.3",
+        "axes": "pitch,roll,yaw",
+        "aborted": "altitude -8m",
+        "yaw_hold_deg": -179.93902464952407,
+        "duration_s": 43.2057226,
+        "created_utc": "2026-06-03T02:26:30Z"
+      },
+      "validation": {
+        "n_samples": 68,
+        "window_s": 1.363,
+        "rot_odo_vs_lpn_vel_rms_mps": 0.0568,
+        "rot_odo_vs_lpn_vel_max_mps": 0.1223,
+        "lpn_pair_gap_ms_med": 0.18,
+        "lpn_pair_gap_ms_max": 5.56,
+        "act_pair_gap_ms_max": 6.96
+      },
+      "size_kb": 37
+    },
+    {
+      "file": "hsweep2.json",
+      "run": "20260603_023217_hsweep2",
+      "purpose": "thrust held 0.25 only (0.6s anti-damping tumble) -> low value, included for completeness",
+      "command_schema": "rate_sysid",
+      "n_samples": 29,
+      "rate_hz": 50.0,
+      "meta": {
+        "label": "hsweep2",
+        "mode": "hover",
+        "probe": "rate_sysid",
+        "thrust": 0.25,
+        "mag": "0.3",
+        "axes": "pitch,roll,yaw",
+        "aborted": "attitude runaway (77 deg)",
+        "yaw_hold_deg": -179.93885388921143,
+        "duration_s": 37.2163912,
+        "created_utc": "2026-06-03T02:32:17Z"
+      },
+      "validation": {
+        "n_samples": 29,
+        "window_s": 0.591,
+        "rot_odo_vs_lpn_vel_rms_mps": 0.024,
+        "rot_odo_vs_lpn_vel_max_mps": 0.0799,
+        "lpn_pair_gap_ms_med": 0.14,
+        "lpn_pair_gap_ms_max": 5.42,
+        "act_pair_gap_ms_max": 6.96
+      },
+      "size_kb": 16
+    },
+    {
+      "file": "hsweep3.json",
+      "run": "20260603_024013_hsweep3",
+      "purpose": "thrust 0.25 then 0.30 -> two vertical-accel points",
+      "command_schema": "rate_sysid",
+      "n_samples": 121,
+      "rate_hz": 50.0,
+      "meta": {
+        "label": "hsweep3",
+        "mode": "hover",
+        "probe": "rate_sysid",
+        "thrust": 0.25,
+        "mag": "0.3",
+        "axes": "pitch,roll,yaw",
+        "aborted": "altitude -8m",
+        "yaw_hold_deg": -179.93890853084864,
+        "duration_s": 17.3505886,
+        "created_utc": "2026-06-03T02:40:13Z"
+      },
+      "validation": {
+        "n_samples": 121,
+        "window_s": 2.426,
+        "rot_odo_vs_lpn_vel_rms_mps": 0.0388,
+        "rot_odo_vs_lpn_vel_max_mps": 0.1316,
+        "lpn_pair_gap_ms_med": 0.16,
+        "lpn_pair_gap_ms_max": 5.57,
+        "act_pair_gap_ms_max": 6.97
+      },
+      "size_kb": 65
+    },
+    {
+      "file": "gate0_course1.json",
+      "run": "20260604_025347_gate0_course1",
+      "purpose": "CLOSED-LOOP validation: clean dense FINISHED origin->gate0 flight (~6.6s)",
+      "command_schema": "fly_vq1",
+      "n_samples": 336,
+      "rate_hz": 50.0,
+      "meta": {
+        "label": "gate0_course1",
+        "mode": "body_rate",
+        "final_state": "FINISHED",
+        "duration_s": 77.4516265,
+        "created_utc": "2026-06-04T02:53:47Z"
+      },
+      "validation": {
+        "n_samples": 336,
+        "window_s": 6.724,
+        "rot_odo_vs_lpn_vel_rms_mps": 0.0063,
+        "rot_odo_vs_lpn_vel_max_mps": 0.021,
+        "lpn_pair_gap_ms_med": 2.73,
+        "lpn_pair_gap_ms_max": 6.19,
+        "act_pair_gap_ms_max": 6.98
+      },
+      "size_kb": 170
+    }
+  ]
+}
