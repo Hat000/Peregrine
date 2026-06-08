@@ -1,5 +1,13 @@
 # CTBR control + inner-rate system-ID (live, ShadowPC 2026-06-03/04)
 
+> **TL;DR (2026-06-07): 🏁 VQ1 PASSED — this CTBR stack threads the full 6-gate course.** Live config
+> = `FAITHFUL_TUNED_GAINS` (`kp_alt 3.0/kd_alt 1.75`, raw vz) + `−0.4 m alt_offset`. The alt loop's
+> ~6 Hz limit cycle is a delay-driven relay (~40 ms loop delay), ALWAYS-ON but VALIDITY-HARMLESS
+> (gates threaded 0.03–0.37 m); descent-track vs static-hold is fundamentally in conflict for a pure-PD
+> loop → clean-up (gain-schedule / RL) deferred post-VQ1. The dated update blocks + saga below are the
+> derivation history (kept for the record). 🚩 The offline twin under-models live latency ~25% even
+> calibrated — don't trust offline "holds" claims.
+
 > **[2026-06-05 UPDATE — read first]** Two things resolved after this file was written:
 > **(1)** The velocity-setpoint "easy-mode" was definitively RE-TESTED with a recording (not a GUI
 > glance) → **World A confirmed**: velocity-in-ANGLE @ 250 Hz drives a `vz=0` setpoint to collective
