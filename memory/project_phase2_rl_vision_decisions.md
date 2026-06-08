@@ -30,6 +30,15 @@ differentiable sims that ALSO supply the infra:
   DIFFERENTIABLE, lightweight, **multiple dynamics models** (inject our system-ID'd plant), built-in
   sensor stacks (IMU/depth/LiDAR) + racing/obstacle tasks (likely the collision detector we'd otherwise
   hand-roll — verify). Batteries-included WITHOUT Isaac's weight/wrong-plant. "Policies in hours."
+  **CONFIRMED 2026-06-08 (paper + repo read):** PyTorch (torch>=2.0), standalone `pip install -e .` (NO
+  Isaac/Omniverse), BSD-3, headless. Dynamics take BODY-RATE+COLLECTIVE = our exact CTBR action;
+  `dynamics/base_dynamics.py` = the inject point for our system-ID'd plant; `env/racing.py` = ordered-gate
+  racing+collision (the env we'd otherwise build); `algo/` = PPO+SHAC+APG(BPTT)+DreamerV3, and SHA2C
+  handles MIXED dense-differentiable + sparse-non-differentiable rewards (= our gate-pass reward — solves
+  DiffRacing's "gate-pass isn't differentiable" problem); models control-latency + per-episode DR of
+  drag/latency/action-range (the VQ1→VQ2 robustness lever). Deps light EXCEPT pytorch3d + open3d
+  (cluster-install pain; both rendering/3D → likely SKIPPABLE for a STATE policy). **VERDICT: adopt,
+  pending only the Adroit install smoke test.**
 - **Crazyflow** (arXiv 2606.01478, utiasDSL/crazyflow) = JAX sibling, ~100M steps/s @ 1M envs.
 - **DiffRacing** (vector-field-augmented differentiable policy learning) = a METHOD, not a sim; its
   **Delta Action Model closes dynamics mismatch WITHOUT system-ID** → directly relevant to the
@@ -41,8 +50,10 @@ differentiable sims that ALSO supply the infra:
 - **Decisive criterion = PLANT FIDELITY.** The twin MUST match the system-ID'd VQ1 plant (inverted-yaw
   cmd, rate_gain ~2.5, τ=0.019, hover 0.2656, drag 0.219, ~40 ms latency) for transfer. The substrate is a
   vehicle; **our plant is the payload, injected regardless of tool.**
-- **STAGE-0 BAKE-OFF (decide with data, not priors):** does DiffAero/Crazyflow run on Adroit under SLURM?
-  effort to inject our plant vs port twin.py → JAX/torch ourselves? Pick from that.
+- **STAGE-0 BAKE-OFF — source-read DONE 2026-06-08 → DiffAero adopted (above).** Remaining = the Adroit
+  install smoke test (Duo): clone + `pip install -e .` (conda py3.11 + torch cu121 like the detector env;
+  watch pytorch3d/open3d — try WITHOUT them for state-only), run a tiny `env/racing.py` PPO/SHAC headless,
+  report GPU + throughput. THEN write our plant as a `dynamics/base_dynamics.py` subclass.
 
 ## Vision = serious investment (user: "train it into something unbeatable") — TWO distinct workstreams
 Do NOT conflate them:
@@ -103,8 +114,11 @@ transitions + COLLISION(1001) events → per-gate clean/contact/miss). For the T
 own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). NOT infra we lack.
 
 ## Staging (walking-skeleton for RL — addresses "too many components to get right")
-- **Stage 0** (now-ish, laptop/offline): `race_outcome` analyzer + twin collision/reward geometry +
-  substrate bake-off (DiffAero/Crazyflow vs port-twin-to-JAX; runs-on-Adroit?).
+- **Stage 0** (IN PROGRESS, laptop/offline): ✅ `race_outcome` analyzer SHIPPED (`src/racer/race_outcome.py`
+  + CLI `scripts/race_outcome.py` + `tests/test_race_outcome.py`, 8 tests; 296 green) — authoritative
+  per-gate pass/contact/miss from RACE_STATUS+COLLISION (ShadowPC to validate semantics on a real
+  recording). ✅ substrate source-read DONE → DiffAero adopted pending the Adroit install. TODO: our plant
+  as a DiffAero `base_dynamics` subclass (do WITH Adroit access).
 - **Stage 1**: state→action policy on the KNOWN map + GIVEN pose, twin-trained, VQ1-sim-validated —
   **ZERO vision dependency**; subsumes the 3 known VQ1-stack issues (start transient, alt relay, descents).
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
