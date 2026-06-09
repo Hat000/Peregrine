@@ -28,18 +28,33 @@ from racer.frames import R_camera_from_body
 from racer.state_estimator import LinearKF
 
 
+# Analytic-PnP covariance inflation [perception-char 2026-06-08]. The 4-corner world-fix covariance
+# is propagated from the confidence-weighted-refine Fisher information, which models ONLY the per-
+# corner pixel noise (``WEIGHTED_SIGMA_PX``); it understates the real fix error (sub-pixel detector
+# bias, heavy-tailed corner localisation, the 1.5 m gate-size model mismatch). Measured consequence:
+# the navigator's chi2_0.999 = 16.27 innovation gate dropped ~20% of GOOD fixes because their analytic
+# cov was ~3.5x too tight (good-fix maha ~ f*chi2(3), with f ~ 3.5). This scalar inflates the analytic
+# PnP translation cov so the gate keeps catching wrong-gate / depth-flip fixes (maha in the hundreds-
+# to-thousands) while passing healthy ones. Conservative default; sweep + confirm on per-gate course
+# bundles against the <=~2% catastrophic-leak ceiling. Does NOT touch the attitude lever-arm term
+# (physically calibrated) nor the no-covariance fallback. See handoff/perception-char-2026-06-08.
+PNP_FIX_COV_INFLATION = 2.0   # variance multiplier on the analytic 4-corner PnP world-fix covariance
+
+
 def gate_pose_to_world_position(
     gate_pose: GatePose,
     gate: Gate,
     R_world_body: np.ndarray,
     default_position_std: float = 0.3,
     attitude_noise_std: float = np.deg2rad(1.0),
+    pnp_cov_inflation: float = PNP_FIX_COV_INFLATION,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Drone world position (NED) + 3x3 covariance from one gate sighting.
 
     ``R_world_body`` is the trusted attitude (e.g. ``frames.R_world_from_body(roll,
     pitch, yaw)``). If ``gate_pose.covariance`` is None, falls back to an isotropic
-    ``default_position_std`` for the PnP term.
+    ``default_position_std`` for the PnP term. When present, the analytic PnP covariance is scaled by
+    ``pnp_cov_inflation`` (it is optimistic -- see ``PNP_FIX_COV_INFLATION``) before propagation.
 
     The fix is ``p = gate_pos - R_world_camera @ t_cam_gate``, so its error has TWO sources:
     the PnP translation (``gate_pose.covariance``, pixel noise) AND attitude error rotating the
@@ -55,7 +70,9 @@ def gate_pose_to_world_position(
     position_ned = gate.position_ned - lever
     if gate_pose.covariance is not None:
         sigma_tt = np.asarray(gate_pose.covariance, dtype=np.float64)[:3, :3]
-        cov = R_world_camera @ sigma_tt @ R_world_camera.T
+        # Inflate the (optimistic) analytic PnP translation cov before propagating -- see
+        # ``PNP_FIX_COV_INFLATION``. Only the analytic branch; the fallback below is already loose.
+        cov = pnp_cov_inflation * (R_world_camera @ sigma_tt @ R_world_camera.T)
     else:
         cov = (default_position_std**2) * np.eye(3)
     if attitude_noise_std > 0.0:
@@ -80,16 +97,19 @@ def apply_gate_pose_update(
     R_world_body: np.ndarray,
     default_position_std: float = 0.3,
     attitude_noise_std: float = np.deg2rad(1.0),
+    pnp_cov_inflation: float = PNP_FIX_COV_INFLATION,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert a gate sighting to a world-position fix and apply it to the KF.
 
     ``attitude_noise_std`` adds the lever-arm attitude-uncertainty term to the fix covariance
-    (see ``gate_pose_to_world_position``) so distant fixes are trusted appropriately less. A weak
-    3-corner (P3P) fix has its covariance inflated by ``P3P_FIX_COV_INFLATION`` on top, so it
-    nudges rather than snaps the estimate at gate transit (the soft gate-transit coast).
+    (see ``gate_pose_to_world_position``) so distant fixes are trusted appropriately less.
+    ``pnp_cov_inflation`` scales the (optimistic) analytic 4-corner PnP cov so the innovation gate
+    keeps a healthy fix instead of over-rejecting it. A weak 3-corner (P3P) fix has its covariance
+    inflated by ``P3P_FIX_COV_INFLATION`` on top, so it nudges rather than snaps the estimate at gate
+    transit (the soft gate-transit coast).
     """
     position_ned, cov = gate_pose_to_world_position(
-        gate_pose, gate, R_world_body, default_position_std, attitude_noise_std
+        gate_pose, gate, R_world_body, default_position_std, attitude_noise_std, pnp_cov_inflation
     )
     if gate_pose.n_corners < 4:
         cov = cov * P3P_FIX_COV_INFLATION

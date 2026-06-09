@@ -50,10 +50,32 @@ def test_glue_covariance_is_rotated_translation_block():
     gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg,
                   reproj_error_px=0.0, covariance=cov6)
     # attitude_noise_std=0 isolates the pure PnP-translation rotation (the attitude lever-arm
-    # term is exercised separately in test_glue_inflates_covariance_for_attitude_uncertainty).
-    _, cov = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0)
+    # term is exercised separately in test_glue_inflates_covariance_for_attitude_uncertainty);
+    # pnp_cov_inflation=1.0 isolates the raw rotated block (the inflation is exercised in
+    # test_glue_inflates_analytic_pnp_covariance).
+    _, cov = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=1.0)
     R_wc = R_wb @ R_camera_from_body().T
     np.testing.assert_allclose(cov, R_wc @ sigma_tt @ R_wc.T, atol=1e-12)
+
+
+def test_glue_inflates_analytic_pnp_covariance():
+    # [perception-char 2026-06-08] The analytic 4-corner PnP cov is optimistic, so the navigator's
+    # chi2 innovation gate over-rejects GOOD fixes. gate_pose_to_world_position scales the analytic
+    # translation block by pnp_cov_inflation; the no-covariance fallback is left alone.
+    p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
+    sigma_tt = np.diag([0.01, 0.02, 0.05])
+    cov6 = np.zeros((6, 6))
+    cov6[:3, :3] = sigma_tt
+    gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg,
+                  reproj_error_px=0.0, covariance=cov6)
+    _, cov1 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=1.0)
+    _, cov2 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=2.5)
+    np.testing.assert_allclose(cov2, 2.5 * cov1, rtol=1e-12)
+    # fallback (no covariance) is independent of pnp_cov_inflation
+    gp_nocov = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg, reproj_error_px=0.0)
+    _, fb1 = gate_pose_to_world_position(gp_nocov, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=1.0)
+    _, fb2 = gate_pose_to_world_position(gp_nocov, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=5.0)
+    np.testing.assert_allclose(fb1, fb2, atol=1e-12)
 
 
 def test_glue_default_covariance_when_none():

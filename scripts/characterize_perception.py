@@ -39,7 +39,11 @@ import numpy as np
 
 from racer import frames as F
 from racer.contracts import Frame, GatePose
-from racer.localization import P3P_FIX_COV_INFLATION, gate_pose_to_world_position
+from racer.localization import (
+    PNP_FIX_COV_INFLATION,
+    P3P_FIX_COV_INFLATION,
+    gate_pose_to_world_position,
+)
 from racer.navigator import load_track_map
 from racer.vision.detector import GateDetector
 from racer.vision.gate_pose import estimate_gate_pose
@@ -51,6 +55,7 @@ MAP = ROOT / "handoff/shadowpc-firstcontact-2026-06-02/track_map.json"
 _RCB = F.R_camera_from_body()
 _K = np.asarray(F.CAMERA_INTRINSICS_K, float)
 ASSOC_MAX_PX = 150.0
+CHI2_GATE = 16.27          # navigator.NavigatorConfig.vision_gate_chi2 (chi2_0.999, 3 DOF)
 
 
 def _predict_gates(drone_pos: np.ndarray, R_wb: np.ndarray, gates) -> dict:
@@ -82,6 +87,11 @@ def main() -> int:
     ap.add_argument("--weights", default=str(WEIGHTS))
     ap.add_argument("--map", default=str(MAP))
     ap.add_argument("--json", default=None)
+    ap.add_argument("--cov-inflation", type=float, default=PNP_FIX_COV_INFLATION,
+                    help="analytic 4-corner PnP world-fix cov multiplier fed to the chi2 gate "
+                         "(pass 1.0 for the pre-change baseline; default = production "
+                         f"PNP_FIX_COV_INFLATION={PNP_FIX_COV_INFLATION}). Sweep to trade good-fix "
+                         "yield against catastrophic leak.")
     args = ap.parse_args()
 
     bundle = Path(args.bundle)
@@ -131,7 +141,8 @@ def main() -> int:
                 bearing = float(np.degrees(np.arctan2(np.hypot(t_pred[0], t_pred[1]), t_pred[2])))
                 # gate-in-camera translation error vs the expected (from map + given pose)
                 t_err = float(np.linalg.norm(pose.t_cam_gate - t_pred))
-                pos_fix, cov = gate_pose_to_world_position(pose, gate, R_wb)
+                pos_fix, cov = gate_pose_to_world_position(
+                    pose, gate, R_wb, pnp_cov_inflation=args.cov_inflation)
                 if pose.n_corners < 4:
                     cov = cov * P3P_FIX_COV_INFLATION
                 off = pos_fix - drone                         # world-fix error (N/E/D)
@@ -148,7 +159,7 @@ def main() -> int:
                            maha=maha)
         rows.append(row)
 
-    _report(rows)
+    _report(rows, cov_inflation=args.cov_inflation)
     if args.json:
         Path(args.json).write_text(json.dumps({"bundle": d.get("run"), "weights": Path(args.weights).name,
                                                "rows": rows}, indent=2))
@@ -160,7 +171,7 @@ def _pct(a, q):
     return float(np.percentile(a, q)) if len(a) else float("nan")
 
 
-def _report(rows: list[dict]) -> None:
+def _report(rows: list[dict], cov_inflation: float = 1.0) -> None:
     n = len(rows)
     det = [r for r in rows if r["detected"]]
     assoc = [r for r in rows if r.get("associated") and "world_fix_err_m" in r]
@@ -218,6 +229,30 @@ def _report(rows: list[dict]) -> None:
     print(f"  REPROJ px          p50 {_pct(reproj,50):.2f}  p90 {_pct(reproj,90):.2f}  max {_pct(reproj,100):.2f}")
     print(f"  fix-cov Mahalanobis (off^T cov^-1 off, dof=3, chi2.999=16.27): "
           f"p50 {_pct(maha,50):.0f}  -> the analytic PnP cov UNDERSTATES the true fix error if >>16.")
+
+    # -- GATE TRADE-OFF: how the navigator's chi2 innovation gate classifies these fixes at this
+    # cov_inflation. GOOD = accurate fix we WANT to keep; CATASTROPHIC = wrong-gate / depth-flip we
+    # MUST reject. ``maha`` was computed with the inflated cov, so this is what the live gate sees (in
+    # VQ1 the KF is anchored to the given pos, so nu~=off and P<<cov -> d2~=maha). Inflating cov by K
+    # scales maha by ~1/K (PnP-dominated near/mid range; less at long range where the attitude lever-
+    # arm term dominates). Thresholds match the TAIL line (cat>=3 m); reconcile the absolute %s against
+    # handoff/perception-char-2026-06-08 -- the before/after DELTA at a fixed threshold is the metric.
+    GOOD_MAX_M, CAT_MIN_M = 1.0, 3.0
+    finite = [r for r in assoc if np.isfinite(r["maha"])]
+    good = [r for r in finite if r["world_fix_err_m"] < GOOD_MAX_M]
+    cat = [r for r in finite if r["world_fix_err_m"] >= CAT_MIN_M]
+    n_good, n_cat = len(good), len(cat)
+    good_rej = sum(r["maha"] > CHI2_GATE for r in good)
+    cat_leak = sum(r["maha"] <= CHI2_GATE for r in cat)
+    gr = 100.0 * good_rej / n_good if n_good else float("nan")
+    cl = 100.0 * cat_leak / n_cat if n_cat else float("nan")
+    catch = 100.0 * (n_cat - cat_leak) / n_cat if n_cat else float("nan")
+    print(f"\nGATE TRADE-OFF  (chi2_0.999={CHI2_GATE}, cov_inflation={cov_inflation:.2f}, "
+          f"good<{GOOD_MAX_M:.0f} m, catastrophic>={CAT_MIN_M:.0f} m):")
+    print(f"  GOOD fixes (keep)    N={n_good:3d}   rejected {good_rej:3d}  ({gr:4.0f}%)"
+          f"   <- minimise (good-fix yield loss; target <5%)")
+    print(f"  CATASTROPHIC (drop)  N={n_cat:3d}   leaked   {cat_leak:3d}  ({cl:4.0f}%)"
+          f"   <- keep <=~2%   (bad-fix catch {catch:.0f}%)")
 
 
 if __name__ == "__main__":
