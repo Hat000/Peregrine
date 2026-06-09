@@ -90,6 +90,15 @@ measured on REAL frames in-loop (v2 had only been eval'd on synthetic; the VQ1 P
   systematic bias → inject THIS into the RL twin, NOT isotropic Gaussian** (master-plan C1 "measured
   perception model = speed ceiling"). Detail: [[project-estimator-robustness]].
 
+### Perception-noise model — MEASURED full-course (2026-06-08, T1) → the RL twin input
+Ran the REAL YOLO→PnP→KF chain on the canonical VQ1 6/6 recording `data/runs/20260607_194615_course_60s`
+(1159 frames; per-gate bundles pooled, N=312 solved fixes). **This is the measured speed-ceiling model.**
+- **Per-axis bias ± σ** (KF-ACCEPTED fixes, the in-loop cut): N −0.42 ± 0.73 · E +0.06 ± 0.47 · D −0.28 ± 0.29 m. |fix| p50 0.82 / p90 1.66 m. Vertical (D) tightest.
+- **Range-FLAT to 24 m — NO growth** (⚠️ CORRECTS the earlier "range-growing" guess above). Per-axis slope ≈ −3.8°…+4.1° = the ~3.6°/range yaw bias, now confirmed through the full chain.
+- **Catastrophic tail:** raw |fix|≥3 m = 46% under naive nearest-centre assoc (87 wrong-gate + 56 frontal-PnP depth flips; tail p50 16 m). The KF χ²₀.₉₉₉ gate rejects 97% → **residual leak ≈ 1.6% = the bad-fix rate the twin MUST model.**
+- **⚠️ χ² gate over-tight:** also drops ~20% of GOOD fixes (analytic PnP cov slightly tight) → inflate PnP cov (task queued).
+- **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **+~1.6% catastrophic leak** after a χ²₀.₉₉₉ gate. Detail: `handoff/perception-char-2026-06-08/`.
+
 ## Depth model / ~100 TOPS budget (user) — OFFLINE flywheel
 After a recorded run (legal between-runs processing): **multi-view triangulation** from logged poses
 (metric, no scale ambiguity — preferred over real-time depth) OR a learned depth model → map the gray-wall
@@ -127,13 +136,22 @@ transitions + COLLISION(1001) events → per-gate clean/contact/miss). For the T
 own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). NOT infra we lack.
 
 ## Staging (walking-skeleton for RL — addresses "too many components to get right")
-- **Stage 0** (IN PROGRESS, laptop/offline): ✅ `race_outcome` analyzer SHIPPED (`src/racer/race_outcome.py`
-  + CLI `scripts/race_outcome.py` + `tests/test_race_outcome.py`, 8 tests; 296 green) — authoritative
-  per-gate pass/contact/miss from RACE_STATUS+COLLISION (ShadowPC to validate semantics on a real
-  recording). ✅ substrate source-read DONE → DiffAero adopted pending the Adroit install. TODO: our plant
-  as a DiffAero `base_dynamics` subclass (do WITH Adroit access).
-- **Stage 1**: state→action policy on the KNOWN map + GIVEN pose, twin-trained, VQ1-sim-validated —
-  **ZERO vision dependency**; subsumes the 3 known VQ1-stack issues (start transient, alt relay, descents).
+- **Stage 0 ✅ COMPLETE (2026-06-08)**: `race_outcome` analyzer SHIPPED + ShadowPC-validated (T1: correctly
+  scores the canonical 6/6 recording as 5-clean/0-contact — see the truncation gotcha). DiffAero substrate
+  GREEN on Adroit (V100). **Our plant injected + PROVEN**: `rl_plant.py` parity bit-identical to the twin;
+  the DiffAero adapter's torch backend = machine-epsilon identical (gate `check_against_rl_plant` DIV
+  **4.4e-16** on V100); smoke-train racing-PPO n_envs=2048 **~88.9K env-steps/s**, success 0→0.79, ep-len
+  0.5→32.6 s. Wiring = a launcher (`peregrine_train.py`) monkeypatching `DYNAMICS_ALIAS` (ZERO edits to the
+  diffaero clone); zero physics/interface drift vs the clone. Stage-1 scaffolding on Adroit:
+  `/scratch/network/fl3689/peregrine_repo/{src/racer,rl}` + `peregrine_{gate,smoke}.sbatch`.
+  **🚩 race_outcome TRUNCATION GOTCHA:** `fly_vq1` force-disarms AT the final-gate pass → the terminal
+  RACE_STATUS never reaches the tlog → recordings self-certify only 5/6 + finished=False (true 6/6 GUI-only).
+  Fix queued (hold ~1 s past finish).
+- **Stage 1 — ✅ UNBLOCKED = NEXT**: state→action policy on the KNOWN map + GIVEN pose, twin-trained,
+  VQ1-sim-validated — **ZERO vision dependency**; subsumes the 3 known VQ1-stack issues (start transient,
+  alt relay, descents). Build off the proven `peregrine_train.py`: real RL I/O (§RL policy I/O) + reward
+  shaping + DR on rate_gain/hover/linear_drag (g=9.80665); validate the trained policy in VQ1 sim via
+  `race_outcome`.
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
   OFF** in VQ1 sim ← the right home for the user's "test the control policy with real YOLO vision."
@@ -147,7 +165,7 @@ largely evaporates (RL flies on given pose; vision just confirms gates). The spe
 submission interface spec + VQ1 deadline + confirm registration active.
 
 ## Open
-- Substrate bake-off verdict (DiffAero vs Crazyflow vs custom JAX twin).
+- ~~Substrate bake-off verdict~~ ✅ RESOLVED: **DiffAero** — proven on Adroit (plant injected, gate PASS, trains our plant).
 - Structural pilot-stack changes (user brainstorming — the Setpoint/ControlCommand seam keeps a
   planner+controller→policy swap low-risk).
 - VQ2 data-stream answer (gates the map/SLAM + vision-load-bearing question).
