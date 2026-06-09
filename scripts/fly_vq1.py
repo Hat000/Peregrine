@@ -44,6 +44,7 @@ import numpy as np
 
 from racer.contracts import ControlMode, Setpoint
 from racer.controller import Controller
+from racer.finish_hold import drain_until_finish, sim_finish_confirmed
 from racer.firstcontact import backend_summary, telemetry_summary
 from racer.mavlink_client import MavlinkClient
 from racer.mission import Mission, MissionConfig, MissionState
@@ -298,6 +299,11 @@ def main() -> int:
     ap.add_argument("--alt-kf-vz", action="store_true", help="alt loop damps on the KF (lagged) vz instead of the raw given vz. Default OFF (raw): the lagged KF vz caused the VERIFY rung-1 limit cycle; raw vz removes it (Task-3 debunked the balloon rationale for KF vz). Flag = A/B back to the old behaviour.")
     ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
+    ap.add_argument("--finish-hold-s", type=float, default=1.0,
+                    help="after the final gate, keep recording (pump + hold position) up to this long "
+                         "so the sim's TERMINAL RACE_STATUS (finished + recognized time) lands in the "
+                         "tlog BEFORE force-disarm -- race_outcome needs it to self-certify a full "
+                         "finish. Fully autonomous; 0 disables.")
     ap.add_argument("--wait-seconds", type=float, default=180.0, help="how long to wait for an active race")
     ap.add_argument("--start-margin-s", type=float, default=0.3,
                     help="wait this long PAST the race GO before any control (avoid early-start DQ)")
@@ -352,6 +358,7 @@ def main() -> int:
                       dry_run=args.dry_run, vision=bool(detector), label=args.label,
                       faithful=bool(args.faithful), rate_hz=args.rate, hover_hold=bool(args.hover_hold),
                       max_gates=args.max_gates, takeoff_alt_m=args.takeoff_alt,
+                      finish_hold_s=args.finish_hold_s,
                       bounds={"max_climb_m": args.max_climb_m, "max_tilt_deg": args.max_tilt_deg,
                               "geofence_m": args.geofence_m, "max_seconds": args.max_seconds},
                       controller_config=_controller_config(controller, planner))
@@ -568,6 +575,37 @@ def main() -> int:
             print(f"\n[run] flying up to {args.max_seconds:g}s / {len(gates)} gates "
                   f"({'DRY-RUN' if args.dry_run else 'LIVE'}). Ctrl-C to stop.")
             final_state = mission.run(navigator, _Transport(), max_steps=max_steps, should_stop=should_stop)
+            # FINISH HOLD: Mission.run exits the instant its GEOMETRIC pass clears the last gate,
+            # a beat BEFORE the sim broadcasts the terminal RACE_STATUS (finished + recognized
+            # time). The finally-block force-disarm then closes the recorder, so that status never
+            # reaches the tlog -> race_outcome self-certifies only 5/6 + finished=False. Keep
+            # recording (pump records the inbound RACE_STATUS; mission.step holds position) for a
+            # short, AUTONOMOUS window so the terminal status lands BEFORE we disarm.
+            finished_run = (final_state == MissionState.FINISHED
+                            or sim_finish_confirmed(client.race_status, len(mission.gates)))
+            if finished_run and not args.dry_run and args.finish_hold_s > 0:
+                print(f"\n[finish] gate {mission.gate_index}/{len(mission.gates)} cleared -- holding up "
+                      f"to {args.finish_hold_s:g}s to record the terminal RACE_STATUS before disarm ...")
+                drain_transport = _Transport()
+
+                def _finish_tick():
+                    drain_transport.send_command(mission.step(navigator()))
+
+                try:
+                    res = drain_until_finish(_finish_tick, lambda: client.race_status,
+                                             n_gates=len(mission.gates), max_hold_s=args.finish_hold_s,
+                                             post_confirm_hold_s=min(0.4, args.finish_hold_s))
+                    rs = client.race_status or {}
+                    ft = rs.get("race_finish_time_ns", -1)
+                    if res["confirmed"]:
+                        tstr = f", time={ft / 1e9:.2f}s" if ft is not None and ft >= 0 else ""
+                        print(f"  terminal RACE_STATUS captured at +{res['confirmed_at_s']:.2f}s "
+                              f"(finished={rs.get('finished')}{tstr}).")
+                    else:
+                        print(f"  !! no terminal RACE_STATUS within {args.finish_hold_s:g}s -- "
+                              f"race_outcome may under-certify; re-check on ShadowPC.")
+                except Exception as exc:
+                    print(f"  finish-hold error: {exc}", file=sys.stderr)
     except KeyboardInterrupt:
         print("\nstopping (Ctrl-C) ...")
     finally:
