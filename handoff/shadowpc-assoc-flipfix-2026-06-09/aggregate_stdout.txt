@@ -1,0 +1,45 @@
+﻿
+=== naive_k1.0 ===
+frames 360  detected 349  solved+associated 312
+RAW solved-fix tail (|fix|>=3 m): 143/312 = 46%   (good<1m 103, good<3m 169)
+depth-sanity dropped: 0 (0 cat, 0 good<1m)
+OFFERED to chi2: 312  catastrophic 143 (46%)
+ACCEPTED by chi2 (the KF diet): 140  |fix| p50 0.84 p90 1.74 m
+  catastrophic LEAK: 5/312 solved = 1.6%   (of offered: 1.6%)
+  good<1m accepted: 91/103 = 88%  (good-fix yield)
+  leaked rows (bundle, assoc, trueRng, poseRng, |fix|, maha):
+    g0 -> 0  23.3  28.9  5.7  5.7
+    g1 -> 2  36.5  29.3  7.3  11.6
+    g1 -> 2  38.0  33.1  4.9  3.2
+    g2 -> 3  25.4  22.5  3.0  11.4
+    g4 -> 5  25.3  29.7  4.4  2.9
+
+=== robust_k1.0 ===
+frames 360  detected 349  solved+associated 189
+RAW solved-fix tail (|fix|>=3 m): 12/189 = 6%   (good<1m 107, good<3m 177)
+depth-sanity dropped: 15 (10 cat, 0 good<1m)
+OFFERED to chi2: 174  catastrophic 2 (1%)
+ACCEPTED by chi2 (the KF diet): 142  |fix| p50 0.82 p90 1.69 m
+  catastrophic LEAK: 2/189 solved = 1.1%   (of offered: 1.1%)
+  good<1m accepted: 94/107 = 88%  (good-fix yield)
+  leaked rows (bundle, assoc, trueRng, poseRng, |fix|, maha):
+    g1 -> 2  38.0  33.1  4.9  3.2
+    g2 -> 3  25.4  22.5  3.0  11.4
+
+=== robust_k2.0 ===
+frames 360  detected 349  solved+associated 189
+RAW solved-fix tail (|fix|>=3 m): 12/189 = 6%   (good<1m 107, good<3m 177)
+depth-sanity dropped: 15 (10 cat, 0 good<1m)
+OFFERED to chi2: 174  catastrophic 2 (1%)
+ACCEPTED by chi2 (the KF diet): 147  |fix| p50 0.83 p90 1.68 m
+  catastrophic LEAK: 2/189 solved = 1.1%   (of offered: 1.1%)
+  good<1m accepted: 95/107 = 89%  (good-fix yield)
+  leaked rows (bundle, assoc, trueRng, poseRng, |fix|, maha):
+    g1 -> 2  38.0  33.1  4.9  1.7
+    g2 -> 3  25.4  22.5  3.0  9.4
+
+=== HEADLINE (course-level, 6 per-gate bundles pooled) ===
+        config solved  rawCat% offered  offCat% leak%ofSolved good1yield%
+    naive_k1.0    312     45.8     312     45.8           1.6          88
+   robust_k1.0    189      6.3     174      1.1           1.1          88
+   robust_k2.0    189      6.3     174      1.1           1.1          89

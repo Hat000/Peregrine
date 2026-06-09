@@ -14,8 +14,10 @@ Faithful to the in-loop chain:
     CONTROLLER, not the nav R_wb). So this measures what the navigator's PnP actually sees.
   * gates from the saved map with corner_to_center=True (opening centre = the PnP gate origin), so a
     perfect fix returns the given drone position; the residual IS the chain error.
-  * predict-in-camera + nearest-centre association + predicted-pose prior == navigator's logic, using
-    the GIVEN position as the prior anchor (in VQ1 the KF holds the pristine given pos anyway).
+  * association + prior + post-PnP depth sanity come from racer.vision.association == the SAME code
+    the navigator runs, using the GIVEN position as the prior anchor (in VQ1 the KF holds the
+    pristine given pos anyway). ``--naive-assoc`` restores the pre-2026-06-09 nearest-centre/150 px
+    association with no depth sanity -- the measured-46%-tail baseline -- for before/after runs.
 
 Per frame we record range/off-axis-bearing/speed and, for the associated gate: detected? score,
 n_corners, reproj_px; pose depth (range) error; gate-in-camera translation error; and the headline
@@ -45,6 +47,11 @@ from racer.localization import (
     gate_pose_to_world_position,
 )
 from racer.navigator import load_track_map
+from racer.vision.association import (
+    associate_scored,
+    predict_gates_in_camera,
+    range_consistent,
+)
 from racer.vision.detector import GateDetector
 from racer.vision.gate_pose import estimate_gate_pose
 
@@ -52,33 +59,18 @@ ROOT = Path(__file__).resolve().parent.parent
 BUNDLE = ROOT / "handoff/shadowpc-followups-2026-06-05/task2_frames"
 WEIGHTS = ROOT / "models/gate_yolo11s_curriculum_v2.pt"
 MAP = ROOT / "handoff/shadowpc-firstcontact-2026-06-02/track_map.json"
-_RCB = F.R_camera_from_body()
-_K = np.asarray(F.CAMERA_INTRINSICS_K, float)
-ASSOC_MAX_PX = 150.0
+NAIVE_ASSOC_MAX_PX = 150.0  # the pre-2026-06-09 fixed centre gate (baseline mode only)
 CHI2_GATE = 16.27          # navigator.NavigatorConfig.vision_gate_chi2 (chi2_0.999, 3 DOF)
 
 
-def _predict_gates(drone_pos: np.ndarray, R_wb: np.ndarray, gates) -> dict:
-    """navigator._predict_gates_in_camera, verbatim: gate_id -> (R_pred, t_pred, center_px)."""
-    R_world_camera = R_wb @ _RCB.T
-    R_camera_world = R_world_camera.T
-    out = {}
-    for g in gates:
-        t_pred = R_camera_world @ (g.position_ned - drone_pos)
-        if t_pred[2] <= 0:                                  # behind the camera
-            continue
-        uv = _K @ t_pred
-        out[g.gate_id] = (R_camera_world @ g.R_world_gate, t_pred, uv[:2] / uv[2])
-    return out
-
-
-def _associate(center_px: np.ndarray, predicted: dict) -> int | None:
-    best_id, best_d = None, ASSOC_MAX_PX
-    for gid, (_, _, c) in predicted.items():
-        d = float(np.linalg.norm(c - center_px))
-        if d < best_d:
-            best_id, best_d = gid, d
-    return best_id
+def _naive_associate(center_px: np.ndarray, predicted: dict) -> tuple[int, float] | None:
+    """The retired nearest-predicted-centre association (baseline for before/after runs)."""
+    best = None
+    for gid, pg in predicted.items():
+        d = float(np.linalg.norm(pg.center_px - center_px))
+        if d < NAIVE_ASSOC_MAX_PX and (best is None or d < best[1]):
+            best = (gid, d)
+    return best
 
 
 def main() -> int:
@@ -92,6 +84,10 @@ def main() -> int:
                          "(pass 1.0 for the pre-change baseline; default = production "
                          f"PNP_FIX_COV_INFLATION={PNP_FIX_COV_INFLATION}). Sweep to trade good-fix "
                          "yield against catastrophic leak.")
+    ap.add_argument("--naive-assoc", action="store_true",
+                    help="use the retired nearest-centre/150px association with NO depth sanity "
+                         "(the pre-2026-06-09 baseline that measured the 46%% catastrophic tail) "
+                         "instead of the navigator's robust shape-consistency association.")
     args = ap.parse_args()
 
     bundle = Path(args.bundle)
@@ -109,30 +105,33 @@ def main() -> int:
                       recv_monotonic_ns=0, jpeg_bytes=None)
         drone = np.asarray(fr["drone_position_ned"], float)
         R_wb = F.R_world_from_body(*F.euler_from_quat_wxyz(np.asarray(fr["odo_q_wxyz"], float)))
-        predicted = _predict_gates(drone, R_wb, gates)
+        predicted = predict_gates_in_camera(gates, drone, R_wb)
         obs_list = det.detect(frame)
         row = {"frame_id": fr["frame_id"], "range_m": fr["range_m"], "speed_mps": fr["speed_mps"],
                "n_det": len(obs_list), "detected": False, "associated": False}
 
-        # associate each detection to the nearest predicted gate centre (navigator._associate),
-        # then keep the one nearest its own predicted centre = the gate this frame is ranged to.
+        # associate each detection (the navigator's association, or the naive baseline with
+        # --naive-assoc), then keep the frame's best-agreeing one.
         best = None
         for o in obs_list:
-            center = np.mean(np.asarray(o.corners_px, float), axis=0)
-            gid = _associate(center, predicted)
-            if gid is None:
+            if args.naive_assoc:
+                center = np.mean(np.asarray(o.corners_px, float), axis=0)
+                scored = _naive_associate(center, predicted)
+            else:
+                scored = associate_scored(o, predicted)
+            if scored is None:
                 continue
-            R_pred, t_pred, cpx = predicted[gid]
-            d_px = float(np.linalg.norm(cpx - center))
-            if best is None or d_px < best[0]:
-                best = (d_px, o, gid)
+            gid, assoc_score = scored
+            if best is None or assoc_score < best[0]:
+                best = (assoc_score, o, gid)
         row["detected"] = len(obs_list) > 0
         if best is not None:
-            d_px, o, gid = best
+            _, o, gid = best
             row["associated"] = True
             gate = gates_by_id[gid]
-            R_pred, t_pred, _ = predicted[gid]
-            prior = GatePose(o.frame_id, o.sim_time_ns, R_pred, t_pred, 0.0, gate_id=gid)
+            pg = predicted[gid]
+            t_pred = pg.t_cam_gate
+            prior = GatePose(o.frame_id, o.sim_time_ns, pg.R_cam_gate, t_pred, 0.0, gate_id=gid)
             pose = estimate_gate_pose(o, prior=prior, compute_covariance=True)
             if pose is not None:
                 # range to the associated gate from the given pos = the true depth
@@ -141,6 +140,9 @@ def main() -> int:
                 bearing = float(np.degrees(np.arctan2(np.hypot(t_pred[0], t_pred[1]), t_pred[2])))
                 # gate-in-camera translation error vs the expected (from map + given pose)
                 t_err = float(np.linalg.norm(pose.t_cam_gate - t_pred))
+                # the navigator's post-PnP depth sanity (always rendered TRUE in naive mode,
+                # where the check did not exist)
+                range_ok = args.naive_assoc or range_consistent(pose.range_m, pg.range_m)
                 pos_fix, cov = gate_pose_to_world_position(
                     pose, gate, R_wb, pnp_cov_inflation=args.cov_inflation)
                 if pose.n_corners < 4:
@@ -154,14 +156,16 @@ def main() -> int:
                 row.update(gate_id=gid, score=float(o.score), n_corners=int(pose.n_corners),
                            reproj_px=float(pose.reproj_error_px), pose_range_m=float(pose.range_m),
                            true_range_m=true_rng, range_err_m=float(pose.range_m - true_rng),
-                           bearing_deg=bearing, t_cam_err_m=t_err,
+                           bearing_deg=bearing, t_cam_err_m=t_err, range_ok=bool(range_ok),
                            off_ned=[float(x) for x in off], world_fix_err_m=float(np.linalg.norm(off)),
                            maha=maha)
         rows.append(row)
 
-    _report(rows, cov_inflation=args.cov_inflation)
+    _report(rows, cov_inflation=args.cov_inflation, naive=args.naive_assoc)
     if args.json:
         Path(args.json).write_text(json.dumps({"bundle": d.get("run"), "weights": Path(args.weights).name,
+                                               "assoc_mode": "naive" if args.naive_assoc else "robust",
+                                               "cov_inflation": args.cov_inflation,
                                                "rows": rows}, indent=2))
         print(f"\nwrote per-frame rows -> {args.json}")
     return 0
@@ -171,20 +175,23 @@ def _pct(a, q):
     return float(np.percentile(a, q)) if len(a) else float("nan")
 
 
-def _report(rows: list[dict], cov_inflation: float = 1.0) -> None:
+def _report(rows: list[dict], cov_inflation: float = 1.0, naive: bool = False) -> None:
     n = len(rows)
     det = [r for r in rows if r["detected"]]
     assoc = [r for r in rows if r.get("associated") and "world_fix_err_m" in r]
-    print(f"\nDETECTION: {len(det)}/{n} frames had >=1 detection; "
+    mode = "NAIVE nearest-centre (baseline)" if naive else "robust shape-consistency"
+    print(f"\nASSOCIATION MODE: {mode}")
+    print(f"DETECTION: {len(det)}/{n} frames had >=1 detection; "
           f"{len(assoc)}/{n} associated + solved a pose.")
 
     print(f"\n{'range':>6} {'gid':>3} {'bear':>5} {'spd':>5} {'sc':>5} {'nc':>3} {'reproj':>6} "
-          f"{'rngErr':>7} {'offN':>7} {'offE':>7} {'offD':>7} {'|fix|':>6} {'maha':>7}")
+          f"{'rngErr':>7} {'offN':>7} {'offE':>7} {'offD':>7} {'|fix|':>6} {'maha':>7} {'rngOK':>5}")
     for r in sorted(assoc, key=lambda x: x["true_range_m"]):
         o = r["off_ned"]
         print(f"{r['true_range_m']:6.1f} {r['gate_id']:3d} {r['bearing_deg']:5.1f} {r['speed_mps']:5.1f} "
               f"{r['score']:5.2f} {r['n_corners']:3d} {r['reproj_px']:6.2f} {r['range_err_m']:+7.2f} "
-              f"{o[0]:+7.2f} {o[1]:+7.2f} {o[2]:+7.2f} {r['world_fix_err_m']:6.2f} {r['maha']:7.1f}")
+              f"{o[0]:+7.2f} {o[1]:+7.2f} {o[2]:+7.2f} {r['world_fix_err_m']:6.2f} {r['maha']:7.1f} "
+              f"{'  ok' if r.get('range_ok', True) else 'DROP'}")
 
     # detection rate + world-fix error by range band
     print("\nBY RANGE BAND:")
@@ -230,15 +237,30 @@ def _report(rows: list[dict], cov_inflation: float = 1.0) -> None:
     print(f"  fix-cov Mahalanobis (off^T cov^-1 off, dof=3, chi2.999=16.27): "
           f"p50 {_pct(maha,50):.0f}  -> the analytic PnP cov UNDERSTATES the true fix error if >>16.")
 
-    # -- GATE TRADE-OFF: how the navigator's chi2 innovation gate classifies these fixes at this
-    # cov_inflation. GOOD = accurate fix we WANT to keep; CATASTROPHIC = wrong-gate / depth-flip we
-    # MUST reject. ``maha`` was computed with the inflated cov, so this is what the live gate sees (in
-    # VQ1 the KF is anchored to the given pos, so nu~=off and P<<cov -> d2~=maha). Inflating cov by K
-    # scales maha by ~1/K (PnP-dominated near/mid range; less at long range where the attitude lever-
-    # arm term dominates). Thresholds match the TAIL line (cat>=3 m); reconcile the absolute %s against
-    # handoff/perception-char-2026-06-08 -- the before/after DELTA at a fixed threshold is the metric.
+    # -- SOURCE FIX (the 2026-06-09 association/depth-sanity work): how many solved fixes the
+    # navigator now refuses BEFORE they reach the chi2 gate, and what is left after. OFFERED =
+    # fixes that pass the depth sanity (in naive mode = all solved fixes: the check didn't exist).
     GOOD_MAX_M, CAT_MIN_M = 1.0, 3.0
-    finite = [r for r in assoc if np.isfinite(r["maha"])]
+    offered = [r for r in assoc if r.get("range_ok", True)]
+    dropped = [r for r in assoc if not r.get("range_ok", True)]
+    drop_cat = sum(r["world_fix_err_m"] >= CAT_MIN_M for r in dropped)
+    drop_good = sum(r["world_fix_err_m"] < GOOD_MAX_M for r in dropped)
+    off_fix = np.array([r["world_fix_err_m"] for r in offered])
+    n_off_cat = int((off_fix >= CAT_MIN_M).sum()) if len(off_fix) else 0
+    print(f"\nDEPTH-SANITY (range_consistent): dropped {len(dropped)}/{len(assoc)} solved fixes "
+          f"({drop_cat} catastrophic, {drop_good} good<{GOOD_MAX_M:.0f} m)")
+    print(f"OFFERED to the chi2 gate: N={len(offered)}  catastrophic {n_off_cat} "
+          f"({100.0 * n_off_cat / len(offered) if offered else float('nan'):.0f}%)  "
+          f"|fix| p50 {_pct(off_fix, 50):.2f}  p90 {_pct(off_fix, 90):.2f} m")
+
+    # -- GATE TRADE-OFF: how the navigator's chi2 innovation gate classifies the OFFERED fixes at
+    # this cov_inflation. GOOD = accurate fix we WANT to keep; CATASTROPHIC = wrong-gate / depth-flip
+    # we MUST reject. ``maha`` was computed with the inflated cov, so this is what the live gate sees
+    # (in VQ1 the KF is anchored to the given pos, so nu~=off and P<<cov -> d2~=maha). Inflating cov
+    # by K scales maha by ~1/K (PnP-dominated near/mid range; less at long range where the attitude
+    # lever-arm term dominates). Thresholds match the TAIL line (cat>=3 m); the LEAK denominator
+    # `of-all-solved` keeps it comparable across association modes (same chain, same frames).
+    finite = [r for r in offered if np.isfinite(r["maha"])]
     good = [r for r in finite if r["world_fix_err_m"] < GOOD_MAX_M]
     cat = [r for r in finite if r["world_fix_err_m"] >= CAT_MIN_M]
     n_good, n_cat = len(good), len(cat)
@@ -247,12 +269,15 @@ def _report(rows: list[dict], cov_inflation: float = 1.0) -> None:
     gr = 100.0 * good_rej / n_good if n_good else float("nan")
     cl = 100.0 * cat_leak / n_cat if n_cat else float("nan")
     catch = 100.0 * (n_cat - cat_leak) / n_cat if n_cat else float("nan")
-    print(f"\nGATE TRADE-OFF  (chi2_0.999={CHI2_GATE}, cov_inflation={cov_inflation:.2f}, "
+    leak_all = 100.0 * cat_leak / len(assoc) if assoc else float("nan")
+    print(f"\nGATE TRADE-OFF on OFFERED fixes  (chi2_0.999={CHI2_GATE}, cov_inflation={cov_inflation:.2f}, "
           f"good<{GOOD_MAX_M:.0f} m, catastrophic>={CAT_MIN_M:.0f} m):")
     print(f"  GOOD fixes (keep)    N={n_good:3d}   rejected {good_rej:3d}  ({gr:4.0f}%)"
           f"   <- minimise (good-fix yield loss; target <5%)")
     print(f"  CATASTROPHIC (drop)  N={n_cat:3d}   leaked   {cat_leak:3d}  ({cl:4.0f}%)"
           f"   <- keep <=~2%   (bad-fix catch {catch:.0f}%)")
+    print(f"  RESIDUAL LEAK = {cat_leak}/{len(assoc)} solved fixes = {leak_all:.1f}% "
+          f"(catastrophic AND past depth-sanity AND past chi2)")
 
 
 if __name__ == "__main__":

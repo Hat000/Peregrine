@@ -1,0 +1,4 @@
+# Per-frame characterize dumps + raw per-run stdouts are regenerable via run_measure.ps1
+# (the bundles live in handoff/perception-char-2026-06-08/pg, gitignored there).
+char_g*.json
+char_g*.stdout.txt

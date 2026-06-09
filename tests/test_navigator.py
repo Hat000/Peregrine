@@ -199,10 +199,11 @@ def test_detector_runs_once_per_frame_id():
     assert det.calls == 2
 
 
-def test_innovation_gate_rejects_inconsistent_fix():
-    # Given position ON + tight at the origin; a detection that PnP-resolves to a gate ~9 m
-    # ahead but is associated to a map gate placed far away implies a drone position far from
-    # the origin -> the Mahalanobis gate rejects it; the estimate stays anchored to truth.
+def test_association_refuses_wrong_scale_gate():
+    # The map's only gate is 200 m north, but the detection is of a gate 9 m ahead: its
+    # apparent size is ~22x the predicted one, so robust association matches NOTHING (the
+    # old nearest-centre rule happily matched it -- the measured wrong-gate tail). No fix
+    # is even attempted and the estimate stays anchored to the given position.
     far_gate = _gate_facing_north([200.0, 0.0, -2.5], gate_id=0)   # map says gate is 200 m north
     seen_gate = _gate_facing_north([9.0, 0.0, -2.5], gate_id=0)    # but we actually see one 9 m ahead
     nav = Navigator(gates=[far_gate], detector=_FakeDetector(seen_gate, [0.0, 0.0, 0.0]),
@@ -211,7 +212,25 @@ def test_innovation_gate_rejects_inconsistent_fix():
     ns = None
     for k in range(1, 20):
         ns = nav.update(_ds(k * 10_000_000, position=[0.0, 0.0, 0.0]), _frame(k, k * 10_000_000))
+    assert nav.n_vision_fixes == 0
+    assert nav.vision_diag.n_associated == 0                       # refused at association
+    np.testing.assert_allclose(ns.position_ned, [0.0, 0.0, 0.0], atol=0.2)   # anchored, not yanked
+
+
+def test_innovation_gate_rejects_inconsistent_fix():
+    # Given position ON + tight at the origin; the detection is geometry-consistent with the
+    # map gate (right scale + centre + depth, so it passes association AND the depth sanity)
+    # but was actually taken from 1 m above where the navigator believes it is -> the fix
+    # implies a 1 m innovation against a cm-tight prior; the Mahalanobis gate rejects it.
+    gate = _gate_facing_north([9.0, 0.0, -2.5], gate_id=0)
+    nav = Navigator(gates=[gate], detector=_FakeDetector(gate, [0.0, 0.0, -1.0]),
+                    config=NavigatorConfig(use_given_position=True, given_pos_std=0.05))
+    nav.update(_ds(0, position=[0.0, 0.0, 0.0]), _frame(0, 0))
+    ns = None
+    for k in range(1, 20):
+        ns = nav.update(_ds(k * 10_000_000, position=[0.0, 0.0, 0.0]), _frame(k, k * 10_000_000))
     assert nav.n_vision_rejected > 0
+    assert nav.vision_diag.n_associated > 0                        # it DID associate; chi2 caught it
     np.testing.assert_allclose(ns.position_ned, [0.0, 0.0, 0.0], atol=0.2)   # anchored, not yanked
 
 

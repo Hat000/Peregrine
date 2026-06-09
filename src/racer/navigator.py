@@ -48,9 +48,18 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, NavState
-from racer.frames import CAMERA_INTRINSICS_K, R_camera_from_body, R_world_from_body
+from racer.frames import R_world_from_body
 from racer.localization import gate_pose_to_world_position
 from racer.state_estimator import LinearKF, make_nav_state
+from racer.vision.association import (
+    ASSOC_MAX_CENTER_UNITS,
+    ASSOC_MAX_SIZE_RATIO,
+    RANGE_ABS_TOL_M,
+    RANGE_REL_TOL,
+    associate,
+    predict_gates_in_camera,
+    range_consistent,
+)
 from racer.vision.gate_pose import GATE_INNER_SIZE_M, estimate_gate_pose
 
 _WORLD_DOWN = np.array([0.0, 0.0, 1.0])   # NED down
@@ -162,7 +171,17 @@ class NavigatorConfig:
     # Vision -> KF (kept in-loop; never the crutch). Off when no detector is supplied.
     use_vision: bool = True
     vision_max_range_m: float = 40.0       # ignore PnP fixes beyond this (too noisy at range)
-    assoc_max_px: float = 150.0            # data-association gate: predicted vs detected gate centre
+    # Robust association (racer.vision.association): a detection must agree with a map
+    # gate's PREDICTED shape -- apparent-size ratio hard-gated, centre offset normalised by
+    # the predicted size. Replaces the naive fixed-150px nearest-centre gate that caused
+    # the measured 46% wrong-gate/junk fix tail on the collinear course. [2026-06-09]
+    assoc_max_size_ratio: float = ASSOC_MAX_SIZE_RATIO
+    assoc_max_center_units: float = ASSOC_MAX_CENTER_UNITS
+    # Post-PnP depth sanity vs the predicted range to the associated gate (known 1.5 m gate
+    # size makes PnP depth metric): reject the fix when they disagree beyond a relative
+    # tolerance with an absolute floor (the floor keeps a ~1 m VQ2 prior error harmless).
+    fix_range_rel_tol: float = RANGE_REL_TOL
+    fix_range_abs_tol_m: float = RANGE_ABS_TOL_M
     # Mahalanobis innovation gate (3-DOF position). 16.27 = chi-square 99.9% quantile: reject
     # only egregious disagreement with the IMU-propagated prior (wrong-gate / garbage PnP), so a
     # healthy fix is never dropped. The right form of "gate the fix on agreement-with-prediction"
@@ -179,6 +198,7 @@ class _VisionDiag:
     n_associated: int = 0
     n_applied: int = 0
     n_rejected_gate: int = 0
+    n_rejected_range: int = 0       # post-PnP depth-sanity rejections (range_consistent)
     last_gate_id: int | None = None
     last_range_m: float = float("nan")
     last_reproj_px: float = float("nan")
@@ -208,7 +228,6 @@ class Navigator:
     _reset_counter: int = field(default=0, repr=False)
     _last_frame_id: int | None = field(default=None, repr=False)
     _last_vision_sim_time_ns: int | None = field(default=None, repr=False)
-    _gate_priors: dict[int, GatePose] = field(default_factory=dict, repr=False)
     _gates_by_id: dict[int, Gate] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -239,7 +258,6 @@ class Navigator:
         self.initialized = False
         self._last_frame_id = None
         self._last_vision_sim_time_ns = None
-        self._gate_priors.clear()
 
     # -- per-tick -----------------------------------------------------------
     def update(self, ds: DroneState, frame: Frame | None = None) -> NavState:
@@ -304,7 +322,7 @@ class Navigator:
             return
 
         drone_pos = self.kf.position
-        predicted = self._predict_gates_in_camera(drone_pos, R_wb)  # gate_id -> (R_pred, t_pred, center_px)
+        predicted = predict_gates_in_camera(self.gates, drone_pos, R_wb)
         for obs in observations:
             self._process_observation(obs, predicted, drone_pos, R_wb)
 
@@ -314,18 +332,28 @@ class Navigator:
             return
         self.vision_diag.n_associated += 1
         gate = self._gates_by_id[gate_id]
-        prior = self._gate_priors.get(gate_id)
-        if prior is None and gate_id in predicted:
-            R_pred, t_pred, _ = predicted[gate_id]
-            prior = GatePose(obs.frame_id, obs.sim_time_ns, R_pred, t_pred, 0.0, gate_id=gate_id)
+        # The PnP prior (IPPE 2-fold / P3P disambiguation) is the FRESH map+attitude+KF
+        # prediction, re-derived every frame -- motion-consistent by construction (the KF
+        # propagates between fixes). The previous pose ESTIMATE was deliberately dropped as
+        # a prior: one accepted flip made it sticky (each flipped pose endorsed the next).
+        pg = predicted[gate_id]
+        prior = GatePose(obs.frame_id, obs.sim_time_ns, pg.R_cam_gate, pg.t_cam_gate, 0.0,
+                         gate_id=gate_id)
         pose = estimate_gate_pose(obs, prior=prior, compute_covariance=True)
         if pose is None:
             return
-        self._gate_priors[gate_id] = pose
         self.vision_diag.last_gate_id = gate_id
         self.vision_diag.last_range_m = pose.range_m
         self.vision_diag.last_reproj_px = pose.reproj_error_px
         if pose.range_m > self.config.vision_max_range_m:
+            return
+        # Known-gate-size depth sanity: the solved PnP depth must agree with the predicted
+        # range to the associated gate, else the solver locked onto the wrong-scale
+        # structure / a degenerate flip -- drop the fix at the source (don't lean on chi2).
+        if not range_consistent(pose.range_m, pg.range_m,
+                                self.config.fix_range_rel_tol, self.config.fix_range_abs_tol_m):
+            self.n_vision_rejected += 1
+            self.vision_diag.n_rejected_range += 1
             return
 
         position_ned, cov = gate_pose_to_world_position(
@@ -350,33 +378,9 @@ class Navigator:
         self._last_vision_sim_time_ns = int(obs.sim_time_ns)
 
     def _associate(self, obs: GateObservation, predicted: dict) -> int | None:
-        """Match a detection to the map gate whose predicted image centre is nearest its own."""
-        center = np.mean(np.asarray(obs.corners_px, dtype=np.float64), axis=0)
-        best_id, best_d = None, self.config.assoc_max_px
-        for gate_id, (_, _, center_px) in predicted.items():
-            d = float(np.linalg.norm(center_px - center))
-            if d < best_d:
-                best_id, best_d = gate_id, d
-        return best_id
-
-    def _predict_gates_in_camera(self, drone_pos: np.ndarray, R_wb: np.ndarray) -> dict:
-        """Each visible map gate's predicted camera-frame pose + centre pixel (for assoc + prior).
-
-        Camera shares the body origin (spec 3.8; the official sim has no lever arm — see
-        ``localization``), so the camera is at the drone position.
-        """
-        R_world_camera = R_wb @ R_camera_from_body().T
-        R_camera_world = R_world_camera.T
-        out: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-        for gate in self.gates:
-            t_pred = R_camera_world @ (gate.position_ned - drone_pos)   # gate origin in camera frame
-            if t_pred[2] <= 0:                                          # behind the camera
-                continue
-            uv = CAMERA_INTRINSICS_K @ t_pred
-            center_px = uv[:2] / uv[2]
-            R_pred = R_camera_world @ gate.R_world_gate
-            out[gate.gate_id] = (R_pred, t_pred, center_px)
-        return out
+        """Match a detection to the map gate whose predicted SHAPE agrees best (or None)."""
+        return associate(obs, predicted,
+                         self.config.assoc_max_size_ratio, self.config.assoc_max_center_units)
 
     def _mahalanobis_position(self, z: np.ndarray, R: np.ndarray) -> float:
         """nu^T S^-1 nu for a position fix vs. the current KF state (H observes position)."""

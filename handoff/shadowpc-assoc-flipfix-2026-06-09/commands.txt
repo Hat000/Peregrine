@@ -1,0 +1,24 @@
+# Commands run on ShadowPC, 2026-06-09 (robust-association + depth-sanity session).
+# venv = .venv\Scripts\python.exe (torch CPU + ultralytics installed 2026-06-08).
+
+# --- setup ---
+git pull origin main          # @ 2e7df71, already up to date
+
+# --- tail decomposition from the EXISTING k1.0 per-frame dumps (design input) ---
+.venv\Scripts\python.exe handoff\shadowpc-assoc-flipfix-2026-06-09\tail_decomposition.py
+
+# --- tests ---
+.venv\Scripts\python.exe -m pytest tests -q                     # full suite (370 after the change)
+.venv\Scripts\python.exe -m pytest tests\test_association.py -q # the new unit tests
+
+# --- before/after measurement: 3 configs x 6 per-gate course bundles ---
+# bundles from handoff\perception-char-2026-06-08\pg\course_g{0..5} (session 20260607_194615_course_60s)
+powershell -ExecutionPolicy Bypass -File handoff\shadowpc-assoc-flipfix-2026-06-09\run_measure.ps1
+#   = scripts\characterize_perception.py --bundle <pg\course_gG> --weights models\gate_yolo11s_curriculum_v2.pt
+#     --map handoff\shadowpc-firstcontact-2026-06-02\track_map.json --json char_gG_<cfg>.json <cfg-flags>
+#   cfgs: naive_k1.0  = --naive-assoc --cov-inflation 1.0   (the pre-change baseline, reproduces perception-char)
+#         robust_k1.0 = --cov-inflation 1.0                 (new association + depth sanity)
+#         robust_k2.0 = --cov-inflation 2.0                 (same, at the production PNP_FIX_COV_INFLATION)
+
+# --- course-level aggregation (the headline table) ---
+.venv\Scripts\python.exe handoff\shadowpc-assoc-flipfix-2026-06-09\aggregate_results.py
