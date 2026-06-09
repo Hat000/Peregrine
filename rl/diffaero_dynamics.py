@@ -198,7 +198,13 @@ class PeregrinePlantDynamics(BaseDynamics):
     def __init__(self, cfg, device, *, backend: str = "rl_plant_numpy",
                  params: "PlantParams | None" = None):
         super().__init__(cfg, device)                       # sets n_agents, n_envs, dt, alpha, _G, _G_vec
-        self.type = "peregrine_plant"
+        # RECONCILED (vs Adroit clone): report "quadrotor", NOT "peregrine_plant". env/racing.py keys
+        # its reset identity-quaternion branch on ``dynamic_type == "quadrotor"`` (racing.py:206) and
+        # selects the quadrotor reward/loss via ``isinstance(.., PointMassModelBase)`` (racing.py:289).
+        # We ARE a quadrotor dynamics -- just with a system-ID'd inner plant -- so "quadrotor" is correct.
+        # build_dynamics still selects THIS class by cfg.dynamics.name == "peregrine_plant" (independent).
+        self.type = "quadrotor"
+        self.plant_name = "peregrine_plant"
         self.state_dim = 13
         self.action_dim = 4
         self.backend = backend
@@ -342,13 +348,25 @@ class PeregrinePlantDynamics(BaseDynamics):
         self._state = self.grad_decay(new)                  # differentiable: keep DiffAero's grad decay
 
     # ---- reset / validation ----------------------------------------------------------------------
+    def detach(self) -> None:
+        """Detach carried state from the autograd graph between rollouts. BaseDynamics.detach only
+        detaches _state; mirror QuadrotorModel and also detach our extra _acc / _thrust state."""
+        super().detach()
+        self._acc = self._acc.detach()
+        self._thrust = self._thrust.detach()
+
     def reset_idx(self, env_idx) -> None:
-        """Reset the given envs to hover (identity attitude, zero vel/rate). # RECONCILE: DiffAero's
-        env usually injects a randomized init pose here -- wire that in."""
-        self._state[env_idx] = 0.0
-        self._state[env_idx, ..., 6] = 1.0                  # qw (xyzw) = identity
-        self._acc[env_idx] = 0.0
-        self._thrust[env_idx] = float(self.params.hover_thrust)
+        """RECONCILED (vs Adroit clone): reset ONLY our carried aux state (_acc, _thrust), OUT-OF-PLACE.
+        env/racing.py BaseEnv.reset_idx has ALREADY written self._state[env_idx] with the reset pose +
+        identity quaternion (racing.py:203-208, via torch.where -- enabled by our type=="quadrotor"),
+        so we must NOT clobber _state here. We use torch.where (not in-place) because mid-rollout these
+        tensors are non-leaf/grad-bearing -- exactly why QuadrotorModel.reset_idx does the same."""
+        amask = torch.zeros_like(self._acc, dtype=torch.bool)
+        amask[env_idx] = True
+        self._acc = torch.where(amask, 0.0, self._acc)
+        tmask = torch.zeros_like(self._thrust, dtype=torch.bool)
+        tmask[env_idx] = True
+        self._thrust = torch.where(tmask, float(self.params.hover_thrust), self._thrust)
 
     def check_against_rl_plant(self, U: Tensor, atol: float = 1e-5) -> float:
         """Validate the torch backend against the parity-tested numpy plant for one step from the
