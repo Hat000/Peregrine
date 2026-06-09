@@ -76,6 +76,11 @@ Do NOT conflate them:
   IPPE flip (solver/prior; a BLANK square is worse than an AprilTag — no internal pattern to break corner
   symmetry → needs the attitude+map+temporal prior, currently firing too weakly), the +3.5°/range yaw
   CALIBRATION bias, wrong-gate association. Training won't fix (b); solver/calibration/logic will.
+  **✅ DONE (commit 4673517, ShadowPC, 2026-06-09): `association.py` ships; wrong-gate association killed
+  (87 catastrophic fixes eliminated); depth-sanity flip disambiguation kills the scale-error mode (not a
+  solver-flip mode — key insight: geometry consistency, not solver tie-breaking, is the lever). Catastrophic
+  tail 46%→6.3%, leak 1.6%→1.1%, 370 tests green. Residual 2 leaks = long-range depth noise → next lever
+  = `attitude_noise_std` (Stage-2 / vision pkg 2). Vision workstream (b) COMPLETE for VQ1+Stage-1.**
 
 ### Perception characterization (this session) — `scripts/characterize_perception.py`
 Ran the navigator's ACTUAL chain (detector v2 → estimate_gate_pose → gate_pose_to_world_position) on the
@@ -95,9 +100,11 @@ Ran the REAL YOLO→PnP→KF chain on the canonical VQ1 6/6 recording `data/runs
 (1159 frames; per-gate bundles pooled, N=312 solved fixes). **This is the measured speed-ceiling model.**
 - **Per-axis bias ± σ** (KF-ACCEPTED fixes, the in-loop cut): N −0.42 ± 0.73 · E +0.06 ± 0.47 · D −0.28 ± 0.29 m. |fix| p50 0.82 / p90 1.66 m. Vertical (D) tightest.
 - **Range-FLAT to 24 m — NO growth** (⚠️ CORRECTS the earlier "range-growing" guess above). Per-axis slope ≈ −3.8°…+4.1° = the ~3.6°/range yaw bias, now confirmed through the full chain.
-- **Catastrophic tail:** raw |fix|≥3 m = 46% under naive nearest-centre assoc (87 wrong-gate + 56 frontal-PnP depth flips; tail p50 16 m). The KF χ²₀.₉₉₉ gate rejects 97% → **residual leak ≈ 1.6% = the bad-fix rate the twin MUST model.**
-- **⚠️ χ² gate over-tight:** also drops ~20% of GOOD fixes (analytic PnP cov slightly tight) → inflate PnP cov (task queued).
-- **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **+~1.6% catastrophic leak** after a χ²₀.₉₉₉ gate. Detail: `handoff/perception-char-2026-06-08/`.
+- **Catastrophic tail:** raw |fix|≥3 m = 46%→6.3% (143→12) with association+depth-sanity (commit 4673517, 2026-06-09). The KF χ²₀.₉₉₉ gate rejects further → **residual leak ≈ 1.1% (0.6% of frames) = UPDATED bad-fix rate the twin MUST model.** Good <1 m fixes went UP (103→107).
+  - **Key insight:** the "56 frontal depth flips" were NOT solver flips — wrong-scale detector boxes (solved depth 1.2–13× true, p50 2.3×, reproj p50 1.0 px). Geometry/depth-sanity kills them; better solver tie-breaking couldn't have.
+  - **2 residual leaks** = honest long-range depth noise (25–38 m range, errors 3–5 m) on correctly-associated next-gate fixes. Next lever = `attitude_noise_std` (queued, Stage-2), NOT tighter geometry gates.
+- **PNP_FIX_COV_INFLATION task CLOSED:** behind the depth-sanity gate K=1.0 and K=2.0 leak identically (prior objection — K=2.0 worsens leak — evaporates). No revert needed.
+- **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **~1.1% catastrophic leak** after χ²₀.₉₉₉ + association + depth-sanity (commit 4673517, 2026-06-09; prior figure was ~1.6%). **Use 1.1% as the Stage-2 twin input.** Detail: `handoff/perception-char-2026-06-08/`.
 
 ## Depth model / ~100 TOPS budget (user) — OFFLINE flywheel
 After a recorded run (legal between-runs processing): **multi-view triangulation** from logged poses
@@ -155,7 +162,11 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
   OFF** in VQ1 sim ← the right home for the user's "test the control policy with real YOLO vision."
-- **Vision engineering runs PARALLEL** (decoupled by design).
+  **Use updated 1.1% leak figure (commit 4673517)** for the twin injection, not the prior 1.6%. Next
+  vision-engineering lever at this stage = `attitude_noise_std` (see perception-char findings above).
+- **Vision engineering workstream (b) COMPLETE for VQ1+Stage-1** (commit 4673517, 2026-06-09). Residual
+  lever for Stage-2 / vision pkg 2: `attitude_noise_std` (currently inert for given-pose nav).
+- **Vision engineering (a) runs PARALLEL** (detector training, Adroit, decoupled by design).
 
 ## #1 ORGANIZER ASK (user offered to email info@theaigrandprix.com)
 **"In Round Two (VQ2), does the sim still stream LOCAL_POSITION_NED / ODOMETRY (drone position+velocity),
