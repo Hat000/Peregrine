@@ -76,6 +76,18 @@ class PeregrineRacing(Racing):
         self.passage_bonus = float(getattr(cfg, "passage_bonus", 10.0))
         self.finish_bonus = float(getattr(cfg, "finish_bonus", 20.0))
 
+        # STANDING START (S1.3, from the S1.2 live-validation findings 2026-06-10): with this
+        # fraction, a reset env spawns at the REAL race start instead of 1 m in front of a random
+        # gate: 23.3 m up-course of gate 0, at rest, on the tilted pad. Pose measured from race
+        # recordings (first ODOMETRY at GO: NED pos (0,0,+0.02), true rpy (0, -17.8deg, -179.9deg))
+        # and mapped through the DEPLOYMENT VIRTUAL FLIP (pi about body z -- rl/fly_rl.py flies the
+        # policy in that frame because training is tail-first): zup euler (roll 0, pitch -17.8deg,
+        # yaw ~0) = quat XYZW [-0.000135, -0.15471, -0.000862, 0.987959]. Default 0.0 = off.
+        self.standing_start_frac = float(getattr(cfg, "standing_start_frac", 0.0))
+        self._spawn_pos_zup = torch.tensor([0.0, 0.0, -0.02], device=device)
+        self._spawn_quat_xyzw = torch.tensor(
+            [-0.000135, -0.15471, -0.000862, 0.987959], device=device)
+
         # obs = parent's 13 + body rates (3) + collective (1)
         self.obs_dim = 17
 
@@ -175,7 +187,32 @@ class PeregrineRacing(Racing):
             self.reset_idx(reset_indices)
         return self.get_observations(), (loss, reward), terminated, extra
 
-    # ---- reset: parent places the drone 1 m in front of a random gate; we also clear `finished` ----
+    # ---- reset: parent places the drone 1 m in front of a random gate; we also clear `finished`
+    # and (optionally) respawn a fraction at the real standing start ----
     def reset_idx(self, env_idx: Tensor):
         super().reset_idx(env_idx)
         self.finished[env_idx] = False
+        if self.standing_start_frac > 0.0 and env_idx.numel() > 0:
+            pick = env_idx[torch.rand(env_idx.numel(), device=self.device)
+                           < self.standing_start_frac]
+            if pick.numel() > 0:
+                n = pick.numel()
+                # pose jitter: +-0.25 m xy, +-0.15 rad axis-angle (robustness around the fixed pad)
+                pos = self._spawn_pos_zup.expand(n, 3).clone()
+                pos = pos + torch.cat([0.5 * (torch.rand(n, 2, device=self.device) - 0.5),
+                                       torch.zeros(n, 1, device=self.device)], dim=-1)
+                jit = 0.3 * (torch.rand(n, 3, device=self.device) - 0.5)        # axis-angle
+                q_jit = T.axis_angle_to_quaternion(jit)                          # wxyz
+                q_spawn = self._spawn_quat_xyzw.expand(n, 4).roll(1, dims=-1)    # xyzw -> wxyz
+                q = T.quaternion_multiply(q_spawn, q_jit).roll(-1, dims=-1)      # -> xyzw
+                state = torch.zeros(n, self.dynamics.state_dim, device=self.device)
+                state[:, 0:3] = pos
+                state[:, 3:7] = q
+                mask = torch.zeros_like(self.dynamics._state, dtype=torch.bool)
+                mask[pick] = True
+                full = torch.zeros_like(self.dynamics._state)
+                full[pick] = state
+                self.dynamics._state = torch.where(mask, full, self.dynamics._state)
+                self.target_gates[pick] = 0
+                self.init_pos[pick] = pos
+                self.target_pos.copy_(self.gate_pos[self.target_gates])
