@@ -249,6 +249,24 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._min_action = torch.tensor([0.0, -8.0, -8.0, -8.0], device=device)
             self._max_action = torch.tensor([2.0, 8.0, 8.0, 8.0], device=device)
 
+        # --- domain randomization of OUR plant params (mismatch #5), per-env, resampled at reset ----
+        # Enabled with `+dynamics.dr=true` (hydra adds the key). Bands are fractions of the nominal
+        # faithful params; g and thrust_tau_s are held fixed. When DISABLED the validated scalar path in
+        # _step_torch runs unchanged -> the check_against_rl_plant gate (4.4e-16) is preserved bit-for-bit.
+        self._dr_enabled = bool(getattr(cfg, "dr", False))
+        self._dr_bands = {
+            "rate_gain": float(getattr(cfg, "dr_rate_gain_frac", 0.10)),   # +-10% per axis
+            "hover":     float(getattr(cfg, "dr_hover_frac", 0.05)),       # +- 5%
+            "drag":      float(getattr(cfg, "dr_drag_frac", 0.30)),        # +-30%
+            "rate_tau":  float(getattr(cfg, "dr_rate_tau_frac", 0.30)),    # +-30%
+        }
+        if torch is not None and self._dr_enabled:
+            n = self.n_envs
+            self._dr_rate_gain = self._rate_gain.unsqueeze(0).expand(n, 3).clone()   # (n,3)
+            self._dr_hover = torch.full((n,), float(self.params.hover_thrust), device=device)
+            self._dr_drag = torch.full((n,), float(self.params.linear_drag), device=device)
+            self._dr_rate_tau = torch.full((n,), float(self.params.rate_tau_s), device=device)
+
     # ---- abstract API ----------------------------------------------------------------------------
     @property
     def min_action(self) -> Tensor: return self._min_action
@@ -316,14 +334,26 @@ class PeregrinePlantDynamics(BaseDynamics):
         w = w_d * flip
         q = torch.cat([q_d[..., 3:4], q_d[..., 0:3]], dim=-1) * qflip   # xyzw->wxyz, frame flip
         rate_frd = U[..., 1:4] * flip
-        collective = U[..., 0] * self.params.hover_thrust
+        sub_dt = self.dt / self.n_substeps
+
+        # --- param sources: per-env DR tensors (training) OR the validated scalars (gate/eval). The
+        # scalar branch is identical to the pre-DR code, so check_against_rl_plant stays bit-for-bit. ---
+        if self._dr_enabled:
+            rate_gain = self._dr_rate_gain                                       # (n_envs, 3)
+            hover = self._dr_hover                                               # (n_envs,)
+            drag = self._dr_drag.unsqueeze(-1)                                   # (n_envs, 1)
+            alpha = (1.0 - torch.exp(-sub_dt / self._dr_rate_tau)).unsqueeze(-1) # (n_envs, 1)
+        else:
+            rate_gain = self._rate_gain                                          # (3,)
+            hover = self.params.hover_thrust                                     # float
+            drag = self.params.linear_drag                                      # float
+            alpha = 1.0 - np.exp(-sub_dt / max(self.params.rate_tau_s, 1e-9))    # float (const over substeps)
+        collective = U[..., 0] * hover                                           # (n_envs,)
 
         thrust = self._thrust
         v_prev = v
-        sub_dt = self.dt / self.n_substeps
         for _ in range(self.n_substeps):
-            target = self._rate_gain * self._rate_sign * rate_frd
-            alpha = 1.0 - np.exp(-sub_dt / max(self.params.rate_tau_s, 1e-9))
+            target = rate_gain * self._rate_sign * rate_frd
             w = _t_clip_to_norm(w + alpha * (target - w), self.params.max_omega_rps)
             q = _t_quat_normalize(_t_quat_multiply(q, _t_rotvec_to_quat(w * sub_dt)))
             if self.params.thrust_tau_s > 0.0:
@@ -331,9 +361,9 @@ class PeregrinePlantDynamics(BaseDynamics):
                 thrust = thrust + beta * (collective - thrust)
             else:
                 thrust = torch.broadcast_to(collective, thrust.shape)
-            a_up = self.params.g * thrust / self.params.hover_thrust
+            a_up = self.params.g * thrust / hover
             f_world = a_up.unsqueeze(-1) * _t_quat_rotate(q, self._BODY_UP)
-            f_world = f_world - self.params.linear_drag * v
+            f_world = f_world - drag * v
             accel = f_world + self._g_vec_ned
             v = v + accel * sub_dt
             p = p + v * sub_dt
@@ -364,9 +394,29 @@ class PeregrinePlantDynamics(BaseDynamics):
         amask = torch.zeros_like(self._acc, dtype=torch.bool)
         amask[env_idx] = True
         self._acc = torch.where(amask, 0.0, self._acc)
+        if self._dr_enabled:
+            self._resample_dr(env_idx)        # new per-env plant params for the reset envs
+            hover = self._dr_hover            # (n_envs,) -- new per-env hover collective
+        else:
+            hover = float(self.params.hover_thrust)
         tmask = torch.zeros_like(self._thrust, dtype=torch.bool)
         tmask[env_idx] = True
-        self._thrust = torch.where(tmask, float(self.params.hover_thrust), self._thrust)
+        self._thrust = torch.where(tmask, hover, self._thrust)
+
+    def _resample_dr(self, env_idx) -> None:
+        """Resample per-env plant params uniformly within the fractional bands, for the reset envs."""
+        m = int(env_idx.numel())
+        if m == 0:
+            return
+        dev = self._dr_rate_gain.device
+
+        def u(shape, frac):                   # uniform multiplier in [1-frac, 1+frac]
+            return 1.0 + frac * (2.0 * torch.rand(*shape, device=dev) - 1.0)
+
+        self._dr_rate_gain[env_idx] = self._rate_gain.unsqueeze(0) * u((m, 3), self._dr_bands["rate_gain"])
+        self._dr_hover[env_idx] = float(self.params.hover_thrust) * u((m,), self._dr_bands["hover"])
+        self._dr_drag[env_idx] = float(self.params.linear_drag) * u((m,), self._dr_bands["drag"])
+        self._dr_rate_tau[env_idx] = float(self.params.rate_tau_s) * u((m,), self._dr_bands["rate_tau"])
 
     def check_against_rl_plant(self, U: Tensor, atol: float = 1e-5) -> float:
         """Validate the torch backend against the parity-tested numpy plant for one step from the
