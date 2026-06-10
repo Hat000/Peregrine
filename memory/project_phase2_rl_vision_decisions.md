@@ -155,12 +155,13 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   RACE_STATUS never reaches the tlog → recordings self-certify only 5/6 + finished=False (true 6/6 GUI-only).
   Fix queued (hold ~1 s past finish).
   **✅ TRUNCATION GOTCHA RESOLVED (2026-06-09):** finish_hold.py (commit 52f075d) ships the post-finish drain; 57f287f adds residue-handling to race_outcome. VQ1 6/6 now self-certifies from tlog.
-- **Stage 1 — ✅ UNBLOCKED = NEXT**: state→action policy on the KNOWN map + GIVEN pose, twin-trained,
+- **Stage 1 — ✅ COMPLETE (increment 1 done; S1.2 = NEXT)**: state→action policy on the KNOWN map + GIVEN pose, twin-trained,
   VQ1-sim-validated — **ZERO vision dependency**; subsumes the 3 known VQ1-stack issues (start transient,
   alt relay, descents). Build off the proven `peregrine_train.py`: real RL I/O (§RL policy I/O) + reward
   shaping + DR on rate_gain/hover/linear_drag (g=9.80665); validate the trained policy in VQ1 sim via
   `race_outcome`.
   **✅ Start-transient issue ① RESOLVED at the control level (2026-06-09, commit 260972e):** `launch_ramp_s=0.6 s` authority ramp eliminates the rate-clamp saturation / tick-phase dice-roll — 4× deterministic 6/6 confirmed on 1.0.3364. RL subsumption (smoother racing line, faster transitions) remains the VQ2 path; the VQ1 blocker is gone.
+  **Stage 1 increment 1 ✅ COMPLETE (2026-06-09):** CTBR policy threads 6-gate course on our plant, given pose, zero vision. success_rate 0→0.97 (A100, 30:48 wall). obs_dim=17, DR on. Checkpoint at `/scratch/network/fl3689/diffaero_repo/outputs/train/2026-06-09/22-50-13/checkpoints/actor.pth`. Caveats: (1) over-aggressive (l_ep ~1.9s, no speed shaping — VQ2 target); (2) real test = live sim transfer. **S1.2 = NEXT:** load actor.pth → deploy via SET_ATTITUDE_TARGET in VQ1 sim → grade with race_outcome. Reward shaping (smoothness/time) = S1.3, AFTER transfer is confirmed.
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
   OFF** in VQ1 sim ← the right home for the user's "test the control policy with real YOLO vision."
