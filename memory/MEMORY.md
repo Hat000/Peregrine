@@ -44,3 +44,4 @@
 - [Estimator robustness](project_estimator_robustness.md) — adaptive R · Mahalanobis innovation-gate · map-averaging · no-gate SEARCH state · optical-flow assist; the home for these when hardening the navigator for VQ2.
 - [Walking-skeleton directive](feedback_walking_skeleton_no_vq1_crutches.md) — VQ1 must BE the full VQ2 stack under-tuned (vision+KF in-loop), never a crutch.
 - [Red-team passes #2 + #3](project_red_team_pass_2.md) — historical pre-sim-drop triage logs (fixes applied; claims logged so they aren't re-litigated). Mostly resolved at first contact; kept for the deferral record. (#3: [project_red_team_pass_3.md](project_red_team_pass_3.md))
+- [Checkpoint transfer workflow](feedback_checkpoint_transfer.md) — small RL policy checkpoints go in git; ShadowPC pulls instead of manual copy
