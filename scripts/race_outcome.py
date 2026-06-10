@@ -37,6 +37,8 @@ def main() -> int:
     if "error" in out:
         print(f"  !! {out['error']}  (gate collisions={out['n_gate_collisions']}, env={out['n_env_collisions']})")
         return 0
+    if out.get("had_pre_race_residue"):
+        print("  (i) discarded leading RACE_STATUS residue from a PRIOR race; scored the final epoch only")
     print(f"  started={out['started']}  finished={out['finished']}  CLEAN FINISH={out['clean_finish']}")
     if out["recognized_time_ns"] is not None and out["recognized_time_ns"] >= 0:
         print(f"  sim-recognized time: {out['recognized_time_ns'] / 1e9:.2f} s")

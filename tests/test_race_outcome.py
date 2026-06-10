@@ -81,6 +81,42 @@ def test_no_race_status_returns_error():
     assert out["n_gate_collisions"] == 1
 
 
+def test_pre_race_residue_is_discarded_and_only_final_epoch_scored():
+    # Regression for data/runs/20260607_200505_vq1: the recording BEGINS with the previous
+    # race's residual RACE_STATUS (already finished @35.32 s, active_gate_index already 6),
+    # then the sim resets to 0 and the live run climbs 0->5. The stale baseline must NOT be
+    # counted: gates_passed should be 5 (the live epoch), finish must NOT latch from the residue.
+    rs = [
+        _rs(0.0, 6, started=True, finished=True, finish_ns=35_316_936_492, last=35_316_936_492),
+        _rs(5.4, 0, started=False),                    # sim resets for the new run
+        _rs(16.5, 1, last=6_812_578_201),              # gate 0
+        _rs(21.3, 2, last=11_567_998_886),             # gate 1
+        _rs(27.0, 3, last=17_231_594_085),             # gate 2
+        _rs(34.6, 4, last=24_798_587_799),             # gate 3
+        _rs(39.3, 5, last=29_576_770_782),             # gate 4
+    ]
+    out = analyze_outcome(rs, [])
+    assert out["had_pre_race_residue"]
+    assert out["gates_passed"] == 5 and [p["gate"] for p in out["passes"]] == [0, 1, 2, 3, 4]
+    assert out["max_active_gate_index"] == 5
+    assert not out["finished"] and not out["clean_finish"]   # this run's finish was not recorded
+    assert out["recognized_time_ns"] is None                 # 35.32 s belonged to the PRIOR race
+    assert out["started"]
+
+
+def test_gate_clip_without_collision_message_is_5_of_6_not_finished():
+    # Regression for data/runs/20260607_200906_vq1: the drone clipped the 6th gate, so the sim
+    # did NOT advance past gate 5 and never finished -- but this sim emitted NO COLLISION frame
+    # for the light clip. The honest verdict is 5 passes, not finished, and (lacking collision
+    # data) no contact flag; clean_finish stays False because the race did not finish.
+    rs = [_rs(0.0, 0, started=False)] + [_rs(float(i), i, last=i * 5_000_000_000) for i in range(1, 6)]
+    out = analyze_outcome(rs, [])                            # no COLLISION events available
+    assert out["gates_passed"] == 5 and out["max_active_gate_index"] == 5
+    assert not out["finished"] and not out["clean_finish"]
+    assert out["n_gate_collisions"] == 0 and out["n_pass_contact"] == 0
+    assert not out["had_pre_race_residue"]
+
+
 def test_multi_gate_jump_counts_all_passed():
     # active jumps 0 -> 3 in one sample (e.g. sparse RACE_STATUS) -> gates 0,1,2 all passed
     rs = [_rs(0.0, 0, started=False), _rs(1.0, 0), _rs(2.0, 3, finished=True, finish_ns=10_000_000_000)]

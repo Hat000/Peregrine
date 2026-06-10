@@ -46,25 +46,40 @@ def analyze_outcome(race_samples: list[dict], collisions: list[dict],
         return {"error": "no RACE_STATUS in recording", "n_gate_collisions": len(gate_hits),
                 "n_env_collisions": len(env_hits), "passes": [], "clean_finish": False}
 
-    started_t = next((s["t"] for s in rs if s.get("started")), None)
-    finished = any(s.get("finished") for s in rs)
-    finish_t = next((s["t"] for s in rs if s.get("finished")), None)
-    finish_sample = next((s for s in rs if s.get("finished")), None)
+    # Scope to the FINAL race epoch. A recording can BEGIN with residual RACE_STATUS from the
+    # PREVIOUS race -- already finished, with a high active_gate_index -- captured before the sim
+    # resets the new run to 0. Counting passes as monotonic climbs of that stale baseline silently
+    # yields gates_passed=0 (cur seeded at e.g. 6, the real run only ever climbs 0->5 < 6, so no
+    # climb is recorded), and latches finished/recognized-time from the prior race. The sim marks
+    # the reset by *decrementing* active_gate_index, so a downward step is an epoch boundary: we
+    # re-baseline and DISCARD the prior epoch's passes + finish, keeping only the live race.
+    passes: list[dict] = []
+    cur = rs[0]["active_gate_index"]
+    started_t = None
+    finished = False
+    finish_t = None
+    finish_sample = None
+    had_pre_race_residue = False
+    for s in rs:
+        a = s["active_gate_index"]
+        if a < cur:                          # race reset -> everything so far was a stale epoch
+            had_pre_race_residue = had_pre_race_residue or bool(passes) or finished
+            passes, started_t, finished, finish_t, finish_sample = [], None, False, None, None
+            cur = a
+        elif a > cur:                        # climb: gates [prev..new-1] passed at this t
+            for g in range(cur, a):
+                passes.append({"gate": g, "t": s["t"]})
+            cur = a
+        if started_t is None and s.get("started"):
+            started_t = s["t"]
+        if s.get("finished") and finish_sample is None:
+            finished, finish_t, finish_sample = True, s["t"], s
+    max_active = cur
+
     recognized_time_ns = None
     if finish_sample is not None:
         fin = finish_sample.get("finish_ns", -1)
         recognized_time_ns = finish_sample.get("last_gate_race_time") if fin < 0 else fin
-
-    # passes: each time active_gate_index climbs, gates [prev..new-1] were passed at that t.
-    passes: list[dict] = []
-    cur = rs[0]["active_gate_index"]
-    for s in rs:
-        a = s["active_gate_index"]
-        if a > cur:
-            for g in range(cur, a):
-                passes.append({"gate": g, "t": s["t"]})
-            cur = a
-    max_active = cur
 
     used: set[int] = set()
     for p in passes:
@@ -86,6 +101,7 @@ def analyze_outcome(race_samples: list[dict], collisions: list[dict],
         "n_pass_clean": len(passes) - n_contact, "n_pass_contact": n_contact,
         "n_gate_collisions": len(gate_hits), "n_gate_collisions_no_pass": len(unmatched),
         "unmatched_gate_hits": unmatched, "n_env_collisions": len(env_hits), "env_collisions": env_hits,
+        "had_pre_race_residue": had_pre_race_residue,
         "clean_finish": bool(finished and n_contact == 0 and not unmatched and not env_hits),
     }
 
