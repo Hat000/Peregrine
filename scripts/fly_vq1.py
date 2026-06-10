@@ -297,7 +297,15 @@ def main() -> int:
     ap.add_argument("--force-saved-map", action="store_true", help="ignore the (flaky) live TRACK_INFO map; use the saved deterministic --map")
     ap.add_argument("--use-kf-state", action="store_true", help="control on the KF-estimated pos/vel (default: use the GIVEN pristine pos/vel; the KF velocity lags ~4x and breaks damping)")
     ap.add_argument("--alt-kf-vz", action="store_true", help="alt loop damps on the KF (lagged) vz instead of the raw given vz. Default OFF (raw): the lagged KF vz caused the VERIFY rung-1 limit cycle; raw vz removes it (Task-3 debunked the balloon rationale for KF vz). Flag = A/B back to the old behaviour.")
-    ap.add_argument("--rate", type=float, default=50.0, help="control loop Hz (sets the setpoint rate)")
+    ap.add_argument("--rate", type=float, default=None,
+                    help="control loop Hz (sets the setpoint rate). DEFAULT: 100 with --faithful "
+                         "(the validated rate the banked 6/6 ran), else 50. The bare 50 Hz default was "
+                         "a FOOTGUN -- it under-actuates the start. Pass >=200 for extra start robustness.")
+    ap.add_argument("--launch-ramp-s", type=float, default=None,
+                    help="takeoff->RUN launch ramp seconds (Mission.config.launch_ramp_s). Over this "
+                         "long after RUN begins, the commanded tilt ramps 0->1 so the attitude can't "
+                         "step to the cruise lean and saturate the rate clamp (sim 1.0.3364 fix). "
+                         "Default = MissionConfig default (0.6). 0 disables (legacy step).")
     ap.add_argument("--max-seconds", type=float, default=120.0, help="hard wall-clock cap on the run")
     ap.add_argument("--finish-hold-s", type=float, default=1.0,
                     help="after the final gate, keep recording (pump + hold position) up to this long "
@@ -315,9 +323,17 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="run the full loop but NEVER arm or send (safe)")
     ap.add_argument("--print-config", action="store_true", help="build + print the wired controller/planner and exit (no connect, no arm) -- the wiring-check artifact")
     ap.add_argument("--no-wait-start", action="store_true", help="fly as soon as position is live (skip 'started')")
+    ap.add_argument("--sim-build", default=None,
+                    help="record the sim build string in run meta (e.g. 1.0.3364) -- the start "
+                         "transient is build-sensitive, so log which build each run flew.")
     ap.add_argument("--label", default="vq1")
     ap.add_argument("--connect-timeout", type=float, default=15.0)
     args = ap.parse_args()
+
+    # Pin the control rate: --faithful defaults to 100 Hz (the validated rate the banked 6/6 ran);
+    # the bare 50 Hz default under-actuates the takeoff->RUN transition. Explicit --rate always wins.
+    if args.rate is None:
+        args.rate = 100.0 if args.faithful else 50.0
 
     # -- build the control law (single source of truth under --faithful) --
     controller = _build_controller(args)
@@ -358,7 +374,9 @@ def main() -> int:
                       dry_run=args.dry_run, vision=bool(detector), label=args.label,
                       faithful=bool(args.faithful), rate_hz=args.rate, hover_hold=bool(args.hover_hold),
                       max_gates=args.max_gates, takeoff_alt_m=args.takeoff_alt,
-                      finish_hold_s=args.finish_hold_s,
+                      finish_hold_s=args.finish_hold_s, sim_build=args.sim_build,
+                      launch_ramp_s=(args.launch_ramp_s if args.launch_ramp_s is not None
+                                     else MissionConfig().launch_ramp_s),
                       bounds={"max_climb_m": args.max_climb_m, "max_tilt_deg": args.max_tilt_deg,
                               "geofence_m": args.geofence_m, "max_seconds": args.max_seconds},
                       controller_config=_controller_config(controller, planner))
@@ -408,13 +426,12 @@ def main() -> int:
         nav = Navigator(gates=gates, detector=detector,
                         config=NavigatorConfig(use_vision=bool(detector),
                                                use_given_position=not args.no_given_position))
-        mission = Mission(
-            gates=gates,
-            planner=planner,
-            controller=controller,
-            config=MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
-                                 gate_pass_radius_m=args.gate_radius),
-        )
+        mcfg = MissionConfig(takeoff_altitude_m=args.takeoff_alt, takeoff_tol_m=0.3,
+                             gate_pass_radius_m=args.gate_radius)
+        if args.launch_ramp_s is not None:
+            mcfg = replace(mcfg, launch_ramp_s=args.launch_ramp_s)
+        mission = Mission(gates=gates, planner=planner, controller=controller, config=mcfg)
+        print(f"  launch ramp: {mcfg.launch_ramp_s:g}s (takeoff->RUN tilt ramp); control rate {args.rate:g} Hz.")
 
         # -- arm (unless dry-run) --
         if not args.dry_run:

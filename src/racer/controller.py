@@ -310,6 +310,15 @@ class Controller:
         a_h[2] = 0.0                                  # the alt-hold owns vertical
         if self.max_accel_mps2 is not None:
             a_h = _clip_norm(a_h, self.max_accel_mps2)
+        if sp.launch_ramp is not None:                # takeoff->RUN launch ramp (Mission-driven)
+            # Ramp the commanded horizontal accel (hence the desired TILT) up from zero so the
+            # attitude target can't STEP to the ~45 deg cruise lean in one tick. A step there makes
+            # the attitude error -> kp_att*rotvec saturate the body-rate clamp, and the underdamped
+            # rate loop overshoots into a tumble (sim 1.0.3364 start-transient: roll cmd hit the
+            # 8 rad/s clamp at t+1.22 s). At ramp=0 a_h=0 -> level hover attitude = the current
+            # attitude post-takeoff -> ~zero rate command, regardless of tick phase. Vertical
+            # (alt-hold) authority is untouched, so the climb is never starved. [build-1.0.3364 fix]
+            a_h = a_h * float(np.clip(sp.launch_ramp, 0.0, 1.0))
         # -- attitude: tilt direction from a_h, then rotvec -> body rate (matched) --
         yaw = sp.yaw if sp.yaw is not None else nav.yaw
         q_des_wxyz, _ = self._accel_to_attitude(a_h, yaw)            # direction only (ignore its thrust)

@@ -18,7 +18,7 @@ land handshake (a first-contact / session-lifecycle concern).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 
 import numpy as np
@@ -51,6 +51,14 @@ class MissionConfig:
     # away false-passes when the through-sign flips. Generous enough for a fast fly-through sampled
     # one frame past the plane.
     gate_pass_depth_m: float = 2.0
+    # Takeoff->RUN launch ramp (s): over this long after RUN begins, scale the controller's
+    # horizontal-accel command (hence the desired tilt) linearly 0 -> 1 so the attitude target
+    # grows smoothly instead of STEPPING to the cruise lean -- a step saturates the body-rate clamp
+    # and tumbles (sim build 1.0.3364, the deterministic start-transient). The ramp is keyed off the
+    # sim CLOCK, so it is invariant to control rate and to the tick/pose-stream phase that turned the
+    # old transient into a dice-roll. 0 disables (legacy step). Tuned offline on the faithful twin
+    # across a control-rate x tick-phase sweep (scripts/twin_launch_phase_sweep.py).
+    launch_ramp_s: float = 0.6
 
 
 @dataclass
@@ -65,6 +73,7 @@ class Mission:
     state: MissionState = MissionState.IDLE
     gate_index: int = 0
     _takeoff_origin: np.ndarray | None = field(default=None, repr=False)
+    _run_start_ns: int | None = field(default=None, repr=False)   # sim-time the RUN began (launch ramp)
 
     # -- lifecycle transitions ----------------------------------------------
     def start(self) -> None:
@@ -72,6 +81,7 @@ class Mission:
         if self.state == MissionState.IDLE:
             self.gate_index = 0
             self._takeoff_origin = None
+            self._run_start_ns = None
             self.state = MissionState.TAKEOFF
 
     def abort(self) -> None:
@@ -104,12 +114,17 @@ class Mission:
                 )
 
         if self.state == MissionState.RUN:
+            if self._run_start_ns is None:                      # first RUN tick: anchor the launch ramp
+                self._run_start_ns = int(nav.sim_time_ns)
             while self.gate_index < len(self.gates) and self._passed(nav, self.gates[self.gate_index]):
                 self.gate_index += 1
             if self.gate_index >= len(self.gates):
                 self.state = MissionState.FINISHED
                 return self._hold(nav)
             setpoint = self.planner.plan(nav, self.gates[self.gate_index])
+            ramp = self._launch_ramp(nav)
+            if ramp < 1.0:                                      # ramp the launch lean (build-1.0.3364 fix)
+                setpoint = replace(setpoint, launch_ramp=ramp)
             return self.controller.command(nav, setpoint)
 
         # IDLE / FINISHED / ABORT: hold position.
@@ -132,6 +147,17 @@ class Mission:
         return self.state
 
     # -- helpers ------------------------------------------------------------
+    def _launch_ramp(self, nav: NavState) -> float:
+        """Linear 0 -> 1 authority scale over ``launch_ramp_s`` after the RUN began, keyed off the
+        sim CLOCK (``sim_time_ns``). Keying off sim-time -- not tick count -- is what makes the ramp
+        invariant to the control rate AND to the tick/pose-stream phase: the same wall-clock fraction
+        of the ramp is applied no matter when or how often we tick. Returns 1.0 (full authority) once
+        the window has elapsed, when the ramp is disabled, or before RUN is anchored."""
+        if self.config.launch_ramp_s <= 0.0 or self._run_start_ns is None:
+            return 1.0
+        elapsed_s = (int(nav.sim_time_ns) - self._run_start_ns) / 1e9
+        return float(np.clip(elapsed_s / self.config.launch_ramp_s, 0.0, 1.0))
+
     def _passed(self, nav: NavState, gate: Gate) -> bool:
         rel = np.asarray(nav.position_ned, dtype=np.float64) - np.asarray(gate.position_ned, dtype=np.float64)
         # (1) Proximity: sign-agnostic, catches slow / centred passes.

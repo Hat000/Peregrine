@@ -1,0 +1,61 @@
+=== YAW-COUPLING (roll-spike suspect): spawn heading off the -X course axis, 100 Hz ===
+
+-- RAMP OFF (legacy step) --
+  yaw_off=  -30deg  peak|omega|= 3.71  rollcmd= 0.97  roll_realized= 2.32  tilt= 47.5deg  [ok]
+  yaw_off=  -20deg  peak|omega|= 3.40  rollcmd= 0.70  roll_realized= 1.67  tilt= 47.5deg  [ok]
+  yaw_off=  -10deg  peak|omega|= 3.20  rollcmd= 0.42  roll_realized= 1.02  tilt= 47.6deg  [ok]
+  yaw_off=   +0deg  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 47.6deg  [ok]
+  yaw_off=  +10deg  peak|omega|= 3.23  rollcmd= 0.12  roll_realized= 0.29  tilt= 47.6deg  [ok]
+  yaw_off=  +20deg  peak|omega|= 3.45  rollcmd= 0.40  roll_realized= 0.95  tilt= 47.5deg  [ok]
+  yaw_off=  +30deg  peak|omega|= 3.78  rollcmd= 0.67  roll_realized= 1.61  tilt= 47.5deg  [ok]
+
+-- RAMP ON (0.6s) --
+  yaw_off=  -30deg  peak|omega|= 2.13  rollcmd= 0.16  roll_realized= 0.38  tilt= 39.1deg  [ok]
+  yaw_off=  -20deg  peak|omega|= 1.44  rollcmd= 0.12  roll_realized= 0.27  tilt= 39.1deg  [ok]
+  yaw_off=  -10deg  peak|omega|= 0.82  rollcmd= 0.09  roll_realized= 0.23  tilt= 39.1deg  [ok]
+  yaw_off=   +0deg  peak|omega|= 0.81  rollcmd= 0.09  roll_realized= 0.23  tilt= 39.1deg  [ok]
+  yaw_off=  +10deg  peak|omega|= 0.82  rollcmd= 0.09  roll_realized= 0.23  tilt= 39.0deg  [ok]
+  yaw_off=  +20deg  peak|omega|= 1.45  rollcmd= 0.09  roll_realized= 0.23  tilt= 39.0deg  [ok]
+  yaw_off=  +30deg  peak|omega|= 2.13  rollcmd= 0.11  roll_realized= 0.26  tilt= 39.0deg  [ok]
+
+Co-sim: faithful plant + 3 decoupled clocks (physics 500 Hz, pose 85 Hz +20 ms, control N Hz +20 ms, phase offset). Body-rate clamp = 8 rad/s.
+Launch-window peak over the first 3s of RUN.
+
+== RAMP OFF (legacy step -- the broken 1.0.3364 behaviour) ==
+  rate=   50Hz phase=0.00  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 48.8deg  [ok]  6/6 worst=0.46m
+  rate=   50Hz phase=0.25  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 49.3deg  [ok]  6/6 worst=0.55m
+  rate=   50Hz phase=0.50  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 49.2deg  [ok]  6/6 worst=0.46m
+  rate=   50Hz phase=0.75  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 49.0deg  [ok]  6/6 worst=0.50m
+  rate=  100Hz phase=0.00  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 47.6deg  [ok]  6/6 worst=0.58m
+  rate=  100Hz phase=0.25  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 47.5deg  [ok]  6/6 worst=0.57m
+  rate=  100Hz phase=0.50  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 47.4deg  [ok]  6/6 worst=0.80m
+  rate=  100Hz phase=0.75  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.36  tilt= 47.5deg  [ok]  6/6 worst=0.60m
+  rate=  200Hz phase=0.00  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.8deg  [ok]  6/6 worst=0.90m
+  rate=  200Hz phase=0.25  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.9deg  [ok]  6/6 worst=1.08m
+  rate=  200Hz phase=0.50  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.9deg  [ok]  6/6 worst=1.06m
+  rate=  200Hz phase=0.75  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.9deg  [ok]  6/6 worst=1.12m
+  rate=  250Hz phase=0.00  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.8deg  [ok]  6/6 worst=1.01m
+  rate=  250Hz phase=0.25  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.9deg  [ok]  6/6 worst=1.09m
+  rate=  250Hz phase=0.50  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.9deg  [ok]  6/6 worst=1.00m
+  rate=  250Hz phase=0.75  peak|omega|= 3.14  rollcmd= 0.15  roll_realized= 0.35  tilt= 46.8deg  [ok]  6/6 worst=1.10m
+  -> worst peak|omega| over the sweep = 3.14 rad/s; 0 saturated, 0 tumbled (of 16).
+
+== RAMP ON  (0.6s launch ramp -- the fix) ==
+  rate=   50Hz phase=0.00  peak|omega|= 0.84  rollcmd= 0.10  roll_realized= 0.25  tilt= 39.4deg  [ok]  6/6 worst=0.50m
+  rate=   50Hz phase=0.25  peak|omega|= 0.84  rollcmd= 0.10  roll_realized= 0.24  tilt= 39.3deg  [ok]  6/6 worst=0.46m
+  rate=   50Hz phase=0.50  peak|omega|= 0.83  rollcmd= 0.11  roll_realized= 0.27  tilt= 40.2deg  [ok]  6/6 worst=0.46m
+  rate=   50Hz phase=0.75  peak|omega|= 0.85  rollcmd= 0.10  roll_realized= 0.24  tilt= 39.0deg  [ok]  6/6 worst=0.44m
+  rate=  100Hz phase=0.00  peak|omega|= 0.81  rollcmd= 0.09  roll_realized= 0.23  tilt= 39.1deg  [ok]  6/6 worst=0.50m
+  rate=  100Hz phase=0.25  peak|omega|= 0.81  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.1deg  [ok]  6/6 worst=0.66m
+  rate=  100Hz phase=0.50  peak|omega|= 0.81  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.2deg  [ok]  6/6 worst=0.78m
+  rate=  100Hz phase=0.75  peak|omega|= 0.81  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.1deg  [ok]  6/6 worst=0.65m
+  rate=  200Hz phase=0.00  peak|omega|= 0.80  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.5deg  [ok]  6/6 worst=0.77m
+  rate=  200Hz phase=0.25  peak|omega|= 0.80  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.5deg  [ok]  6/6 worst=0.87m
+  rate=  200Hz phase=0.50  peak|omega|= 0.80  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.4deg  [ok]  6/6 worst=0.82m
+  rate=  200Hz phase=0.75  peak|omega|= 0.80  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.5deg  [ok]  6/6 worst=0.88m
+  rate=  250Hz phase=0.00  peak|omega|= 0.79  rollcmd= 0.09  roll_realized= 0.22  tilt= 38.9deg  [ok]  6/6 worst=1.00m
+  rate=  250Hz phase=0.25  peak|omega|= 0.79  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.5deg  [ok]  6/6 worst=0.58m
+  rate=  250Hz phase=0.50  peak|omega|= 0.79  rollcmd= 0.09  roll_realized= 0.22  tilt= 39.5deg  [ok]  6/6 worst=0.58m
+  rate=  250Hz phase=0.75  peak|omega|= 0.79  rollcmd= 0.09  roll_realized= 0.22  tilt= 38.9deg  [ok]  6/6 worst=1.12m
+  -> worst peak|omega| over the sweep = 0.85 rad/s; 0 saturated, 0 tumbled (of 16).
+

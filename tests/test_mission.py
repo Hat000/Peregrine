@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from racer.contracts import ControlMode, Gate, NavState
+from racer.contracts import ControlCommand, ControlMode, Gate, NavState
 from racer.controller import Controller
 from racer.mission import Mission, MissionConfig, MissionState
 from racer.planner import ReactivePlanner
@@ -157,6 +158,69 @@ def test_closed_loop_point_mass_flies_the_course():
     assert m.state is MissionState.FINISHED
     assert m.gate_index == 3
     np.testing.assert_allclose(pos, [15.0, 0.0, -1.5], atol=1.0)   # ended at the last gate
+
+
+class _RampSpy:
+    """A controller stand-in that records the launch_ramp on every setpoint it is handed."""
+
+    def __init__(self):
+        self.ramps = []
+
+    def command(self, nav, sp):
+        self.ramps.append(sp.launch_ramp)
+        return ControlCommand(mode=ControlMode.BODY_RATE)
+
+
+def _ramp_mission(spy, launch_ramp_s=1.0):
+    return Mission(gates=[_gate([-25.0, 0.0, -1.5], normal=(-1.0, 0.0, 0.0), gate_id=0)],
+                   planner=ReactivePlanner(yaw_mode="course"), controller=spy,
+                   config=MissionConfig(takeoff_altitude_m=1.5, takeoff_tol_m=0.3,
+                                        gate_pass_radius_m=0.75, launch_ramp_s=launch_ramp_s))
+
+
+def test_launch_ramp_walks_from_zero_with_sim_time():
+    # The Mission ramps the launch authority 0 -> 1 over launch_ramp_s of SIM TIME after RUN begins.
+    spy = _RampSpy()
+    m = _ramp_mission(spy, launch_ramp_s=1.0)
+    m.start()
+    sec = 1_000_000_000
+    m.step(_nav([0.0, 0.0, 0.0], sim_time_ns=0))                 # ground -> capture takeoff origin
+    m.step(_nav([0.0, 0.0, -1.5], sim_time_ns=10 * sec))         # at altitude -> RUN anchors here
+    assert m.state is MissionState.RUN
+    assert spy.ramps[-1] == 0.0                                  # first RUN tick: zero authority
+    m.step(_nav([0.0, 0.0, -1.5], sim_time_ns=10 * sec + sec // 2))   # +0.5 s -> half
+    assert spy.ramps[-1] == pytest.approx(0.5)
+    m.step(_nav([0.0, 0.0, -1.5], sim_time_ns=11 * sec))         # +1.0 s -> full window elapsed
+    assert spy.ramps[-1] is None                                 # full authority -> no ramp on the setpoint
+
+
+def test_launch_ramp_is_rate_invariant_keyed_off_sim_time():
+    # Keying the ramp off SIM TIME (not tick count) makes it invariant to the control rate: the same
+    # sim-time fraction yields the same authority no matter how many ticks fired in between.
+    sec = 1_000_000_000
+    fracs = {}
+    for n_ticks in (1, 5, 50):                                   # different control rates over 0.4 s
+        spy = _RampSpy()
+        m = _ramp_mission(spy, launch_ramp_s=1.0)
+        m.start()
+        m.step(_nav([0.0, 0.0, 0.0], sim_time_ns=0))
+        m.step(_nav([0.0, 0.0, -1.5], sim_time_ns=10 * sec))     # RUN anchors at t=10 s
+        for k in range(1, n_ticks + 1):
+            t = 10 * sec + int(0.4 * sec * k / n_ticks)
+            m.step(_nav([0.0, 0.0, -1.5], sim_time_ns=t))
+        fracs[n_ticks] = spy.ramps[-1]                           # ramp at +0.4 s, any tick count
+    assert all(v == pytest.approx(0.4) for v in fracs.values())
+
+
+def test_launch_ramp_disabled_passes_full_authority():
+    # launch_ramp_s = 0 disables the ramp (legacy step): every RUN setpoint carries full authority.
+    spy = _RampSpy()
+    m = _ramp_mission(spy, launch_ramp_s=0.0)
+    m.start()
+    m.step(_nav([0.0, 0.0, 0.0], sim_time_ns=0))
+    m.step(_nav([0.0, 0.0, -1.5], sim_time_ns=10_000_000_000))
+    assert m.state is MissionState.RUN
+    assert spy.ramps[-1] is None                                 # no ramp -> full authority immediately
 
 
 def test_run_drives_to_finished_end_to_end():

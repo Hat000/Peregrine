@@ -251,6 +251,13 @@ class Setpoint:
     accel_ned: np.ndarray | None = None
     yaw: float | None = None
     yaw_rate: float | None = None
+    # Launch ramp [0, 1]: a transient authority scale the Mission ramps up at the takeoff->RUN
+    # handoff. The decoupled CTBR controller multiplies its commanded horizontal acceleration
+    # (hence the desired TILT) by this, so the attitude target grows smoothly from level instead
+    # of STEPPING to the ~45 deg cruise lean in one tick -- a step saturates the body-rate clamp
+    # and tumbles (sim build 1.0.3364, the start-transient knife-edge). ``None`` = full authority
+    # (1.0); only the RUN-entry window sets it < 1. Time-based, so it is tick-phase/rate invariant.
+    launch_ramp: float | None = None
 
 
 # ---------------------------------------------------------------------------

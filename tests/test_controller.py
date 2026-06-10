@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -399,6 +401,54 @@ def test_decoupled_alt_offset_raises_thrust_to_climb_above_gate():
     lifted = _decoupled(alt_offset_m=0.5, kp_alt=0.05).command(nav, sp).thrust
     assert base == pytest.approx(0.26)                                   # no offset -> bare hover
     assert lifted == pytest.approx(0.26 + 0.05 * 0.5)                    # offset -> climb thrust
+
+
+def test_launch_ramp_zero_holds_level_no_tilt_command():
+    # build-1.0.3364 start-transient fix: launch_ramp scales the commanded horizontal accel (the
+    # tilt). At ramp=0 the controller demands ZERO horizontal accel -> a LEVEL desired attitude, so a
+    # level, at-rest drone gets ~zero body-rate command even with a far horizontal target (no step to
+    # the cruise lean -> nothing for the rate clamp to saturate).
+    c = _decoupled(max_speed=6.0, max_accel_mps2=12.0)
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=np.pi,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    far = Setpoint(position_ned=np.array([-25.0, 0.0, 0.0]), velocity_ned=np.array([-6.0, 0.0, 0.0]),
+                   yaw=np.pi, launch_ramp=0.0)
+    cmd = c.command(nav, far)
+    np.testing.assert_allclose(cmd.body_rate, np.zeros(3), atol=1e-9)   # level target -> zero rate
+
+
+def test_launch_ramp_monotonically_scales_the_launch_rate():
+    # Increasing the ramp 0 -> 1 grows the desired tilt smoothly, so the commanded body-rate
+    # magnitude increases monotonically -- the smooth ramp the Mission walks up at the RUN handoff.
+    c = _decoupled(max_speed=6.0, max_accel_mps2=12.0)
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=np.pi,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+
+    def rate_norm(ramp):
+        sp = Setpoint(position_ned=np.array([-25.0, 0.0, 0.0]),
+                      velocity_ned=np.array([-6.0, 0.0, 0.0]), yaw=np.pi, launch_ramp=ramp)
+        return float(np.linalg.norm(c.command(nav, sp).body_rate))
+
+    norms = [rate_norm(r) for r in (0.0, 0.25, 0.5, 0.75, 1.0)]
+    assert all(b > a for a, b in zip(norms, norms[1:]))                 # strictly increasing
+    # ramp=None (the default, full authority) == ramp=1.0 (no scaling)
+    full = Setpoint(position_ned=np.array([-25.0, 0.0, 0.0]),
+                    velocity_ned=np.array([-6.0, 0.0, 0.0]), yaw=np.pi)
+    np.testing.assert_allclose(c.command(nav, full).body_rate,
+                               c.command(nav, replace(full, launch_ramp=1.0)).body_rate, atol=1e-12)
+
+
+def test_launch_ramp_clamped_to_unit_interval():
+    # Out-of-range ramp values are clamped: <=0 behaves like 0 (level), >=1 like 1 (full authority).
+    c = _decoupled(max_speed=6.0, max_accel_mps2=12.0)
+    nav = NavState(sim_time_ns=0, roll=0.0, pitch=0.0, yaw=np.pi,
+                   position_ned=np.zeros(3), velocity_ned=np.zeros(3))
+    sp = Setpoint(position_ned=np.array([-25.0, 0.0, 0.0]),
+                  velocity_ned=np.array([-6.0, 0.0, 0.0]), yaw=np.pi)
+    np.testing.assert_allclose(c.command(nav, replace(sp, launch_ramp=-0.5)).body_rate,
+                               c.command(nav, replace(sp, launch_ramp=0.0)).body_rate, atol=1e-12)
+    np.testing.assert_allclose(c.command(nav, replace(sp, launch_ramp=2.0)).body_rate,
+                               c.command(nav, replace(sp, launch_ramp=1.0)).body_rate, atol=1e-12)
 
 
 def test_decoupled_odo_att_sign_flips_roll_feedback():
