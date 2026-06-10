@@ -1,0 +1,43 @@
+﻿
+>>> race_outcome.py data\runs\20260607_194615_course_60s
+=== race outcome: 20260607_194615_course_60s
+  started=True  finished=False  CLEAN FINISH=False
+  gates passed: 5  (clean 5 / contact 0)   next-active-index reached: 5
+    gate  0: PASS-CLEAN
+    gate  1: PASS-CLEAN
+    gate  2: PASS-CLEAN
+    gate  3: PASS-CLEAN
+    gate  4: PASS-CLEAN
+
+>>> race_outcome.py data\runs\20260607_200505_vq1
+=== race outcome: 20260607_200505_vq1
+  (i) discarded leading RACE_STATUS residue from a PRIOR race; scored the final epoch only
+  started=True  finished=False  CLEAN FINISH=False
+  gates passed: 5  (clean 5 / contact 0)   next-active-index reached: 5
+    gate  0: PASS-CLEAN
+    gate  1: PASS-CLEAN
+    gate  2: PASS-CLEAN
+    gate  3: PASS-CLEAN
+    gate  4: PASS-CLEAN
+
+>>> race_outcome.py data\runs\20260607_200650_vq1
+=== race outcome: 20260607_200650_vq1
+  (i) discarded leading RACE_STATUS residue from a PRIOR race; scored the final epoch only
+  started=True  finished=False  CLEAN FINISH=False
+  gates passed: 5  (clean 5 / contact 0)   next-active-index reached: 5
+    gate  0: PASS-CLEAN
+    gate  1: PASS-CLEAN
+    gate  2: PASS-CLEAN
+    gate  3: PASS-CLEAN
+    gate  4: PASS-CLEAN
+
+>>> race_outcome.py data\runs\20260607_200906_vq1
+=== race outcome: 20260607_200906_vq1
+  started=True  finished=False  CLEAN FINISH=False
+  gates passed: 5  (clean 5 / contact 0)   next-active-index reached: 5
+    gate  0: PASS-CLEAN
+    gate  1: PASS-CLEAN
+    gate  2: PASS-CLEAN
+    gate  3: PASS-CLEAN
+    gate  4: PASS-CLEAN
+

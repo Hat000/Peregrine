@@ -1,0 +1,4 @@
+# Decoded FPV frame bundles (~147 MB of PNGs) — regenerable from data/runs/ via
+# scratch/export_course_bundle.py. Keep the small frames.json manifests + all reports/JSON tracked.
+course_bundle/*.png
+pg/**/*.png

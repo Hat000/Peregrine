@@ -1,0 +1,56 @@
+{
+  "started": true,
+  "finished": false,
+  "started_t": 1780861642.4060328,
+  "finish_t": null,
+  "recognized_time_ns": null,
+  "gates_passed": 5,
+  "max_active_gate_index": 5,
+  "passes": [
+    {
+      "gate": 0,
+      "t": 1780861652.169296,
+      "contact": false,
+      "threat_level": 0,
+      "verdict": "PASS-CLEAN"
+    },
+    {
+      "gate": 1,
+      "t": 1780861657.176792,
+      "contact": false,
+      "threat_level": 0,
+      "verdict": "PASS-CLEAN"
+    },
+    {
+      "gate": 2,
+      "t": 1780861662.686324,
+      "contact": false,
+      "threat_level": 0,
+      "verdict": "PASS-CLEAN"
+    },
+    {
+      "gate": 3,
+      "t": 1780861670.451057,
+      "contact": false,
+      "threat_level": 0,
+      "verdict": "PASS-CLEAN"
+    },
+    {
+      "gate": 4,
+      "t": 1780861675.2094388,
+      "contact": false,
+      "threat_level": 0,
+      "verdict": "PASS-CLEAN"
+    }
+  ],
+  "n_pass_clean": 5,
+  "n_pass_contact": 0,
+  "n_gate_collisions": 0,
+  "n_gate_collisions_no_pass": 0,
+  "unmatched_gate_hits": [],
+  "n_env_collisions": 0,
+  "env_collisions": [],
+  "had_pre_race_residue": false,
+  "clean_finish": false,
+  "session": "data\\runs\\20260607_194615_course_60s"
+}

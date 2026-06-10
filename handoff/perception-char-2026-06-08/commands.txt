@@ -1,0 +1,31 @@
+# Commands run on ShadowPC, 2026-06-08 (repo @ 016bdbd). venv = .venv\Scripts\python.exe
+
+# --- setup ---
+git pull origin main
+
+# --- help ---
+.venv\Scripts\python.exe scripts\race_outcome.py --help
+.venv\Scripts\python.exe scripts\characterize_perception.py --help
+
+# --- Part 1: race_outcome on the canonical VQ1 6/6 course finish ---
+.venv\Scripts\python.exe scripts\race_outcome.py data\runs\20260607_194615_course_60s --json handoff\perception-char-2026-06-08\race_outcome_course_60s.json
+# cross-check the 3 repeat 6/6 runs (all score identically: started=True, finished=False, 5 clean / 0 contact)
+.venv\Scripts\python.exe scripts\race_outcome.py data\runs\20260607_200505_vq1
+.venv\Scripts\python.exe scripts\race_outcome.py data\runs\20260607_200650_vq1
+.venv\Scripts\python.exe scripts\race_outcome.py data\runs\20260607_200906_vq1
+
+# --- Part 2: detector was MISSING (ModuleNotFoundError: ultralytics). Confirmed, then installed (user-approved) ---
+.venv\Scripts\python.exe scripts\characterize_perception.py     # FAILED first: No module named 'ultralytics'
+.venv\Scripts\python.exe -m pip install ultralytics             # -> torch-2.12.0 (CPU) + ultralytics-8.4.62, exit 0
+
+# --- Part 2 prep (torch-free): build frame bundles from the SAME session ---
+# full-course (kept for the record; modal-gate TAIL is an artifact on multi-gate -- see README):
+.venv\Scripts\python.exe handoff\perception-char-2026-06-08\scratch\export_course_bundle.py data\runs\20260607_194615_course_60s -o handoff\perception-char-2026-06-08\course_bundle --n 240 --commit 016bdbd
+# per-gate (the real characterization; one bundle per gate keeps modal-gate/TAIL meaningful):
+.venv\Scripts\python.exe handoff\perception-char-2026-06-08\scratch\export_course_bundle.py data\runs\20260607_194615_course_60s -o handoff\perception-char-2026-06-08\pg\course --n 60 --per-gate --commit 016bdbd
+
+# --- Part 2 run: characterize per gate, then pool into the noise model ---
+.venv\Scripts\python.exe scripts\characterize_perception.py --bundle handoff\perception-char-2026-06-08\course_bundle --weights models\gate_yolo11s_curriculum_v2.pt --map handoff\shadowpc-firstcontact-2026-06-02\track_map.json --json handoff\perception-char-2026-06-08\characterize_course_60s.json
+# (loop g=0..5)
+.venv\Scripts\python.exe scripts\characterize_perception.py --bundle handoff\perception-char-2026-06-08\pg\course_g<G> --weights models\gate_yolo11s_curriculum_v2.pt --map handoff\shadowpc-firstcontact-2026-06-02\track_map.json --json handoff\perception-char-2026-06-08\characterize_g<G>.json
+.venv\Scripts\python.exe handoff\perception-char-2026-06-08\scratch\aggregate_perception.py
