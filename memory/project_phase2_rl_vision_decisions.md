@@ -106,16 +106,56 @@ Ran the REAL YOLO→PnP→KF chain on the canonical VQ1 6/6 recording `data/runs
 - **PNP_FIX_COV_INFLATION task CLOSED:** behind the depth-sanity gate K=1.0 and K=2.0 leak identically (prior objection — K=2.0 worsens leak — evaporates). No revert needed.
 - **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **~1.1% catastrophic leak** after χ²₀.₉₉₉ + association + depth-sanity (commit 4673517, 2026-06-09; prior figure was ~1.6%). **Use 1.1% as the Stage-2 twin input.** Detail: `handoff/perception-char-2026-06-08/`.
 
-### 2nd-order inner-loop re-system-ID (queued, NON-BLOCKING — a VQ2 ceiling-raiser)
-The first-order twin (`rate_gain`, `τ` steady-state) **under-models the live transient overshoot**:
-S1.2 measured realized rates peaking **9.7 rad/s vs the first-order ceiling 7.85** (3.14·2.5). Today's
-S1.2 tumble recordings (`data/runs/20260610_205414_rl_s12_f1` + the five `20260610_*_rl_s1_v1` runs =
-saturated step commands with realized-rate telemetry) are **ideal 2nd-order fit data.**
-- **NOT on the VQ1 critical path:** a perfect rate model still would NOT fix the discrete ±180° yaw-spin
-  sim anomaly (untwinned) — the S1.3 tilt/jerk regularization ③ owns VQ1 by keeping the policy out of
-  that regime. So re-sysID is decoupled from the retrain.
-- **Value = VQ2:** flying faster / closer-to-the-limits ACCURATELY (the twin's overshoot gap is a speed
-  ceiling). Layer it in after VQ1 transfer is banked.
+### 2nd-order inner-loop re-system-ID ✅ DONE (cc6921d, fable, 2026-06-10) — AMPLITUDE-DEPENDENT / PI-windup
+The first-order twin (`rate_gain`, `τ` steady-state) under-modeled the live transient overshoot (twin
+capped 7.85 vs live 9.7 rad/s). Fable re-system-ID'd the inner loop from the S1.2 tumble recordings.
+Writeup + fitter: `handoff/shadowpc-2ndorder-resysid-2026-06-10/{WRITEUP.md,fit_2nd_order.py}`.
+- **CORE FINDING — the inner loop is AMPLITUDE-DEPENDENT (a PI-windup signature):**
+  - **Zero overshoot at small targets** (0.75 rad/s) → the shipped first-order model (τ≈20 ms) is CORRECT
+    where it was originally fit (normal flight). This is exactly why the twin was faithful in normal flight
+    and wrong ONLY in the aggressive dive.
+  - **20–26% overshoot at saturation** = PI-windup. ONE linear 2nd-order cannot fit both regimes (each
+    regime's params degrade the other's data ~3×).
+  - **DC gain is FIXED** at the validated steady gains (roll 2.501 / pitch 2.504 / yaw 2.231) — overshoot is
+    a TRANSIENT phenomenon at the SAME DC gain, NOT a gain change. (G=3.8 was explicitly rejected — saturated
+    steady gain is unobservable in the tumble because commands flip every ~100 ms.)
+- **Recovered 2nd-order params (DC gain anchored):**
+
+  | regime | axis | ωₙ (rad/s) | ζ | delay | step overshoot |
+  |---|---|---|---|---|---|
+  | saturated | roll | 21.0 | 0.393 | 15 ms | 26% |
+  | saturated | pitch | 28.3 | 0.467 | 30 ms | 19% |
+  | saturated | yaw | 11.3 | 0.273 | 0 | 41% (caveated) |
+  | small/mid | roll | 67.6 | 0.824 | 0 | 1% |
+  | small/mid | pitch | 66.9 | 0.699 | 0 | 5% |
+
+- **Validation (before/after on the tumble):** overshoot reproduced — measured peak rates 9.77/9.72/8.14;
+  shipped 1st-order capped 7.82/7.84/7.00; fitted 2nd-order 10.14/9.50/7.75. Fit RMSE 20–30× better
+  (roll 7.70→0.25, pitch 5.02→0.39, yaw 6.92→0.28). Fit window cut at 90° tilt to exclude the sim yaw-spin
+  anomaly regime.
+- **Integration recommendation (writeup §5, for a future COORDINATED session — do NOT integrate on n=1):**
+  - **RL training:** DR over the regime envelope — per-env blend λ: ωₙ ∈ [21, 68], ζ ∈ [0.39, 0.85]
+    (roll/pitch). **This SUPERSEDES the +30% rate_gain proxy (item ④) — see 🚩 below.**
+  - **Deterministic twin:** amplitude-scheduled ωₙ(|target|), ζ(|target|) between anchors at 3.0 and
+    7.85 rad/s. New `omega_dot` state; discretization stability bounds (substeps vs exact ZOH) in §5.
+  - **Backward-compat:** none ⇒ legacy 1st-order, all tests stay green.
+  - **Parity-gate sequence:** twin first → rl_plant → torch adapter.
+  - **Caveats:** yaw rests on anomaly-adjacent data + was the worst-modeled axis all along (small-signal
+    prefers τ≈97 ms vs shipped 19 ms — deserves its own pass); the saturated regime rests on ONE maneuver.
+
+### 🚩 The "+30% rate_gain band" DR proxy is DISPROVEN (replace at retrain)
+The asymmetric rate_gain DR band **[0.90, 1.30]** (item ④, currently in `rl/diffaero_dynamics.py` and LIVE
+in the S1.3 run training 2026-06-10) is the **WRONG model for the overshoot**: it inflates **DC GAIN**, which
+the validated steady-gain anchor contradicts (G=3.8 was explicitly rejected). The current S1.3 run is
+therefore suboptimal in the saturated regime. **When we retrain, REPLACE the rate_gain band with the ωₙ/ζ
+envelope DR** (per-env blend λ: ωₙ ∈ [21, 68], ζ ∈ [0.39, 0.85] roll/pitch).
+
+### 🆕 NEXT CHEAP EXPERIMENT — buy confidence in the env before integrating
+The saturated regime + yaw both rest on n=1 maneuver. **Cheap definitive follow-up = a `rate_sysid.py`
+magnitude sweep (`--mag 0.3,1.0,2.0,3.14`, ~10 min sim time) to map the windup curve DIRECTLY — run BEFORE
+the 2nd-order integration lands.** Bundle it with the **anomaly-boundary characterization sweep** (both are
+controlled-maneuver sweeps on the unattended harness). The anomaly boundary is also a GATE for the env
+redesign below (the crash-termination needs the measured boundary).
 
 ## Depth model / ~100 TOPS budget (user) — OFFLINE flywheel
 After a recorded run (legal between-runs processing): **multi-view triangulation** from logged poses
@@ -184,6 +224,21 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   - **✅ S1.3 RETRAIN SPEC (Path C, ~30 min A100, `rl/peregrine_racing_s13.sbatch` staged):** ① `dynamics.controller.max_normed_thrust=3.765` (live ceiling; one-line override); ② **standing-start resets** (`+env.standing_start_frac`, reset at ~23 m from gate 0 at rest = real race start; **implemented** cfg-gated in `peregrine_racing.py`, spawn pose mapped through the deployment virtual flip → fly_rl.py needs no change; removes the CTBR bridge, bridge stays as fallback); ③ **tilt/jerk regularization** (`reward_weights.quadrotor.attitude≈2.0`/`jerk≈0.3`, sweep — kills the >90°-roll style that lands in the untwinned sim-anomaly regime; THE load-bearing transfer fix + the VQ2 aggression fix); ④ **latency DR** (port the transport-delay ring buffer to the torch backend of `rl/diffaero_dynamics.py` — rl_plant already supports it, parity-checkable via `check_against_rl_plant` with `transport_delay_steps>0`; DR per-env delay ∈ {0,1,2}) + asymmetric rate-gain DR band **[−10%,+30%]** (cheap transient-overshoot proxy, measured +24%). **④ needs an Adroit session on diffaero_dynamics.py FIRST + must re-pass the parity gate** (not yet implemented). Reward shaping (smoothness/time) folds in here.
 
   Reward shaping (smoothness/time) = part of S1.3, AFTER the transfer fixes.
+
+  **🆕 STASHED — NEXT RETRAIN = an ENV-COHERENCE REDESIGN, not just a policy re-tune (user directive 2026-06-10).**
+  The user flagged that the **reward CONFLICTS with the termination**, and we need **more reward terms with
+  more explicit logic on how each works.** Reframe the next retrain as redesigning the ENV: reward +
+  termination designed TOGETHER + the new **ωₙ/ζ DR** (above) + a **crash-termination at the MEASURED anomaly
+  boundary**. Hand to a dedicated **fable + adroit-connector** session. **GATED on the characterization sweep**
+  (the crash-termination needs the measured boundary). Non-trivial, objectively-checkable → good fable fit.
+
+  **🆕 PENDING ARCHITECTURE DECISION (2026-06-10 discussion) — S2 = decomposed plan-line + RL-tracker?**
+  Consider making S2 a **decomposed plan-line + RL-tracker** (plan an explicit smooth/feasible racing line;
+  RL only TRACKS it) INSTEAD of another monolithic racer. Rationale: the monolithic policy's freedom to choose
+  the trajectory is what produced the **backflip-dive** — an explicit line makes inversion STRUCTURALLY
+  impossible. Tradeoff: lower speed ceiling than SWIFT-style learn-the-line, bought back via the offline
+  line-iteration flywheel. **DECISION PENDING the S1.3 result.** (Mapping is PERCEPTION — conservative lap +
+  detector→PnP→KF — NOT an RL task, and only needed if VQ2 hides the map; open organizer question.)
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
   OFF** in VQ1 sim ← the right home for the user's "test the control policy with real YOLO vision."
