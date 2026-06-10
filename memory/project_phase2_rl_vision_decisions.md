@@ -225,6 +225,16 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
 
   Reward shaping (smoothness/time) = part of S1.3, AFTER the transfer fixes.
 
+  **✅ S1.3 RETRAIN COMPLETE IN-TWIN (2026-06-10) — all four items done + validated; an INTERIM TRANSFER-TEST checkpoint, NOT the final policy.**
+  - **① max_normed_thrust=3.765** (live collective ceiling) — active in all runs.
+  - **② standing-start resets** — active; **FIXED A REAL BUG:** the spawn at x_zup=0 sat ~8 m OUTSIDE the gate-bbox+margin OOB box ⇒ every standing-start env truncated on step 1. This was the cause of an earlier eval's 768768-episodes / 0%-success — that was the BUG, NOT the policy. Spawn is now folded inside the OOB box.
+  - **③ tilt/jerk regularization tuned → ATT=2.0, JERK=0.5: 100% 6/6 in-twin, peak roll 65°** (< 80° target), down from inc-1's 104–126° — **the backflip-dive is GONE in-twin.**
+  - **④ adapter robustness** (latency + asymmetric rate-gain DR) implemented; parity preserved (`check_against_rl_plant` DIV **2.22e-16**).
+  - **🚩 KEY CORRECTION to inc-1's record — inc-1 had NO PLANT DR.** The training launcher defaulted to the numpy backend, which **silently ignores per-env DR** (item ④'s DR only fires on the torch backend). So inc-1's success_rate 0.97 was trained on the NOMINAL plant with ZERO domain randomization (overfit-to-nominal — partly explains its brittleness / non-transfer). S1.3 switched the launcher to the **torch backend → DR is actually active for the first time.**
+  - **Checkpoint:** the final run consolidates ATT=2.0 over 5000 updates; a 2000-update ATT=2.0 checkpoint (identical metrics) is held as fallback. Loose end: cosmetic `TRAIN_RC=1` from diffaero's post-checkpoint export not supporting `action_frame="body"` — it fires AFTER `agent.save()`, so the checkpoint + eval are unaffected.
+  - **🚩 INTERIM-CHECKPOINT CAVEAT:** S1.3's ④ DR uses the **+30% rate-gain band that the 2nd-order re-sysID (cc6921d) DISPROVED** (it perturbs DC gain, not transient overshoot — see "+30% rate_gain band DISPROVEN" above). So S1.3 is an INTERIM checkpoint for a TRANSFER TEST, NOT the final policy. The final policy still awaits: characterization sweep → 2nd-order integration → env/reward redesign → retrain. S1.3 remains a valid live-transfer test because ③ (peak roll 65°) should keep it in the faithful envelope regardless of the DR mechanism.
+  - **🆕 NEXT = the disambiguator: live VQ1-sim transfer test of S1.3 via `fly_rl.py` (unattended, `--flights N`).** If it threads gates live, ③ ("stay in the faithful envelope") is VALIDATED and the 2nd-order/characterization chain demotes to a VQ2 ceiling-raiser. If it still fails live, plant fidelity (2nd-order) becomes critical-path.
+
   **🆕 STASHED — NEXT RETRAIN = an ENV-COHERENCE REDESIGN, not just a policy re-tune (user directive 2026-06-10).**
   The user flagged that the **reward CONFLICTS with the termination**, and we need **more reward terms with
   more explicit logic on how each works.** Reframe the next retrain as redesigning the ENV: reward +
