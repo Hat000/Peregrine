@@ -94,8 +94,8 @@ print("STEP10 obs.shape=%s reward.mean=%.3f z0=%.2f z10=%.2f n_passed_mean=%.2f"
       % (tuple(obs.shape), reward.mean().item(), z0, env.p[:, 2].mean().item(),
          env.n_passed_gates.float().mean().item()))
 expect_stats = {"success_rate", "survive_rate", "l_episode", "n_passed_gates", "collision_rate",
-                "miss_rate", "oob_rate", "peak_tilt_deg", "mean_speed", "finish_time_s",
-                "pass_offset_m"}
+                "miss_rate", "oob_rate", "peak_tilt_deg", "peak_roll_deg", "mean_speed",
+                "finish_time_s", "pass_offset_m"}
 got_stats = set(extra["stats_raw"].keys())
 print("stats_raw keys: %s  missing=%s" % (sorted(got_stats), sorted(expect_stats - got_stats)))
 assert expect_stats <= got_stats

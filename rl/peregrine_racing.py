@@ -236,6 +236,14 @@ def tilt_cos_from_quat_xyzw(q: Tensor) -> Tensor:
     return 1.0 - 2.0 * (q[..., 0] ** 2 + q[..., 1] ** 2)
 
 
+def roll_from_quat_xyzw(q: Tensor) -> Tensor:
+    """ZYX Euler roll = atan2(R32, R33) = atan2(2(qy*qz + qw*qx), 1 - 2(qx^2+qy^2)). XYZW quats.
+    Matches pytorch3d's matrix_to_euler_angles(..., "ZYX") last angle -- the S1.3 peak-roll
+    acceptance metric, tracked HERE (pre-reset) so the terminal/crash pose is included."""
+    return torch.atan2(2.0 * (q[..., 1] * q[..., 2] + q[..., 3] * q[..., 0]),
+                       tilt_cos_from_quat_xyzw(q))
+
+
 @dataclass
 class RewardWeights:
     """All S1.4 reward/termination weights (see module docstring for the per-term contract).
@@ -393,8 +401,9 @@ class PeregrineRacing(Racing):
         self.finished = torch.zeros(n, dtype=torch.bool, device=device)
         self.rw = RewardWeights.from_cfg(cfg)
         self.standing_start_frac = float(getattr(cfg, "standing_start_frac", 0.0))
-        # per-episode diagnostics (running)
+        # per-episode diagnostics (running; pre-reset, so terminal poses are included)
         self._peak_tilt = torch.zeros(n, device=device)          # rad
+        self._peak_roll = torch.zeros(n, device=device)          # rad (ZYX Euler |roll|)
         self._speed_sum = torch.zeros(n, device=device)          # sum of |v| per step
         # action span for the R5 normalization (set lazily: dynamics bounds exist after init)
         span = (self.dynamics.max_action - self.dynamics.min_action).clamp(min=1e-6)
@@ -518,6 +527,7 @@ class PeregrineRacing(Racing):
         # per-episode diagnostics
         tilt = torch.arccos(tilt_cos_from_quat_xyzw(self._q).clamp(-1.0, 1.0))
         self._peak_tilt = torch.maximum(self._peak_tilt, tilt)
+        self._peak_roll = torch.maximum(self._peak_roll, roll_from_quat_xyzw(self._q).abs())
         speed = torch.linalg.norm(self._v, dim=-1)
         self._speed_sum += speed
 
@@ -556,6 +566,7 @@ class PeregrineRacing(Racing):
                 "miss_rate": gate_miss[reset].float(),
                 "oob_rate": oob[reset].float(),
                 "peak_tilt_deg": torch.rad2deg(self._peak_tilt)[reset],
+                "peak_roll_deg": torch.rad2deg(self._peak_roll)[reset],
                 "mean_speed": (self._speed_sum / self.progress.clamp(min=1).float())[reset],
                 "finish_time_s": ((self.progress.clone() - 1).float() * self.dt)[newly_finished],
                 "pass_offset_m": pass_linf[gate_passed],
@@ -638,6 +649,7 @@ class PeregrineRacing(Racing):
         self.arrive_time[env_idx] = 0
         self.last_action[env_idx] = 0.0                # collective obs starts at 0 (contract)
         self._peak_tilt[env_idx] = 0.0
+        self._peak_roll[env_idx] = 0.0
         self._speed_sum[env_idx] = 0.0
         self.max_vel[env_idx] = (torch.rand(m, device=dev)
                                  * (self.max_target_vel - self.min_target_vel)

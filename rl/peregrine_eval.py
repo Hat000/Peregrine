@@ -26,7 +26,6 @@ from pathlib import Path
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-import pytorch3d.transforms as T
 
 # register OUR injections (zero clone edits), identical to peregrine_train_racing.py
 import diffaero.dynamics as _dyn
@@ -98,9 +97,6 @@ def main() -> int:
           f"plant={args.plant} dr=False standing_frac={args.standing_frac}")
 
     obs = env.reset()
-    n = args.n_envs
-    cur_peak_roll = torch.zeros(n, device=device)
-    cur_peak_tilt = torch.zeros(n, device=device)
     ep_success, ep_roll, ep_tilt = [], [], []
     counts = {"collision": 0.0, "miss": 0.0, "oob": 0.0, "timeout": 0.0, "finish": 0.0}
     finish_times, pass_offsets, mean_speeds = [], [], []
@@ -108,7 +104,6 @@ def main() -> int:
     n_steps_total = 0
 
     n_steps = int(args.horizons * args.max_time / dt)
-    body_up = torch.tensor([0.0, 0.0, 1.0], device=device)
     with torch.no_grad():
         for _ in range(n_steps):
             action, _ = agent.act(obs, test=True)
@@ -117,14 +112,10 @@ def main() -> int:
             action = env.rescale_action(action)
             obs, _loss, _term, info = env.step(action)
 
-            q = env.dynamics._q                                  # XYZW (Z-up)
-            R = T.quaternion_to_matrix(q.roll(1, dims=-1)).clamp(-1 + 1e-6, 1 - 1e-6)
-            _, _, roll = T.matrix_to_euler_angles(R, "ZYX").unbind(-1)
-            up_w = torch.matmul(R, body_up)
-            tilt = torch.arccos(up_w[..., 2].clamp(-1 + 1e-6, 1 - 1e-6))
-            cur_peak_roll = torch.maximum(cur_peak_roll, roll.abs())
-            cur_peak_tilt = torch.maximum(cur_peak_tilt, tilt)
-
+            # Peak roll/tilt come from the ENV's per-episode trackers (stats_raw) -- recorded
+            # PRE-reset inside step(), so the terminal/crash pose is included and the next
+            # episode's spawn pose cannot contaminate the ended episode (review finding F12;
+            # an eval-side tracker reads env.dynamics._q AFTER the internal auto-reset).
             sr = info["stats_raw"]
             counts["collision"] += float(sr["collision_rate"].sum())
             counts["miss"] += float(sr["miss_rate"].sum())
@@ -139,17 +130,10 @@ def main() -> int:
             if reset.any():
                 ridx = reset.nonzero().flatten()
                 succ = info["success"]
-                # TILT: the env's own tracker (stats_raw.peak_tilt_deg) -- recorded PRE-reset
-                # inside step(), so it includes the terminal attitude; our outside-the-env
-                # tracker only sees post-reset states. ROLL: tracked here (the env does not),
-                # so it misses the terminal step -- a documented, slightly-optimistic proxy
-                # kept for comparability with the S1.3 numbers.
                 for k, i in enumerate(ridx.tolist()):
                     ep_success.append(bool(succ[i]))
-                    ep_roll.append(float(cur_peak_roll[i]))
+                    ep_roll.append(float(sr["peak_roll_deg"][k]) * np.pi / 180.0)
                     ep_tilt.append(float(sr["peak_tilt_deg"][k]) * np.pi / 180.0)
-                cur_peak_roll[ridx] = 0.0
-                cur_peak_tilt[ridx] = 0.0
 
     succ = np.array(ep_success)
     roll = np.degrees(np.array(ep_roll))

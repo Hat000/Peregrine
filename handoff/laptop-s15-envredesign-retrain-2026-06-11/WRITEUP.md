@@ -98,8 +98,54 @@ backward-compatible default; `+env.course_mode=random` enables sampling (trainin
 ## 5. Review discipline
 
 Six-lens adversarial review (env-correctness, reward-exploits, deploy-contract,
-sampler-geometry, launcher-guards, eval-scripts), every finding independently verified by a
-refute-first agent before being acted on. Confirmed findings + fixes: *(filled below)*
+sampler-geometry, launcher-guards, eval-scripts; 29 agents), findings independently verified by
+refute-first agents (9 verifiers died on a usage limit — those findings were adjudicated by hand).
+
+**Confirmed → fixed:**
+1. **[critical] The thrust sidecar was read-only** — nothing ever *wrote* one, so every
+   3.765-trained checkpoint (incl. S1.3's, in the repo today) deployed through a [0,5] rescale
+   silently: ×1.33 thrust overdrive + corrupted obs[12] feedback, invisible to eval (eval uses
+   the training cfg). Fixed: the launcher now wraps `agent.save` to emit `actor.json` next to
+   every checkpoint (covers periodic/emergency/best/final in one place); sbatch belt-and-braces;
+   `rl/checkpoints/stage1_inc3_actor.json` created; loud warning in `load_actor` when absent.
+2. **[major] `offline_rollout.gate_event` graded a backward crossing through the OPEN aperture
+   as a collision** (no lower bound on the bwd branch) — diverged from the env and the live sim;
+   would have mis-graded acceptance evals. Fixed + regression-tested.
+3. [minor ×8, fixed] offline OOB box ~10 m tighter than training behind the pad (now mirrors
+   `_update_boxes` exactly); `--virtual-flip` defaulted OFF vs deployment ON (now ON,
+   `--no-virtual-flip` to disable); stale ShadowPC default checkpoint paths (now repo-relative
+   inc-4); sampler silently ignored misspelled overrides (now raises); periodic saves non-atomic
+   (now rotated through `periodic_prev`); NaN-guard could burn wall time forever (aborts after
+   200 skips → emergency save); sbatch picked checkpoints lexicographically (now newest-by-mtime);
+   eval peak-tilt read POST-reset states (now uses the env's pre-reset `peak_tilt_deg` stat; the
+   eval-side peak-roll tracker keeps the old slightly-optimistic semantics for S1.3 comparability
+   — documented).
+4. [minor, accepted-and-documented] pure lateral (no-crossing) frame grazes remain undetected —
+   the C2 docstring now states the crossing-based scope honestly; a capsule-contact model is out
+   of scope. Eval on CPU would crash on CUDA checkpoints (no `map_location` in diffaero's
+   `agent.load`) — eval is a GPU-node tool; documented.
+
+**Unverified-by-agent, adjudicated by hand:**
+- *GAE leaks across truncation boundaries* — REAL, but a pre-existing flaw in diffaero's frozen
+  PPO (`nextnonterminal=1` at truncation lets the NEXT episode's advantage flow into the ended
+  one). S1.4 *shrinks* its surface: OOB became a termination, so only timeouts leak (rare for a
+  competent policy). Not fixable without editing the clone; accepted.
+- *Terminal magnitudes vs PPO's 0.2 absolute value-clip* — real slow-critic effect, pre-existing
+  (parent returns already span hundreds via progress); same order as before; accepted.
+- *Time-in-reward aliasing* (finish-time bonus + time penalty depend on the episode clock, which
+  is not in the frozen 17-dim obs) — true for ANY time shaping under this obs contract; weights
+  kept moderate (±5-ish at stake vs ~1500 progress scale); accepted, revisit only if curves show
+  value-loss pathology.
+- *Hover-stall local optimum near hard gates* (hover ≈ −2 discounted beats miss −15 / risky
+  attempts) — real in the low-success regime only; passage+downstream value (+10 + hundreds)
+  dominates once p(success) ≳ 0.1, entropy bonus pushes exploration; S1.3 reached 1.00 with a
+  weaker structure. Accepted; the curves will show it if it bites (success plateau at a gate).
+- *R5 pays a spurious dact at step 1* (last_action zeroed by contract) — ~0.12 one-time;
+  trivial; contract-frozen; accepted.
+- *Outcome flags not strictly a partition* (e.g. simultaneous miss + other-gate strike) —
+  co-occurrence is rare and only perturbs the printed histogram; accepted.
+- *Sampler rejection-exhaust could return violating layouts silently* — fixed anyway (straight-
+  course fallback; a straight course always satisfies separation).
 
 ## 6. Training runs + curves
 
@@ -107,8 +153,25 @@ refute-first agent before being acted on. Confirmed findings + fixes: *(filled b
 
 ## 7. Eval results
 
-*(TODO: held-out VQ1 map-ON table; random-course generalization; offline_rollout from handoff +
-standing start; saturation; acceptance verdict)*
+### 7.0 Baseline first (S1.3 inc-3 through the NEW laptop pipeline, before the retrain)
+
+`offline_rollout.py` (numpy twin, fly_rl's exact obs/action pipeline, sidecar applied
+thrust≤3.765, virtual flip ON, standing start `simstart`):
+
+| plant | outcome | lap | vmax |
+|---|---|---|---|
+| map-ON (S1.4 default) | **6/6 FINISHED** | 6.63 s | 30.7 m/s |
+| flat (its training plant) | 6/6 FINISHED | 6.59 s | 31.3 m/s |
+| map-ON + 1-step transport delay | 6/6 FINISHED | 6.46 s | 31.7 m/s |
+
+Read: the flat-trained S1.3 is NOT broken in-twin on the measured plant — the map mostly *adds*
+authority and the policy's commands on this course are mostly sub-saturation. The S1.4 retrain's
+value is therefore (a) DR breadth = transfer margin, (b) track generalization (rank-impact #1),
+(c) reward coherence → style/validity — not rescuing a failing baseline. (Also: these three runs
+exercised the new sidecar, map-plant default, and interpolated event classification end-to-end.)
+
+*(TODO: held-out VQ1 map-ON table; random-course generalization; S1.4 offline_rollout;
+saturation; acceptance verdict)*
 
 ## 8. Checkpoint provenance
 

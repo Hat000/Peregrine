@@ -21,8 +21,8 @@ sys.path.insert(0, str(_RL))
 
 from peregrine_racing import (RewardWeights, compute_reward_terms, crossing_events,  # noqa: E402
                               quat_xyzw_from_axis_angle, quat_xyzw_from_yaw_pitch,
-                              quat_xyzw_mul, rel_tables, tilt_cos_from_quat_xyzw,
-                              world_to_gateframe)
+                              quat_xyzw_mul, rel_tables, roll_from_quat_xyzw,
+                              tilt_cos_from_quat_xyzw, world_to_gateframe)
 
 HALF_IN, HALF_OUT = 0.75, 1.36
 
@@ -117,6 +117,16 @@ def test_quat_mul_and_axis_angle_match_scipy():
     for i in range(8):                                       # quats are sign-ambiguous
         err = min(np.abs(got[i] - expect[i]).max(), np.abs(got[i] + expect[i]).max())
         assert err < 1e-12
+
+
+def test_roll_from_quat_matches_scipy_zyx():
+    """The env's peak-roll tracker must agree with the ZYX Euler roll the old eval computed
+    via pytorch3d (matrix_to_euler_angles 'ZYX' last angle) -- scipy as the arbiter."""
+    rots = Rotation.random(64, random_state=11)
+    q = torch.tensor(rots.as_quat())                  # xyzw
+    got = roll_from_quat_xyzw(q).numpy()
+    expect = rots.as_euler("ZYX")[:, 2]               # (yaw, pitch, roll) -> roll
+    np.testing.assert_allclose(got, expect, atol=1e-10)
 
 
 def test_tilt_cos():
