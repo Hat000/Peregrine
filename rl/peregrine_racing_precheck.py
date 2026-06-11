@@ -79,6 +79,16 @@ if getattr(dyn, "_dr_enabled", False):
           % (dyn._dr_hover.min(), dyn._dr_hover.max(), dyn._dr_drag.min(), dyn._dr_drag.max(),
              dyn._dr_rate_tau.min(), dyn._dr_rate_tau.max(),
              bool((dyn._dr_hover.std() > 0).item())))
+    if getattr(dyn, "_dr_aero", False):
+        c2 = dyn._dr_c2
+        kv = dyn._dr_coll_kvals
+        print("DR AERO ON  quad c2 fwd [%.4f,%.4f] climb [%.4f,%.4f] (per-slot, Section-7 band);"
+              " K(1.0) [%.1f,%.1f] hover-knot [%.2f,%.2f] (pin +-2%%); d1==drag above; hover PINNED"
+              % (c2[:, 0, 0].min(), c2[:, 0, 0].max(), c2[:, 2, 1].min(), c2[:, 2, 1].max(),
+                 kv[:, -1].min(), kv[:, -1].max(), kv[:, 4].min(), kv[:, 4].max()))
+    else:
+        print("DR AERO off (legacy linear-drag plant; +dynamics.dr_aero=true for the twin-falsify"
+              " 2026-06-11 measured aero)")
     print("DR latency enabled=%s max_steps=%d" % (dyn._latency_enabled, dyn._latency_max))
 else:
     print("DR OFF (unexpected)")

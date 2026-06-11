@@ -361,7 +361,7 @@ def _wrap(a: np.ndarray) -> np.ndarray:
 # odo_att_report_sign=[-1,1,1] (ODOMETRY-quat roll inverted), odo_rate_report_sign=[-1,-1,1] (raw
 # ODOMETRY angular_rate inverted on roll+pitch). The reported-q quat-FD COMPOSITE the fit measures is
 # [-1,+1,-1] = physical [+1,+1,-1] x att-report [-1,+1,+1].
-def faithful_config(super_rate: bool = False):
+def faithful_config(super_rate: bool = False, measured_aero: bool = False):
     """The sim-faithful :class:`CtbrPlantConfig` fitted from the ShadowPC sysid extract (Task B/C):
     true-frame physics + the sim's ODOMETRY telemetry inversions, so the measured live controller
     signs transfer. Reproduce with ``scripts/fit_twin.py``.
@@ -371,7 +371,20 @@ def faithful_config(super_rate: bool = False):
     2026-06-10/WRITEUP.md`` Section 3): ``g(|c|) = rate_gain/(1 - 0.30*min(|c|,pi)/pi)`` (sustained
     gains 2.50 -> 3.50 over |cmd| 0.3 -> 3.14, roll == pitch; s good to ~+-0.02) with slew
     ``alpha_max`` ~260 rad/s^2 roll/pitch, ~80 yaw. The flat default (False) preserves the exact
-    pre-map twin every existing consumer was tuned against."""
+    pre-map twin every existing consumer was tuned against.
+
+    ``measured_aero=True`` swaps the FALSIFIED legacy aero for the measured model (twin-falsify
+    2026-06-11, ``handoff/shadowpc-twin-falsify-2026-06-10/WRITEUP.md``): the world-isotropic
+    linear drag 0.2111/s (2.2x under-braking at 9 m/s) becomes body-frame direction-dependent
+    QUADRATIC drag (``linear_drag -> 0``) and the linear collective map becomes the measured
+    CONVEX knot table (full stick 78.3 m/s^2 ~= 2.1x linear). Nominals are the canonical
+    constants in :mod:`racer.rl_plant` (coast-replay speed RMS on the campaign's 9 drag runs:
+    legacy 0.81 -> 0.24-0.29 m/s). The fully sim-faithful twin as of 2026-06-11 is
+    ``faithful_config(super_rate=True, measured_aero=True)``; both flags default OFF so every
+    existing consumer keeps the exact plant it was tuned against."""
+    from racer.rl_plant import (COLL_MAP_ACCEL_MEASURED, COLL_MAP_THR_MEASURED,
+                                QUAD_DRAG_C2_MEASURED)
+
     return CtbrPlantConfig(
         hover_thrust=0.2656,
         rate_tau_s=0.0190,
@@ -379,7 +392,10 @@ def faithful_config(super_rate: bool = False):
         rate_sign=np.array([1.0, 1.0, -1.0]),              # PHYSICAL: only yaw command inverted
         super_rate_s=0.30 if super_rate else None,         # static gain map (sweep 2026-06-10)
         alpha_max_rps2=np.array([260.0, 260.0, 80.0]) if super_rate else None,
-        linear_drag=0.2111,
+        linear_drag=0.0 if measured_aero else 0.2111,      # quad drag replaces linear (d1=0 pure-quad)
+        quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy() if measured_aero else None,
+        coll_map_thr=COLL_MAP_THR_MEASURED.copy() if measured_aero else None,
+        coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy() if measured_aero else None,
         odo_att_report_sign=np.array([-1.0, 1.0, 1.0]),    # telemetry: ODOMETRY-quat roll inverted
         odo_rate_report_sign=np.array([-1.0, -1.0, 1.0]),  # telemetry: raw rate inverted roll+pitch
     )

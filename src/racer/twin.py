@@ -21,7 +21,11 @@ rate loop is a first-order lag (``rate_tau_s``) toward ``rate_gain * rate_sign *
 optionally the steady gain is the measured STATIC amplitude-dependent "super-rate" map
 ``rate_gain / (1 - super_rate_s * min(|cmd|, pi)/pi)`` with a per-axis slew limit ``alpha_max_rps2``
 (characterize-sweep 2026-06-10 -- the flat-2.5 gain under-predicts authority by up to 42% at full
-stick; both new params default OFF for exact legacy behavior).
+stick; both new params default OFF for exact legacy behavior). The twin-falsify campaign
+(2026-06-11) additionally measured the AERO: drag is body-frame QUADRATIC and direction-dependent
+(``quad_drag_c2``; the legacy linear 0.2111/s under-brakes 2.2x at 9 m/s) and the collective->accel
+map is CONVEX (``coll_map_thr``/``coll_map_accel`` knot table; full stick is ~2.1x the linear
+model). All three aero params default OFF (None) for exact legacy behavior.
 
 NB this models the CLEAN CTBR rotor physics — it deliberately does NOT model the sim's broken
 vertical *velocity-setpoint* auto-thrust (the "altitude balloon" / World-A runaway); in CTBR we own
@@ -55,6 +59,19 @@ def _wxyz_from_euler(roll: float, pitch: float, yaw: float) -> np.ndarray:
     return np.array([w, x, y, z], dtype=np.float64)
 
 
+def _quad_c2_table(c2) -> np.ndarray:
+    """Normalise a ``quad_drag_c2`` spec (scalar | (3,) | (3, 2)) to the (3, 2) per-axis, per-sign
+    coefficient table: ``[:, 0]`` applies where ``v_body[axis] >= 0``, ``[:, 1]`` where ``< 0``."""
+    t = np.asarray(c2, dtype=np.float64)
+    if t.ndim == 0:
+        return np.full((3, 2), float(t))
+    if t.shape == (3,):
+        return np.stack([t, t], axis=-1)
+    if t.shape == (3, 2):
+        return t
+    raise ValueError(f"quad_drag_c2 must be a scalar, (3,) or (3, 2); got shape {t.shape}")
+
+
 @dataclass
 class CtbrPlantConfig:
     """Plant parameters. Defaults are a canonical unity-gain quadrotor; set ``rate_gain`` /
@@ -81,6 +98,23 @@ class CtbrPlantConfig:
     # (legacy). Scalar or per-axis (3,).
     alpha_max_rps2: float | np.ndarray | None = None
     linear_drag: float = 0.0            # optional world-frame linear drag (1/s); 0 = ideal
+    # MEASURED AERO (twin-falsify 2026-06-11, ``handoff/shadowpc-twin-falsify-2026-06-10/
+    # WRITEUP.md`` Sections 2-3 + 7). Both default OFF (None) = exact legacy behavior.
+    # Body-frame QUADRATIC drag, direction-dependent: f_b = -c2 (.) |v_b| (.) v_b (elementwise),
+    # with a per-axis, per-SIGN coefficient table (3, 2): [axis][0] applies where v_b[axis] >= 0,
+    # [axis][1] where < 0. Measured (1/m): x 0.042 nose-first / 0.058 tail-first; y 0.055 both;
+    # z 0.054 descend (+z, FRD) / 0.076 climb (-z). Scalar = isotropic (pooled 0.052); (3,) =
+    # per-axis sign-symmetric. ADDS to ``linear_drag`` (the measured-aero config zeroes
+    # linear_drag; a small d1 + quad is the WRITEUP's "mixed" form). The legacy linear 0.2111/s
+    # over-brakes at low speed and under-brakes 2.2x at 9 m/s -- exactly the race-speed band.
+    quad_drag_c2: float | np.ndarray | None = None
+    # MEASURED collective->accel map (same campaign): the sim's thrust curve is CONVEX -- full
+    # stick is 78.3 m/s^2 ~= 2.1x the linear g*thr/hover model, sub-linear below hover. When BOTH
+    # arrays are set, a_up = np.interp(realised_collective, coll_map_thr, coll_map_accel) REPLACES
+    # the linear map (np.interp clamps to the end knots outside the range -- collective beyond the
+    # last knot saturates, faithful to the [0,1] stick). Setting exactly one raises. None -> OFF.
+    coll_map_thr: np.ndarray | None = None     # (K,) increasing collective knots [0..1]
+    coll_map_accel: np.ndarray | None = None   # (K,) body-up specific accel at the knots (m/s^2)
     # Sim-to-real LATENCY the ideal twin lacked -- why kp_alt=4 looked stable offline but relay-
     # oscillated live (VERIFY rung 1, 2026-06-06): a transport delay on the sense->command->act loop
     # + a first-order lag on the realized collective (motor spin-up). With the controller's thrust
@@ -174,14 +208,29 @@ class CtbrPlant:
             self._thrust += (1.0 - np.exp(-dt / cfg.thrust_tau_s)) * (thrust_cmd - self._thrust)
         else:
             self._thrust = thrust_cmd
-        a_up = cfg.g * (self._thrust / cfg.hover_thrust)           # thrust=hover -> g (balances)
-        f_world = R_new.as_matrix() @ np.array([0.0, 0.0, -a_up])  # body -Z (up) in world NED
+        if cfg.coll_map_thr is not None or cfg.coll_map_accel is not None:
+            if cfg.coll_map_thr is None or cfg.coll_map_accel is None:
+                raise ValueError("coll_map_thr and coll_map_accel must be set together")
+            # measured CONVEX collective map (twin-falsify 2026-06-11) on the REALISED collective
+            a_up = float(np.interp(self._thrust, np.asarray(cfg.coll_map_thr, dtype=np.float64),
+                                   np.asarray(cfg.coll_map_accel, dtype=np.float64)))
+        else:
+            a_up = cfg.g * (self._thrust / cfg.hover_thrust)       # thrust=hover -> g (balances)
+        R_m = R_new.as_matrix()
+        f_world = R_m @ np.array([0.0, 0.0, -a_up])                # body -Z (up) in world NED
         f_world = f_world - cfg.linear_drag * self.vel             # specific force incl. drag
+        if cfg.quad_drag_c2 is not None:
+            # measured body-frame direction-dependent QUADRATIC drag (uses the OLD velocity,
+            # like the linear term): per-axis coefficient picked by the sign of v_body
+            c2 = _quad_c2_table(cfg.quad_drag_c2)
+            v_b = R_m.T @ self.vel
+            c = np.where(v_b >= 0.0, c2[:, 0], c2[:, 1])
+            f_world = f_world + R_m @ (-(c * np.abs(v_b) * v_b))
         accel = f_world + np.array([0.0, 0.0, cfg.g])              # + gravity (NED +Z down)
         # semi-implicit Euler (update velocity first, then position with the new velocity)
         self.vel = self.vel + accel * dt
         self.pos = self.pos + self.vel * dt
-        self.accel_body = R_new.as_matrix().T @ f_world           # what an accelerometer reads
+        self.accel_body = R_m.T @ f_world                          # what an accelerometer reads
         self.t_ns += int(round(dt * 1e9))
 
     def state(self) -> DroneState:

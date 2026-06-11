@@ -4,7 +4,9 @@
 Both are driven from the same initial physical state over a battery of random CTBR sequences (hover,
 aggressive rates into the norm clamp, swept collective, sustained forward) across the faithful + a
 canonical + an actuator-lag + a transport-delay + a super-rate (static amplitude-dependent gain map
-+ slew limit) + a super-rate-with-delay config, at the live (50 Hz) and twin-course (100 Hz) dt. We compare the TRUE physical state -- twin's internals ``plant.pos/vel/q/omega/_thrust`` (NOT
++ slew limit) + a super-rate-with-delay + a measured-aero (body-frame sign-split quadratic drag +
+convex collective knot table, twin-falsify 2026-06-11) + an everything-ON (aero + map + collective
+lag + delay) config, at the live (50 Hz) and twin-course (100 Hz) dt. We compare the TRUE physical state -- twin's internals ``plant.pos/vel/q/omega/_thrust`` (NOT
 ``plant.state()``, which re-applies the sim's telemetry report-signs that rl_plant deliberately omits).
 
 Also asserts rl_plant's hand-rolled quaternion helpers match ``scipy ... Rotation`` (the math twin.py
@@ -50,6 +52,9 @@ def _params_from_cfg(cfg: CtbrPlantConfig, dt: float) -> rp.PlantParams:
         super_rate_s=None if cfg.super_rate_s is None else np.asarray(cfg.super_rate_s, float).copy(),
         alpha_max_rps2=None if cfg.alpha_max_rps2 is None else np.asarray(cfg.alpha_max_rps2, float).copy(),
         linear_drag=cfg.linear_drag,
+        quad_drag_c2=None if cfg.quad_drag_c2 is None else np.asarray(cfg.quad_drag_c2, float).copy(),
+        coll_map_thr=None if cfg.coll_map_thr is None else np.asarray(cfg.coll_map_thr, float).copy(),
+        coll_map_accel=None if cfg.coll_map_accel is None else np.asarray(cfg.coll_map_accel, float).copy(),
         thrust_tau_s=cfg.thrust_tau_s,
         transport_delay_steps=nlag,
         max_omega_rps=cfg.max_omega_rps,
@@ -95,6 +100,9 @@ def _configs():
     delay = faithful_config(); delay.cmd_latency_s = 0.0                  # set per-dt below (3 steps)
     smap = faithful_config(super_rate=True)                               # static gain map + slew ON
     smap_delay = faithful_config(super_rate=True)                         # map + transport delay
+    aero = faithful_config(measured_aero=True)                            # quad drag + knot collective
+    aero_full = faithful_config(super_rate=True, measured_aero=True)      # everything measured ON
+    aero_full.thrust_tau_s = 0.05                                         # + collective lag + delay
     return {
         "faithful": base,
         "canonical": canon,
@@ -102,6 +110,8 @@ def _configs():
         "transport_delay": delay,                                        # cmd_latency_s patched in the loop
         "super_rate": smap,
         "super_rate_delay": smap_delay,                                  # cmd_latency_s patched in the loop
+        "measured_aero": aero,
+        "aero_full": aero_full,                                          # cmd_latency_s patched in the loop
     }
 
 
@@ -151,7 +161,7 @@ _REPORT: list[tuple] = []
 @pytest.mark.parametrize("cfg_name,dt,seq_name", _CASES)
 def test_parity(cfg_name, dt, seq_name):
     cfg = _configs()[cfg_name]
-    if cfg_name in ("transport_delay", "super_rate_delay"):
+    if cfg_name in ("transport_delay", "super_rate_delay", "aero_full"):
         cfg.cmd_latency_s = 3 * dt                                        # exactly 3 steps of delay
     params = _params_from_cfg(cfg, dt)
 

@@ -12,6 +12,10 @@ across a CONFIG MATRIX:
   * delay2      -- params.transport_delay_steps=2 (rl_plant's internal ring buffer, mirrored in the
                    torch backend per the S12 handoff item 4a)
   * map_delay   -- both at once
+  * aero        -- measured aero (twin-falsify 2026-06-11): body-frame sign-split quadratic drag +
+                   convex collective knot table (linear_drag=0); thrust commands include both
+                   knot-table end clamps
+  * aero_full   -- aero + super-rate map + slew + transport delay, everything ON at once
 
 Per config: float64 run -> ALGEBRAIC correctness of the hand-written torch mirror (THIS IS THE
 GATE; numpy rl_plant is ground truth, itself bit-identical to twin.py); float32 run -> realistic
@@ -28,7 +32,8 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from racer.rl_plant import PlantParams
+from racer.rl_plant import (PlantParams, QUAD_DRAG_C2_MEASURED,
+                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED)
 from diffaero_dynamics import PeregrinePlantDynamics
 
 GATE_TOL = 1e-9     # float64 algebraic-equivalence bound (acceptance <= ~1e-6; history ~2e-16)
@@ -37,12 +42,22 @@ N_ENVS = 16
 T_STEPS = 8         # steps per trajectory (> transport_delay_steps so the delay buffer cycles)
 SEEDS = range(6)
 
+_AERO = dict(linear_drag=0.0, quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
+             coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
+             coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
+_MAP = dict(super_rate_s=0.30, alpha_max_rps2=np.array([260.0, 260.0, 80.0]))
+
 CONFIGS = {
     "legacy":     dict(),
-    "super_rate": dict(super_rate_s=0.30, alpha_max_rps2=np.array([260.0, 260.0, 80.0])),
+    "super_rate": dict(_MAP),
     "delay2":     dict(transport_delay_steps=2),
-    "map_delay":  dict(super_rate_s=0.30, alpha_max_rps2=np.array([260.0, 260.0, 80.0]),
-                       transport_delay_steps=2),
+    "map_delay":  dict(_MAP, transport_delay_steps=2),
+    # measured aero (twin-falsify 2026-06-11): quad body drag + convex collective knot table.
+    # The random velocities exercise the per-axis sign split; the thrust commands span the knot
+    # interior + both end clamps (see random_traj).
+    "aero":       dict(_AERO),
+    # everything ON at once: aero + super-rate map + slew + transport delay
+    "aero_full":  dict(_AERO, **_MAP, transport_delay_steps=2),
 }
 
 
@@ -76,6 +91,12 @@ def rebuild_params(dyn, device, dtype):
     dyn._alpha_max = (None if dyn.params.alpha_max_rps2 is None else
                       torch.tensor(np.broadcast_to(dyn.params.alpha_max_rps2, (3,)).copy(),
                                    device=device, dtype=dtype))
+    dyn._quad_c2 = (None if dyn.params.quad_drag_c2 is None else
+                    torch.tensor(dyn.params.quad_drag_c2, device=device, dtype=dtype))
+    dyn._coll_knots = (None if dyn.params.coll_map_thr is None else
+                       torch.tensor(dyn.params.coll_map_thr, device=device, dtype=dtype))
+    dyn._coll_kvals = (None if dyn.params.coll_map_accel is None else
+                       torch.tensor(dyn.params.coll_map_accel, device=device, dtype=dtype))
     dyn._plant_act_buf = None        # cold delay buffer; both backends seed it identically
     dyn._acc = dyn._acc.to(dtype)
 
@@ -91,6 +112,11 @@ def random_traj(n_envs, device, dtype, seed):
     state = torch.cat([p, q, v, w], dim=-1).to(device=device, dtype=dtype)
     u = torch.empty(T_STEPS, n_envs, 4)
     u[..., 0] = 1.0 + 0.3 * torch.randn(T_STEPS, n_envs, generator=g)   # normed thrust ~ hover
+    # knot-table edge coverage (aero configs): one step above the last knot (collective > 1.0 ->
+    # upper end clamp), one in the bottom region (floored 0.0/0.10 knots; lower edge). Harmless
+    # for the linear-map configs (their thrust map has no knots).
+    u[T_STEPS - 2, :, 0] = 3.8 + 1.2 * torch.rand(n_envs, generator=g)  # collective ~ [1.01, 1.33]
+    u[T_STEPS - 1, :, 0] = 0.4 * torch.rand(n_envs, generator=g)        # collective ~ [0, 0.106]
     # body-rate setpoints with tails beyond pi: exercises the map's min(|c|,pi) clamp + the slew
     u[..., 1:] = 1.5 * torch.randn(T_STEPS, n_envs, 3, generator=g)
     return state, u.to(device=device, dtype=dtype)

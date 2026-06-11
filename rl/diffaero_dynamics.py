@@ -69,6 +69,12 @@ INTERFACE MISMATCHES / ASSUMPTIONS (each tagged ``# RECONCILE`` at its use site)
     (2026-06-10): super_rate_s, rate_tau, alpha_max (absolute measured bands) + hover/drag
     (fractional), NOT rate_gain (the old asymmetric "+30% band" was the flat-gain model's shadow of
     the unmodeled static map -- disproven; G0 stays fixed at the shipped nominal). # RECONCILE
+    Since twin-falsify (2026-06-11): `+dynamics.dr_aero=true` (an opt-in ON TOP of `dr`) forces the
+    measured aero ON with per-env bands -- quad-drag c2 (WRITEUP Section 7 band, per slot), the
+    collective K-table scale (hover point pinned +-2%), and a residual linear d1 in [0, 0.08]
+    REPLACING the legacy fractional drag jitter; the hover collective is pinned at the nominal
+    (under the knot table the +-5% hover band is no longer dynamically inert). dr_aero stays a
+    SEPARATE opt-in (not folded into `dr`) so concurrently-running trainings keep their plant.
  6. INTEGRATOR: DiffAero applies solver(euler|rk4) x n_substeps to X_dot. Our plant integrates
     INTERNALLY (semi-implicit Euler) at its own dt; we bypass DiffAero's solver and call rl_plant per
     substep with dt/n_substeps. (rate/thrust lags use exp(-dt/tau), so substepping is consistent.)
@@ -109,11 +115,26 @@ except Exception:                       # pragma: no cover - diffaero absent off
 # `pip install -e` of the Peregrine repo, or copy rl_plant.py next to this file. # RECONCILE path.
 try:
     from racer.rl_plant import (PlantParams, PlantState, step as rl_step,
-                                SUPER_RATE_S_MEASURED, ALPHA_MAX_RPS2_MEASURED)
+                                SUPER_RATE_S_MEASURED, ALPHA_MAX_RPS2_MEASURED,
+                                QUAD_DRAG_C2_MEASURED, QUAD_DRAG_C2_POOLED,
+                                COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED)
 except Exception:                       # pragma: no cover
     PlantParams = PlantState = None     # RECONCILE: ensure racer.rl_plant is on PYTHONPATH on Adroit
     SUPER_RATE_S_MEASURED = 0.30                                  # characterize-sweep nominals
     ALPHA_MAX_RPS2_MEASURED = np.array([260.0, 260.0, 80.0])
+    # twin-falsify 2026-06-11 aero nominals (see racer.rl_plant for provenance)
+    QUAD_DRAG_C2_MEASURED = np.array([[0.042, 0.058],
+                                      [0.055, 0.055],
+                                      [0.0539309301924107, 0.0756168595765378]])
+    QUAD_DRAG_C2_POOLED = 0.052
+    COLL_MAP_THR_MEASURED = np.array([0.0, 0.10, 0.15, 0.20, 0.2656, 0.32, 0.40, 0.45,
+                                      0.55, 0.60, 0.80, 1.0])
+    COLL_MAP_ACCEL_MEASURED = np.array([0.0, 0.0,
+                                        2.1279523370741864, 4.7051594638528362,
+                                        9.5804078429104393, 13.576760297067407,
+                                        21.708896781382972, 26.488309151664271,
+                                        38.748577917265877, 42.360958058019655,
+                                        58.431876299624356, 78.282838504684648])
 
 
 # ================================================================================================
@@ -189,6 +210,32 @@ def _t_quat_normalize(q, eps=1e-12):
     return q / torch.clamp(torch.linalg.norm(q, dim=-1, keepdim=True), min=eps)
 
 
+def _t_quat_conjugate(q):
+    return torch.cat([q[..., 0:1], -q[..., 1:4]], dim=-1)
+
+
+def _t_interp1d(x, xp, fp):
+    """Mirror of ``rl_plant._interp1d`` (np.interp semantics: piecewise-linear, end-knot clamp),
+    extended to a per-env value table: ``fp`` is ``(K,)`` (shared) or ``(..., K)`` batch-matching
+    ``x`` (the DR per-env collective tables). Same arithmetic order as the numpy reference, so the
+    float64 gate stays bit-for-bit. searchsorted is non-differentiable but gradient flows through
+    the linear formula (d a_up / d x = segment slope; zero beyond the end knots -- the clamp)."""
+    idx = torch.clamp(torch.searchsorted(xp, x.detach().contiguous(), right=True) - 1,
+                      0, xp.shape[0] - 2)
+    x0 = xp[idx]
+    if fp.dim() == 1:
+        y0, y1, f_lo, f_hi = fp[idx], fp[idx + 1], fp[0], fp[-1]
+    else:
+        y0 = torch.gather(fp, -1, idx.unsqueeze(-1)).squeeze(-1)
+        y1 = torch.gather(fp, -1, (idx + 1).unsqueeze(-1)).squeeze(-1)
+        f_lo, f_hi = fp[..., 0], fp[..., -1]
+    slope = (y1 - y0) / (xp[idx + 1] - x0)
+    y = y0 + slope * (x - x0)
+    y = torch.where(x <= xp[0], f_lo, y)
+    y = torch.where(x >= xp[-1], f_hi, y)
+    return y
+
+
 def _t_clip_to_norm(v, max_norm):
     if max_norm <= 0.0:
         return v
@@ -242,6 +289,17 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._alpha_max = (None if self.params.alpha_max_rps2 is None else
                                torch.tensor(np.broadcast_to(self.params.alpha_max_rps2, (3,)).copy(),
                                             device=device, dtype=torch.float32))
+            # measured aero (twin-falsify 2026-06-11; None -> legacy linear-drag-only aero).
+            # params.quad_drag_c2 is already (3, 2)-normalised by PlantParams.__post_init__.
+            self._quad_c2 = (None if self.params.quad_drag_c2 is None else
+                             torch.tensor(self.params.quad_drag_c2, device=device,
+                                          dtype=torch.float32))
+            self._coll_knots = (None if self.params.coll_map_thr is None else
+                                torch.tensor(self.params.coll_map_thr, device=device,
+                                             dtype=torch.float32))
+            self._coll_kvals = (None if self.params.coll_map_accel is None else
+                                torch.tensor(self.params.coll_map_accel, device=device,
+                                             dtype=torch.float32))
         # params-level transport-delay ring buffer (mismatch #8b): the NED CTBR action queue carried
         # across step() calls, SHARED by both backends (numpy threads it through rl_plant's
         # PlantState.act_buf; torch mirrors the push/pop). None = cold; rl_plant cold-seeds with the
@@ -283,6 +341,12 @@ class PeregrinePlantDynamics(BaseDynamics):
         # REPLACED by it. g and thrust_tau_s are held fixed. When DISABLED the validated scalar path
         # in _step_torch runs unchanged -> the check_against_rl_plant gate stays bit-for-bit.
         self._dr_enabled = bool(getattr(cfg, "dr", False))
+        # MEASURED-AERO DR (twin-falsify 2026-06-11, WRITEUP Section 7): a SEPARATE opt-in on top
+        # of `dr` -- `+dynamics.dr_aero=true` forces the quad-drag + convex-collective aero ON
+        # with per-env bands (the aero IS the measured plant, but a concurrent training session
+        # owns the current configs, so unlike the super-rate map it does NOT auto-enable under
+        # plain `dr`; fold it into the default once the aero-ON retrain is gated in).
+        self._dr_aero = self._dr_enabled and bool(getattr(cfg, "dr_aero", False))
         self._dr_bands = {
             "s_lo":        float(getattr(cfg, "dr_s_lo", 0.25)),           # super-rate s (absolute;
             "s_hi":        float(getattr(cfg, "dr_s_hi", 0.35)),           #  measured 0.30 +- ~0.02)
@@ -291,13 +355,38 @@ class PeregrinePlantDynamics(BaseDynamics):
             "alpha_lo":    float(getattr(cfg, "dr_alpha_max_lo", 200.0)),  # rad/s^2 roll/pitch
             "alpha_hi":    float(getattr(cfg, "dr_alpha_max_hi", 320.0)),  #  (yaw scales by 80/260)
             "hover":       float(getattr(cfg, "dr_hover_frac", 0.05)),     # +- 5%
-            "drag":        float(getattr(cfg, "dr_drag_frac", 0.30)),      # +-30%
+            "drag":        float(getattr(cfg, "dr_drag_frac", 0.30)),      # +-30% (legacy linear)
+            # aero bands (active only with dr_aero). c2: WRITEUP Section 7 gives the ABSOLUTE
+            # per-axis band [0.040, 0.065] around the pooled 0.052 -- each (3,2) slot samples it
+            # RELATIVE to its own measured nominal (x [lo,hi]/0.052), the S14 yaw-alpha precedent
+            # (a literal absolute band would systematically under-drag the 0.076 climb slot).
+            "c2_lo":       float(getattr(cfg, "dr_c2_lo", 0.040)),         # 1/m, at the pooled nominal
+            "c2_hi":       float(getattr(cfg, "dr_c2_hi", 0.065)),
+            "d1_lo":       float(getattr(cfg, "dr_d1_lo", 0.0)),           # linear residual drag (1/s,
+            "d1_hi":       float(getattr(cfg, "dr_d1_hi", 0.08)),          #  absolute; mixed-form fit 0.07)
+            "coll_k_lo":   float(getattr(cfg, "dr_coll_k_lo", 0.90)),      # K-table scale (deltas from
+            "coll_k_hi":   float(getattr(cfg, "dr_coll_k_hi", 1.10)),      #  the hover point)
+            "coll_h_lo":   float(getattr(cfg, "dr_coll_hover_lo", 0.98)),  # hover-point pin +-2%
+            "coll_h_hi":   float(getattr(cfg, "dr_coll_hover_hi", 1.02)),
         }
         # DR nominal for alpha_max (the yaw column scales with it): the params' value if map-ON
         # params were passed, else the measured nominal [260, 260, 80].
         self._alpha_nom = np.broadcast_to(
             ALPHA_MAX_RPS2_MEASURED if self.params.alpha_max_rps2 is None
             else self.params.alpha_max_rps2, (3,)).astype(np.float64)
+        # Aero DR nominals (same pattern): the params' aero if passed, else the measured nominals.
+        self._c2_nom = np.asarray(
+            QUAD_DRAG_C2_MEASURED if self.params.quad_drag_c2 is None
+            else self.params.quad_drag_c2, dtype=np.float64)                    # (3, 2)
+        self._coll_thr_nom = np.asarray(
+            COLL_MAP_THR_MEASURED if self.params.coll_map_thr is None
+            else self.params.coll_map_thr, dtype=np.float64)                    # (K,)
+        self._coll_kvals_nom = np.asarray(
+            COLL_MAP_ACCEL_MEASURED if self.params.coll_map_accel is None
+            else self.params.coll_map_accel, dtype=np.float64)                  # (K,)
+        # the K-table value at the hover collective -- the +-2% pinned point of the table DR
+        self._coll_k_hover_nom = float(np.interp(self.params.hover_thrust,
+                                                 self._coll_thr_nom, self._coll_kvals_nom))
         if torch is not None and self._dr_enabled:
             n = self.n_envs
             self._dr_s = torch.full((n, 3), float(SUPER_RATE_S_MEASURED), device=device)
@@ -306,6 +395,28 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._dr_hover = torch.full((n,), float(self.params.hover_thrust), device=device)
             self._dr_drag = torch.full((n,), float(self.params.linear_drag), device=device)
             self._dr_rate_tau = torch.full((n,), float(self.params.rate_tau_s), device=device)
+        if torch is not None and self._dr_aero:
+            n = self.n_envs
+            # per-env aero tensors, initialised at the nominals (resampled per env at reset).
+            # Under dr_aero the linear_drag channel _dr_drag is re-purposed as the small residual
+            # d1 (absolute [d1_lo, d1_hi] band) -- its nominal is 0 (Section 7 pure-quad), or the
+            # params' own linear_drag when measured-aero params were passed (the "mixed" form);
+            # NEVER the legacy 0.2111 the quad term replaces.
+            self._dr_c2 = (torch.tensor(self._c2_nom, device=device, dtype=torch.float32)
+                           .unsqueeze(0).expand(n, 3, 2).clone())
+            self._dr_coll_kvals = (torch.tensor(self._coll_kvals_nom, device=device,
+                                                dtype=torch.float32)
+                                   .unsqueeze(0).expand(n, self._coll_kvals_nom.shape[0]).clone())
+            self._coll_knots_dr = torch.tensor(self._coll_thr_nom, device=device,
+                                               dtype=torch.float32)             # shared knot grid
+            d1_nom = (float(self.params.linear_drag)
+                      if self.params.quad_drag_c2 is not None else 0.0)
+            self._dr_drag = torch.full((n,), d1_nom, device=device)
+            # the stick->collective conversion is PINNED at the nominal hover under dr_aero: with
+            # the knot table the legacy +-5% hover jitter is no longer dynamically inert (it would
+            # scale the whole thrust curve ~+-10% at the hover point, violating the Section 7
+            # "hover pinned +-2%" requirement); the K-table h-jitter IS the hover randomization.
+            self._dr_hover = torch.full((n,), float(self.params.hover_thrust), device=device)
 
         # --- control-latency DR (item 4a): a per-env action RING BUFFER. The policy's command is
         # delayed by a per-episode integer number of control steps (resampled at reset) to model the
@@ -426,12 +537,26 @@ class PeregrinePlantDynamics(BaseDynamics):
             alpha = (1.0 - torch.exp(-sub_dt / self._dr_rate_tau)).unsqueeze(-1) # (n_envs, 1)
             super_s = self._dr_s                                                 # (n_envs, 3)
             alpha_max = self._dr_alpha_max                                       # (n_envs, 3)
+            if self._dr_aero:
+                # measured aero forced ON with per-env randomized tables; _dr_drag is the small
+                # residual d1 here (NOT the legacy 0.2111 -- the quad term replaces it) and
+                # _dr_hover is pinned at the nominal (see __init__).
+                quad_c2 = self._dr_c2                                            # (n_envs, 3, 2)
+                coll_knots = self._coll_knots_dr                                 # (K,) shared grid
+                coll_kvals = self._dr_coll_kvals                                 # (n_envs, K)
+            else:
+                quad_c2 = self._quad_c2                                          # (3, 2) or None
+                coll_knots = self._coll_knots                                    # (K,) or None
+                coll_kvals = self._coll_kvals                                    # (K,) or None
         else:
             hover = self.params.hover_thrust                                     # float
             drag = self.params.linear_drag                                      # float
             alpha = 1.0 - np.exp(-sub_dt / max(self.params.rate_tau_s, 1e-9))    # float (const over substeps)
             super_s = self._super_s                                              # (3,) or None (legacy)
             alpha_max = self._alpha_max                                          # (3,) or None (legacy)
+            quad_c2 = self._quad_c2                                              # (3, 2) or None (legacy)
+            coll_knots = self._coll_knots                                        # (K,) or None (legacy)
+            coll_kvals = self._coll_kvals                                        # (K,) or None (legacy)
         collective = U[..., 0] * hover                                           # (n_envs,)
 
         # params-level transport delay (mismatch #8b): mirror rl_plant's ring buffer EXACTLY --
@@ -469,9 +594,19 @@ class PeregrinePlantDynamics(BaseDynamics):
                 thrust = thrust + beta * (cmd_coll - thrust)
             else:
                 thrust = torch.broadcast_to(cmd_coll, thrust.shape)
-            a_up = self.params.g * thrust / hover
+            # thrust map: legacy linear g*thr/hover, or the measured convex knot table; drag:
+            # linear (legacy / d1 residual) + the measured body-frame sign-split quadratic term.
+            # Mirrors rl_plant.step operation-for-operation (twin-falsify 2026-06-11).
+            if coll_kvals is not None:
+                a_up = _t_interp1d(thrust, coll_knots, coll_kvals)
+            else:
+                a_up = self.params.g * thrust / hover
             f_world = a_up.unsqueeze(-1) * _t_quat_rotate(q, self._BODY_UP)
             f_world = f_world - drag * v
+            if quad_c2 is not None:
+                v_b = _t_quat_rotate(_t_quat_conjugate(q), v)        # OLD velocity, body frame
+                c = torch.where(v_b >= 0.0, quad_c2[..., 0], quad_c2[..., 1])
+                f_world = f_world + _t_quat_rotate(q, -(c * v_b.abs() * v_b))
             accel = f_world + self._g_vec_ned
             v = v + accel * sub_dt
             p = p + v * sub_dt
@@ -536,7 +671,14 @@ class PeregrinePlantDynamics(BaseDynamics):
         """Resample per-env plant params for the reset envs: super-rate s / rate_tau / alpha_max
         uniform within their ABSOLUTE measured bands, hover/drag within the fractional ones.
         rate_gain (G0) is deliberately NOT resampled -- fixed at the shipped nominal (the old
-        "+30% band" is superseded by the static map; characterize-sweep 2026-06-10)."""
+        "+30% band" is superseded by the static map; characterize-sweep 2026-06-10).
+
+        With ``dr_aero`` (twin-falsify 2026-06-11, WRITEUP Section 7): quad-drag c2 samples the
+        [c2_lo, c2_hi] band RELATIVE to the pooled 0.052 around each (3,2) slot's own nominal
+        (per-env per-slot); the collective K-table scales its deltas-from-hover by
+        [coll_k_lo, coll_k_hi] while the hover point itself gets only the +-2% pin band; the
+        linear-drag channel becomes the residual d1 in the ABSOLUTE [d1_lo, d1_hi] band; the
+        hover collective is PINNED at the nominal (the table's h-jitter owns the trim)."""
         m = int(env_idx.numel())
         if m == 0:
             return
@@ -556,9 +698,26 @@ class PeregrinePlantDynamics(BaseDynamics):
         amax = u_abs((m, 3), b["alpha_lo"], b["alpha_hi"])
         amax[:, 2] = amax[:, 2] * float(self._alpha_nom[2] / self._alpha_nom[0])
         self._dr_alpha_max[env_idx] = amax
-        self._dr_hover[env_idx] = float(self.params.hover_thrust) * u((m,), b["hover"])
-        self._dr_drag[env_idx] = float(self.params.linear_drag) * u((m,), b["drag"])
         self._dr_rate_tau[env_idx] = u_abs((m,), b["rate_tau_lo"], b["rate_tau_hi"])
+        if self._dr_aero:
+            # quad drag: per-slot relative scaling (sampled/pooled-nominal x slot nominal)
+            rel = u_abs((m, 3, 2), b["c2_lo"], b["c2_hi"]) / float(QUAD_DRAG_C2_POOLED)
+            c2_nom = torch.tensor(self._c2_nom, device=dev, dtype=self._dr_c2.dtype)
+            self._dr_c2[env_idx] = c2_nom * rel
+            # collective table: K_dr = h*K_hov + k*(K - K_hov) -- deltas-from-hover scale by k,
+            # the hover point moves only by h (the Section 7 "+-2% pin")
+            k = u_abs((m, 1), b["coll_k_lo"], b["coll_k_hi"])
+            h = u_abs((m, 1), b["coll_h_lo"], b["coll_h_hi"])
+            k_hov = float(self._coll_k_hover_nom)
+            kvals_nom = torch.tensor(self._coll_kvals_nom, device=dev,
+                                     dtype=self._dr_coll_kvals.dtype)
+            self._dr_coll_kvals[env_idx] = h * k_hov + k * (kvals_nom - k_hov)
+            # residual linear drag d1 (absolute band); hover stays pinned at the nominal
+            self._dr_drag[env_idx] = u_abs((m,), b["d1_lo"], b["d1_hi"])
+            self._dr_hover[env_idx] = float(self.params.hover_thrust)
+        else:
+            self._dr_hover[env_idx] = float(self.params.hover_thrust) * u((m,), b["hover"])
+            self._dr_drag[env_idx] = float(self.params.linear_drag) * u((m,), b["drag"])
 
     def check_against_rl_plant(self, U: Tensor, atol: float = 1e-5) -> float:
         """Validate the torch backend against the parity-tested numpy plant from the CURRENT state.

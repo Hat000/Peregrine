@@ -34,9 +34,14 @@ DISCRETE UPDATE (semi-implicit Euler, fixed ``dt``), per :func:`step` -- identic
     q       <- normalize( q (x) exp(omega * dt) )                   # R_world_body, Hamilton product
     # 3. realised collective -- optional first-order actuator lag (thrust_tau_s = 0 -> instant)
     thrust  <- thrust + (1 - exp(-dt / thrust_tau_s)) * (cmd_thrust - thrust)
-    # 4. translation -- thrust along body -Z (up), world-frame linear drag, gravity
-    a_up    = g * thrust / hover_thrust                             # thrust == hover -> a_up == g (balances)
+    # 4. translation -- thrust along body -Z (up), drag, gravity. The thrust map is the linear
+    #    g*thr/hover (legacy) or the measured CONVEX knot table when coll_map_* is set; drag is
+    #    world-frame linear (legacy) plus the measured body-frame direction-dependent QUADRATIC
+    #    term when quad_drag_c2 is set (twin-falsify 2026-06-11; all three default OFF).
+    a_up    = interp(thrust, coll_map_thr, coll_map_accel)          # or g * thrust / hover_thrust
     f_world = R(q) @ [0, 0, -a_up] - linear_drag * vel             # specific force incl. drag (OLD vel)
+    v_b     = R(q).T @ vel                                          # quad drag: body-frame, per-axis
+    f_world += R(q) @ (-c2[sign(v_b)] * |v_b| * v_b)                #   coefficient picked by sign(v_b)
     accel   = f_world + [0, 0, g]                                   # + gravity (NED +Z down)
     vel     <- vel + accel * dt                                     # update velocity first ...
     pos     <- pos + vel  * dt                                      # ... then position with the NEW velocity
@@ -58,7 +63,11 @@ PARAMS -- :class:`PlantParams`. Defaults ARE the validated sim-faithful PHYSICS
     physically), linear_drag 0.2111 /s, g 9.80665. The MEASURED super-rate map/slew
     (``super_rate_s=SUPER_RATE_S_MEASURED``, ``alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED``) default to
     None/OFF for exact backward compatibility -- turn them ON for sim-faithful saturated authority
-    (the flat 2.5 gain under-predicts full-stick authority by up to 42%).
+    (the flat 2.5 gain under-predicts full-stick authority by up to 42%). The MEASURED aero
+    (``quad_drag_c2=QUAD_DRAG_C2_MEASURED`` + ``coll_map_thr/accel=COLL_MAP_*_MEASURED`` with
+    ``linear_drag=0.0``; twin-falsify 2026-06-11) likewise defaults to None/OFF -- turn it ON for
+    sim-faithful braking (legacy under-brakes 2.2x at 9 m/s) and climb authority (legacy
+    under-predicts full-stick thrust 2.1x).
 
 SIGN CONVENTIONS (PHYSICS ONLY):
     world NED (Z down, g = +9.80665 on +Z), body FRD (X fwd, Y right, Z down), thrust acts along body
@@ -93,6 +102,10 @@ __all__ = [
     "quat_normalize",
     "SUPER_RATE_S_MEASURED",
     "ALPHA_MAX_RPS2_MEASURED",
+    "QUAD_DRAG_C2_MEASURED",
+    "QUAD_DRAG_C2_POOLED",
+    "COLL_MAP_THR_MEASURED",
+    "COLL_MAP_ACCEL_MEASURED",
 ]
 
 _G = 9.80665
@@ -103,6 +116,31 @@ _BODY_UP = np.array([0.0, 0.0, -1.0])   # thrust direction in body FRD (up = -Z)
 # roll/pitch, ~78 yaw (level). These are the DR centers and the values faithful map-ON configs use.
 SUPER_RATE_S_MEASURED = 0.30
 ALPHA_MAX_RPS2_MEASURED = np.array([260.0, 260.0, 80.0])
+
+# Measured AERO nominals (twin-falsify campaign 2026-06-10/11, handoff/shadowpc-twin-falsify-
+# 2026-06-10/WRITEUP.md Sections 2-3 + 7; 40+ recordings, predictions committed pre-flight).
+# Body-frame quadratic drag coefficients (1/m): rows = body FRD axis, column 0 applies where
+# v_body[axis] >= 0, column 1 where < 0. x: 0.042 nose-first / 0.058 tail-first (WRITEUP per-
+# family coast fits); y: 0.055 symmetric; z: 0.0539 descend (+z) / 0.0756 climb (-z) (joint
+# vertical fit, vert_fit_coef.npy full precision -- the WRITEUP rounds these to 0.054/0.076).
+QUAD_DRAG_C2_MEASURED = np.array([[0.042, 0.058],
+                                  [0.055, 0.055],
+                                  [0.0539309301924107, 0.0756168595765378]])
+QUAD_DRAG_C2_POOLED = 0.052          # isotropic pooled coast fit -- the WRITEUP Section 7 DR-band center
+# Convex collective->accel knot table (WRITEUP Section 3 joint fit, 4812 samples; the hover knot
+# recovers g to 2.3% -- kept as measured, NOT snapped to g). Knots 0.0/0.10 are not fit-grade
+# (drag colinearity); per Section 7 they are replaced by the linear extrapolation of the
+# 0.15-0.20 segment, FLOORED AT 0: the raw extrapolation (-5.60 / -0.45 m/s^2) is worse-than-
+# free-fall, contradicting the measured c000 near-free-fall (Section 8). The floor encodes the
+# motor idle deadband instead. np.interp clamps beyond 1.0 (the [0,1] stick saturates there).
+COLL_MAP_THR_MEASURED = np.array([0.0, 0.10, 0.15, 0.20, 0.2656, 0.32, 0.40, 0.45,
+                                  0.55, 0.60, 0.80, 1.0])
+COLL_MAP_ACCEL_MEASURED = np.array([0.0, 0.0,
+                                    2.1279523370741864, 4.7051594638528362,
+                                    9.5804078429104393, 13.576760297067407,
+                                    21.708896781382972, 26.488309151664271,
+                                    38.748577917265877, 42.360958058019655,
+                                    58.431876299624356, 78.282838504684648])
 
 
 # --------------------------------------------------------------------------- quaternion helpers
@@ -173,6 +211,22 @@ def _clip_to_norm(v: np.ndarray, max_norm: float) -> np.ndarray:
     return v * scale
 
 
+def _interp1d(x: np.ndarray, xp: np.ndarray, fp: np.ndarray) -> np.ndarray:
+    """Batched piecewise-linear interpolation with end-knot clamping -- ``np.interp`` semantics
+    (bit-identical for finite inputs: same segment selection, same ``y0 + slope*(x - x0)``
+    arithmetic, exact ``fp`` values at the knots and beyond the ends). Written out explicitly so
+    the torch backend can mirror it operation-for-operation (``np.interp`` has no torch analog).
+    Shapes ``(...,), (K,), (K,) -> (...,)``."""
+    idx = np.clip(np.searchsorted(xp, x, side="right") - 1, 0, xp.shape[0] - 2)
+    x0 = xp[idx]
+    y0 = fp[idx]
+    slope = (fp[idx + 1] - y0) / (xp[idx + 1] - x0)
+    y = y0 + slope * (x - x0)
+    y = np.where(x <= xp[0], fp[0], y)
+    y = np.where(x >= xp[-1], fp[-1], y)
+    return y
+
+
 # --------------------------------------------------------------------------- params
 @dataclass
 class PlantParams:
@@ -194,6 +248,17 @@ class PlantParams:
     # Measured ALPHA_MAX_RPS2_MEASURED=[260, 260, 80].
     alpha_max_rps2: float | np.ndarray | None = None
     linear_drag: float = 0.2111            # world-frame linear drag (1/s)
+    # Measured body-frame direction-dependent QUADRATIC drag (twin-falsify 2026-06-11): scalar |
+    # (3,) | (3,2) per-axis-per-sign table, normalised to (3,2) in __post_init__ ([:, 0] where
+    # v_body >= 0, [:, 1] where < 0). ADDS to linear_drag (the measured config zeroes linear_drag).
+    # None -> OFF (exact legacy). Nominal = QUAD_DRAG_C2_MEASURED.
+    quad_drag_c2: float | np.ndarray | None = None
+    # Measured CONVEX collective->accel knot table (same campaign): when both are set,
+    # a_up = interp(thrust, coll_map_thr, coll_map_accel) REPLACES g*thrust/hover_thrust
+    # (clamped to the end knots outside the range). Set together or not at all (validated).
+    # None -> OFF (exact legacy). Nominals = COLL_MAP_THR_MEASURED / COLL_MAP_ACCEL_MEASURED.
+    coll_map_thr: np.ndarray | None = None
+    coll_map_accel: np.ndarray | None = None
     thrust_tau_s: float = 0.0              # actuator (collective) first-order lag (s); 0 -> instant
     transport_delay_steps: int = 0         # command transport delay in integer steps; 0 -> OFF
     # Sanity NORM clamp on |omega|. With the map ON the DC ceiling is g(pi)*pi ~= 11.2 rad/s per
@@ -207,6 +272,26 @@ class PlantParams:
             self.super_rate_s = np.asarray(self.super_rate_s, dtype=np.float64)
         if self.alpha_max_rps2 is not None:
             self.alpha_max_rps2 = np.asarray(self.alpha_max_rps2, dtype=np.float64)
+        if self.quad_drag_c2 is not None:
+            t = np.asarray(self.quad_drag_c2, dtype=np.float64)
+            if t.ndim == 0:
+                t = np.full((3, 2), float(t))
+            elif t.shape == (3,):
+                t = np.stack([t, t], axis=-1)
+            elif t.shape != (3, 2):
+                raise ValueError(f"quad_drag_c2 must be a scalar, (3,) or (3, 2); got shape {t.shape}")
+            self.quad_drag_c2 = t
+        if (self.coll_map_thr is None) != (self.coll_map_accel is None):
+            raise ValueError("coll_map_thr and coll_map_accel must be set together")
+        if self.coll_map_thr is not None:
+            thr = np.asarray(self.coll_map_thr, dtype=np.float64)
+            acc = np.asarray(self.coll_map_accel, dtype=np.float64)
+            if thr.ndim != 1 or thr.shape != acc.shape or thr.shape[0] < 2:
+                raise ValueError("coll_map_thr/coll_map_accel must be matching 1-D arrays, K >= 2")
+            if not np.all(np.diff(thr) > 0.0):
+                raise ValueError("coll_map_thr knots must be strictly increasing")
+            self.coll_map_thr = thr
+            self.coll_map_accel = acc
 
 
 # --------------------------------------------------------------------------- state
@@ -306,10 +391,20 @@ def step(state: PlantState, action: np.ndarray, dt: float, params: PlantParams) 
     else:
         thrust = np.broadcast_to(cmd_thrust, state.thrust.shape).astype(np.float64, copy=True)
 
-    # --- 4. translation: thrust along body -Z (up) -> world, world-frame drag, gravity (NED +Z down) ---
-    a_up = params.g * thrust / params.hover_thrust               # (...,)
+    # --- 4. translation: thrust along body -Z (up) -> world, drag, gravity (NED +Z down).
+    # Thrust map: linear g*thr/hover (legacy) or the measured convex knot table; drag: world
+    # linear (legacy) + the measured body-frame sign-split quadratic term (twin-falsify
+    # 2026-06-11). All aero params None -> bit-identical legacy floats. ---
+    if params.coll_map_thr is not None:
+        a_up = _interp1d(thrust, params.coll_map_thr, params.coll_map_accel)   # (...,)
+    else:
+        a_up = params.g * thrust / params.hover_thrust           # (...,)
     f_world = a_up[..., None] * quat_rotate(quat, _BODY_UP)      # (..., 3) body -Z (up) in world NED
     f_world = f_world - params.linear_drag * state.vel           # specific force incl. drag (OLD vel)
+    if params.quad_drag_c2 is not None:
+        v_b = quat_rotate_inverse(quat, state.vel)               # (..., 3) OLD velocity, body frame
+        c = np.where(v_b >= 0.0, params.quad_drag_c2[..., 0], params.quad_drag_c2[..., 1])
+        f_world = f_world + quat_rotate(quat, -(c * np.abs(v_b) * v_b))
     accel = f_world + np.array([0.0, 0.0, params.g])             # + gravity
     vel = state.vel + accel * dt                                 # semi-implicit: velocity first ...
     pos = state.pos + vel * dt                                   # ... then position with the NEW velocity
