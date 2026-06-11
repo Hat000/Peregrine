@@ -21,10 +21,15 @@ Why a separate module (not reuse twin.py):
 DISCRETE UPDATE (semi-implicit Euler, fixed ``dt``), per :func:`step` -- identical to
 ``CtbrPlant.step`` with the latency params defaulted off:
 
-    # 1. inner rate loop -- first-order lag toward the sim's realised steady rate
-    target  = rate_gain * rate_sign * cmd_rate                      # (sim amplifies ~2.5x; inverts yaw cmd)
-    omega   <- omega + (1 - exp(-dt / rate_tau_s)) * (target - omega)
-    omega   <- clip_to_norm(omega, max_omega_rps)                   # sanity clamp on |omega|
+    # 1. inner rate loop -- first-order lag toward the sim's realised steady rate. The steady gain
+    #    is FLAT rate_gain (legacy, super_rate_s=None) or the measured STATIC amplitude-dependent
+    #    "super-rate" map (characterize-sweep 2026-06-10): gain grows with command amplitude.
+    gain    = rate_gain / (1 - super_rate_s * min(|cmd_rate|, pi) / pi)   # per axis; flat if s=None
+    target  = gain * rate_sign * cmd_rate                           # (sim amplifies ~2.5x at small cmd,
+                                                                    #  ~3.5x at full stick; inverts yaw cmd)
+    domega  = (1 - exp(-dt / rate_tau_s)) * (target - omega)
+    domega  <- clip(domega, +-alpha_max_rps2 * dt)                  # per-axis slew limit (None -> off)
+    omega   <- clip_to_norm(omega + domega, max_omega_rps)          # sanity clamp on |omega|
     # 2. attitude -- integrate the BODY rate (right-multiply by the body-frame increment)
     q       <- normalize( q (x) exp(omega * dt) )                   # R_world_body, Hamilton product
     # 3. realised collective -- optional first-order actuator lag (thrust_tau_s = 0 -> instant)
@@ -50,7 +55,10 @@ ACTION -- ``(..., 4)`` CTBR command ``[wx, wy, wz, collective]``: body-rate setp
 PARAMS -- :class:`PlantParams`. Defaults ARE the validated sim-faithful PHYSICS
     (``twin.faithful_config`` with the telemetry report-signs dropped): hover 0.2656, rate_tau 0.019 s,
     rate_gain [2.501, 2.504, 2.231], rate_sign [+1, +1, -1] (sim inverts ONLY the yaw command,
-    physically), linear_drag 0.2111 /s, g 9.80665.
+    physically), linear_drag 0.2111 /s, g 9.80665. The MEASURED super-rate map/slew
+    (``super_rate_s=SUPER_RATE_S_MEASURED``, ``alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED``) default to
+    None/OFF for exact backward compatibility -- turn them ON for sim-faithful saturated authority
+    (the flat 2.5 gain under-predicts full-stick authority by up to 42%).
 
 SIGN CONVENTIONS (PHYSICS ONLY):
     world NED (Z down, g = +9.80665 on +Z), body FRD (X fwd, Y right, Z down), thrust acts along body
@@ -83,10 +91,18 @@ __all__ = [
     "quat_rotate_inverse",
     "quat_conjugate",
     "quat_normalize",
+    "SUPER_RATE_S_MEASURED",
+    "ALPHA_MAX_RPS2_MEASURED",
 ]
 
 _G = 9.80665
 _BODY_UP = np.array([0.0, 0.0, -1.0])   # thrust direction in body FRD (up = -Z)
+
+# Measured super-rate map nominals (characterize-sweep 2026-06-10, WRITEUP Section 3; 15-run
+# controlled magnitude sweep on the live sim). s is good to ~+-0.02; slew measured 250-280 rad/s^2
+# roll/pitch, ~78 yaw (level). These are the DR centers and the values faithful map-ON configs use.
+SUPER_RATE_S_MEASURED = 0.30
+ALPHA_MAX_RPS2_MEASURED = np.array([260.0, 260.0, 80.0])
 
 
 # --------------------------------------------------------------------------- quaternion helpers
@@ -166,17 +182,31 @@ class PlantParams:
     hover_thrust: float = 0.2656            # collective at zero net vertical accel
     g: float = _G
     rate_tau_s: float = 0.0190             # inner rate-loop first-order time constant (s)
-    # realised body rate is a first-order lag toward ``rate_gain * rate_sign * cmd_rate``
+    # realised body rate is a first-order lag toward ``gain * rate_sign * cmd_rate`` where gain is
+    # flat rate_gain (legacy) or the super-rate map when super_rate_s is set (see module docstring)
     rate_gain: np.ndarray = field(default_factory=lambda: np.array([2.501, 2.504, 2.231]))
     rate_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, -1.0]))  # PHYSICS: yaw cmd inverted
+    # STATIC amplitude-dependent gain map strength s (scalar or (3,)); None -> flat legacy gain.
+    # Measured SUPER_RATE_S_MEASURED=0.30 roll/pitch; yaw same form (the level-attitude ~7.4 rad/s
+    # yaw plateau is a KNOWN UNMODELED caveat -- racing yaw cmds are small; own pass if it matters).
+    super_rate_s: float | np.ndarray | None = None
+    # per-axis slew limit on the realised rate (rad/s^2; scalar or (3,)); None -> unlimited.
+    # Measured ALPHA_MAX_RPS2_MEASURED=[260, 260, 80].
+    alpha_max_rps2: float | np.ndarray | None = None
     linear_drag: float = 0.2111            # world-frame linear drag (1/s)
     thrust_tau_s: float = 0.0              # actuator (collective) first-order lag (s); 0 -> instant
     transport_delay_steps: int = 0         # command transport delay in integer steps; 0 -> OFF
-    max_omega_rps: float = 25.0            # sanity clamp on |omega|
+    # Sanity NORM clamp on |omega|. With the map ON the DC ceiling is g(pi)*pi ~= 11.2 rad/s per
+    # axis (~18.5 worst-case 3-axis norm) -- keep >= ~11.5 or the flat-gain ceiling artifact returns.
+    max_omega_rps: float = 25.0
 
     def __post_init__(self) -> None:
         self.rate_gain = np.asarray(self.rate_gain, dtype=np.float64)
         self.rate_sign = np.asarray(self.rate_sign, dtype=np.float64)
+        if self.super_rate_s is not None:
+            self.super_rate_s = np.asarray(self.super_rate_s, dtype=np.float64)
+        if self.alpha_max_rps2 is not None:
+            self.alpha_max_rps2 = np.asarray(self.alpha_max_rps2, dtype=np.float64)
 
 
 # --------------------------------------------------------------------------- state
@@ -252,10 +282,19 @@ def step(state: PlantState, action: np.ndarray, dt: float, params: PlantParams) 
     cmd_rate = applied[..., :3]                                  # (..., 3) rad/s
     cmd_thrust = applied[..., 3]                                 # (...,)
 
-    # --- 1. inner rate loop: first-order lag toward the sim's realised steady rate, then norm-clamp ---
-    target = params.rate_gain * params.rate_sign * cmd_rate      # (..., 3)
+    # --- 1. inner rate loop: first-order lag toward the sim's realised steady rate (flat gain or
+    # the super-rate map), optional per-axis slew limit, then norm-clamp. Mirrors twin.py
+    # operation-for-operation (bit-identical floats); both new params None -> exact legacy update. ---
+    gain = params.rate_gain
+    if params.super_rate_s is not None:
+        gain = gain / (1.0 - params.super_rate_s * np.minimum(np.abs(cmd_rate), np.pi) / np.pi)
+    target = gain * params.rate_sign * cmd_rate                  # (..., 3)
     alpha = 1.0 - np.exp(-dt / max(params.rate_tau_s, 1e-9))
-    omega = _clip_to_norm(state.omega + alpha * (target - state.omega), params.max_omega_rps)
+    domega = alpha * (target - state.omega)
+    if params.alpha_max_rps2 is not None:
+        lim = params.alpha_max_rps2 * dt
+        domega = np.clip(domega, -lim, lim)
+    omega = _clip_to_norm(state.omega + domega, params.max_omega_rps)
 
     # --- 2. attitude: integrate the BODY-frame rate (right-multiply by the body-frame increment) ---
     quat = quat_normalize(quat_multiply(state.quat, rotvec_to_quat(omega * dt)))

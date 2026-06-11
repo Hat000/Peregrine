@@ -361,15 +361,24 @@ def _wrap(a: np.ndarray) -> np.ndarray:
 # odo_att_report_sign=[-1,1,1] (ODOMETRY-quat roll inverted), odo_rate_report_sign=[-1,-1,1] (raw
 # ODOMETRY angular_rate inverted on roll+pitch). The reported-q quat-FD COMPOSITE the fit measures is
 # [-1,+1,-1] = physical [+1,+1,-1] x att-report [-1,+1,+1].
-def faithful_config():
+def faithful_config(super_rate: bool = False):
     """The sim-faithful :class:`CtbrPlantConfig` fitted from the ShadowPC sysid extract (Task B/C):
     true-frame physics + the sim's ODOMETRY telemetry inversions, so the measured live controller
-    signs transfer. Reproduce with ``scripts/fit_twin.py``."""
+    signs transfer. Reproduce with ``scripts/fit_twin.py``.
+
+    ``super_rate=True`` additionally turns on the measured STATIC amplitude-dependent inner-loop
+    gain map + slew limit (characterize-sweep 2026-06-10, ``handoff/shadowpc-characterize-sweep-
+    2026-06-10/WRITEUP.md`` Section 3): ``g(|c|) = rate_gain/(1 - 0.30*min(|c|,pi)/pi)`` (sustained
+    gains 2.50 -> 3.50 over |cmd| 0.3 -> 3.14, roll == pitch; s good to ~+-0.02) with slew
+    ``alpha_max`` ~260 rad/s^2 roll/pitch, ~80 yaw. The flat default (False) preserves the exact
+    pre-map twin every existing consumer was tuned against."""
     return CtbrPlantConfig(
         hover_thrust=0.2656,
         rate_tau_s=0.0190,
         rate_gain=np.array([2.501, 2.504, 2.231]),
         rate_sign=np.array([1.0, 1.0, -1.0]),              # PHYSICAL: only yaw command inverted
+        super_rate_s=0.30 if super_rate else None,         # static gain map (sweep 2026-06-10)
+        alpha_max_rps2=np.array([260.0, 260.0, 80.0]) if super_rate else None,
         linear_drag=0.2111,
         odo_att_report_sign=np.array([-1.0, 1.0, 1.0]),    # telemetry: ODOMETRY-quat roll inverted
         odo_rate_report_sign=np.array([-1.0, -1.0, 1.0]),  # telemetry: raw rate inverted roll+pitch
