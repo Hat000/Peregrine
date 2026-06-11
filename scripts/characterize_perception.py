@@ -46,7 +46,7 @@ from racer.localization import (
     P3P_FIX_COV_INFLATION,
     gate_pose_to_world_position,
 )
-from racer.navigator import load_track_map
+from racer.navigator import NavigatorConfig, load_track_map
 from racer.vision.association import (
     associate_scored,
     predict_gates_in_camera,
@@ -84,6 +84,28 @@ def main() -> int:
                          "(pass 1.0 for the pre-change baseline; default = production "
                          f"PNP_FIX_COV_INFLATION={PNP_FIX_COV_INFLATION}). Sweep to trade good-fix "
                          "yield against catastrophic leak.")
+    ap.add_argument("--attitude-noise-std-deg", type=float, default=None,
+                    help="given-attitude 1-sigma (deg) for the lever-arm covariance term, threaded "
+                         "to gate_pose_to_world_position (default: the production default baked "
+                         "into racer.localization). The cov-finishhold-2026-06-09 session showed "
+                         "good-fix over-rejection is attitude-lever-dominated; sweep THIS, not "
+                         "--cov-inflation, to move it.")
+    ap.add_argument("--fix-cov-floor", type=float, default=None,
+                    help="isotropic world-fix covariance floor 1-sigma (m) threaded to "
+                         "gate_pose_to_world_position (default: production FIX_COV_FLOOR_STD; "
+                         "pass 0 for the pre-vision-pkg2 baseline).")
+    ap.add_argument("--max-range-m", type=float, default=None,
+                    help="mirror the navigator's vision_max_range_m: a solved fix beyond this "
+                         "range is NOT offered to the chi2 gate (default: the production "
+                         "NavigatorConfig value; pass a large value to reproduce pre-cap "
+                         "baselines -- the published 2026-06-08/09 numbers had no cap applied "
+                         "in this harness).")
+    ap.add_argument("--dump-extras", action="store_true",
+                    help="record per-row chain internals in the --json dump (odo quat + euler, "
+                         "solved & predicted gate rotations as rotvecs, t_cam vectors, corner "
+                         "pixels/confidences, the analytic world-frame PnP translation cov) so "
+                         "attitude-error / calibration analyses can run offline without "
+                         "re-running the detector.")
     ap.add_argument("--naive-assoc", action="store_true",
                     help="use the retired nearest-centre/150px association with NO depth sanity "
                          "(the pre-2026-06-09 baseline that measured the 46%% catastrophic tail) "
@@ -95,8 +117,25 @@ def main() -> int:
     gates = load_track_map(args.map, corner_to_center=True)
     gates_by_id = {g.gate_id: g for g in gates}
     det = GateDetector.load(Path(args.weights), score_thresh=0.25, kpt_conf_thresh=0.5)
+    # production default unless overridden (kwargs-style so the localization default stays the
+    # single source of truth)
+    loc_kw = dict(pnp_cov_inflation=args.cov_inflation)
+    if args.attitude_noise_std_deg is not None:
+        loc_kw["attitude_noise_std"] = float(np.deg2rad(args.attitude_noise_std_deg))
+    if args.fix_cov_floor is not None:
+        loc_kw["fix_cov_floor_std"] = float(args.fix_cov_floor)
+    import inspect
+    _sig = inspect.signature(gate_pose_to_world_position).parameters
+    eff_att_deg = (args.attitude_noise_std_deg if args.attitude_noise_std_deg is not None
+                   else float(np.degrees(_sig["attitude_noise_std"].default)))
+    eff_floor = (args.fix_cov_floor if args.fix_cov_floor is not None
+                 else float(_sig["fix_cov_floor_std"].default))
+    max_range = (args.max_range_m if args.max_range_m is not None
+                 else float(NavigatorConfig().vision_max_range_m))
     print(f"bundle={bundle.name}  run={d.get('run')}  n_frames={d['n_frames']}  "
-          f"range {d['range_span_m']} m  weights={Path(args.weights).name}  gates={len(gates)}")
+          f"range {d['range_span_m']} m  weights={Path(args.weights).name}  gates={len(gates)}  "
+          f"attitude_noise_std={eff_att_deg:.2f}deg  fix_cov_floor={eff_floor:.2f}m  "
+          f"max_range={max_range:.0f}m")
 
     rows = []
     for fr in d["frames"]:
@@ -143,8 +182,8 @@ def main() -> int:
                 # the navigator's post-PnP depth sanity (always rendered TRUE in naive mode,
                 # where the check did not exist)
                 range_ok = args.naive_assoc or range_consistent(pose.range_m, pg.range_m)
-                pos_fix, cov = gate_pose_to_world_position(
-                    pose, gate, R_wb, pnp_cov_inflation=args.cov_inflation)
+                range_cap_ok = bool(pose.range_m <= max_range)   # navigator's vision_max_range_m
+                pos_fix, cov = gate_pose_to_world_position(pose, gate, R_wb, **loc_kw)
                 if pose.n_corners < 4:
                     cov = cov * P3P_FIX_COV_INFLATION
                 off = pos_fix - drone                         # world-fix error (N/E/D)
@@ -157,15 +196,47 @@ def main() -> int:
                            reproj_px=float(pose.reproj_error_px), pose_range_m=float(pose.range_m),
                            true_range_m=true_rng, range_err_m=float(pose.range_m - true_rng),
                            bearing_deg=bearing, t_cam_err_m=t_err, range_ok=bool(range_ok),
+                           range_cap_ok=range_cap_ok,
                            off_ned=[float(x) for x in off], world_fix_err_m=float(np.linalg.norm(off)),
                            maha=maha)
+                if args.dump_extras:
+                    # chain internals for offline attitude-error / calibration analysis: the
+                    # SOLVED gate rotation vs the MODEL-PREDICTED one is the per-frame 3-DOF
+                    # vision-chain attitude error (independent of gate map POSITION), and the
+                    # analytic translation cov (world frame, UNinflated) feeds the sigma_theta MLE.
+                    R_wc = R_wb @ F.R_camera_from_body().T
+                    cov_t_world = None
+                    if pose.covariance is not None:
+                        sig_tt = np.asarray(pose.covariance, float)[:3, :3]
+                        cov_t_world = (R_wc @ sig_tt @ R_wc.T).tolist()
+                    rvec = lambda R: cv2.Rodrigues(np.ascontiguousarray(R, dtype=np.float64))[0].ravel().tolist()  # noqa: E731
+                    row.update(
+                        odo_q_wxyz=[float(v) for v in fr["odo_q_wxyz"]],
+                        rpy_deg=[float(np.degrees(a)) for a in
+                                 F.euler_from_quat_wxyz(np.asarray(fr["odo_q_wxyz"], float))],
+                        drone_position_ned=[float(v) for v in drone],
+                        rvec_cam_gate=rvec(pose.R_cam_gate),
+                        rvec_cam_gate_pred=rvec(pg.R_cam_gate),
+                        t_cam_solved=[float(v) for v in pose.t_cam_gate],
+                        t_cam_pred=[float(v) for v in t_pred],
+                        cov_t_world=cov_t_world,
+                        corners_px=np.asarray(o.corners_px, float).tolist(),
+                        corner_conf=(None if o.corner_confidence is None
+                                     else np.asarray(o.corner_confidence, float).tolist()),
+                        corner_ids=(None if o.corner_ids is None
+                                    else np.asarray(o.corner_ids, int).tolist()),
+                    )
         rows.append(row)
 
-    _report(rows, cov_inflation=args.cov_inflation, naive=args.naive_assoc)
+    _report(rows, cov_inflation=args.cov_inflation, naive=args.naive_assoc, att_deg=eff_att_deg,
+            floor=eff_floor)
     if args.json:
         Path(args.json).write_text(json.dumps({"bundle": d.get("run"), "weights": Path(args.weights).name,
                                                "assoc_mode": "naive" if args.naive_assoc else "robust",
                                                "cov_inflation": args.cov_inflation,
+                                               "attitude_noise_std_deg": eff_att_deg,
+                                               "fix_cov_floor_m": eff_floor,
+                                               "map": str(args.map),
                                                "rows": rows}, indent=2))
         print(f"\nwrote per-frame rows -> {args.json}")
     return 0
@@ -175,7 +246,8 @@ def _pct(a, q):
     return float(np.percentile(a, q)) if len(a) else float("nan")
 
 
-def _report(rows: list[dict], cov_inflation: float = 1.0, naive: bool = False) -> None:
+def _report(rows: list[dict], cov_inflation: float = 1.0, naive: bool = False,
+            att_deg: float = float("nan"), floor: float = float("nan")) -> None:
     n = len(rows)
     det = [r for r in rows if r["detected"]]
     assoc = [r for r in rows if r.get("associated") and "world_fix_err_m" in r]
@@ -241,14 +313,21 @@ def _report(rows: list[dict], cov_inflation: float = 1.0, naive: bool = False) -
     # navigator now refuses BEFORE they reach the chi2 gate, and what is left after. OFFERED =
     # fixes that pass the depth sanity (in naive mode = all solved fixes: the check didn't exist).
     GOOD_MAX_M, CAT_MIN_M = 1.0, 3.0
-    offered = [r for r in assoc if r.get("range_ok", True)]
+    sane = [r for r in assoc if r.get("range_ok", True)]
     dropped = [r for r in assoc if not r.get("range_ok", True)]
     drop_cat = sum(r["world_fix_err_m"] >= CAT_MIN_M for r in dropped)
     drop_good = sum(r["world_fix_err_m"] < GOOD_MAX_M for r in dropped)
+    offered = [r for r in sane if r.get("range_cap_ok", True)]
+    capped = [r for r in sane if not r.get("range_cap_ok", True)]
+    cap_cat = sum(r["world_fix_err_m"] >= CAT_MIN_M for r in capped)
+    cap_good = sum(r["world_fix_err_m"] < GOOD_MAX_M for r in capped)
     off_fix = np.array([r["world_fix_err_m"] for r in offered])
     n_off_cat = int((off_fix >= CAT_MIN_M).sum()) if len(off_fix) else 0
     print(f"\nDEPTH-SANITY (range_consistent): dropped {len(dropped)}/{len(assoc)} solved fixes "
           f"({drop_cat} catastrophic, {drop_good} good<{GOOD_MAX_M:.0f} m)")
+    if capped:
+        print(f"RANGE CAP (vision_max_range_m): dropped {len(capped)} more "
+              f"({cap_cat} catastrophic, {cap_good} good<{GOOD_MAX_M:.0f} m)")
     print(f"OFFERED to the chi2 gate: N={len(offered)}  catastrophic {n_off_cat} "
           f"({100.0 * n_off_cat / len(offered) if offered else float('nan'):.0f}%)  "
           f"|fix| p50 {_pct(off_fix, 50):.2f}  p90 {_pct(off_fix, 90):.2f} m")
@@ -271,6 +350,7 @@ def _report(rows: list[dict], cov_inflation: float = 1.0, naive: bool = False) -
     catch = 100.0 * (n_cat - cat_leak) / n_cat if n_cat else float("nan")
     leak_all = 100.0 * cat_leak / len(assoc) if assoc else float("nan")
     print(f"\nGATE TRADE-OFF on OFFERED fixes  (chi2_0.999={CHI2_GATE}, cov_inflation={cov_inflation:.2f}, "
+          f"attitude_noise_std={att_deg:.2f}deg, fix_cov_floor={floor:.2f}m, "
           f"good<{GOOD_MAX_M:.0f} m, catastrophic>={CAT_MIN_M:.0f} m):")
     print(f"  GOOD fixes (keep)    N={n_good:3d}   rejected {good_rej:3d}  ({gr:4.0f}%)"
           f"   <- minimise (good-fix yield loss; target <5%)")

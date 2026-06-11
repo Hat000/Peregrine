@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from racer.contracts import DroneState, NavState
+from racer.frames import ATTITUDE_NOISE_STD_RAD
 
 _I3 = np.eye(3)
 _Z3 = np.zeros((3, 3))
@@ -66,7 +67,10 @@ class LinearKF:
     x: np.ndarray                      # (6,)
     P: np.ndarray                      # (6,6)
     accel_noise_std: float = 0.3       # m/s^2, accel process/measurement noise (tune to the IMU)
-    attitude_noise_std: float = np.deg2rad(1.0)  # rad, 1-sigma error in the GIVEN attitude [review 3A]
+    # rad, 1-sigma error in the GIVEN attitude [review 3A]. Measured through the vision chain
+    # (frames.ATTITUDE_NOISE_STD_RAD, vision-pkg2 2026-06-10) -- an upper bound on the pure
+    # given-attitude error, so the Q inflation it drives here is honest-to-conservative.
+    attitude_noise_std: float = ATTITUDE_NOISE_STD_RAD
     gravity_ned: np.ndarray = field(default_factory=lambda: GRAVITY_NED.copy())
     process_floor: float = 1e-6        # tiny diagonal to keep Q full-rank
     max_dt_s: float = 0.2              # reject implausibly large predict steps (sim reset/stutter) [red-team]

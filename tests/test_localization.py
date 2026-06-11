@@ -52,8 +52,10 @@ def test_glue_covariance_is_rotated_translation_block():
     # attitude_noise_std=0 isolates the pure PnP-translation rotation (the attitude lever-arm
     # term is exercised separately in test_glue_inflates_covariance_for_attitude_uncertainty);
     # pnp_cov_inflation=1.0 isolates the raw rotated block (the inflation is exercised in
-    # test_glue_inflates_analytic_pnp_covariance).
-    _, cov = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=1.0)
+    # test_glue_inflates_analytic_pnp_covariance); fix_cov_floor_std=0 drops the constant-
+    # systematics floor (exercised in test_glue_adds_fix_cov_floor).
+    _, cov = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0,
+                                         pnp_cov_inflation=1.0, fix_cov_floor_std=0.0)
     R_wc = R_wb @ R_camera_from_body().T
     np.testing.assert_allclose(cov, R_wc @ sigma_tt @ R_wc.T, atol=1e-12)
 
@@ -68,21 +70,72 @@ def test_glue_inflates_analytic_pnp_covariance():
     cov6[:3, :3] = sigma_tt
     gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg,
                   reproj_error_px=0.0, covariance=cov6)
-    _, cov1 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=1.0)
-    _, cov2 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=2.5)
+    _, cov1 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0,
+                                          pnp_cov_inflation=1.0, fix_cov_floor_std=0.0)
+    _, cov2 = gate_pose_to_world_position(gp, gate, R_wb, attitude_noise_std=0.0,
+                                          pnp_cov_inflation=2.5, fix_cov_floor_std=0.0)
     np.testing.assert_allclose(cov2, 2.5 * cov1, rtol=1e-12)
     # fallback (no covariance) is independent of pnp_cov_inflation
     gp_nocov = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg, reproj_error_px=0.0)
-    _, fb1 = gate_pose_to_world_position(gp_nocov, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=1.0)
-    _, fb2 = gate_pose_to_world_position(gp_nocov, gate, R_wb, attitude_noise_std=0.0, pnp_cov_inflation=5.0)
+    _, fb1 = gate_pose_to_world_position(gp_nocov, gate, R_wb, attitude_noise_std=0.0,
+                                         pnp_cov_inflation=1.0, fix_cov_floor_std=0.0)
+    _, fb2 = gate_pose_to_world_position(gp_nocov, gate, R_wb, attitude_noise_std=0.0,
+                                         pnp_cov_inflation=5.0, fix_cov_floor_std=0.0)
     np.testing.assert_allclose(fb1, fb2, atol=1e-12)
 
 
 def test_glue_default_covariance_when_none():
     p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
     gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg, reproj_error_px=0.0)
-    _, cov = gate_pose_to_world_position(gp, gate, R_wb, default_position_std=0.3, attitude_noise_std=0.0)
+    _, cov = gate_pose_to_world_position(gp, gate, R_wb, default_position_std=0.3,
+                                         attitude_noise_std=0.0, fix_cov_floor_std=0.0)
     np.testing.assert_allclose(cov, 0.09 * np.eye(3))
+
+
+def test_glue_adds_fix_cov_floor():
+    # [vision-pkg2 2026-06-10] The measured fix error carries range-independent constant
+    # systematics; the floor adds sigma^2 I so a close-range fix (lever ~ 0, mm-tight analytic
+    # PnP cov) cannot be over-trusted by the KF nor over-rejected by the chi2 gate.
+    p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
+    sigma_tt = np.diag([0.01, 0.02, 0.05])
+    cov6 = np.zeros((6, 6))
+    cov6[:3, :3] = sigma_tt
+    gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg,
+                  reproj_error_px=0.0, covariance=cov6)
+    _, cov_no = gate_pose_to_world_position(gp, gate, R_wb, fix_cov_floor_std=0.0)
+    _, cov_fl = gate_pose_to_world_position(gp, gate, R_wb, fix_cov_floor_std=0.4)
+    np.testing.assert_allclose(cov_fl - cov_no, 0.16 * np.eye(3), atol=1e-12)
+    # the fallback path gets the floor too
+    gp_nocov = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg, reproj_error_px=0.0)
+    _, fb_no = gate_pose_to_world_position(gp_nocov, gate, R_wb, fix_cov_floor_std=0.0)
+    _, fb_fl = gate_pose_to_world_position(gp_nocov, gate, R_wb, fix_cov_floor_std=0.4)
+    np.testing.assert_allclose(fb_fl - fb_no, 0.16 * np.eye(3), atol=1e-12)
+
+
+def test_measured_constants_are_consolidated():
+    # [vision-pkg2 2026-06-10] One source of truth for the measured noise model: the localization
+    # signature defaults, the navigator config, and the KF predict-Q all share
+    # frames.ATTITUDE_NOISE_STD_RAD (no more independent 1.0-deg guesses), and the floor default
+    # is localization.FIX_COV_FLOOR_STD everywhere it appears.
+    import inspect
+
+    from racer.frames import ATTITUDE_NOISE_STD_RAD
+    from racer.localization import FIX_COV_FLOOR_STD
+    from racer.navigator import NavigatorConfig
+
+    sig = inspect.signature(gate_pose_to_world_position).parameters
+    assert sig["attitude_noise_std"].default == ATTITUDE_NOISE_STD_RAD
+    assert sig["fix_cov_floor_std"].default == FIX_COV_FLOOR_STD
+    sig_apply = inspect.signature(apply_gate_pose_update).parameters
+    assert sig_apply["attitude_noise_std"].default == ATTITUDE_NOISE_STD_RAD
+    assert sig_apply["fix_cov_floor_std"].default == FIX_COV_FLOOR_STD
+    cfg = NavigatorConfig()
+    assert cfg.attitude_noise_std == ATTITUDE_NOISE_STD_RAD
+    assert cfg.fix_cov_floor_std == FIX_COV_FLOOR_STD
+    assert LinearKF.initialize(np.zeros(3)).attitude_noise_std == ATTITUDE_NOISE_STD_RAD
+    # the measured value replaced the guess
+    assert ATTITUDE_NOISE_STD_RAD == pytest.approx(np.deg2rad(1.4))
+    assert FIX_COV_FLOOR_STD == pytest.approx(0.40)
 
 
 def test_glue_inflates_covariance_for_attitude_uncertainty():

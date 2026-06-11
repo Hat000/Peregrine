@@ -17,6 +17,19 @@ from scipy.spatial.transform import Rotation
 
 CAMERA_PITCH_RAD = np.deg2rad(20.0)
 
+# Measured 1-sigma of the chain's attitude-equivalent error (the given attitude as exercised
+# end-to-end by the vision chain: odo quat decode -> camera mount -> PnP world fix), replacing
+# the np.deg2rad(1.0) first-contact GUESS that lived independently in localization, navigator
+# and state_estimator. Derived by 2-term MLE on the canonical 6/6 course recording
+# (20260607_194615_course_60s, 165 offered fixes): residual lever-arm angular spread after the
+# constant-floor term (FIX_COV_FLOOR_STD) absorbs the range-independent systematics. The raw
+# per-frame angular spread (~1.3-1.9 deg/axis) contains flight-specific systematics (roll/
+# trajectory-correlated wander, per-gate offsets) that do NOT transfer across runs (cross-
+# validated against the 2026-06-05 task2 bundle), so they are covered as noise here rather
+# than calibrated. MLE 1.37 deg, profile flat 1.25-1.5; shipped 1.4.
+# [vision-pkg2 2026-06-10, handoff/shadowpc-vision-pkg2-2026-06-10]
+ATTITUDE_NOISE_STD_RAD = float(np.deg2rad(1.4))
+
 IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 360
 
