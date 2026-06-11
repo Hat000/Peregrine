@@ -459,6 +459,24 @@ def _send_key(vk: int, hold_s: float = 0.06, settle_s: float = 0.25) -> None:
     time.sleep(settle_s)
 
 
+def _force_foreground(hwnd, attempts: int = 3) -> bool:
+    """Restore-if-minimized + VERIFIED foreground. The fullscreen sim AUTO-MINIMIZES
+    when it loses focus (observed mid-batch 2026-06-11: every subsequent keybd_event
+    landed in whatever was focused instead -> NO_GO chain), and SetForegroundWindow
+    from a background process is refused unless wrapped in a synthetic ALT press."""
+    user32 = ctypes.windll.user32
+    for _ in range(attempts):
+        user32.ShowWindow(hwnd, 9)               # SW_RESTORE (no-op if not minimized)
+        time.sleep(0.3)
+        user32.keybd_event(0x12, 0, 0, 0)        # ALT down: unlock SetForegroundWindow
+        user32.SetForegroundWindow(hwnd)
+        user32.keybd_event(0x12, 0, _KEYUP, 0)
+        time.sleep(0.4)
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+    return False
+
+
 def full_sim_reset() -> bool:
     """The BETWEEN-FLIGHTS full reset (S17 mandate): ESC + Down*3 + Enter exits the
     race to HOME, then Enter*2 starts a fresh waiting room -> race countdown. Unlike
@@ -469,9 +487,10 @@ def full_sim_reset() -> bool:
         print("  full-reset: sim window not found -> falling back to MAV_CMD 31000",
               file=sys.stderr)
         return False
-    user32 = ctypes.windll.user32
-    user32.SetForegroundWindow(hwnd)
-    time.sleep(0.5)
+    if not _force_foreground(hwnd):
+        print("  full-reset: could not verify sim foreground -> skipping key sends",
+              file=sys.stderr)
+        return False
     _send_key(_VK_ESCAPE, settle_s=0.6)          # pause menu
     for _ in range(3):
         _send_key(_VK_DOWN)                      # highlight "exit to home"
@@ -488,8 +507,9 @@ def kick_sim_from_home(n_enter: int = 2, settle_s: float = 1.5) -> bool:
     if hwnd is None:
         print("  home-kick: sim window not found", file=sys.stderr)
         return False
-    ctypes.windll.user32.SetForegroundWindow(hwnd)
-    time.sleep(0.5)
+    if not _force_foreground(hwnd):
+        print("  home-kick: could not verify sim foreground", file=sys.stderr)
+        return False
     for _ in range(n_enter):
         _send_key(_VK_RETURN, settle_s=settle_s)
     return True
