@@ -32,6 +32,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ctypes
+import json
 import sys
 import threading
 import time
@@ -110,6 +112,13 @@ _GATE_REL_POS = np.array(
     dtype=np.float64,
 )
 _GATE_YAW_REL = np.zeros(N_GATES, dtype=np.float64)   # 0 everywhere (uniform yaw)
+
+# Obs dim labels (debug dumps + replay_obs.py). Matches obs_from_zup's layout.
+OBS_LABELS = (
+    [f"pos_g{i}" for i in "xyz"] + [f"vel_g{i}" for i in "xyz"]
+    + ["rpy_g_r", "rpy_g_p", "rpy_g_y"] + [f"w_flu{i}" for i in "xyz"]
+    + ["collective_prev"] + [f"nxt_rel{i}" for i in "xyz"] + ["nxt_relyaw"]
+)
 
 # VIRTUAL BODY FLIP (π about body z). Training resets at identity Z-up attitude
 # with all gates at yaw π => the policy learned to fly the course TAIL-FIRST
@@ -269,8 +278,8 @@ def load_actor(path: str) -> nn.Module:
 
 @torch.no_grad()
 def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
-                virtual_flip: bool = False, max_thrust: float = 0.0
-                ) -> tuple[np.ndarray, float, float]:
+                virtual_flip: bool = False, max_thrust: float = 0.0,
+                debug: dict | None = None) -> tuple[np.ndarray, float, float]:
     """One forward pass, replicating the TRAINING action pipeline exactly:
     test-mode action = tanh(actor_mean(obs)), then env.rescale_action onto
     [_ACT_MIN, _ACT_MAX].
@@ -279,6 +288,9 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
       body_rate_frd  (3,)  rad/s, FRD  — ready for ControlCommand.body_rate
       collective     float [0,1]       — ready for ControlCommand.thrust
       normed_thrust  float [0,5]       — RESCALED action[0]; next obs[12]
+
+    ``debug``: pass a dict to receive the pipeline internals (raw mean, tanh,
+    rescaled action) for the --debug-obs per-step dump.
     """
     obs_t = torch.as_tensor(obs_np[None], dtype=torch.float32)   # (1, 17)
     mean  = actor(obs_t)[0].cpu().numpy().astype(np.float64)     # (4,) raw mean
@@ -295,6 +307,10 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
         rate_flu = _RZ_PI_BODY @ rate_flu       # virtual body frame -> real body
     rate_frd = rate_flu * _ACT_FLU_TO_FRD
     collective = float(np.clip(normed_thrust * _HOVER_THRUST, 0.0, 1.0))
+    if debug is not None:
+        debug["actor_mean"] = mean.tolist()
+        debug["tanh"] = a.tolist()
+        debug["act_rescaled"] = act.tolist()
     return rate_frd, collective, normed_thrust
 
 
@@ -398,6 +414,78 @@ def run_bridge(client, args, gate0_x_ned: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sim window control (unattended full reset, S17 harness hardening)
+# ---------------------------------------------------------------------------
+_VK_RETURN, _VK_ESCAPE, _VK_DOWN, _KEYUP = 0x0D, 0x1B, 0x28, 0x0002
+
+
+def _find_sim_window(title_substr: str = "AI-GP") -> int | None:
+    """HWND of the first visible window whose title contains ``title_substr``
+    (falls back to the FlightSim binary name)."""
+    user32 = ctypes.windll.user32
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def _cb(hwnd, _lp):
+        if user32.IsWindowVisible(hwnd):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                t = buf.value.lower()
+                if title_substr.lower() in t or "flightsim" in t or "ai grand prix" in t:
+                    found.append(hwnd)
+        return True
+
+    user32.EnumWindows(_cb, None)
+    return found[0] if found else None
+
+
+def _send_key(vk: int, hold_s: float = 0.06, settle_s: float = 0.25) -> None:
+    user32 = ctypes.windll.user32
+    user32.keybd_event(vk, 0, 0, 0)
+    time.sleep(hold_s)
+    user32.keybd_event(vk, 0, _KEYUP, 0)
+    time.sleep(settle_s)
+
+
+def full_sim_reset() -> bool:
+    """The BETWEEN-FLIGHTS full reset (S17 mandate): ESC + Down*3 + Enter exits the
+    race to HOME, then Enter*2 starts a fresh waiting room -> race countdown. Unlike
+    MAV_CMD 31000 (in-race restart), this clears all race residue, so every flight
+    starts from an identical fresh countdown. Needs the sim window (Win32 focus)."""
+    hwnd = _find_sim_window()
+    if hwnd is None:
+        print("  full-reset: sim window not found -> falling back to MAV_CMD 31000",
+              file=sys.stderr)
+        return False
+    user32 = ctypes.windll.user32
+    user32.SetForegroundWindow(hwnd)
+    time.sleep(0.5)
+    _send_key(_VK_ESCAPE, settle_s=0.6)          # pause menu
+    for _ in range(3):
+        _send_key(_VK_DOWN)                      # highlight "exit to home"
+    _send_key(_VK_RETURN, settle_s=2.5)          # confirm -> HOME
+    for _ in range(2):
+        _send_key(_VK_RETURN, settle_s=1.5)      # HOME -> waiting room -> race
+    return True
+
+
+def kick_sim_from_home(n_enter: int = 2, settle_s: float = 1.5) -> bool:
+    """HOME/parked-page recovery (rate_sysid S1.2 mechanics): MAV_CMD 31000 is a no-op
+    on the home/off-race screens, so focus the window and send Enter*n."""
+    hwnd = _find_sim_window()
+    if hwnd is None:
+        print("  home-kick: sim window not found", file=sys.stderr)
+        return False
+    ctypes.windll.user32.SetForegroundWindow(hwnd)
+    time.sleep(0.5)
+    for _ in range(n_enter):
+        _send_key(_VK_RETURN, settle_s=settle_s)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Race lifecycle helpers
 # ---------------------------------------------------------------------------
 def wait_fresh_go(client, args, auto_reset: bool) -> bool:
@@ -408,6 +496,7 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
     margin_ms  = args.start_margin_s * 1000.0
     next_reset = time.monotonic() + (args.reset_after if auto_reset else 1e18)
     last_p     = 0.0
+    stale_strikes = 0     # consecutive ineffective 31000s (sim parked off-race / at HOME)
     while time.monotonic() < deadline:
         client.pump()
         s  = client.state
@@ -428,15 +517,24 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
             elif fresh:
                 # a fresh countdown is ticking — never fire a reset into it
                 next_reset = max(next_reset, now + args.reset_after)
+                stale_strikes = 0
                 if now - last_p >= 0.25:
                     print(f"  countdown {to_go/1000:+.2f}s   ", end="\r", flush=True)
                     last_p = now
         if now >= next_reset:
-            print("\n  no fresh GO -> requesting sim reset (MAV_CMD 31000) ...")
-            try:
-                client.send_sim_reset()
-            except Exception as exc:
-                print(f"  sim reset send failed: {exc}", file=sys.stderr)
+            stale_strikes += 1
+            if stale_strikes >= 3:
+                # 31000 is a no-op at HOME / on the parked off-race screen (measured
+                # 2026-06-10) -> escalate to the Win32 focus + Enter*2 recovery.
+                print("\n  no fresh GO after repeated resets -> home-kick (Enter*2) ...")
+                kick_sim_from_home()
+                stale_strikes = 0
+            else:
+                print("\n  no fresh GO -> requesting sim reset (MAV_CMD 31000) ...")
+                try:
+                    client.send_sim_reset()
+                except Exception as exc:
+                    print(f"  sim reset send failed: {exc}", file=sys.stderr)
             next_reset = now + args.reset_after
         elif now - last_p >= 2.0:
             print(f"  waiting: started={bool(rs and rs['started'])} "
@@ -447,7 +545,8 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
     return False
 
 
-def fly_once(client, actor, args, flight_idx: int) -> dict:
+def fly_once(client, actor, args, flight_idx: int,
+             session_dir: Path | None = None) -> dict:
     """One full attempt: wait fresh GO -> arm -> RL control loop -> finish hold ->
     disarm.  Returns a per-flight result dict.  Caller owns recorder lifecycle."""
     from pymavlink import mavutil
@@ -509,69 +608,154 @@ def fly_once(client, actor, args, flight_idx: int) -> dict:
     n_coll0      = result["collisions_at_start"]
     gate_index   = 0
 
-    while time.monotonic() < deadline:
-        # pace to target rate while draining telemetry
-        while time.monotonic() < next_t:
+    # --- S17 live-reset guard baselines: the sim AUTORESETS the race on sustained
+    # gate contact; commanding through one latches throttle into the fresh race
+    # (2026-06-11: minutes of uncontrolled spinning). Detect the epoch break and
+    # CUT commands immediately.
+    reset_counter0 = int(client.state.reset_counter)
+    race_start0    = (int(client.race_status["race_start_boot_time_ms"])
+                      if client.race_status else None)
+    prev_pos       = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
+                      if client.state.position_ned is not None else None)
+    spin_t0: float | None = None   # S17 spin guard: onset of sustained high |rate|
+    spin_gate      = gate_index
+
+    # --- --debug-obs per-step dump (S17): everything the policy saw and emitted.
+    dbg_f = None
+    dbg_k = 0
+    if args.debug_obs and session_dir is not None:
+        dbg_f = open(session_dir / "debug_obs.jsonl", "w", encoding="utf-8")
+        dbg_f.write(json.dumps({
+            "type": "header", "flight": flight_idx, "checkpoint": str(args.checkpoint),
+            "act_min": _ACT_MIN.tolist(), "act_max": _ACT_MAX.tolist(),
+            "hover_thrust": _HOVER_THRUST, "rate_hz": args.rate,
+            "max_rate": args.max_rate, "virtual_flip": args.virtual_flip,
+            "obs_labels": OBS_LABELS,
+        }) + "\n")
+
+    try:
+        while time.monotonic() < deadline:
+            # pace to target rate while draining telemetry
+            while time.monotonic() < next_t:
+                client.pump()
+                time.sleep(0.001)
             client.pump()
-            time.sleep(0.001)
-        client.pump()
-        next_t = time.monotonic() + tick
+            next_t = time.monotonic() + tick
 
-        s  = client.state
-        rs = client.race_status
-        now = time.monotonic()
+            s  = client.state
+            rs = client.race_status
+            now = time.monotonic()
 
-        # --- stop conditions ---
-        st = int(s.sim_time_ns)
-        if st > last_sim_t:
-            last_sim_t = st
-            last_adv_w = now
-        elif now - last_adv_w > 1.5:
-            print("\n  sim_time stalled (race ended) -> stopping.")
-            break
+            # --- stop conditions ---
+            st = int(s.sim_time_ns)
+            if st > last_sim_t:
+                last_sim_t = st
+                last_adv_w = now
+            elif now - last_adv_w > 1.5:
+                print("\n  sim_time stalled (race ended) -> stopping.")
+                break
 
-        if rs and rs["finished"]:
-            print("\n  RACE_STATUS finished -> stopping.")
-            final_state = "FINISHED"
-            break
+            if rs and rs["finished"]:
+                print("\n  RACE_STATUS finished -> stopping.")
+                final_state = "FINISHED"
+                break
 
-        if any(c["threat_level"] >= 2 for c in client.collisions[n_coll0:]):
-            print("\n  HARD COLLISION -> abort.")
-            final_state = "CRASH"
-            break
+            if any(c["threat_level"] >= 2 for c in client.collisions[n_coll0:]):
+                print("\n  HARD COLLISION -> abort.")
+                final_state = "CRASH"
+                break
 
-        # --- gate tracking via RACE_STATUS.active_gate_index ---
-        if rs and rs.get("active_gate_index") is not None:
-            gi = int(rs["active_gate_index"])
-            if gi > gate_index:
-                print(f"\n  gate {gate_index} PASSED -> targeting {gi}", flush=True)
-            gate_index = min(gi, N_GATES - 1)
+            # --- S17 live-reset guard: epoch discontinuity -> CUT commands NOW ---
+            gi_now = (int(rs["active_gate_index"])
+                      if rs and rs.get("active_gate_index") is not None else None)
+            jump = (float(np.linalg.norm(np.asarray(s.position_ned) - prev_pos))
+                    if (s.position_ned is not None and prev_pos is not None) else 0.0)
+            reset_why = None
+            if int(s.reset_counter) != reset_counter0:
+                reset_why = f"ODOMETRY reset_counter {reset_counter0}->{s.reset_counter}"
+            elif (rs and race_start0 is not None
+                    and int(rs["race_start_boot_time_ms"]) != race_start0):
+                reset_why = "RACE_STATUS race_start changed (new race)"
+            elif gi_now is not None and gi_now < gate_index:
+                reset_why = f"active_gate_index dropped {gate_index}->{gi_now}"
+            elif jump > 10.0:   # respawns teleport 20+ m; max real movement ~1 m/tick
+                reset_why = f"position teleport ({jump:.1f} m in one tick)"
+            if reset_why is not None:
+                print(f"\n  SIM RESET DETECTED ({reset_why}) -> cutting RL commands.")
+                final_state = "SIM_RESET"
+                break
+            if s.position_ned is not None:
+                prev_pos = np.asarray(s.position_ned, dtype=np.float64).copy()
 
-        # --- build obs & run policy ---
-        if (s.position_ned is None or s.velocity_ned is None
-                or s.orientation_ned_wxyz is None
-                or s.angular_rate_body is None):
-            continue   # ODOMETRY not arrived yet
+            # --- gate tracking via RACE_STATUS.active_gate_index ---
+            if gi_now is not None:
+                if gi_now > gate_index:
+                    print(f"\n  gate {gate_index} PASSED -> targeting {gi_now}", flush=True)
+                gate_index = min(gi_now, N_GATES - 1)
 
-        obs = build_obs(s, gate_index, last_normed, virtual_flip=args.virtual_flip)
-        rate_frd, collective, last_normed = policy_step(
-            actor, obs, args.max_rate, virtual_flip=args.virtual_flip)
+            # --- S17 spin guard: sustained high body rate with zero gate progress ---
+            w_mag = float(np.linalg.norm(np.asarray(s.angular_rate_body, dtype=np.float64)))
+            if w_mag < args.spin_rate_abort or gate_index != spin_gate:
+                spin_t0, spin_gate = None, gate_index
+            elif spin_t0 is None:
+                spin_t0 = now
+            elif now - spin_t0 > args.spin_time_abort:
+                print(f"\n  UNRECOVERED SPIN (|w|={w_mag:.1f} rad/s > "
+                      f"{args.spin_rate_abort:g} for {args.spin_time_abort:g}s, "
+                      f"no gate progress) -> abort.")
+                final_state = "SPIN_ABORT"
+                break
 
-        client.send_command(ControlCommand(
-            mode=ControlMode.BODY_RATE,
-            sim_time_ns=int(s.sim_time_ns),
-            body_rate=rate_frd,
-            thrust=collective,
-        ))
+            # --- build obs & run policy ---
+            if (s.position_ned is None or s.velocity_ned is None
+                    or s.orientation_ned_wxyz is None
+                    or s.angular_rate_body is None):
+                continue   # ODOMETRY not arrived yet
 
-        if now - last_p >= 1.0 and s.position_ned is not None:
-            p = s.position_ned
-            print(f"  t={s.sim_time_ns/1e9:7.2f}s  gi={gate_index}  "
-                  f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f})  "
-                  f"thr={collective:.3f}  "
-                  f"rate=[{rate_frd[0]:+.2f},{rate_frd[1]:+.2f},{rate_frd[2]:+.2f}]   ",
-                  end="\r", flush=True)
-            last_p = now
+            obs = build_obs(s, gate_index, last_normed, virtual_flip=args.virtual_flip)
+            dbg: dict | None = {} if dbg_f is not None else None
+            rate_frd, collective, last_normed = policy_step(
+                actor, obs, args.max_rate, virtual_flip=args.virtual_flip, debug=dbg)
+
+            client.send_command(ControlCommand(
+                mode=ControlMode.BODY_RATE,
+                sim_time_ns=int(s.sim_time_ns),
+                body_rate=rate_frd,
+                thrust=collective,
+            ))
+
+            if dbg_f is not None:
+                dbg.update({
+                    "k": dbg_k, "t_mono": now, "sim_time_ns": st,
+                    "gate_index": gate_index,
+                    "odo_age_ms": round((time.monotonic_ns() - s.recv_monotonic_ns) / 1e6, 1),
+                    "pos_ned": np.asarray(s.position_ned).round(4).tolist(),
+                    "vel_ned": np.asarray(s.velocity_ned).round(4).tolist(),
+                    "q_raw_wxyz": np.asarray(s.orientation_ned_wxyz).round(6).tolist(),
+                    "w_raw": np.asarray(s.angular_rate_body).round(4).tolist(),
+                    "reset_counter": int(s.reset_counter),
+                    "n_coll": len(client.collisions) - n_coll0,
+                    "obs": np.asarray(obs, dtype=np.float64).round(5).tolist(),
+                    "rate_frd": rate_frd.round(4).tolist(),
+                    "collective": round(collective, 5),
+                    "normed_thrust": round(last_normed, 5),
+                })
+                dbg_f.write(json.dumps(dbg) + "\n")
+                dbg_k += 1
+                if dbg_k % 30 == 0:
+                    dbg_f.flush()
+
+            if now - last_p >= 1.0 and s.position_ned is not None:
+                p = s.position_ned
+                print(f"  t={s.sim_time_ns/1e9:7.2f}s  gi={gate_index}  "
+                      f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f})  "
+                      f"thr={collective:.3f}  "
+                      f"rate=[{rate_frd[0]:+.2f},{rate_frd[1]:+.2f},{rate_frd[2]:+.2f}]   ",
+                      end="\r", flush=True)
+                last_p = now
+    finally:
+        if dbg_f is not None:
+            dbg_f.close()
 
     if final_state == "IDLE":
         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
@@ -681,6 +865,19 @@ def main() -> int:
     ap.add_argument("--start-margin-s", type=float, default=0.3)
     ap.add_argument("--finish-hold-s",  type=float, default=1.0)
     ap.add_argument("--connect-timeout",type=float, default=15.0)
+    ap.add_argument("--debug-obs", action=argparse.BooleanOptionalAction, default=True,
+                    help="write <session>/debug_obs.jsonl: per-step telemetry, the "
+                         "labeled 17-dim obs, actor mean/tanh/rescale, and the wire "
+                         "command (S17 forensics; ~1 KB/step). DEFAULT ON.")
+    ap.add_argument("--full-reset", action=argparse.BooleanOptionalAction, default=True,
+                    help="between flights, exit the race to HOME (ESC+Down*3+Enter) "
+                         "and re-enter (Enter*2) so every flight starts from a fresh "
+                         "countdown with zero race residue (S17). Falls back to "
+                         "MAV_CMD 31000 when the sim window is not found.")
+    ap.add_argument("--spin-rate-abort", type=float, default=6.0,
+                    help="S17 spin guard: abort when |body rate| exceeds this (rad/s) "
+                         "with no gate progress for --spin-time-abort seconds")
+    ap.add_argument("--spin-time-abort", type=float, default=2.0)
     args = ap.parse_args()
 
     # -- load checkpoint --
@@ -752,7 +949,7 @@ def main() -> int:
 
             res = {"flight": flight, "final_state": "ERROR", "gate_index": 0}
             try:
-                res = fly_once(client, actor, args, flight)
+                res = fly_once(client, actor, args, flight, session_dir=session)
             except KeyboardInterrupt:
                 print("\nCtrl-C -> stopping.")
                 try:
@@ -779,6 +976,12 @@ def main() -> int:
             if res["final_state"] in ("NO_GO", "ARM_REFUSED"):
                 print("  cannot start races -> stopping the batch.", file=sys.stderr)
                 break
+            if args.full_reset and flight < args.flights:
+                # S17: full ESC->HOME->Enter*2 reset so the next flight starts from a
+                # fresh countdown with no race residue (31000 restarts can carry the
+                # old race's RACE_STATUS + collision state).
+                print("  [full-reset] exiting race to HOME and re-entering ...")
+                full_sim_reset()
     except KeyboardInterrupt:
         pass
     finally:
