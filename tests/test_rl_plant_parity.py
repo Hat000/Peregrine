@@ -55,6 +55,10 @@ def _params_from_cfg(cfg: CtbrPlantConfig, dt: float) -> rp.PlantParams:
         quad_drag_c2=None if cfg.quad_drag_c2 is None else np.asarray(cfg.quad_drag_c2, float).copy(),
         coll_map_thr=None if cfg.coll_map_thr is None else np.asarray(cfg.coll_map_thr, float).copy(),
         coll_map_accel=None if cfg.coll_map_accel is None else np.asarray(cfg.coll_map_accel, float).copy(),
+        mixer_idle=cfg.mixer_idle,
+        mixer_kappa_err=cfg.mixer_kappa_err,
+        mixer_kappa_hold=cfg.mixer_kappa_hold,
+        mixer_zeta_yaw=cfg.mixer_zeta_yaw,
         thrust_tau_s=cfg.thrust_tau_s,
         transport_delay_steps=nlag,
         max_omega_rps=cfg.max_omega_rps,
@@ -103,6 +107,9 @@ def _configs():
     aero = faithful_config(measured_aero=True)                            # quad drag + knot collective
     aero_full = faithful_config(super_rate=True, measured_aero=True)      # everything measured ON
     aero_full.thrust_tau_s = 0.05                                         # + collective lag + delay
+    mixer = faithful_config(super_rate=True, measured_aero=True, mixer=True)  # + motor mixer (S17)
+    mixer_full = faithful_config(super_rate=True, measured_aero=True, mixer=True)
+    mixer_full.thrust_tau_s = 0.05                                        # + collective lag + delay
     return {
         "faithful": base,
         "canonical": canon,
@@ -112,6 +119,8 @@ def _configs():
         "super_rate_delay": smap_delay,                                  # cmd_latency_s patched in the loop
         "measured_aero": aero,
         "aero_full": aero_full,                                          # cmd_latency_s patched in the loop
+        "mixer": mixer,
+        "mixer_full": mixer_full,                                        # cmd_latency_s patched in the loop
     }
 
 
@@ -161,7 +170,7 @@ _REPORT: list[tuple] = []
 @pytest.mark.parametrize("cfg_name,dt,seq_name", _CASES)
 def test_parity(cfg_name, dt, seq_name):
     cfg = _configs()[cfg_name]
-    if cfg_name in ("transport_delay", "super_rate_delay", "aero_full"):
+    if cfg_name in ("transport_delay", "super_rate_delay", "aero_full", "mixer_full"):
         cfg.cmd_latency_s = 3 * dt                                        # exactly 3 steps of delay
     params = _params_from_cfg(cfg, dt)
 

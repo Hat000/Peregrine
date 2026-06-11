@@ -361,7 +361,7 @@ def _wrap(a: np.ndarray) -> np.ndarray:
 # odo_att_report_sign=[-1,1,1] (ODOMETRY-quat roll inverted), odo_rate_report_sign=[-1,-1,1] (raw
 # ODOMETRY angular_rate inverted on roll+pitch). The reported-q quat-FD COMPOSITE the fit measures is
 # [-1,+1,-1] = physical [+1,+1,-1] x att-report [-1,+1,+1].
-def faithful_config(super_rate: bool = False, measured_aero: bool = False):
+def faithful_config(super_rate: bool = False, measured_aero: bool = False, mixer: bool = False):
     """The sim-faithful :class:`CtbrPlantConfig` fitted from the ShadowPC sysid extract (Task B/C):
     true-frame physics + the sim's ODOMETRY telemetry inversions, so the measured live controller
     signs transfer. Reproduce with ``scripts/fit_twin.py``.
@@ -379,12 +379,23 @@ def faithful_config(super_rate: bool = False, measured_aero: bool = False):
     QUADRATIC drag (``linear_drag -> 0``) and the linear collective map becomes the measured
     CONVEX knot table (full stick 78.3 m/s^2 ~= 2.1x linear). Nominals are the canonical
     constants in :mod:`racer.rl_plant` (coast-replay speed RMS on the campaign's 9 drag runs:
-    legacy 0.81 -> 0.24-0.29 m/s). The fully sim-faithful twin as of 2026-06-11 is
-    ``faithful_config(super_rate=True, measured_aero=True)``; both flags default OFF so every
-    existing consumer keeps the exact plant it was tuned against."""
-    from racer.rl_plant import (COLL_MAP_ACCEL_MEASURED, COLL_MAP_THR_MEASURED,
-                                QUAD_DRAG_C2_MEASURED)
+    legacy 0.81 -> 0.24-0.29 m/s).
 
+    ``mixer=True`` (S17, live-deploy diag 2026-06-11) additionally turns on the measured
+    MOTOR-MIXER coupling -- per-motor clip of collective +- rate differentials, the unmodeled
+    channel that broke the inc4/inc5 live transfers (parasitic lift at thr~0 x high rate; rate
+    authority / thrust sag at collective ~1). Requires ``super_rate=True`` (the authority model
+    is normalised against the measured slew limits). The fully sim-faithful twin as of
+    2026-06-11 is ``faithful_config(super_rate=True, measured_aero=True, mixer=True)``; all
+    flags default OFF so every existing consumer keeps the exact plant it was tuned against."""
+    from racer.rl_plant import (COLL_MAP_ACCEL_MEASURED, COLL_MAP_THR_MEASURED,
+                                QUAD_DRAG_C2_MEASURED, MIXER_IDLE_MEASURED,
+                                MIXER_KAPPA_ERR_MEASURED, MIXER_KAPPA_HOLD_MEASURED,
+                                MIXER_ZETA_YAW_MEASURED)
+
+    if mixer and not super_rate:
+        raise ValueError("faithful_config(mixer=True) requires super_rate=True: the mixer "
+                         "authority model scales the measured alpha_max slew limits")
     return CtbrPlantConfig(
         hover_thrust=0.2656,
         rate_tau_s=0.0190,
@@ -396,6 +407,10 @@ def faithful_config(super_rate: bool = False, measured_aero: bool = False):
         quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy() if measured_aero else None,
         coll_map_thr=COLL_MAP_THR_MEASURED.copy() if measured_aero else None,
         coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy() if measured_aero else None,
+        mixer_idle=MIXER_IDLE_MEASURED if mixer else None,
+        mixer_kappa_err=MIXER_KAPPA_ERR_MEASURED if mixer else None,
+        mixer_kappa_hold=MIXER_KAPPA_HOLD_MEASURED if mixer else None,
+        mixer_zeta_yaw=MIXER_ZETA_YAW_MEASURED if mixer else None,
         odo_att_report_sign=np.array([-1.0, 1.0, 1.0]),    # telemetry: ODOMETRY-quat roll inverted
         odo_rate_report_sign=np.array([-1.0, -1.0, 1.0]),  # telemetry: raw rate inverted roll+pitch
     )

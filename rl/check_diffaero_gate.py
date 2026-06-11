@@ -33,7 +33,9 @@ import torch
 from omegaconf import OmegaConf
 
 from racer.rl_plant import (PlantParams, QUAD_DRAG_C2_MEASURED,
-                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED)
+                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                            MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
+                            MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED)
 from diffaero_dynamics import PeregrinePlantDynamics
 
 GATE_TOL = 1e-9     # float64 algebraic-equivalence bound (acceptance <= ~1e-6; history ~2e-16)
@@ -46,6 +48,9 @@ _AERO = dict(linear_drag=0.0, quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
              coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
              coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
 _MAP = dict(super_rate_s=0.30, alpha_max_rps2=np.array([260.0, 260.0, 80.0]))
+_MIXER = dict(mixer_idle=MIXER_IDLE_MEASURED, mixer_kappa_err=MIXER_KAPPA_ERR_MEASURED,
+              mixer_kappa_hold=MIXER_KAPPA_HOLD_MEASURED,
+              mixer_zeta_yaw=MIXER_ZETA_YAW_MEASURED)
 
 CONFIGS = {
     "legacy":     dict(),
@@ -58,6 +63,11 @@ CONFIGS = {
     "aero":       dict(_AERO),
     # everything ON at once: aero + super-rate map + slew + transport delay
     "aero_full":  dict(_AERO, **_MAP, transport_delay_steps=2),
+    # S17 motor mixer (live-deploy diag 2026-06-11): per-motor clip of collective +- rate
+    # differentials -> parasitic-lift mean + Q-scaled slew authority. The big rate commands at
+    # the collective end clamps (random_traj's last two steps) drive both rails hard.
+    "mixer":      dict(_AERO, **_MAP, **_MIXER),
+    "mixer_full": dict(_AERO, **_MAP, **_MIXER, transport_delay_steps=2),
 }
 
 
@@ -97,6 +107,8 @@ def rebuild_params(dyn, device, dtype):
                        torch.tensor(dyn.params.coll_map_thr, device=device, dtype=dtype))
     dyn._coll_kvals = (None if dyn.params.coll_map_accel is None else
                        torch.tensor(dyn.params.coll_map_accel, device=device, dtype=dtype))
+    dyn._mix_rfit = (None if dyn.params.mixer_idle is None else
+                     torch.tensor(dyn.params._mixer_r_fit, device=device, dtype=dtype))
     dyn._plant_act_buf = None        # cold delay buffer; both backends seed it identically
     dyn._acc = dyn._acc.to(dtype)
 
@@ -119,6 +131,10 @@ def random_traj(n_envs, device, dtype, seed):
     u[T_STEPS - 1, :, 0] = 0.4 * torch.rand(n_envs, generator=g)        # collective ~ [0, 0.106]
     # body-rate setpoints with tails beyond pi: exercises the map's min(|c|,pi) clamp + the slew
     u[..., 1:] = 1.5 * torch.randn(T_STEPS, n_envs, 3, generator=g)
+    # deep mixer-rail coverage (S17): large rate demands AT the collective end clamps -- the
+    # (top x rate) headroom collapse and the (bottom x rate) parasitic-lift clip both engage.
+    # Changes the gate trajectories for ALL configs (the gate is self-comparative; re-verified).
+    u[T_STEPS - 2:, :, 1:] = u[T_STEPS - 2:, :, 1:] * 2.5
     return state, u.to(device=device, dtype=dtype)
 
 

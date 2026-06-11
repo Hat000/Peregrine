@@ -117,11 +117,20 @@ try:
     from racer.rl_plant import (PlantParams, PlantState, step as rl_step,
                                 SUPER_RATE_S_MEASURED, ALPHA_MAX_RPS2_MEASURED,
                                 QUAD_DRAG_C2_MEASURED, QUAD_DRAG_C2_POOLED,
-                                COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED)
+                                COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                                MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
+                                MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED,
+                                mixer_r_fit)
 except Exception:                       # pragma: no cover
     PlantParams = PlantState = None     # RECONCILE: ensure racer.rl_plant is on PYTHONPATH on Adroit
     SUPER_RATE_S_MEASURED = 0.30                                  # characterize-sweep nominals
     ALPHA_MAX_RPS2_MEASURED = np.array([260.0, 260.0, 80.0])
+    # S17 motor-mixer nominals (live-deploy diag 2026-06-11; see racer.rl_plant for provenance)
+    MIXER_IDLE_MEASURED = 0.05
+    MIXER_KAPPA_ERR_MEASURED = 0.073
+    MIXER_KAPPA_HOLD_MEASURED = 0.046
+    MIXER_ZETA_YAW_MEASURED = 0.34
+    mixer_r_fit = None
     # twin-falsify 2026-06-11 aero nominals (see racer.rl_plant for provenance)
     QUAD_DRAG_C2_MEASURED = np.array([[0.042, 0.058],
                                       [0.055, 0.055],
@@ -300,6 +309,12 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._coll_kvals = (None if self.params.coll_map_accel is None else
                                 torch.tensor(self.params.coll_map_accel, device=device,
                                              dtype=torch.float32))
+            # S17 motor-mixer coupling (live-deploy diag 2026-06-11; None -> legacy independent
+            # thrust/rates). Scalars stay python floats (bit-identity with rl_plant); the
+            # per-axis r_fit normalisation is the cached float64 from PlantParams.__post_init__.
+            self._mix_rfit = (None if self.params.mixer_idle is None else
+                              torch.tensor(self.params._mixer_r_fit, device=device,
+                                           dtype=torch.float32))
         # params-level transport-delay ring buffer (mismatch #8b): the NED CTBR action queue carried
         # across step() calls, SHARED by both backends (numpy threads it through rl_plant's
         # PlantState.act_buf; torch mirrors the push/pop). None = cold; rl_plant cold-seeds with the
@@ -347,6 +362,18 @@ class PeregrinePlantDynamics(BaseDynamics):
         # owns the current configs, so unlike the super-rate map it does NOT auto-enable under
         # plain `dr`; fold it into the default once the aero-ON retrain is gated in).
         self._dr_aero = self._dr_enabled and bool(getattr(cfg, "dr_aero", False))
+        # S17 MOTOR-MIXER DR: `+dynamics.dr_mixer=true` (opt-in on top of `dr`, the dr_aero
+        # precedent -- concurrent trainings keep their plant). Forces the mixer ON with per-env
+        # params resampled at reset. REQUIRES dr_aero: the parasitic-lift channel runs the
+        # clipped motor MEAN through the knot table (free-fall bottom; convex top), and dr_aero
+        # pins the hover conversion the mixer's r_fit is normalised against.
+        self._dr_mixer = self._dr_enabled and bool(getattr(cfg, "dr_mixer", False))
+        if self._dr_mixer and not self._dr_aero:
+            raise ValueError("+dynamics.dr_mixer=true requires +dynamics.dr_aero=true "
+                             "(knot-table thrust map + pinned hover)")
+        if self._dr_enabled and not self._dr_mixer and self.params.mixer_idle is not None:
+            raise ValueError("mixer params under DR require +dynamics.dr_mixer=true "
+                             "(the r_fit normalisation depends on the per-env super-rate s)")
         self._dr_bands = {
             "s_lo":        float(getattr(cfg, "dr_s_lo", 0.25)),           # super-rate s (absolute;
             "s_hi":        float(getattr(cfg, "dr_s_hi", 0.35)),           #  measured 0.30 +- ~0.02)
@@ -368,6 +395,17 @@ class PeregrinePlantDynamics(BaseDynamics):
             "coll_k_hi":   float(getattr(cfg, "dr_coll_k_hi", 1.10)),      #  the hover point)
             "coll_h_lo":   float(getattr(cfg, "dr_coll_hover_lo", 0.98)),  # hover-point pin +-2%
             "coll_h_hi":   float(getattr(cfg, "dr_coll_hover_hi", 1.02)),
+            # mixer bands (active only with dr_mixer; fit_mixer.py uncertainty -- kappa_err is
+            # the tight two-probe fit, kappa_hold a single point (roll/pitch unmeasured),
+            # zeta_yaw carries the mean-vs-max probe tension, idle the 0.05-0.08 spread)
+            "mix_idle_lo":  float(getattr(cfg, "dr_mix_idle_lo", 0.04)),
+            "mix_idle_hi":  float(getattr(cfg, "dr_mix_idle_hi", 0.08)),
+            "mix_kerr_lo":  float(getattr(cfg, "dr_mix_kerr_lo", 0.060)),
+            "mix_kerr_hi":  float(getattr(cfg, "dr_mix_kerr_hi", 0.085)),
+            "mix_khold_lo": float(getattr(cfg, "dr_mix_khold_lo", 0.030)),
+            "mix_khold_hi": float(getattr(cfg, "dr_mix_khold_hi", 0.060)),
+            "mix_zeta_lo":  float(getattr(cfg, "dr_mix_zeta_lo", 0.20)),
+            "mix_zeta_hi":  float(getattr(cfg, "dr_mix_zeta_hi", 0.55)),
         }
         # DR nominal for alpha_max (the yaw column scales with it): the params' value if map-ON
         # params were passed, else the measured nominal [260, 260, 80].
@@ -417,6 +455,26 @@ class PeregrinePlantDynamics(BaseDynamics):
             # scale the whole thrust curve ~+-10% at the hover point, violating the Section 7
             # "hover pinned +-2%" requirement); the K-table h-jitter IS the hover randomization.
             self._dr_hover = torch.full((n,), float(self.params.hover_thrust), device=device)
+        # Mixer DR nominals (the _alpha_nom pattern: the params' values if mixer params were
+        # passed, else the canonical measured constants).
+        self._mix_idle_nom = (MIXER_IDLE_MEASURED if self.params.mixer_idle is None
+                              else float(self.params.mixer_idle))
+        self._mix_kerr_nom = (MIXER_KAPPA_ERR_MEASURED if self.params.mixer_kappa_err is None
+                              else float(self.params.mixer_kappa_err))
+        self._mix_khold_nom = (MIXER_KAPPA_HOLD_MEASURED if self.params.mixer_kappa_hold is None
+                               else float(self.params.mixer_kappa_hold))
+        self._mix_zeta_nom = (MIXER_ZETA_YAW_MEASURED if self.params.mixer_zeta_yaw is None
+                              else float(self.params.mixer_zeta_yaw))
+        if torch is not None and self._dr_mixer:
+            n = self.n_envs
+            self._dr_mix_idle = torch.full((n,), self._mix_idle_nom, device=device)
+            self._dr_mix_kerr = torch.full((n,), self._mix_kerr_nom, device=device)
+            self._dr_mix_khold = torch.full((n,), self._mix_khold_nom, device=device)
+            self._dr_mix_zeta = torch.full((n,), self._mix_zeta_nom, device=device)
+            # per-env r_fit (3,) -- depends on the per-env super-rate s and mixer params; kept
+            # in sync by _resample_dr (initialised here at the nominals)
+            self._dr_mix_rfit = self._t_mixer_r_fit(
+                self._dr_s, self._dr_mix_idle, self._dr_mix_kerr, self._dr_mix_zeta)
 
         # --- control-latency DR (item 4a): a per-env action RING BUFFER. The policy's command is
         # delayed by a per-episode integer number of control steps (resampled at reset) to model the
@@ -431,14 +489,22 @@ class PeregrinePlantDynamics(BaseDynamics):
         # and do NOT double-count it into rate_tau (whose DR band is the loop dynamics, not delay).
         # NOTE: actions are detached into the buffer -- correct for PPO (no pathwise grad through the
         # env); a BPTT algo (SHAC/APG) with latency-DR would need a differentiable buffer instead.
-        self._latency_max = int(getattr(cfg, "dr_latency_max_steps", 2))   # delay in {0..max} steps
+        # S17: the live transport latency MEASURED at 2 control ticks (67 ms; cross-correlation
+        # of commanded vs realized rates, live-deploy diag Section 4) -- inc6+ trains with the
+        # band CENTERED there: dr_latency_min_steps=1, max=3 -> {1,2,3}. min defaults 0 (legacy).
+        self._latency_max = int(getattr(cfg, "dr_latency_max_steps", 2))   # delay in {min..max}
+        self._latency_min = int(getattr(cfg, "dr_latency_min_steps", 0))
+        if not 0 <= self._latency_min <= self._latency_max:
+            raise ValueError(f"need 0 <= dr_latency_min_steps <= dr_latency_max_steps; "
+                             f"got [{self._latency_min}, {self._latency_max}]")
         self._latency_enabled = self._dr_enabled and self._latency_max > 0
         if torch is not None and self._latency_enabled:
             n, K = self.n_envs, self._latency_max
             buf = torch.zeros(n, K + 1, self.action_dim, device=device)    # [:, 0] = newest
             buf[..., 0] = 1.0                                              # hover (normed_thrust=1)
             self._act_buf = buf
-            self._latency_steps = torch.randint(0, K + 1, (n,), device=device)  # per-env delay
+            self._latency_steps = torch.randint(self._latency_min, K + 1, (n,),
+                                                device=device)            # per-env delay
 
     # ---- abstract API ----------------------------------------------------------------------------
     @property
@@ -468,6 +534,23 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._step_torch(U)
         else:
             raise ValueError(f"unknown backend {self.backend!r}")
+
+    def _t_mixer_r_fit(self, s, idle, kerr, zeta):
+        """Per-env mixer authority normalisation (n, 3) -- the torch analog of
+        ``racer.rl_plant.mixer_r_fit`` evaluated at each env's sampled super-rate ``s`` and
+        mixer params (hover PINNED at the nominal under dr_aero, which dr_mixer requires).
+        Only used on the DR path (resampled at reset); the scalar/gate path uses the cached
+        float64 ``params._mixer_r_fit``."""
+        gain = self._rate_gain.unsqueeze(0) / (1.0 - s)               # (n, 3); cmd = pi exactly
+        target = self._rate_sign.unsqueeze(0) * (gain * np.pi)
+        d = kerr.unsqueeze(-1) * target                               # (n, 3)
+        hover = float(self.params.hover_thrust)
+        eta = (zeta / (zeta + hover)).unsqueeze(-1)                   # (n, 1)
+        d = torch.cat([d[:, 0:2], d[:, 2:3] * eta], dim=-1).abs()
+        idle_ = idle.unsqueeze(-1)
+        u_hi = torch.clamp(hover + d, min=idle_, max=torch.ones_like(d))
+        u_lo = torch.clamp(hover - d, min=idle_, max=torch.ones_like(d))
+        return (u_hi - u_lo) * 0.5 / d
 
     def _apply_latency(self, U: Tensor) -> Tensor:
         """Push the newest action to the front of the ring buffer, drop the oldest, and return each
@@ -548,6 +631,17 @@ class PeregrinePlantDynamics(BaseDynamics):
                 quad_c2 = self._quad_c2                                          # (3, 2) or None
                 coll_knots = self._coll_knots                                    # (K,) or None
                 coll_kvals = self._coll_kvals                                    # (K,) or None
+            if self._dr_mixer:
+                # S17 motor mixer forced ON with per-env params (resampled at reset).
+                # mix_hi is a tensor because torch.clamp cannot mix Tensor/Number bounds.
+                mix_idle = self._dr_mix_idle                                     # (n_envs,)
+                mix_hi = torch.ones_like(self._dr_mix_idle)                      # (n_envs,)
+                mix_kerr = self._dr_mix_kerr.unsqueeze(-1)                       # (n_envs, 1)
+                mix_khold = self._dr_mix_khold.unsqueeze(-1)                     # (n_envs, 1)
+                mix_zeta = self._dr_mix_zeta                                     # (n_envs,)
+                mix_rfit = self._dr_mix_rfit                                     # (n_envs, 3)
+            else:
+                mix_idle = mix_hi = mix_kerr = mix_khold = mix_zeta = mix_rfit = None
         else:
             hover = self.params.hover_thrust                                     # float
             drag = self.params.linear_drag                                      # float
@@ -557,6 +651,17 @@ class PeregrinePlantDynamics(BaseDynamics):
             quad_c2 = self._quad_c2                                              # (3, 2) or None (legacy)
             coll_knots = self._coll_knots                                        # (K,) or None (legacy)
             coll_kvals = self._coll_kvals                                        # (K,) or None (legacy)
+            # mixer scalars stay python floats (bit-identity with rl_plant); r_fit is the
+            # cached float64 from PlantParams, rebuilt at the gate dtype by check_diffaero_gate
+            if self.params.mixer_idle is not None:
+                mix_idle = self.params.mixer_idle                                # float
+                mix_hi = 1.0                                                     # float (Number/Number clamp)
+                mix_kerr = self.params.mixer_kappa_err                           # float
+                mix_khold = self.params.mixer_kappa_hold                         # float
+                mix_zeta = self.params.mixer_zeta_yaw                            # float
+                mix_rfit = self._mix_rfit                                        # (3,)
+            else:
+                mix_idle = mix_hi = mix_kerr = mix_khold = mix_zeta = mix_rfit = None
         collective = U[..., 0] * hover                                           # (n_envs,)
 
         # params-level transport delay (mismatch #8b): mirror rl_plant's ring buffer EXACTLY --
@@ -577,6 +682,13 @@ class PeregrinePlantDynamics(BaseDynamics):
                 cmd_rate, cmd_coll = applied[..., 0:3], applied[..., 3]
             else:
                 cmd_rate, cmd_coll = rate_frd, collective
+            # realised collective FIRST (the mixer needs it; independent of the rate/attitude
+            # blocks, so the legacy floats are unchanged -- mirrors rl_plant's S17 reorder)
+            if self.params.thrust_tau_s > 0.0:
+                beta = 1.0 - np.exp(-sub_dt / self.params.thrust_tau_s)
+                thrust = thrust + beta * (cmd_coll - thrust)
+            else:
+                thrust = torch.broadcast_to(cmd_coll, thrust.shape)
             # inner rate loop: flat gain (legacy) or the static super-rate map; optional slew clamp.
             if super_s is not None:
                 gain = self._rate_gain / (1.0 - super_s * torch.clamp(cmd_rate.abs(), max=np.pi) / np.pi)
@@ -584,23 +696,42 @@ class PeregrinePlantDynamics(BaseDynamics):
                 gain = self._rate_gain
             target = gain * self._rate_sign * cmd_rate
             domega = alpha * (target - w)
-            if alpha_max is not None:
+            c_eff = None                                # mixer-OFF: thrust map sees the collective
+            if mix_idle is not None:
+                # S17 MOTOR MIXER -- mirrors rl_plant.step operation-for-operation: per-motor
+                # clip of collective +- the rate differential demand; the clipped MEAN feeds
+                # the thrust map, the clipped DIFFERENTIAL scales the slew limit by Q = r/r_fit.
+                e = target - w
+                d = mix_kerr * e + mix_khold * w
+                eta = mix_zeta / (mix_zeta + torch.clamp(thrust, min=0.0))
+                d = torch.cat([d[..., 0:2], d[..., 2:3] * eta.unsqueeze(-1)], dim=-1)
+                u0 = torch.clamp(thrust + (d[..., 0] + d[..., 1] + d[..., 2]), mix_idle, mix_hi)
+                u1 = torch.clamp(thrust + (-d[..., 0] + d[..., 1] - d[..., 2]), mix_idle, mix_hi)
+                u2 = torch.clamp(thrust + (d[..., 0] - d[..., 1] - d[..., 2]), mix_idle, mix_hi)
+                u3 = torch.clamp(thrust + (-d[..., 0] - d[..., 1] + d[..., 2]), mix_idle, mix_hi)
+                c_eff = (u0 + u1 + u2 + u3) * 0.25
+                delta = torch.stack([(u0 - u1 + u2 - u3) * 0.25,
+                                     (u0 + u1 - u2 - u3) * 0.25,
+                                     (u0 - u1 - u2 + u3) * 0.25], dim=-1)
+                d_safe = torch.where(d.abs() > 1e-9, d, torch.ones_like(d))
+                r = torch.where(d.abs() > 1e-9, torch.clamp(delta / d_safe, 0.0, 1.0),
+                                torch.ones_like(d))
+                lim = alpha_max * (r / mix_rfit) * sub_dt
+                domega = torch.clamp(domega, -lim, lim)
+            elif alpha_max is not None:
                 lim = alpha_max * sub_dt
                 domega = torch.clamp(domega, -lim, lim)
             w = _t_clip_to_norm(w + domega, self.params.max_omega_rps)
             q = _t_quat_normalize(_t_quat_multiply(q, _t_rotvec_to_quat(w * sub_dt)))
-            if self.params.thrust_tau_s > 0.0:
-                beta = 1.0 - np.exp(-sub_dt / self.params.thrust_tau_s)
-                thrust = thrust + beta * (cmd_coll - thrust)
-            else:
-                thrust = torch.broadcast_to(cmd_coll, thrust.shape)
-            # thrust map: legacy linear g*thr/hover, or the measured convex knot table; drag:
-            # linear (legacy / d1 residual) + the measured body-frame sign-split quadratic term.
-            # Mirrors rl_plant.step operation-for-operation (twin-falsify 2026-06-11).
+            # thrust map: legacy linear g*thr/hover, or the measured convex knot table, consuming
+            # the realised collective or the mixer's clipped motor MEAN; drag: linear (legacy /
+            # d1 residual) + the measured body-frame sign-split quadratic term. Mirrors
+            # rl_plant.step operation-for-operation (twin-falsify 2026-06-11 + S17 mixer).
+            coll = thrust if c_eff is None else c_eff
             if coll_kvals is not None:
-                a_up = _t_interp1d(thrust, coll_knots, coll_kvals)
+                a_up = _t_interp1d(coll, coll_knots, coll_kvals)
             else:
-                a_up = self.params.g * thrust / hover
+                a_up = self.params.g * coll / hover
             f_world = a_up.unsqueeze(-1) * _t_quat_rotate(q, self._BODY_UP)
             f_world = f_world - drag * v
             if quad_c2 is not None:
@@ -663,7 +794,8 @@ class PeregrinePlantDynamics(BaseDynamics):
         if self._latency_enabled and env_idx.numel() > 0:
             # new per-episode delay + flush the buffer to hover for the reset envs (no stale commands)
             self._latency_steps[env_idx] = torch.randint(
-                0, self._latency_max + 1, (env_idx.numel(),), device=self._latency_steps.device)
+                self._latency_min, self._latency_max + 1, (env_idx.numel(),),
+                device=self._latency_steps.device)
             self._act_buf[env_idx] = 0.0
             self._act_buf[env_idx, :, 0] = 1.0
 
@@ -718,6 +850,17 @@ class PeregrinePlantDynamics(BaseDynamics):
         else:
             self._dr_hover[env_idx] = float(self.params.hover_thrust) * u((m,), b["hover"])
             self._dr_drag[env_idx] = float(self.params.linear_drag) * u((m,), b["drag"])
+        if self._dr_mixer:
+            # S17 mixer params: absolute bands from the fit uncertainty (fit_mixer.py); the
+            # per-env r_fit normalisation is recomputed for the reset envs (it depends on the
+            # envs' freshly sampled super-rate s AND mixer params).
+            self._dr_mix_idle[env_idx] = u_abs((m,), b["mix_idle_lo"], b["mix_idle_hi"])
+            self._dr_mix_kerr[env_idx] = u_abs((m,), b["mix_kerr_lo"], b["mix_kerr_hi"])
+            self._dr_mix_khold[env_idx] = u_abs((m,), b["mix_khold_lo"], b["mix_khold_hi"])
+            self._dr_mix_zeta[env_idx] = u_abs((m,), b["mix_zeta_lo"], b["mix_zeta_hi"])
+            self._dr_mix_rfit[env_idx] = self._t_mixer_r_fit(
+                self._dr_s[env_idx], self._dr_mix_idle[env_idx],
+                self._dr_mix_kerr[env_idx], self._dr_mix_zeta[env_idx])
 
     def check_against_rl_plant(self, U: Tensor, atol: float = 1e-5) -> float:
         """Validate the torch backend against the parity-tested numpy plant from the CURRENT state.

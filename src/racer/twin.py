@@ -72,6 +72,28 @@ def _quad_c2_table(c2) -> np.ndarray:
     raise ValueError(f"quad_drag_c2 must be a scalar, (3,) or (3, 2); got shape {t.shape}")
 
 
+def _mixer_r_fit(rate_gain, rate_sign, super_rate_s, hover, idle, kappa_err, zeta_yaw) -> np.ndarray:
+    """Authority normalisation (3,) at the S14 slew-fit condition (hover collective, single-axis
+    sustained pi command, zero rate): the realized/demanded differential ratio there. alpha_max
+    was measured WITH the mixer already throttling at that point, so the slew limit scales by
+    Q = r/r_fit -- keeping the fit point exact -- rather than by the raw r. Duplicated
+    operation-for-operation in ``racer.rl_plant`` (parity-pinned; twin is ground truth).
+    ``rate_sign`` only flips the sign of the demand -- |delta/d| is sign-invariant -- but is
+    threaded through so the arithmetic matches the in-step computation bit-for-bit."""
+    gain = np.asarray(rate_gain, dtype=np.float64)
+    if super_rate_s is not None:
+        s = np.asarray(super_rate_s, dtype=np.float64)
+        gain = gain / (1.0 - s * np.minimum(np.pi, np.pi) / np.pi)
+    target = gain * np.asarray(rate_sign, dtype=np.float64) * np.pi   # one full-stick axis at a time
+    d = kappa_err * target
+    eta = zeta_yaw / (zeta_yaw + np.maximum(hover, 0.0))
+    d = np.concatenate([d[..., 0:2], d[..., 2:3] * eta])
+    u_hi = np.clip(hover + np.abs(d), idle, 1.0)
+    u_lo = np.clip(hover - np.abs(d), idle, 1.0)
+    delta = (u_hi - u_lo) * 0.5
+    return delta / np.abs(d)
+
+
 @dataclass
 class CtbrPlantConfig:
     """Plant parameters. Defaults are a canonical unity-gain quadrotor; set ``rate_gain`` /
@@ -115,6 +137,24 @@ class CtbrPlantConfig:
     # last knot saturates, faithful to the [0,1] stick). Setting exactly one raises. None -> OFF.
     coll_map_thr: np.ndarray | None = None     # (K,) increasing collective knots [0..1]
     coll_map_accel: np.ndarray | None = None   # (K,) body-up specific accel at the knots (m/s^2)
+    # MOTOR-MIXER coupling (live-deploy diag 2026-06-11, ``handoff/shadowpc-live-deploy-diag-
+    # 2026-06-11/WRITEUP.md`` Sections 2 + 8; fit in ``handoff/laptop-s17-mixer-inc6-2026-06-11/
+    # fit_mixer.py``). The sim's per-motor commands are collective +- rate-PID differentials,
+    # clipped to [idle, 1] -- so (low collective x high rate demand) generates UNCOMMANDED LIFT
+    # via the clipped low pair (measured: thr 0 + yaw 3.14 -> motors [.08,.73,.73,.08], a_up
+    # 9.4 m/s^2 ~= hover at commanded ZERO), and (collective ~1) leaves no up-headroom -- rate
+    # authority degrades during thrust pulses. Model (all four set together; None -> exact
+    # legacy, thrust and rates independent):
+    #   d_ax  = kappa_err*(target_ax - omega_ax) + kappa_hold*omega_ax;  d_yaw *= zeta/(zeta+c)
+    #   u_i   = clip(c + S_i . d, idle, 1)  (X-quad signs);  c_eff = mean(u) -> the thrust map
+    #   Q_ax  = (delta_ax/d_ax)/r_fit_ax scales the alpha_max slew limit (delta = realized
+    #           differential (S^T u)/4; r_fit = the same ratio at the S14 slew-fit condition --
+    #           hover collective, single-axis pi -- because alpha_max was measured WITH the
+    #           mixer throttling there; requires alpha_max_rps2 set).
+    mixer_idle: float | None = None         # motor idle clip floor (collective units), ~0.05
+    mixer_kappa_err: float | None = None    # differential per rad/s of rate ERROR, ~0.073
+    mixer_kappa_hold: float | None = None   # differential per rad/s of HELD rate, ~0.046
+    mixer_zeta_yaw: float | None = None     # yaw effectiveness d_yaw *= zeta/(zeta+c), ~0.34
     # Sim-to-real LATENCY the ideal twin lacked -- why kp_alt=4 looked stable offline but relay-
     # oscillated live (VERIFY rung 1, 2026-06-06): a transport delay on the sense->command->act loop
     # + a first-order lag on the realized collective (motor spin-up). With the controller's thrust
@@ -182,6 +222,14 @@ class CtbrPlant:
         cmd = self._cmd_buf[-(nlag + 1)] if len(self._cmd_buf) >= nlag + 1 else self._cmd_buf[0]
         if len(self._cmd_buf) > nlag + 2:
             self._cmd_buf.pop(0)
+        # --- realised collective FIRST (moved ahead of the rate loop for the mixer, which needs
+        # it; the lag is independent of the rate/attitude blocks, so the legacy floats are
+        # unchanged -- pinned by tests/test_measured_aero's inline-legacy bit-identity test) ---
+        thrust_cmd = 0.0 if cmd.thrust is None else float(cmd.thrust)
+        if cfg.thrust_tau_s > 0.0:                                 # actuator spin-up lag (0 -> instant)
+            self._thrust += (1.0 - np.exp(-dt / cfg.thrust_tau_s)) * (thrust_cmd - self._thrust)
+        else:
+            self._thrust = thrust_cmd
         # --- inner rate loop: first-order lag toward the sim's realized steady rate. The steady
         # gain is FLAT rate_gain (legacy) or the measured STATIC amplitude-dependent map when
         # super_rate_s is set (see CtbrPlantConfig); the increment is slew-limited when
@@ -194,7 +242,40 @@ class CtbrPlant:
         target = gain * np.asarray(cfg.rate_sign) * cmd_rate
         alpha = 1.0 - np.exp(-dt / max(cfg.rate_tau_s, 1e-9))
         domega = alpha * (target - self.omega)
-        if cfg.alpha_max_rps2 is not None:
+        c_eff = None                                               # mixer-OFF: thrust map sees _thrust
+        if cfg.mixer_idle is not None:
+            # --- MOTOR MIXER (live-deploy diag 2026-06-11; see CtbrPlantConfig). Per-motor
+            # commands = collective +- the rate-loop differential demand, clipped to [idle, 1]:
+            # the clipped MEAN re-enters the thrust map (parasitic lift at the bottom rail,
+            # thrust sag at the top), the clipped DIFFERENTIAL throttles the slew authority
+            # (Q = r/r_fit; r_fit-normalised because alpha_max was fit mixer-throttled). ---
+            if (cfg.mixer_kappa_err is None or cfg.mixer_kappa_hold is None
+                    or cfg.mixer_zeta_yaw is None):
+                raise ValueError("mixer_idle/kappa_err/kappa_hold/zeta_yaw must be set together")
+            if cfg.alpha_max_rps2 is None:
+                raise ValueError("the mixer authority model scales the measured slew limits: "
+                                 "set alpha_max_rps2 when the mixer is on")
+            c = float(self._thrust)
+            e = target - self.omega
+            d = cfg.mixer_kappa_err * e + cfg.mixer_kappa_hold * self.omega
+            eta = cfg.mixer_zeta_yaw / (cfg.mixer_zeta_yaw + np.maximum(c, 0.0))
+            d = np.concatenate([d[..., 0:2], d[..., 2:3] * eta])
+            u0 = np.clip(c + (d[..., 0] + d[..., 1] + d[..., 2]), cfg.mixer_idle, 1.0)
+            u1 = np.clip(c + (-d[..., 0] + d[..., 1] - d[..., 2]), cfg.mixer_idle, 1.0)
+            u2 = np.clip(c + (d[..., 0] - d[..., 1] - d[..., 2]), cfg.mixer_idle, 1.0)
+            u3 = np.clip(c + (-d[..., 0] - d[..., 1] + d[..., 2]), cfg.mixer_idle, 1.0)
+            c_eff = (u0 + u1 + u2 + u3) * 0.25
+            delta = np.stack([(u0 - u1 + u2 - u3) * 0.25,
+                              (u0 + u1 - u2 - u3) * 0.25,
+                              (u0 - u1 - u2 + u3) * 0.25], axis=-1)
+            d_safe = np.where(np.abs(d) > 1e-9, d, 1.0)
+            r = np.where(np.abs(d) > 1e-9, np.clip(delta / d_safe, 0.0, 1.0), 1.0)
+            r_fit = _mixer_r_fit(cfg.rate_gain, cfg.rate_sign, cfg.super_rate_s,
+                                 cfg.hover_thrust, cfg.mixer_idle, cfg.mixer_kappa_err,
+                                 cfg.mixer_zeta_yaw)
+            lim = np.asarray(cfg.alpha_max_rps2, dtype=np.float64) * (r / r_fit) * dt
+            domega = np.clip(domega, -lim, lim)
+        elif cfg.alpha_max_rps2 is not None:
             lim = np.asarray(cfg.alpha_max_rps2, dtype=np.float64) * dt
             domega = np.clip(domega, -lim, lim)
         self.omega = _clip_norm(self.omega + domega, cfg.max_omega_rps)
@@ -202,20 +283,18 @@ class CtbrPlant:
         R_cur = self._from_quat(self.q)
         R_new = R_cur * Rotation.from_rotvec(self.omega * dt)
         self.q = self._to_wxyz(R_new)
-        # --- thrust -> body-up specific force -> world accel + gravity (+ optional drag) ---
-        thrust_cmd = 0.0 if cmd.thrust is None else float(cmd.thrust)
-        if cfg.thrust_tau_s > 0.0:                                 # actuator spin-up lag (0 -> instant)
-            self._thrust += (1.0 - np.exp(-dt / cfg.thrust_tau_s)) * (thrust_cmd - self._thrust)
-        else:
-            self._thrust = thrust_cmd
+        # --- thrust -> body-up specific force -> world accel + gravity (+ optional drag). The
+        # thrust map consumes the realised collective, or the mixer's clipped motor MEAN when
+        # the mixer is on (the parasitic-lift / thrust-sag channel). ---
+        coll = self._thrust if c_eff is None else c_eff
         if cfg.coll_map_thr is not None or cfg.coll_map_accel is not None:
             if cfg.coll_map_thr is None or cfg.coll_map_accel is None:
                 raise ValueError("coll_map_thr and coll_map_accel must be set together")
             # measured CONVEX collective map (twin-falsify 2026-06-11) on the REALISED collective
-            a_up = float(np.interp(self._thrust, np.asarray(cfg.coll_map_thr, dtype=np.float64),
+            a_up = float(np.interp(coll, np.asarray(cfg.coll_map_thr, dtype=np.float64),
                                    np.asarray(cfg.coll_map_accel, dtype=np.float64)))
         else:
-            a_up = cfg.g * (self._thrust / cfg.hover_thrust)       # thrust=hover -> g (balances)
+            a_up = cfg.g * (coll / cfg.hover_thrust)               # thrust=hover -> g (balances)
         R_m = R_new.as_matrix()
         f_world = R_m @ np.array([0.0, 0.0, -a_up])                # body -Z (up) in world NED
         f_world = f_world - cfg.linear_drag * self.vel             # specific force incl. drag

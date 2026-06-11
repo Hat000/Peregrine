@@ -1,0 +1,17 @@
+{
+ "_comment": "S17 follow-up mixer probe (~10-min ShadowPC errand; rate_sysid profile mode, same as mixer_probe.json). Targets the corners the WRITEUP aggregates under-constrain: (1) TOP-RAIL x large rate demand -- c100_r31/c100_y31 measure the realized differential + slew when there is zero up-headroom (the gate-2 killer; never probed directly); (2) c60_r31 mid-band roll authority (does the yaw-only zeta effectiveness also apply to roll/pitch?); (3) zhov_r31 the roll analog of zhov_y31 (mean preservation -> eta for roll/pitch); (4) z00_y31_long 1.5 s for a clean settled tail (clean kappa_err/kappa_hold split + idle floor without re-level riding). Extraction: same per-phase aggregates as the diag WRITEUP Section 2 table (motors mean/max + a_up) PLUS the per-motor settled tail (last 0.3 s) and the realized-rate rise slope (ODOMETRY raw rate, ~80/260 rad/s^2 analog) per phase.",
+ "phases": [
+  {"name": "init", "dur": 3.5, "vel_damp": true, "alt_target_m": 0.0},
+  {"name": "climb", "dur": 6.0, "vel_damp": true, "alt_target_m": -14.0},
+  {"name": "z00_y31_long", "dur": 1.5, "kind": "astep", "value": [0.0, 0.0, 3.14], "thrust": 0.0},
+  {"name": "catch1", "dur": 3.0, "vel_damp": true, "alt_target_m": -14.0},
+  {"name": "c100_r31", "dur": 0.5, "kind": "astep", "value": [3.14, 0.0, 0.0], "thrust": 1.0},
+  {"name": "catch2", "dur": 3.0, "vel_damp": true, "alt_target_m": -14.0},
+  {"name": "c100_y31", "dur": 0.6, "kind": "astep", "value": [0.0, 0.0, 3.14], "thrust": 1.0},
+  {"name": "catch3", "dur": 3.0, "vel_damp": true, "alt_target_m": -14.0},
+  {"name": "c60_r31", "dur": 0.5, "kind": "astep", "value": [3.14, 0.0, 0.0], "thrust": 0.6},
+  {"name": "catch4", "dur": 3.0, "vel_damp": true, "alt_target_m": -14.0},
+  {"name": "zhov_r31", "dur": 0.5, "kind": "astep", "value": [3.14, 0.0, 0.0], "thrust": 0.2656},
+  {"name": "catch5", "dur": 3.5, "vel_damp": true, "alt_target_m": -14.0}
+ ]
+}

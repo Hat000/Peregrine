@@ -35,7 +35,9 @@ from peregrine_racing import PeregrineRacing
 
 from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams,  # noqa: E402
                             SUPER_RATE_S_MEASURED, QUAD_DRAG_C2_MEASURED,
-                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED)
+                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                            MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
+                            MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED)
 
 _env.ENV_ALIAS["peregrine_racing"] = PeregrineRacing
 
@@ -56,11 +58,13 @@ def main() -> int:
     ap.add_argument("--ckpt", required=True, help="dir containing actor.pth")
     ap.add_argument("--course", default="vq1", choices=["vq1", "random"],
                     help="vq1 = the held-out acceptance course; random = generalization")
-    ap.add_argument("--plant", default="map", choices=["map", "flat", "aero"],
+    ap.add_argument("--plant", default="map", choices=["map", "flat", "aero", "mixer"],
                     help="map = measured super-rate plant (S1.4+ default); flat = legacy, "
                          "ONLY for flat-trained checkpoints; aero = map + measured aero "
                          "(quad body drag + convex collective, linear_drag=0; twin-falsify "
-                         "2026-06-11) -- ALL S1.5+ (aero-trained) evals")
+                         "2026-06-11) -- S1.5 (inc5) evals; mixer = aero + the measured "
+                         "motor-mixer coupling (live-deploy diag 2026-06-11) -- ALL S17+ "
+                         "(inc6, mixer-trained) evals")
     ap.add_argument("--standing-frac", type=float, default=1.0)
     ap.add_argument("--n-envs", type=int, default=256)
     ap.add_argument("--max-time", type=float, default=40.0)
@@ -69,13 +73,20 @@ def main() -> int:
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
-    if args.plant == "aero":     # the fully measured plant (S16 fixed-params form)
-        params = PlantParams(super_rate_s=SUPER_RATE_S_MEASURED,
-                             alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED.copy(),
-                             linear_drag=0.0,
-                             quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
-                             coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
-                             coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
+    _aero = dict(super_rate_s=SUPER_RATE_S_MEASURED,
+                 alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED.copy(),
+                 linear_drag=0.0,
+                 quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
+                 coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
+                 coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
+    if args.plant == "mixer":    # the fully measured plant as of S17 (aero + motor mixer)
+        params = PlantParams(**_aero,
+                             mixer_idle=MIXER_IDLE_MEASURED,
+                             mixer_kappa_err=MIXER_KAPPA_ERR_MEASURED,
+                             mixer_kappa_hold=MIXER_KAPPA_HOLD_MEASURED,
+                             mixer_zeta_yaw=MIXER_ZETA_YAW_MEASURED)
+    elif args.plant == "aero":   # the S16 fixed-params form (pre-mixer)
+        params = PlantParams(**_aero)
     elif args.plant == "map":
         params = PlantParams(super_rate_s=SUPER_RATE_S_MEASURED,
                              alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)
@@ -114,6 +125,14 @@ def main() -> int:
     finish_times, pass_offsets, mean_speeds = [], [], []
     sat_steps = torch.zeros(4, device=device)
     n_steps_total = 0
+    # S17 ACTION-RATE stats (the inc6 style gate): per-tick action delta in SPAN-NORMALISED
+    # units (|a_t - a_{t-1}| / 2 of the [-1,1] pre-rescale action = fraction of full span per
+    # tick; 1.0 = a full-rail flip, the inc5 bang-bang/dither signature). Episode boundaries
+    # (reset ticks) are masked out. Yaw flip = consecutive |a_yaw| > 0.5 with opposite signs.
+    dact_hist = [[] for _ in range(4)]
+    yaw_flips = 0
+    yaw_pairs = 0
+    prev_action = None
 
     n_steps = int(args.horizons * args.max_time / dt)
     with torch.no_grad():
@@ -121,8 +140,19 @@ def main() -> int:
             action, _ = agent.act(obs, test=True)
             sat_steps += (action.abs() > 0.95).float().sum(dim=0)
             n_steps_total += action.shape[0]
+            if prev_action is not None:
+                da = (action - prev_action).abs() * 0.5            # span-normalised per tick
+                da = da[valid_prev]                                # mask envs reset last tick
+                for ax in range(4):
+                    dact_hist[ax].append(da[:, ax].cpu())
+                yy, py = action[valid_prev, 3], prev_action[valid_prev, 3]
+                flips = ((yy.abs() > 0.5) & (py.abs() > 0.5) & (yy * py < 0))
+                yaw_flips += int(flips.sum())
+                yaw_pairs += int(flips.numel())
+            prev_action = action.clone()
             action = env.rescale_action(action)
             obs, _loss, _term, info = env.step(action)
+            valid_prev = ~info["reset"]                            # next delta invalid for resets
 
             # Peak roll/tilt come from the ENV's per-episode trackers (stats_raw) -- recorded
             # PRE-reset inside step(), so the terminal/crash pose is included and the next
@@ -171,6 +201,20 @@ def main() -> int:
     sat = (sat_steps / max(n_steps_total, 1)).cpu().numpy()
     print(f"[RESULT] CMD_SATURATION |a|>0.95: thrust {sat[0]:.1%}  "
           f"roll {sat[1]:.1%}  pitch {sat[2]:.1%}  yaw {sat[3]:.1%}")
+    # S17 action-rate gate: inc5 datum ~1.0 span/tick rails on thrust+yaw; the documented
+    # inc6 acceptance bound is p95 <= 0.5 span/tick on thrust AND yaw, yaw flip rate <= 5%.
+    if dact_hist[0]:
+        names = ("thrust", "roll", "pitch", "yaw")
+        parts = []
+        for ax in range(4):
+            v = torch.cat(dact_hist[ax]).numpy()
+            parts.append(f"{names[ax]} p95 {np.percentile(v, 95):.3f} max {v.max():.3f}")
+        flip_rate = yaw_flips / max(yaw_pairs, 1)
+        print("[RESULT] ACTION_RATE span/tick: " + "  ".join(parts))
+        print(f"[RESULT] YAW_FLIP_RATE (|a|>0.5 sign flips): {flip_rate:.1%}")
+        v_thr = torch.cat(dact_hist[0]).numpy(); v_yaw = torch.cat(dact_hist[3]).numpy()
+        print(f"ACTRATE_SUMMARY thr_p95={np.percentile(v_thr, 95):.3f} "
+              f"yaw_p95={np.percentile(v_yaw, 95):.3f} yaw_flip={flip_rate:.3f}")
     if n_ep:
         print(f"[RESULT] PEAK_ROLL_DEG all:     max {roll.max():6.1f}  p90 {np.percentile(roll,90):6.1f}  median {np.median(roll):6.1f}")
         print(f"[RESULT] PEAK_TILT_DEG all:     max {tilt.max():6.1f}  p90 {np.percentile(tilt,90):6.1f}  median {np.median(tilt):6.1f}")

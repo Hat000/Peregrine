@@ -883,8 +883,11 @@ def main() -> int:
                          "DEFAULT ON (offline: required for gate passes).")
     ap.add_argument("--bridge", action=argparse.BooleanOptionalAction, default=True,
                     help="PATH B: fly the proven CTBR stack to ~3 m before gate 0 "
-                         "then hand off to the policy. DEFAULT ON (offline: 4/6 "
-                         "gates vs 0/6 from the raw standing start).")
+                         "then hand off to the policy. inc5+ pass 6/6 in-twin from ALL "
+                         "start modes incl. the raw standing start (the old '0/6 raw "
+                         "standing start' was inc4-era); standing start (--no-bridge) "
+                         "is the deployment target -- it deletes the non-deterministic "
+                         "bridge seam (INC5-LIVE Appendix B).")
     ap.add_argument("--map", default="data/runs/track_map_20260602_114630.json",
                     help="saved deterministic gate map for the bridge navigator")
     ap.add_argument("--handoff-dist", type=float, default=3.0,

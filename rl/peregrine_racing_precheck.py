@@ -92,7 +92,20 @@ if getattr(dyn, "_dr_enabled", False):
     else:
         print("DR AERO off (legacy linear-drag plant; +dynamics.dr_aero=true for the twin-falsify"
               " 2026-06-11 measured aero)")
-    print("DR latency enabled=%s max_steps=%d" % (dyn._latency_enabled, dyn._latency_max))
+    if getattr(dyn, "_dr_mixer", False):
+        print("DR MIXER ON  idle [%.3f,%.3f] kerr [%.4f,%.4f] khold [%.4f,%.4f] zeta [%.2f,%.2f];"
+              " r_fit roll [%.3f,%.3f] yaw [%.3f,%.3f] (per-env, tracks sampled s)"
+              % (dyn._dr_mix_idle.min(), dyn._dr_mix_idle.max(),
+                 dyn._dr_mix_kerr.min(), dyn._dr_mix_kerr.max(),
+                 dyn._dr_mix_khold.min(), dyn._dr_mix_khold.max(),
+                 dyn._dr_mix_zeta.min(), dyn._dr_mix_zeta.max(),
+                 dyn._dr_mix_rfit[:, 0].min(), dyn._dr_mix_rfit[:, 0].max(),
+                 dyn._dr_mix_rfit[:, 2].min(), dyn._dr_mix_rfit[:, 2].max()))
+    else:
+        print("DR MIXER off (thrust and rates independent -- the corner the inc4/inc5 live"
+              " transfers died in; +dynamics.dr_mixer=true for the S17 measured mixer)")
+    print("DR latency enabled=%s steps=[%d..%d] (live measured 2 ticks; inc6 trains {1,2,3})"
+          % (dyn._latency_enabled, getattr(dyn, "_latency_min", 0), dyn._latency_max))
 else:
     print("DR OFF (unexpected)")
     raise SystemExit(1)
