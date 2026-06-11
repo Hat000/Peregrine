@@ -271,9 +271,10 @@ held. Source of truth: `handoff/shadowpc-twin-falsify-2026-06-10/WRITEUP.md` (co
   ≈78 m/s² = 2.12× the linear model's 37; sub-linear below hover; motor witness 1:1 ⇒ thrust physics, not
   motor lag. **CORRECTS the banked "live collective≤1.0 ≈ 3.765 normed ≈ 3.77 g ceiling" — that figure
   was a LINEAR-MODEL artifact; real full-stick is ~8 g.** Implications: (a) the S1.3/S1.4 training thrust
-  model (max_normed_thrust=3.765 linear) under-states top-end authority ~2×; (b) **the TOGT time-optimal
-  bound (committed 35f451d) was computed with T/W≈3.77 ⇒ it is CONSERVATIVE — re-run the TOGT pipeline
-  with the corrected thrust curve after S16.**
+  model (max_normed_thrust=3.765 linear) under-states top-end authority ~2×; (b) ~~the TOGT time-optimal
+  bound was computed with T/W≈3.77 ⇒ it is CONSERVATIVE~~ — **❌ CORRECTED (TOGT 2026-06-11): that was
+  thrust-only reasoning; the corrected-aero case (quad drag + T/W 8) gives 4.71 s — the v² drag wall eats
+  the doubled thrust, ceiling ROBUST ~4.3–4.7 s (§TOGT-BOUND). Authoritative re-run still queued post-S16.**
 - **Survivals (4):** rate map **airspeed-INVARIANT** (ratios 0.95–0.98 of the hover map at 6 m/s, all
   magnitudes); **control-rate invariant** 50/100/200 Hz (±0.2%); **NO battery sag** (−0.02% over 8 min);
   **determinism** run-to-run SD ~0.03 m/s.
@@ -290,6 +291,39 @@ held. Source of truth: `handoff/shadowpc-twin-falsify-2026-06-10/WRITEUP.md` (co
   ALIASES against the LPN/ODO telemetry stagger (produced a false "rate gain +20% at airspeed/100 Hz" —
   refuted); use raw ODOMETRY rate + euler-slope cross-check (WRITEUP §6). (c) `rate_sysid.py` gained
   `--mode profile` (JSON phase schedules) + a stale-collision fix.
+
+### ✅ TOGT TIME-OPTIMAL BOUND COMPLETE (2026-06-11, laptop fable) — ceiling ~4.3–4.7 s; THRUST binds; reference line shipped
+Stack-review meta-gap ② CLOSED. TOGT-Planner + multiple-shooting refine on WSL; pipeline `scripts/togt/`
+(re-runs in minutes for new tracks/plants). Source of truth: `handoff/laptop-togt-bound-2026-06-10/WRITEUP.md`
+(commits 35f451d+c4a8134+00d7cfe). Tests 457 green.
+- **THE BOUND: ~4.27 s** (standing start → gate-5 plane, crossings within the inscribed circle = Euclidean
+  miss <0.75 m, the validity rule as we measure it); **4.13 s** if the full 1.5 m square counts. **Our VQ1
+  35.3 s is 8× off the ceiling.** Even the twin-TRACKABLE lap (8.3 s, below) is 4.2× faster than VQ1 —
+  the VQ2 rank war happens far below 35 s.
+- **THRUST BINDS, overwhelmingly:** collective rides the ceiling ~84% of the lap; 75%/50% thrust costs
+  +0.77/+2.29 s. Body rates barely matter (the old wrong 7.85 rad/s model costs only +0.05 s; unbounded
+  rates buy −0.04 s) — **the super-rate map's value is control fidelity, NOT lap time.** Drag costs
+  0.085 s on the linear model; vmax≈52 m/s.
+- **🚩 CORRECTS the §TWIN-FALSIFY "TOGT bound is CONSERVATIVE" note (thrust-only reasoning — WRONG):**
+  the exploratory corrected-aero case (quadratic drag c2≈0.052 + T/W 8) gives **4.71 s — the v² drag wall
+  (~39 m/s top speed) eats the doubled thrust almost exactly; the ceiling is ROBUST at ~4.3–4.7 s** to the
+  plant revision. Authoritative re-run queued post-S16 (v² extrapolated beyond 7.6 m/s; the pipeline
+  re-runs in minutes).
+- **REFERENCE LINE SHIPPED: `rl/reference_line_vq1.json`** (margined circle-gate solution, lap 4.551 s,
+  crossings ≤0.14 m from centre = 0.6 m tracking budget) + `rl/reference_line.py` loader with arc-length
+  `progress()` for the RL progress reward.
+- **TWIN-TRACKED REALITY CHECK:** the existing geometric controller CANNOT track a thrust-saturated
+  reference at 1× (zero recovery headroom, diverges by design); time-dilating the geometry, first valid
+  6/6 at **k=1.85 ⇒ twin-tracked lap ≈8.3 s**, stable across 0–40 ms latency; a 54-combo gain sweep finds
+  nothing faster — **the 4.55→8.3 s gap is STRUCTURAL**, the tracking architecture's to close (MPCC /
+  RL-as-tracker / monolithic RL with progress reward). Directly informs the pending S2
+  monolithic-vs-decomposed decision.
+- **OPEN VALIDITY QUESTION → cheap live probe queued (ShadowPC):** the optimum clips every gate corner
+  when allowed (~1.06 m Euclidean, per-axis ≤0.76 m) — whether the sim's race_outcome accepts corner
+  passes is UNVERIFIED; a one-off live corner-pass probe closes the 4.13-vs-4.27 bracket and decides how
+  aggressively lines may cut corners.
+- **Ops keepers** (in `scripts/togt/README`): CRLF segfaults TOGT's YAML parser; the standalone CLI
+  crashes pre-main → use the gtest driver; MSYS path mangling when driving WSL from Windows.
 
 ## Depth model / ~100 TOPS budget (user) — OFFLINE flywheel
 After a recorded run (legal between-runs processing): **multi-view triangulation** from logged poses
@@ -393,7 +427,10 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   the trajectory is what produced the **backflip-dive** — an explicit line makes inversion STRUCTURALLY
   impossible. Tradeoff: lower speed ceiling than SWIFT-style learn-the-line, bought back via the offline
   line-iteration flywheel. **DECISION PENDING the post-static-map retrain result** (the S1.3 live datum is
-  now optional — see the characterize-sweep section). (Mapping is PERCEPTION — conservative lap +
+  now optional — see the characterize-sweep section). **🆕 TOGT datum (2026-06-11, §TOGT-BOUND): the existing
+  geometric tracker needs k=1.85 time-dilation to track the optimal line (twin lap ≈8.3 s vs the 4.55 s
+  reference; 54-combo gain sweep finds nothing faster) — the gap is STRUCTURAL ⇒ whichever S2 wins must close
+  it (MPCC / RL-as-tracker / monolithic RL with progress reward over the shipped reference line).** (Mapping is PERCEPTION — conservative lap +
   detector→PnP→KF — NOT an RL task, and only needed if VQ2 hides the map; open organizer question.)
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
@@ -424,10 +461,11 @@ in any component but in **3 META gaps**:
   TOGT-Planner** (FSC-Lab + Run-TOGT-Planner Python wrapper; plans through the gate OPENING — frees the
   crossing point, where corner-cut time lives) **+ CPC (Foehn 2021) as the true offline bound.** Serves
   three masters: the gap meter, the RL progress-reward reference, and the explicit line if decomposed S2
-  wins. ~3–5 days; feed the new ~11 rad/s authority + measured thrust ceiling. **Pipeline since BUILT
-  (35f451d: TOGT-Planner + multiple-shooting refine, WSL) — but the bound used T/W≈3.77, since FALSIFIED
-  (real full-stick ≈8 g, §TWIN-FALSIFY) ⇒ the bound is CONSERVATIVE; re-run with the corrected convex
-  thrust curve after S16.**
+  wins. **✅ CLOSED (2026-06-11): bound COMPUTED — ~4.27 s, ROBUST ~4.3–4.7 s under the corrected aero
+  (the "T/W≈3.77 ⇒ conservative" worry resolved: the v² drag wall eats the doubled thrust; thrust binds,
+  rates barely matter); our 35.3 s is 8× off; reference line + progress() shipped
+  (`rl/reference_line_vq1.json` / `rl/reference_line.py`); twin-tracked lap ≈8.3 s = a STRUCTURAL tracking
+  gap. See §TOGT-BOUND.**
 - **③ Vision-only (VQ2 case C) readiness pieces UNBUILT** (cheap, champion-validated, useful in A/B too):
   **delayed-fix KF rewind ring buffer** (apply fix at capture time — exact + cheap for a linear KF; at
   15 m/s a 50 ms stale fix mis-applied "at now" = 0.75 m; buys more than any factor graph);
