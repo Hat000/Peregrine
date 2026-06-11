@@ -1,0 +1,53 @@
+{
+ "phases": [
+  {
+   "name": "init",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": 0.0
+  },
+  {
+   "name": "climb",
+   "dur": 6.0,
+   "vel_damp": true,
+   "alt_target_m": -8.0
+  },
+  {
+   "name": "accel",
+   "dur": 3.5,
+   "pitch_deg": 20.0,
+   "alt_target_m": -8.0,
+   "tilt_ff": true
+  },
+  {
+   "name": "c034",
+   "dur": 0.6,
+   "thrust": 0.34
+  },
+  {
+   "name": "chov",
+   "dur": 0.8,
+   "thrust": 0.2656
+  },
+  {
+   "name": "c018",
+   "dur": 0.6,
+   "thrust": 0.18
+  },
+  {
+   "name": "chov2",
+   "dur": 0.8,
+   "thrust": 0.2656
+  },
+  {
+   "name": "c045",
+   "dur": 0.5,
+   "thrust": 0.45
+  },
+  {
+   "name": "chov3",
+   "dur": 1.0,
+   "thrust": 0.2656
+  }
+ ]
+}

@@ -1,0 +1,16 @@
+{
+ "phases": [
+  {
+   "name": "init",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": 0.0
+  },
+  {
+   "name": "hover_drift",
+   "dur": 320.0,
+   "vel_damp": true,
+   "alt_target_m": -5.0
+  }
+ ]
+}

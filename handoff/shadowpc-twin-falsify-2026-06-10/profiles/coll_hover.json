@@ -1,0 +1,112 @@
+{
+ "phases": [
+  {
+   "name": "init",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": 0.0
+  },
+  {
+   "name": "climb",
+   "dur": 6.0,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c000",
+   "dur": 0.5,
+   "thrust": 0.0,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c010",
+   "dur": 0.6,
+   "thrust": 0.1,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c020",
+   "dur": 0.8,
+   "thrust": 0.2,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c032",
+   "dur": 0.8,
+   "thrust": 0.32,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c045",
+   "dur": 0.5,
+   "thrust": 0.45,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c060",
+   "dur": 0.4,
+   "thrust": 0.6,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c080",
+   "dur": 0.35,
+   "thrust": 0.8,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  },
+  {
+   "name": "c100",
+   "dur": 0.3,
+   "thrust": 1.0,
+   "vel_damp": true
+  },
+  {
+   "name": "rehov",
+   "dur": 2.5,
+   "vel_damp": true,
+   "alt_target_m": -10.0
+  }
+ ]
+}

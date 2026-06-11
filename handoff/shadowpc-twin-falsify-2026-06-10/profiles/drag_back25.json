@@ -1,0 +1,28 @@
+{
+ "phases": [
+  {
+   "name": "init",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": 0.0
+  },
+  {
+   "name": "climb",
+   "dur": 5.0,
+   "vel_damp": true,
+   "alt_target_m": -6.0
+  },
+  {
+   "name": "accel",
+   "dur": 3.5,
+   "pitch_deg": 25,
+   "alt_target_m": -6.0,
+   "tilt_ff": true
+  },
+  {
+   "name": "coast",
+   "dur": 5.5,
+   "alt_target_m": -6.0
+  }
+ ]
+}

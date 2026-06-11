@@ -1,0 +1,40 @@
+{
+ "phases": [
+  {
+   "name": "init",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": 0.0
+  },
+  {
+   "name": "hold",
+   "dur": 1.0,
+   "vel_damp": true,
+   "alt_target_m": -2.0
+  },
+  {
+   "name": "climb55",
+   "dur": 1.4,
+   "thrust": 0.55,
+   "vel_damp": true
+  },
+  {
+   "name": "coast_v",
+   "dur": 1.0,
+   "thrust": 0.2656,
+   "vel_damp": true
+  },
+  {
+   "name": "desc05",
+   "dur": 2.5,
+   "thrust": 0.05,
+   "vel_damp": true
+  },
+  {
+   "name": "catch",
+   "dur": 2.0,
+   "thrust": 0.45,
+   "vel_damp": true
+  }
+ ]
+}

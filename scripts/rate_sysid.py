@@ -30,6 +30,13 @@ Usage:
   python scripts/rate_sysid.py --dry-run
   python scripts/rate_sysid.py --mode hover  --thrust-levels 0.42,0.45,0.48,0.51 --label hsweep
   python scripts/rate_sysid.py --mode rate   --mag 0.3 --thrust 0.46 --label rate1
+  python scripts/rate_sysid.py --mode profile --profile handoff/.../profiles/drag_back17.json \
+      --rate 100 --max-offset-m 100 --label dragb17    # twin-falsify campaign (2026-06-10)
+
+--mode profile: the schedule is a committed JSON (phases with attitude targets, yaw ramps,
+rel-z alt-hold + optional --ki-alt integral trim, tilt thrust feedforward, per-phase vel-damp,
+open-loop rate steps) -- every campaign probe re-runnable bit-for-bit. ALWAYS pin --rate
+explicitly (default 50 is a footgun for fast probes; campaign flies 100+).
 """
 from __future__ import annotations
 
@@ -169,14 +176,30 @@ def _wait_fresh_go(client, frames, args) -> bool:
 
 
 class _Phase:
-    """One segment of the schedule. ``kind`` in {hold, step}; a step injects ``value`` (raw wire
-    rad/s) on ``axis`` while the other axes are held level. ``thrust`` overrides the collective."""
+    """One segment of the schedule. ``kind`` in {hold, step, astep}; a step injects ``value`` (raw
+    wire rad/s) on ``axis`` while the other axes are held level; an astep sends the pure open-loop
+    rate vector ``value``. ``thrust`` overrides the collective.
 
-    __slots__ = ("name", "kind", "axis", "value", "thrust", "dur")
+    Profile-mode extras (all default None = legacy behavior, used by --mode profile):
+      roll_des/pitch_des  attitude TARGET (rad, reported frame) the hold drives to (tilt runs)
+      alt_target          rel-z altitude target (m, NED: -6 = 6 m above origin) -> PD(+I) thrust
+      tilt_ff             divide the alt-hold thrust by cos(roll_des)*cos(pitch_des) (tilt comp)
+      vel_damp            per-phase velocity-damp enable (None = global args; profile default off
+                          -- vel-damp tilts would CONTAMINATE a drag coast)
+      yaw_ramp/yaw_rate   slew the persistent yaw target to start_yaw+yaw_ramp (rad) at yaw_rate
+                          (rad/s); the new target PERSISTS into later phases (heading changes)"""
 
-    def __init__(self, name, kind, dur, *, axis=None, value=None, thrust=None):
+    __slots__ = ("name", "kind", "axis", "value", "thrust", "dur", "roll_des", "pitch_des",
+                 "alt_target", "tilt_ff", "vel_damp", "yaw_ramp", "yaw_rate")
+
+    def __init__(self, name, kind, dur, *, axis=None, value=None, thrust=None, roll_des=None,
+                 pitch_des=None, alt_target=None, tilt_ff=False, vel_damp=None,
+                 yaw_ramp=None, yaw_rate=None):
         self.name, self.kind, self.dur = name, kind, dur
         self.axis, self.value, self.thrust = axis, value, thrust
+        self.roll_des, self.pitch_des = roll_des, pitch_des
+        self.alt_target, self.tilt_ff, self.vel_damp = alt_target, tilt_ff, vel_damp
+        self.yaw_ramp, self.yaw_rate = yaw_ramp, yaw_rate
 
 
 def _build_rate_schedule(args) -> list[_Phase]:
@@ -214,6 +237,36 @@ def _build_anomaly_schedule(args) -> list[_Phase]:
     ]
 
 
+def _build_profile_schedule(args) -> list[_Phase]:
+    """TWIN-FALSIFY campaign mode (2026-06-10): the schedule is DATA -- a committed JSON profile
+    (handoff/shadowpc-twin-falsify-2026-06-10/profiles/*.json), so every probe is re-runnable
+    bit-for-bit. Each phase object: {name, dur, kind?: hold|step|astep, axis?: roll|pitch|yaw,
+    value?: float|[3], thrust?, roll_deg?, pitch_deg?, alt_target_m?, tilt_ff?: bool,
+    vel_damp?: bool, yaw_ramp_deg?, yaw_rate_dps?}. Angles in DEGREES in the JSON (readable),
+    radians internally. vel_damp defaults OFF in profile phases (a vel-damp tilt would
+    contaminate a drag coast); set it true for station-keeping phases."""
+    spec = json.loads(Path(args.profile).read_text())
+    phases = []
+    for p in spec["phases"]:
+        kind = p.get("kind", "hold")
+        axis = _NAME_AXIS[p["axis"]] if isinstance(p.get("axis"), str) else p.get("axis")
+        value = p.get("value")
+        if kind == "astep":
+            value = np.asarray(value, dtype=np.float64)
+        phases.append(_Phase(
+            p["name"][:14], kind, float(p["dur"]), axis=axis, value=value,
+            thrust=p.get("thrust"),
+            roll_des=np.radians(p["roll_deg"]) if "roll_deg" in p else None,
+            pitch_des=np.radians(p["pitch_deg"]) if "pitch_deg" in p else None,
+            alt_target=p.get("alt_target_m"),
+            tilt_ff=bool(p.get("tilt_ff", False)),
+            vel_damp=bool(p.get("vel_damp", False)),
+            yaw_ramp=np.radians(p["yaw_ramp_deg"]) if "yaw_ramp_deg" in p else None,
+            yaw_rate=np.radians(p["yaw_rate_dps"]) if "yaw_rate_dps" in p else None,
+        ))
+    return phases
+
+
 def _build_hover_schedule(args) -> list[_Phase]:
     """init level-hold, then a level-hold at each thrust level (measure the vertical drift)."""
     levels = [float(t) for t in args.thrust_levels.split(",") if t.strip()]
@@ -227,7 +280,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--endpoint", default="udp:127.0.0.1:14550")
     ap.add_argument("--video-port", type=int, default=VIDEO_PORT)
-    ap.add_argument("--mode", choices=["rate", "hover", "anomaly"], default="rate")
+    ap.add_argument("--mode", choices=["rate", "hover", "anomaly", "profile"], default="rate")
+    ap.add_argument("--profile", default=None,
+                    help="profile mode: JSON phase schedule (twin-falsify campaign probes)")
     # rate-step schedule
     ap.add_argument("--mag", default="0.3", help="rad/s step magnitude(s), comma list (e.g. 0.2,0.35)")
     ap.add_argument("--axes", default="pitch,roll,yaw", help="which axes to probe, in order")
@@ -247,6 +302,10 @@ def main() -> int:
     ap.add_argument("--kd-alt", type=float, default=0.025, help="alt-hold: thrust per m/s descent (vz damping)")
     ap.add_argument("--alt-thr-lo", type=float, default=0.18, help="alt-hold thrust clamp low")
     ap.add_argument("--alt-thr-hi", type=float, default=0.34, help="alt-hold thrust clamp high")
+    ap.add_argument("--ki-alt", type=float, default=0.0,
+                    help="alt-hold integral (thrust per m*s); the integrator READS the true hover "
+                         "collective (drift probe) -- clamped to +-ki-alt-clamp")
+    ap.add_argument("--ki-alt-clamp", type=float, default=0.08, help="alt-hold integrator clamp")
     ap.add_argument("--kp-hold", type=float, default=1.0, help="level-hold attitude gain (low BW = delay-tolerant)")
     ap.add_argument("--kd-hold", type=float, default=1.0, help="level-hold rate damping")
     # velocity damping / station-keeping (2026-06-10: the pure attitude hold ratchets horizontal
@@ -270,6 +329,11 @@ def main() -> int:
     # safety bounds / abort
     ap.add_argument("--max-offset-m", type=float, default=18.0, help="abort if horiz dist from origin exceeds")
     ap.add_argument("--max-alt-m", type=float, default=8.0, help="abort if |z| exceeds (climb/sink)")
+    ap.add_argument("--max-up-m", type=float, default=None,
+                    help="asymmetric alt abort: rel climb above origin (m); overrides --max-alt-m up")
+    ap.add_argument("--max-down-m", type=float, default=None,
+                    help="asymmetric alt abort: rel sink below origin (m); overrides --max-alt-m down")
+    ap.add_argument("--max-vz", type=float, default=1e9, help="abort if |vz| exceeds (m/s)")
     ap.add_argument("--max-tilt-deg", type=float, default=70.0, help="abort if |roll|/|pitch| exceeds")
     ap.add_argument("--max-seconds", type=float, default=40.0, help="hard wall-clock cap")
     # race wait (unattended: auto-reset + HOME kick; see _wait_fresh_go)
@@ -289,8 +353,10 @@ def main() -> int:
     args = ap.parse_args()
 
     sign = np.array([float(x) for x in args.rate_sign.split(",")], dtype=np.float64)
+    if args.mode == "profile" and not args.profile:
+        ap.error("--mode profile requires --profile <schedule.json>")
     schedule = {"rate": _build_rate_schedule, "hover": _build_hover_schedule,
-                "anomaly": _build_anomaly_schedule}[args.mode](args)
+                "anomaly": _build_anomaly_schedule, "profile": _build_profile_schedule}[args.mode](args)
     if args.mode == "anomaly" and args.max_tilt_deg == 70.0:
         args.max_tilt_deg = 1e9          # the tumble IS the measurement
         print("[anomaly] tilt abort OFF (collision/position/altitude/time aborts stay)")
@@ -303,6 +369,15 @@ def main() -> int:
             extra = " step " + ",".join(f"{v:+.2f}" for v in np.atleast_1d(p.value))
         else:
             extra = f" thrust={p.thrust:.2f}" if p.thrust is not None else ""
+        for fld, fmt in (("roll_des", " roll%+.0fdeg"), ("pitch_des", " pitch%+.0fdeg"),
+                         ("yaw_ramp", " yawramp%+.0fdeg")):
+            v = getattr(p, fld, None)
+            if v is not None:
+                extra += fmt % np.degrees(v)
+        if getattr(p, "alt_target", None) is not None:
+            extra += f" alt@{p.alt_target:+.1f}m"
+        if getattr(p, "vel_damp", None):
+            extra += " vdamp"
         print(f"   {p.name:14s} {p.kind:5s} {p.dur:4.1f}s{extra}")
     if args.dry_run:
         print("\n[dry-run] not connecting/arming. Schedule above is what WOULD be flown.")
@@ -318,7 +393,8 @@ def main() -> int:
     recorder = Recorder(session)
     recorder.start()
     recorder.add_meta(endpoint=args.endpoint, probe="rate_sysid", mode=args.mode,
-                      thrust=args.thrust, mag=args.mag, axes=args.axes, label=args.label)
+                      thrust=args.thrust, mag=args.mag, axes=args.axes, label=args.label,
+                      profile=args.profile, rate_hz=args.rate)
     print(f"recording -> {session}")
 
     def video_loop():
@@ -390,22 +466,34 @@ def main() -> int:
             rel = np.asarray(s.position_ned, dtype=np.float64) - origin
             if float(np.hypot(rel[0], rel[1])) > args.max_offset_m:
                 return f"drifted {np.hypot(rel[0], rel[1]):.0f}m from origin"
-            if abs(float(rel[2])) > args.max_alt_m:
-                return f"altitude {rel[2]:+.0f}m"
+            up_lim = args.max_up_m if args.max_up_m is not None else args.max_alt_m
+            dn_lim = args.max_down_m if args.max_down_m is not None else args.max_alt_m
+            if -float(rel[2]) > up_lim or float(rel[2]) > dn_lim:   # NED: -rel z = climb
+                return f"altitude {-rel[2]:+.0f}m rel"
+            if s.velocity_ned is not None and abs(float(s.velocity_ned[2])) > args.max_vz:
+                return f"vz {s.velocity_ned[2]:+.0f} m/s"
             if max(abs(s.roll), abs(s.pitch)) > np.radians(args.max_tilt_deg):
                 return f"attitude runaway ({np.degrees(max(abs(s.roll), abs(s.pitch))):.0f} deg)"
             return None
 
         origin_z = float(origin[2])
+        alt_i = 0.0                      # alt-hold integrator (reads the true hover collective)
 
-        def hold_thrust(s) -> float:
+        def hold_thrust(s, alt_target: float = 0.0, dt: float = 0.0) -> float:
             """Velocity-damped altitude hold around base thrust (the controller's alt channel).
-            NED: z+ = down, vz+ = descending; sink/descent -> more thrust."""
+            NED: z+ = down, vz+ = descending; sink/descent -> more thrust. ``alt_target`` is the
+            rel-z setpoint (-6 = 6 m above origin); ``dt``>0 integrates --ki-alt (drift probe)."""
+            nonlocal alt_i
             z = float(s.position_ned[2]) if s.position_ned is not None else origin_z
             vz = float(s.velocity_ned[2]) if s.velocity_ned is not None else 0.0
-            thr = args.thrust + args.kp_alt * (z - origin_z) + args.kd_alt * vz
+            err = (z - origin_z) - alt_target            # + = too low (z down)
+            if args.ki_alt > 0.0 and dt > 0.0:
+                alt_i = float(np.clip(alt_i + args.ki_alt * err * dt,
+                                      -args.ki_alt_clamp, args.ki_alt_clamp))
+            thr = args.thrust + args.kp_alt * err + args.kd_alt * vz + alt_i
             return float(np.clip(thr, args.alt_thr_lo, args.alt_thr_hi))
 
+        yaw_target = yaw_hold                 # persistent: profile yaw ramps move it, then it holds
         print(f"\n[run] {args.mode} sysid, ~{total_s:.0f}s. Ctrl-C to stop.")
         for phase in schedule:
             phase_end = time.monotonic() + phase.dur
@@ -418,8 +506,13 @@ def main() -> int:
                     trusted_rate = args.rate_ema * new_rate + (1.0 - args.rate_ema) * trusted_rate
                     prev_q = np.asarray(s.orientation_ned_wxyz, dtype=np.float64).copy()
                     prev_t = int(s.sim_time_ns)
+                if phase.yaw_ramp is not None:                     # slew the heading target
+                    goal = yaw_hold + phase.yaw_ramp
+                    step_y = (phase.yaw_rate if phase.yaw_rate is not None else 0.6) * tick
+                    yaw_target += float(np.clip(goal - yaw_target, -step_y, step_y))
                 roll_des = pitch_des = 0.0
-                if args.vel_damp > 0.0 and s.velocity_ned is not None and s.position_ned is not None:
+                vd_on = (args.vel_damp > 0.0) if phase.vel_damp is None else (phase.vel_damp and args.vel_damp > 0.0)
+                if vd_on and s.velocity_ned is not None and s.position_ned is not None:
                     cpsi, spsi = np.cos(s.yaw), np.sin(s.yaw)
                     rel = np.asarray(s.position_ned, dtype=np.float64) - origin
                     v_des = -args.pos_pull * rel[:2]                  # world-frame pull to origin
@@ -433,8 +526,12 @@ def main() -> int:
                     kva = args.vel_damp / 9.80665                     # tilt per (m/s): a_b = -g*tilt
                     pitch_des = float(np.clip(kva * dv_bx, -tmax, tmax))
                     roll_des = float(np.clip(kva * dv_by, -tmax, tmax))
+                if phase.roll_des is not None:               # profile tilt target (drag/turn probes)
+                    roll_des += phase.roll_des
+                if phase.pitch_des is not None:
+                    pitch_des += phase.pitch_des
                 omega = level_hold_body_rate(
-                    s.roll - roll_des, s.pitch - pitch_des, s.yaw, yaw_hold, trusted_rate,
+                    s.roll - roll_des, s.pitch - pitch_des, s.yaw, yaw_target, trusted_rate,
                     kp=args.kp_hold, kd=args.kd_hold, body_rate_sign=sign,
                     max_rate=args.max_hold_rate, ff_gain=args.ff_gain,
                 )
@@ -445,10 +542,15 @@ def main() -> int:
                     omega = np.asarray(phase.value, dtype=np.float64).copy()
                 if phase.thrust is not None:
                     thr = phase.thrust                       # hover-sweep: explicit per-phase thrust
+                elif phase.alt_target is not None:
+                    thr = hold_thrust(s, phase.alt_target, tick)   # profile: rel-z setpoint (+I)
                 elif args.alt_hold:
                     thr = hold_thrust(s)                     # rate mode: hold altitude
                 else:
                     thr = args.thrust
+                if phase.tilt_ff:                            # tilt compensation: keep the VERTICAL
+                    ctilt = float(np.cos(roll_des) * np.cos(pitch_des))   # thrust component at tilt
+                    thr = float(thr / max(ctilt, 0.5))
                 cmd = ControlCommand(mode=ControlMode.BODY_RATE, sim_time_ns=int(s.sim_time_ns),
                                      body_rate=omega, thrust=float(thr))
                 client.send_command(cmd)
@@ -471,6 +573,8 @@ def main() -> int:
                     "rpy": [round(float(s.roll), 5), round(float(s.pitch), 5), round(float(s.yaw), 5)],
                     "pos": [round(float(v), 3) for v in pos],
                     "vel": [round(float(v), 4) for v in vel],             # FIXED world velocity (c3b5a8e)
+                    "des": [round(roll_des, 5), round(pitch_des, 5), round(float(yaw_target), 5)],
+                    "alt_i": round(alt_i, 5),                             # alt-hold integrator (drift)
                 }) + "\n")
                 n_rows += 1
 

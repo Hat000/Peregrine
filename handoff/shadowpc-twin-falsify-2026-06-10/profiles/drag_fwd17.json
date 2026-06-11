@@ -1,0 +1,42 @@
+{
+ "phases": [
+  {
+   "name": "init",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": 0.0
+  },
+  {
+   "name": "climb",
+   "dur": 5.0,
+   "vel_damp": true,
+   "alt_target_m": -6.0
+  },
+  {
+   "name": "yawramp",
+   "dur": 4.0,
+   "yaw_ramp_deg": -180.0,
+   "yaw_rate_dps": 60.0,
+   "vel_damp": true,
+   "alt_target_m": -6.0
+  },
+  {
+   "name": "settle",
+   "dur": 1.0,
+   "vel_damp": true,
+   "alt_target_m": -6.0
+  },
+  {
+   "name": "accel",
+   "dur": 4.0,
+   "pitch_deg": -17,
+   "alt_target_m": -6.0,
+   "tilt_ff": true
+  },
+  {
+   "name": "coast",
+   "dur": 6.0,
+   "alt_target_m": -6.0
+  }
+ ]
+}

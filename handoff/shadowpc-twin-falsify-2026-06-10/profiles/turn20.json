@@ -1,0 +1,31 @@
+{
+ "phases": [
+  {
+   "name": "init",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": 0.0
+  },
+  {
+   "name": "climb",
+   "dur": 6.0,
+   "vel_damp": true,
+   "alt_target_m": -8.0
+  },
+  {
+   "name": "turn",
+   "dur": 22.0,
+   "roll_deg": 20.0,
+   "yaw_ramp_deg": -720.0,
+   "yaw_rate_dps": 34.0,
+   "alt_target_m": -8.0,
+   "tilt_ff": true
+  },
+  {
+   "name": "recover",
+   "dur": 2.0,
+   "vel_damp": true,
+   "alt_target_m": -8.0
+  }
+ ]
+}
