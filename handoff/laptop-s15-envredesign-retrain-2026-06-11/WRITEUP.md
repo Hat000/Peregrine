@@ -149,7 +149,52 @@ refute-first agents (9 verifiers died on a usage limit — those findings were a
 
 ## 6. Training runs + curves
 
-*(TODO: job ids, seeds, durations, tensorboard curve extracts, nan-guard counts)*
+Planned matrix (launched as soon as the adroit-connector daemon re-authenticates — it idle-
+dropped mid-session; a keeper loop re-fires `serve` + a Duo push every ~8 min until approved):
+
+| job | tag | seed | rw_tilt | outcome |
+|---|---|---|---|---|
+| 3267229 | s14_seed0 | 0 | 4 | **NaN'd at update 848** (see below); emergency ckpt evaluated — VQ1 sr 1.000 @ 8.52 s, random 0.927, but median peak tilt ~100° |
+| 3267230 | s14_seed1 | 1 | 4 | pre-NaN-fix code, left running as a crash-statistics datum |
+| 3267259 | s14_t10_s0 | 0 | 10 | sweep (obs-NaN fix in) |
+| 3267260 | s14_t16_s0 | 0 | 16 | sweep (obs-NaN fix in) |
+| 3267261 | s14_t10_s1 | 1 | 10 | sweep seed redundancy |
+
+Each job chains the held-out VQ1 + random-course map-ON evals (`peregrine_racing_s14.sbatch`).
+
+**🚩 THE S1.3 NaN MYSTERY IS SOLVED (and it was never a PPO/gradient problem).** Job 3267229
+died at update 848 with the exact S1.3 signature (`Normal(loc)` Real() validation) and **zero
+nan-guard hits** — the gradients were always finite. Root cause: `get_observations` feeds an
+UNclamped rotation-matrix product into pytorch3d's `matrix_to_euler_angles`, whose `asin` returns
+NaN when a float32 entry lands at 1+1e-7 (≈ once per ~30M obs; faster with random courses + the
+high-tilt style). The parent's authors clamp in their LOSS path (`racing.py:331`) but never in
+obs — they evidently met the same bug. Fix: same clamp in `get_observations`/`get_state` + a
+counted nan_to_num lifeline (`loss_components.obs_nonfinite`). The launcher lifelines built this
+session did their job on the crash: emergency checkpoint at 848 + sidecar + chained evals ran.
+
+**Style regression at rw_tilt=4 → the sweep.** The 848-update emergency checkpoint already
+passes VQ1 1.000/2816 eps at 8.52 s median (4× faster than the model-based 35.3 s; TOGT bound
+4.55 s) with generalization 0.927 — but median peak tilt ≈ 97–101°, command saturation 70%+:
+the backflip style is back because the coherent env now genuinely rewards speed and the w=4
+hinge is too cheap. Transfer+validity come first this session → rw_tilt swept {10, 16}.
+
+**Time-optimal context (TOGT session, concurrent):** `rl/reference_line_vq1.json` —
+gate0→gate5 time-optimal bound **4.55 s** (thrust 3.765, ω_max [11,11,7], drag 0.21, 0.7 m gate
+margin). S1.3's offline standing-start lap splits gate0→gate5 at ~5.4 s = within ~18% of the
+bound already.
+
+*(TODO: job ids, durations, curve extracts, nan-guard counts)*
+
+### Ops notes (durable)
+- The adroit-connector `serve` daemon idle-drops AND a missed Duo push leaves it hung
+  (port 8765 never opens, no error in the buffered log). `.s15_ref/serve_keeper.ps1` pattern:
+  kill + relaunch on an 8-min cycle until the port opens; the user approves whichever push is
+  current. Probe liveness via the PORT, not the log (stdout is block-buffered).
+- `peregrine_eval.py` is a GPU-node tool: diffaero's `agent.load` has no `map_location`, so a
+  CPU fallback on a CUDA checkpoint crashes (review F13, accepted).
+- `cluster/push_dir.py`-style chunked-tar pushes MUST check the daemon reachability per `x` call
+  — the original script printed "sent chunk" on a dead daemon and "verified" nothing
+  (`.s15_ref/push_s15.py` hardened: aborts on unreachable, requires every md5 to match).
 
 ## 7. Eval results
 
@@ -170,8 +215,33 @@ value is therefore (a) DR breadth = transfer margin, (b) track generalization (r
 (c) reward coherence → style/validity — not rescuing a failing baseline. (Also: these three runs
 exercised the new sidecar, map-plant default, and interpolated event classification end-to-end.)
 
-*(TODO: held-out VQ1 map-ON table; random-course generalization; S1.4 offline_rollout;
-saturation; acceptance verdict)*
+### 7.1 Sweep results (all map-ON, standing-start, DR-off-nominal eval; n_ep ≈ 2.7–3.7k each)
+
+| ckpt | updates | VQ1 sr | VQ1 t_med | VQ1 coll% | gen sr | tilt med (succ) | roll med | sat |
+|---|---|---|---|---|---|---|---|---|
+| tilt4 s0 emergency | 848 | **1.000** | 8.52 | 0.0 | 0.927 | 97° | 100° | 71% |
+| tilt4 s1 emergency (pre-fix) | ~3319 | 0.990 | 6.96 | 0.8 | 0.868 | — | — | — |
+| tilt10 s1 final | 6000 | 0.946 | 6.81 | 5.4 | 0.931 | 94° | 102° | 93% |
+| tilt10 s0 final | 6000 | 0.832 | 7.03 | **16.4** | 0.861 | 99° | 165° | 94% |
+| tilt16 s0 final | 6000 | 0.982 | 7.89 | 1.8 | 0.869 | **88°** | **84.5°** | 95% |
+
+**The round-2 finding (drives round 3):** converged training under the coherent speed incentives
+settles at a *risk-neutral* 2–16% crash rate — finish (+20) + finish-time (~+30) vs collision
+(−25) makes ~5% crashes rationally optimal, and seeds vary wildly in where they land (tilt10:
+0.832 vs 0.946 VQ1 across seeds). The tilt hinge DOES bind style at w=16 (median roll 84.5°,
+within the ≤80–90° envelope ballpark) but doesn't touch the risk appetite, and all converged
+policies ride 93–95% command saturation (transfer-hostile: sustained full-stick is the least-
+measured plant regime). **Round 3 (validity config, jobs 3267359/60, seeds 0/1):** rw_collision
+75, rw_miss 40, rw_oob 75, rw_finish_time 0.25, rw_dact 1.0, rw_tilt 16.
+
+### 7.2 Fallback candidate banked: tilt4@848 ("emergency") through the laptop deploy pipeline
+
+`offline_rollout.py` (fly_rl's exact obs/action path, map-ON numpy plant, sidecar 3.765,
+virtual flip ON): **6/6 from the standing start in ALL configs** — nominal 8.39 s; +1-step
+latency 8.36 s; +2-step latency 9.06 s; handoff\@10 m/s 7.36 s; live-thrust-clip 8.39 s
+(vmax 27–30 m/s). md5 `1be41f9839ff7cfa78e120f1260a83ce` (job 3267229, update 848, rw defaults).
+
+*(TODO: round-3 results; final candidate; acceptance verdict)*
 
 ## 8. Checkpoint provenance
 

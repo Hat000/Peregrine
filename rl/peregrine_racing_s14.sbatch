@@ -34,14 +34,24 @@ SEED=${SEED:-0}
 NUPD=${NUPD:-6000}
 NENVS=${NENVS:-2048}
 RW_TILT=${RW_TILT:-4.0}
+# validity knobs (sweep round 3, 2026-06-11): converged policies settle at a risk-neutral 2-16%
+# crash rate when finish(20)+finish_time(~30) vs collision(25) -- the asymmetry must grow to
+# push crash rate -> 0, and dact must rise to fight the observed 93-95% bang-bang saturation.
+RW_COLL=${RW_COLL:-25.0}
+RW_MISS=${RW_MISS:-15.0}
+RW_OOB=${RW_OOB:-25.0}
+RW_FTIME=${RW_FTIME:-1.0}
+RW_DACT=${RW_DACT:-0.25}
 TAG=${TAG:-s14_seed${SEED}}
 RUNDIR=/scratch/network/fl3689/s14_runs/${TAG}
 rm -rf "$RUNDIR"; mkdir -p "$RUNDIR"
 
-echo "=== STAGE1.4: coherent env + random courses + map-ON plant (seed=$SEED nupd=$NUPD rw_tilt=$RW_TILT) ==="
+echo "=== STAGE1.4: coherent env + random courses + map-ON plant (seed=$SEED nupd=$NUPD rw_tilt=$RW_TILT coll=$RW_COLL miss=$RW_MISS ftime=$RW_FTIME dact=$RW_DACT) ==="
 python /scratch/network/fl3689/peregrine_repo/rl/peregrine_train_racing.py \
   env=racing env.name=peregrine_racing \
   +env.course_mode=random +env.standing_start_frac=0.3 +env.rw_tilt=${RW_TILT} \
+  +env.rw_collision=${RW_COLL} +env.rw_miss=${RW_MISS} +env.rw_oob=${RW_OOB} \
+  +env.rw_finish_time=${RW_FTIME} +env.rw_dact=${RW_DACT} \
   dynamics=quad dynamics.name=peregrine_plant dynamics.g=9.80665 +dynamics.dr=true \
   dynamics.controller.max_normed_thrust=3.765 \
   algo=ppo n_envs=${NENVS} n_updates=${NUPD} save_freq=200 log_freq=10 \
