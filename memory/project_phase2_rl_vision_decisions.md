@@ -332,6 +332,29 @@ After a recorded run (legal between-runs processing): **multi-view triangulation
 **OBSTACLES** → regen a collision-free line for the next run. Real-time learned depth = backstop for
 UNMAPPED obstacles only. Depth's value = obstacles/free-space, **not gate-depth** (known-size PnP has that).
 
+## ✅ GATE MAPPER COMPLETE (2026-06-11, laptop fable; commits 46a4cc4→75fa42a; 528 tests green, 31 new) — closes stack-review keeper "offline mapper skeleton (cases B/C)"
+Source of truth: `handoff/laptop-gate-mapper-2026-06-11/WRITEUP.md`.
+
+### Implementation
+- **`src/racer/gate_mapper.py`**: unified mapper for all three VQ2 cases.
+  - **Case A / B (pose-aided)**: per-gate robust averaging (median centre + MAD), χ² rejection (k=4, matches live KF gate), per-gate covariance. B-mode: rough-prior fusion with configurable trust + consistency gate + low-n down-weighting.
+  - **Case C (no pose, attitude given ⇒ LINEAR)**: sparse exact-Jacobian least-squares (~10 landmarks + few hundred poses, 2–22 s solve), yaw by robust circular averaging. Two-stage solve: linear first (56 m→2 m unlock for the robust-loss saturation pathology), then robust re-weight.
+  - **Output**: serializes to the EXACT `capture_track_map.py` schema — `navigator.load_track_map` consumes mapper maps and given maps identically (round-trip 1e-6 m; navigator untouched). Also ships: `gate_mapper_synth.py` (measured-noise synthetic validation), `scripts/run_mapper_offline.py` (CLI), `scripts/validate_gate_mapper.py` (parameter sweep).
+
+### Validation vs 0.75 m validity half-opening (mean/worst over seeds)
+- **Case A**: 1 lap = 0.63/0.70 m max; in-plane 0.36 m (bias along through-axis); with measured-bias correction 0.20/0.25 m. Flat across leak 0→5% and association-error 5→15%.
+- **Case B**: 1–3 m rough prior → ~0.6 m in one lap (3–5× gain over prior). Starved quarter-lap: correctly no-harm (failsafe holds prior).
+- **Case C**: 1.8–3.4 m aligned; yaw ≤3°; bounded; pathologies flagged.
+
+### Three durable findings
+1. **Consecutive-gate co-visibility IS GEOMETRICALLY IMPOSSIBLE** on this course (23.7–38.5 m spacing vs 24–32 m camera range) — case-C backbone = motion prior + velocity dead-reckoned init; recommended exploration maneuver = a deliberate pre-transit scan nod.
+2. **Case C has a noise-independent ~1.5 m floor** (blind-transit corner-cut) — a case-C map is a SHAPE ESTIMATE to localize against, not survey-grade; use case A/B once pose is available.
+3. **Two failure modes found+fixed**: (a) robust-loss saturation stranding far components → linear-first two-stage solve (the 54 m→2 m unlock); (b) phantom gates from pure-mislabel groups → geometry cross-check merging.
+
+### Deviations from original spec
+- CLI input = new `racer.mapper_sightings/v1` format (`extract_run.py` emits no detections; recording→sightings extractor recipe documented in WRITEUP).
+- Multi-pass case C has **NO loop closure** — documented workflow sidesteps it (one pass per solve, then pose-aided refinement once a first map exists).
+
 ## Gate map / SLAM (user Q) — depends on the VQ2 stream
 - **VQ1: map is GIVEN** (TRACK_INFO broadcast type-2 + `capture_track_map.py` + given pose) → **NO SLAM.**
 - **VQ2 cases:** (A) gives pose like VQ1 → average gate sightings vs known pose = precise map, no SLAM;
