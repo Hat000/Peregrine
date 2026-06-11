@@ -220,9 +220,38 @@ class _ActorMean(nn.Module):
         return self.head(x)
 
 
+def _apply_checkpoint_sidecar(path: str) -> None:
+    """Per-checkpoint training constants (S1.4+): a JSON sidecar next to the .pth, e.g.
+    ``stage1_inc4_actor.json`` beside ``stage1_inc4_actor.pth``, carrying the action bounds the
+    checkpoint was TRAINED with. S1.3+ train with ``max_normed_thrust=3.765`` (the live collective
+    ceiling) while the original constant here was quad.yaml's 5.0 -- deploying a 3.765-trained
+    actor through a [0,5] rescale overdrives every thrust command by up to 33%. The sidecar makes
+    the rescale follow the checkpoint instead of trusting a hand-synced constant.
+    Mutates _ACT_MAX/_ACT_MIN IN PLACE so policy_step and every importer see it."""
+    import json as _json
+    sidecar = Path(path).with_suffix(".json")
+    if not sidecar.exists():
+        print(f"[load_actor] WARNING: no sidecar {sidecar.name} -- assuming the LEGACY action "
+              f"bounds thrust [0,{_ACT_MAX[0]:.3f}] / rates +-{_ACT_MAX[1]:.2f}. Correct ONLY "
+              f"for checkpoints trained with quad.yaml defaults (stage1_inc1). S1.3+ trained "
+              f"with max_normed_thrust=3.765 -- deploying one without its sidecar overdrives "
+              f"every thrust command up to 33% AND corrupts the obs[12] collective feedback.")
+        return
+    meta = _json.loads(sidecar.read_text())
+    if "act_max_thrust" in meta:
+        _ACT_MAX[0] = float(meta["act_max_thrust"])
+    if "act_max_rate" in meta:
+        _ACT_MAX[1:4] = float(meta["act_max_rate"])
+        _ACT_MIN[1:4] = -float(meta["act_max_rate"])
+    print(f"[load_actor] sidecar {sidecar.name}: action bounds -> "
+          f"thrust [{_ACT_MIN[0]:.3f},{_ACT_MAX[0]:.3f}] rates +-{_ACT_MAX[1]:.2f} rad/s")
+
+
 def load_actor(path: str) -> nn.Module:
     """Load actor.pth.  Handles both a full nn.Module save and the dict format
-    {'actor_mean': state_dict, 'actor_logstd': tensor} produced by DiffAero PPO."""
+    {'actor_mean': state_dict, 'actor_logstd': tensor} produced by DiffAero PPO.
+    Applies the checkpoint's JSON sidecar (training action bounds) if present."""
+    _apply_checkpoint_sidecar(path)
     d = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(d, dict) and "actor_mean" in d:
         actor = _ActorMean()
@@ -610,8 +639,11 @@ def fly_once(client, actor, args, flight_idx: int) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--checkpoint",   default=r"C:\Users\Shadow\Downloads\stage1_inc1_actor.pth",
-                    help="path to actor.pth checkpoint")
+    ap.add_argument("--checkpoint",
+                    default=str(Path(__file__).resolve().parent / "checkpoints"
+                                / "stage1_inc4_actor.pth"),
+                    help="path to actor .pth (its .json sidecar, if present, sets the "
+                         "trained action bounds)")
     ap.add_argument("--endpoint",     default="udp:127.0.0.1:14550")
     ap.add_argument("--video-port",   type=int, default=VIDEO_PORT)
     ap.add_argument("--label",        default="rl_s1")

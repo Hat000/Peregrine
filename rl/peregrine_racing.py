@@ -1,176 +1,545 @@
-"""PeregrineRacing -- DiffAero racing env subclassed onto OUR VQ1 6-gate course (given pose, no vision).
+"""PeregrineRacing -- DiffAero racing env on OUR courses (given pose, no vision). S1.4 redesign.
 
-Registered into ``diffaero.env.ENV_ALIAS["peregrine_racing"]`` by the launcher (``peregrine_train_racing``)
-so the pristine diffaero clone is never edited (same monkeypatch discipline as the dynamics injection).
-Select it with ``env=racing env.name=peregrine_racing`` (keeps racing.yaml's weights/dt/max_time; only
-``cfg.name`` routing changes).
+Registered into ``diffaero.env.ENV_ALIAS["peregrine_racing"]`` by the launcher
+(``peregrine_train_racing``) so the pristine diffaero clone is never edited.
 
-WHAT WE CHANGE vs ``diffaero.env.racing.Racing`` (and WHY) -- everything else is inherited:
-  * GATES: replace the synthetic flat figure-8 with our 6-gate descending course (``peregrine_course``
-    -> ``peregrine_course_diffaero.json``, expressed in DiffAero's Z-up frame). Non-looping: a point-to-
-    point race, gate 0 -> gate 5 = FINISH (the parent loops with ``% n_gates``).
-  * BOUNDS: the parent's hardcoded |x,y|<5 / z<7 box fits the figure-8; our course spans x in [-159,-23],
-    descends 26 m. We replace it with a generous box around the course bbox so only genuinely-lost drones
-    truncate.
-  * PASS APERTURE: the parent passes/collides on an L1 "radius" 1.5 m; our gate inner opening is a 1.5 m
-    SQUARE -> half-width 0.75 m, L-inf (``is_passed``). Crossing the plane outside the square = collision.
-  * OBS (+4 vs parent's 13): append body rates (3) + last collective (1) -- our CTBR policy's target I/O
-    (the parent omits both). Layout: [pos_g(3), vel_g(3), rpy_g(3), body_rates(3), collective(1),
-    next_gate_relpos(3), next_gate_relyaw(1)] = 17.
-  * REWARD: inherit the parent's quadrotor reward (dense gate PROGRESS w=10 + COLLISION w=-10 +
-    rate-smoothness jerk w=-0.1 -- exactly our target's progress/collision/smoothness) and ADD a discrete
-    gate-PASSAGE bonus + a FINISH bonus (the parent has neither for the quadrotor). No reference line
-    (the policy learns it); no visibility term (speed > keeping the gate in view). For PPO only ``reward``
-    matters -- the parent's ``loss``/``pos_loss``/``oob_loss`` terms are dead code here, untouched.
+================================================================================================
+S1.4 ENV-COHERENCE REDESIGN (session S15, 2026-06-10) -- the audit and the design, in full.
+The reward and the termination are designed TOGETHER; every term documents its formula, weight,
+units, what behavior it buys, and what breaks if it is removed. This docstring is a deliverable.
+================================================================================================
 
-DR (plant domain randomization) lives in the DYNAMICS adapter (``rl.diffaero_dynamics``), resampled per
-env at reset -- not here.
+AUDITED INCOHERENCES in the S1.3 env (parent ``Racing`` + the old subclass), each now fixed:
+
+C1. OOB ESCAPE WAS FREE, COLLISION WAS PUNISHED. The parent classifies out-of-bounds as
+    TRUNCATION; diffaero's PPO bootstraps V(s') on truncation (PPO.py: ``next_done = terminated``
+    only, GAE uses V(next_obs_before_reset)) and the quadrotor reward has NO oob term (the
+    ``oob_loss`` computed in racing.py is applied only in the pointmass branch). The OOB box is
+    also INVISIBLE in the gate-relative obs. Net effect: near a risky gate, "fly past the gate and
+    out of the box" returned bootstrapped continuation value with zero penalty, while attempting
+    the aperture risked -10 and a zeroed future -- the env was TEACHING escape over threading.
+    FIX: OOB is now a TERMINATION with a penalty equal to a frame strike (both are a lost run in
+    the live sim), logged separately (``oob_rate``).
+
+C2. ONE COLLISION CLASS FOR THREE PHYSICALLY DIFFERENT EVENTS. The old ``is_passed`` called ANY
+    off-aperture plane crossing "collision": clipping the 2.72 m physical frame (live: tumble --
+    the S1.2 crash was a gate-post strike at -63 rad/s), missing wide through free air (live: the
+    run is invalid but flight continues), and crossing 5 m above the gate (live: nothing there).
+    Worse, the aperture test used the POST-crossing position, so at racing speed (~0.5 m/step at
+    30 Hz) a clean center pass could read as off-aperture and vice versa. And lateral/backward
+    post strikes never registered at all (plane-crossing-only detection).
+    FIX: crossings are classified at the INTERPOLATED plane-crossing point against the twin gate
+    geometry: |y|,|z| L-inf < 0.75 m (1.5 m inner opening) = PASS; in (0.75, 1.36] m (2.72 m outer
+    frame) = FRAME COLLISION (terminal, big penalty); > 1.36 m = CLEAN MISS (terminal, smaller
+    penalty -- deliberately conservative: live a wide miss is recoverable by circling back, but
+    training must learn clean lines, so we terminate; documented trade-off). Frame strikes are
+    detected on ALL gates (both crossing directions), not just the target -- gates are physical
+    everywhere in the live sim. SCOPE: detection stays crossing-based -- a pure lateral graze
+    (touching a frame while moving parallel to its plane, no x sign change) remains unmodeled;
+    that needs a capsule-vs-frame contact model and is out of scope here. The dominant
+    racing-line failure modes (off-aperture crossings, the S1.2 through-the-post line) are
+    covered.
+
+C3. ATTITUDE PENALTY TAXED ALL TILT. S1.3's ``attitude=2.0`` penalizes roll^2+pitch^2 -- including
+    the 30-60 deg of tilt a racing quad NEEDS to accelerate and corner. It bought peak roll 65 deg
+    but fights speed everywhere.
+    FIX: a HINGE tilt penalty, zero inside a 60 deg free cone, quadratic beyond it (see term R4).
+    Explicitly a SMOOTHNESS/VQ2-style + stay-in-the-well-modeled-envelope term; the characterize
+    sweep (510da24) proved there is NO tilt anomaly in the sim, so this is NOT anomaly avoidance
+    and there is deliberately NO tilt-threshold termination.
+
+C4. "JERK" WAS A BODY-RATE TAX. The parent's quadrotor ``jerk_loss`` is ||omega|| -- it taxes
+    cornering itself, not roughness. With the super-rate plant the policy legitimately commands
+    ~11 rad/s transients.
+    FIX: a true command-smoothness term on the ACTION RATE (R5) + a small residual ||omega||
+    style term (R6) at half the old weight.
+
+C5. NO TIME PRESSURE BEYOND THE DISCOUNT. Nothing penalized loitering; a policy hovering 1 cm
+    before the finish plane lost nothing (timeout truncation bootstraps, see C1).
+    FIX: an explicit small per-step time penalty (R3) + a finish-time bonus (T4) -- the moderate
+    speed shaping VQ2's ranking needs, sized so transfer/validity still dominate (the aggressive
+    speed iteration comes later, against a live-validated baseline).
+
+C6. STATS HID THE FAILURE MODES. ``survive_rate`` counted OOB escapes as survival; collisions,
+    misses, OOB and timeouts were indistinguishable.
+    FIX: per-episode outcome stats: finish / frame-collision / miss / oob / timeout rates, plus
+    peak tilt, mean speed, pass offset (L-inf at the crossing point), and finish time.
+
+Also fixed while in here: ``get_state`` (used by asymmetric critics + check_dims) inherited the
+parent's looping ``% n_gates`` lookahead -- physically meaningless teleports past the finish on a
+point-to-point course, and shape-incompatible with per-env courses. Now clamped + gathered.
+
+------------------------------------------------------------------------------------------------
+THE REWARD/TERMINATION CONTRACT (all weights cfg-overridable as ``+env.rw_<name>=...``; defaults
+in ``RewardWeights``). Per-step reward r_t =
+
+    R1  + rw_progress   * (d2g_prev - d2g_curr)      [10 / m]
+    R2  + rw_passage    * 1[gate passed]             [+10]
+    T4  + (rw_finish + rw_finish_time * t_left_s) * 1[finished]   [+20 + 1.0/s]
+    T1  - rw_collision  * 1[frame strike, any gate]  [-25, TERMINAL]
+    T2  - rw_miss       * 1[clean miss, target]      [-15, TERMINAL]
+    T3  - rw_oob        * 1[out of bounds]           [-25, TERMINAL]
+    R3  - rw_time       * 1                          [-0.02 / step  (~0.6/s @ 30 Hz)]
+    R4  - rw_tilt       * relu(cos(rw_tilt_free) - R33)^2          [4.0; free cone 60 deg]
+    R5  - rw_dact       * ||a_t - a_{t-1}||^2        [0.25; normalized action units^2]
+    R6  - rw_rate       * ||omega||                  [0.05 / (rad/s)]
+
+R1 PROGRESS (dense): Euclidean distance-to-gate-CENTER delta, measured against the (possibly just
+   advanced) target gate for BOTH prev and curr (parent convention -- no spike at passage).
+   Units: reward per meter of approach. Buys: the only dense gradient toward the task; PPO never
+   discovers the first passage from sparse terms alone at this horizon. Removed => no learning.
+   Known bias (accepted, documented): radial-to-center shaping fights wide racing lines; the
+   TOGT-reference upgrade (stack-review #2) replaces it in a later session.
+R2 PASSAGE (+10, at the interpolated crossing): makes the gate plane itself worth crossing.
+   Removed => near a gate the plane offers risk (T1/T2 nearby) with no differential payoff;
+   policies hover-stall short of hard gates.
+T4 FINISH (+20) + FINISH-TIME (+1.0 per second left on the clock): the finish is terminal, so
+   without a bonus the last plane is just where reward STOPS (value cliff to 0) -- a mild
+   anti-finish gradient. The time term is the explicit "faster lap" pressure (VQ2 ranks on time).
+   Removed => laps drift slow; only the discount factor pushes speed, weakly and implicitly.
+T1 FRAME COLLISION (-25, terminal, any gate, either crossing direction, at the interpolated
+   crossing point): the live sim's real failure mode (S1.2: gate-post strike, -63 rad/s tumble).
+   Sized 2.5x the passage bonus and ~3.5x the largest plausible single-step progress (+7 at
+   0.7 m/step) so "clip the frame to grab the bonus sooner" is never positive-EV, and so early
+   in training (noisy values) the margin is wide. Removed/undersized => progress + passage can
+   bribe through posts; termination alone is NOT a penalty under PPO (V(crash)=0 can beat a
+   locally-bad continuation, which is exactly incoherence C1).
+T2 CLEAN MISS (-15, terminal, target gate only): crossing the target plane beyond the 1.36 m
+   physical frame. Less than T1 (live: no tumble, just an invalid run) but MORE than the +10
+   passage so deliberately skipping a hard gate never pays. Removed => missing terminates at 0,
+   so for a risky gate the policy rationally prefers a free miss over a -25-risk attempt --
+   institutionalized gate-skipping.
+T3 OOB (-25, terminal): closes C1. The box is generous (course bbox + spawn corridor + 15/12 m
+   margins) so only genuinely lost drones hit it. Equal to T1: both are a lost run live.
+   Removed => bootstrapped free-escape returns (C1).
+R3 TIME (-0.02/step): the explicit cost of existing. SIZING COHERENCE: total over a full 40 s
+   episode = -24, comparable to ONE terminal penalty -- but every failure mode is ALREADY
+   terminal-with-penalty <= -15 and timeout TRUNCATES (bootstraps V, no penalty), so ending early
+   never beats staying alive productively, and hovering forever is strictly dominated. Removed =>
+   loitering near hard gates is free; episodes fill to timeout and dilute the batch with idle
+   states.
+R4 TILT HINGE (zero below 60 deg of total tilt; R33 = world-z component of body-z = 1-2(qx^2+qy^2)
+   from the XYZW quat): at 80 deg costs 0.43/step, at the S1.2 backflip's 104 deg costs 2.2/step,
+   at inversion 9/step. Buys: kills the backflip-diver STYLE (in-twin-optimal, live-divergent)
+   without taxing the racing tilt envelope the task needs. Removed => the S1.2 style returns.
+   NOT a termination, NOT anomaly avoidance (no anomaly exists -- sweep 510da24).
+R5 ACTION-RATE (||Delta action||^2 in per-axis span-normalized units, full-scale flip = 1/axis):
+   command smoothness. Buys: keeps the command stream inside the measured static-map regime
+   (large per-step command steps excite the slew-limit corner where the twin is least faithful),
+   and live actuator-friendliness (VQ2 style). Removed => bang-bang CTBR chatter, the regime
+   where transfer is weakest.
+R6 BODY-RATE (0.05*||omega||): residual style term at HALF the parent's old 0.1 -- the super-rate
+   plant legitimately uses ~11 rad/s transients and yaw is the worst-modeled axis, so we tax
+   sustained tumbling-style rates lightly without fighting cornering. Removed => mostly fine;
+   kept as a cheap regularizer against rate-riding solutions.
+
+TERMINATION SET (terminal, PPO sees done=1, no bootstrap): frame collision (T1) | clean miss (T2)
+| OOB (T3) | finished (T4). TRUNCATION SET (PPO bootstraps V(s')): timeout, GUI reset. This is
+the coherence core: every BAD absorbing event carries an explicit penalty AND kills the future;
+the only neutral exits are non-events (timeout) that bootstrap honestly.
+
+LOSS OUTPUT: this env is PPO-ONLY. ``loss`` is returned as ``-reward`` (detached) to keep the
+diffaero runner's logging alive; do NOT train a BPTT algorithm (SHAC/APG) against it.
+
+------------------------------------------------------------------------------------------------
+PROCEDURAL COURSES (S1.4, stack-review meta-gap #1): ``+env.course_mode=random`` trains on
+per-env sampled 6-gate courses (``peregrine_course.sample_courses``, VQ1-derived ranges, resampled
+per env at every reset); ``course_mode=vq1`` (default) broadcasts the fixed VQ1 course (the
+HELD-OUT eval). Obs are already gate-relative/translation-invariant, so only the training
+distribution changes. Course tensors are per-env throughout: gate_pos (N,G,3), gate_yaw (N,G).
+
+SPAWNS (per env, at reset): with prob ``standing_start_frac`` a STANDING START (the course's pad:
+23.3 m-class up-course of gate 0, at rest, tilted -17.8 deg pitch, TAIL-FIRST body yaw =
+gate0_yaw + pi -- the VQ1 deployment convention behind fly_rl.py's virtual flip; on VQ1 this
+reproduces the measured spawn pose); otherwise 1 m up-course of a random target gate, at rest,
+tail-first w.r.t. that gate (on VQ1 with gate yaws = pi this equals the parent's identity-attitude
+spawn EXACTLY, so the S1.3 obs distribution is preserved). Both get small pose jitter.
+
+WHAT IS DELIBERATELY UNCHANGED (frozen deployment contract, fly_rl.py): obs layout (17 dims,
+same order/frames), action semantics (4-dim [normed_thrust, rates FLU], tanh+rescale), dt, the
+[-1]-wrap convention in gate_rel_pos (index 0 is never consumed: next_gate_idx is clamped >= 1),
+gate-frame conventions. A policy trained here deploys through the existing fly_rl.py unchanged
+(only the rescale bound for thrust follows the training cfg: 3.765 for S1.3+).
 """
 from __future__ import annotations
 
 import json
+import math
 import os
+from dataclasses import dataclass, fields
 from typing import Dict, Tuple, Union
 
-import torch
-import pytorch3d.transforms as T
-from torch import Tensor
+import numpy as np
 
-from diffaero.env.racing import Racing, get_gate_rotmat_w2g
-from diffaero.utils.math import mvp
+try:
+    import torch
+    from torch import Tensor
+except Exception:                       # pragma: no cover - torch absent in some tooling contexts
+    torch = None
+    Tensor = "Tensor"                   # type: ignore
+
+try:                                    # diffaero + pytorch3d only exist on the training cluster;
+    import pytorch3d.transforms as T    # the pure helpers below stay importable/testable anywhere.
+    from diffaero.env.racing import Racing, get_gate_rotmat_w2g
+    from diffaero.utils.math import mvp
+    _HAVE_DIFFAERO = True
+except Exception:                       # pragma: no cover
+    Racing = object
+    _HAVE_DIFFAERO = False
 
 _COURSE_JSON = os.path.join(os.path.dirname(__file__), "peregrine_course_diffaero.json")
 
 
+# ================================================================================================
+# Pure helpers (torch-only, no diffaero) -- unit-tested on the laptop (tests/test_peregrine_racing_core.py)
+# ================================================================================================
+
+def world_to_gateframe(d: Tensor, yaw: Tensor) -> Tensor:
+    """Rotate world-frame deltas ``d`` (..., 3) into gate frames given gate ``yaw`` (...).
+    Gate frame: +x = exit/down-course direction = world [cos(yaw), sin(yaw), 0]; z stays world z.
+    Identical math to diffaero's ``get_gate_rotmat_w2g`` (rows [c,s,0; -s,c,0; 0,0,1])."""
+    c, s = torch.cos(yaw), torch.sin(yaw)
+    x = c * d[..., 0] + s * d[..., 1]
+    y = -s * d[..., 0] + c * d[..., 1]
+    return torch.stack([x, y, d[..., 2]], dim=-1)
+
+
+def crossing_events(prev_rel: Tensor, curr_rel: Tensor, half_inner: float, half_outer: float):
+    """Classify gate-plane crossings at the INTERPOLATED crossing point.
+
+    ``prev_rel``/``curr_rel``: positions in the gate frame, shape (..., 3); the gate plane is x=0.
+    Returns dict of bool tensors shaped (...):
+      fwd      -- crossed the plane in the exit direction (prev x<0 -> curr x>=0)
+      bwd      -- crossed backward
+      pass_ok  -- crossing point inside the 1.5 m inner opening (L-inf < half_inner)
+      in_frame -- crossing point in the physical frame band (half_inner <= L-inf <= half_outer)
+      linf     -- float tensor: L-inf off-axis distance at the crossing point (junk where no cross)
+    The interpolation matters at racing speed: ~0.5 m/step at 30 Hz is most of the aperture."""
+    px, cx = prev_rel[..., 0], curr_rel[..., 0]
+    fwd = (px < 0) & (cx >= 0)
+    bwd = (px > 0) & (cx <= 0)
+    crossed = fwd | bwd
+    denom = (cx - px)
+    f = torch.where(crossed, -px / torch.where(denom.abs() < 1e-9,
+                                               torch.full_like(denom, 1e-9), denom),
+                    torch.zeros_like(denom))
+    y = prev_rel[..., 1] + f * (curr_rel[..., 1] - prev_rel[..., 1])
+    z = prev_rel[..., 2] + f * (curr_rel[..., 2] - prev_rel[..., 2])
+    linf = torch.maximum(y.abs(), z.abs())
+    pass_ok = crossed & (linf < half_inner)
+    in_frame = crossed & (linf >= half_inner) & (linf <= half_outer)
+    return {"fwd": fwd, "bwd": bwd, "pass_ok": pass_ok, "in_frame": in_frame, "linf": linf}
+
+
+def tilt_cos_from_quat_xyzw(q: Tensor) -> Tensor:
+    """cos(total tilt) = world-z component of body-z = R33 = 1 - 2(qx^2 + qy^2). XYZW quats."""
+    return 1.0 - 2.0 * (q[..., 0] ** 2 + q[..., 1] ** 2)
+
+
+@dataclass
+class RewardWeights:
+    """All S1.4 reward/termination weights (see module docstring for the per-term contract).
+    Override any of them from hydra with ``+env.rw_<field>=<value>``."""
+    progress: float = 10.0       # R1, per meter of approach to the target gate center
+    passage: float = 10.0        # R2, per gate passed
+    finish: float = 20.0         # T4, at the finish crossing
+    finish_time: float = 1.0     # T4, per second left on the episode clock at finish
+    time: float = 0.02           # R3, per step
+    collision: float = 25.0      # T1, frame strike (terminal)
+    miss: float = 15.0           # T2, clean miss of the target plane (terminal)
+    oob: float = 25.0            # T3, out of bounds (terminal)
+    tilt: float = 4.0            # R4, on relu(cos(tilt_free) - R33)^2
+    tilt_free_rad: float = 1.0471976   # R4 free cone half-angle: 60 deg
+    dact: float = 0.25           # R5, on ||Delta action||^2 (span-normalized units)
+    rate: float = 0.05           # R6, on ||omega|| (rad/s)
+
+    @classmethod
+    def from_cfg(cls, cfg) -> "RewardWeights":
+        kw = {}
+        for f in fields(cls):
+            kw[f.name] = float(getattr(cfg, f"rw_{f.name}", f.default))
+        # honor the legacy S1.3 cfg names if present (back-compat with old sbatch files)
+        kw["passage"] = float(getattr(cfg, "passage_bonus", kw["passage"]))
+        kw["finish"] = float(getattr(cfg, "finish_bonus", kw["finish"]))
+        return cls(**kw)
+
+
+def compute_reward_terms(w: RewardWeights, *, prev_d2g, curr_d2g, gate_passed, gate_collision,
+                         gate_miss, oob, newly_finished, time_left_s, quat_xyzw, omega,
+                         action_norm, last_action_norm):
+    """The S1.4 reward, as a pure function of event/state tensors (all shaped (N,) or (N,k)).
+    ``action_norm``/``last_action_norm`` are span-normalized to [0,1] per axis. Returns
+    (reward (N,), components dict of floats for logging)."""
+    progress = prev_d2g - curr_d2g
+    tilt_pen = torch.relu(math.cos(w.tilt_free_rad) - tilt_cos_from_quat_xyzw(quat_xyzw)) ** 2
+    dact = ((action_norm - last_action_norm) ** 2).sum(dim=-1)
+    rate_mag = torch.linalg.norm(omega, dim=-1)
+    fin = newly_finished.float()
+    reward = (
+        w.progress * progress
+        + w.passage * gate_passed.float()
+        + (w.finish + w.finish_time * time_left_s) * fin
+        - w.collision * gate_collision.float()
+        - w.miss * gate_miss.float()
+        - w.oob * oob.float()
+        - w.time
+        - w.tilt * tilt_pen
+        - w.dact * dact
+        - w.rate * rate_mag
+    )
+    components = {
+        "progress_loss": -progress.mean().item(),
+        "tilt_pen": tilt_pen.mean().item(),
+        "dact_pen": dact.mean().item(),
+        "rate_pen": rate_mag.mean().item(),
+        "collision_loss": gate_collision.float().mean().item(),
+        "miss_loss": gate_miss.float().mean().item(),
+        "oob_loss": oob.float().mean().item(),
+        "total_reward": reward.mean().item(),
+        "total_loss": -reward.mean().item(),
+    }
+    return reward, components
+
+
+def rel_tables(gate_pos: Tensor, gate_yaw: Tensor) -> Tuple[Tensor, Tensor]:
+    """Per-course next-gate lookahead tables, (N,G,3)/(N,G) -> (N,G,3), (N,G).
+    ``gate_rel_pos[:, i]`` = gate i's position in gate (i-1)'s frame; index 0 wraps to the last
+    gate (the parent's Python ``[i-1]`` convention, mirrored by fly_rl.py's precomputed tables;
+    index 0 is never consumed by the obs because next_gate_idx is clamped >= 1)."""
+    prev_pos = torch.roll(gate_pos, shifts=1, dims=1)
+    prev_yaw = torch.roll(gate_yaw, shifts=1, dims=1)
+    rel = world_to_gateframe(gate_pos - prev_pos, prev_yaw)
+    dy = gate_yaw - prev_yaw
+    yaw_rel = torch.atan2(torch.sin(dy), torch.cos(dy))
+    return rel, yaw_rel
+
+
+def quat_xyzw_from_yaw_pitch(yaw: Tensor, pitch: Tensor) -> Tensor:
+    """Body-to-world quaternion (XYZW, Hamilton, matches pytorch3d after the roll) for
+    R = Rz(yaw) @ Ry(pitch), roll = 0. Built by hand so the helpers stay diffaero-free."""
+    cy, sy = torch.cos(yaw * 0.5), torch.sin(yaw * 0.5)
+    cp, sp = torch.cos(pitch * 0.5), torch.sin(pitch * 0.5)
+    # q = qz (x) qy  (wxyz): [cy*cp, -sy*sp, cy*sp, sy*cp]
+    w = cy * cp
+    x = -sy * sp
+    y = cy * sp
+    z = sy * cp
+    return torch.stack([x, y, z, w], dim=-1)
+
+
+def quat_xyzw_mul(a: Tensor, b: Tensor) -> Tensor:
+    """Hamilton product on XYZW quaternions (a (x) b)."""
+    ax, ay, az, aw = a.unbind(-1)
+    bx, by, bz, bw = b.unbind(-1)
+    return torch.stack([
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ], dim=-1)
+
+
+def quat_xyzw_from_axis_angle(rotvec: Tensor) -> Tensor:
+    """Axis-angle vector (..., 3) -> XYZW quaternion (small-angle-safe)."""
+    theta = torch.linalg.norm(rotvec, dim=-1, keepdim=True)
+    half = 0.5 * theta
+    w = torch.cos(half)
+    scale = 0.5 * torch.sinc(half / math.pi)       # sin(half)/theta, robust at 0
+    return torch.cat([scale * rotvec, w], dim=-1)
+
+
+# ================================================================================================
+# The environment (requires diffaero -- training/eval cluster only).
+# ================================================================================================
 class PeregrineRacing(Racing):
     def __init__(self, cfg, device):
-        super().__init__(cfg, device)  # builds the figure-8; we overwrite the course below
+        super().__init__(cfg, device)  # builds the figure-8; everything below overwrites it
 
-        # --- our course (DiffAero Z-up frame), replacing the synthetic gates ---
+        n = self.n_envs
+        self._arange = torch.arange(n, device=device)
+
+        # --- course source: fixed VQ1 (held-out eval / legacy) or per-env procedural sampling ---
+        self.course_mode = str(getattr(cfg, "course_mode", "vq1"))
         course_path = getattr(cfg, "course_json", None) or _COURSE_JSON
         course = json.loads(open(course_path).read())
-        gates = course["gates"]
-        self.n_gates = len(gates)
-        self.gate_pos = torch.tensor([g["pos_zup"] for g in gates], device=device, dtype=torch.float32)
-        self.gate_yaw = torch.tensor([g["yaw"] for g in gates], device=device, dtype=torch.float32)
-        self.gate_half_opening_m = float(course.get("inner_opening_m", 1.5)) / 2.0  # 0.75 m
+        vq1_pos = torch.tensor([g["pos_zup"] for g in course["gates"]], device=device,
+                               dtype=torch.float32)
+        vq1_yaw = torch.tensor([g["yaw"] for g in course["gates"]], device=device,
+                               dtype=torch.float32)
+        self.n_gates = vq1_pos.shape[0]
+        self.gate_half_opening_m = float(course.get("inner_opening_m", 1.5)) / 2.0   # 0.75 m
+        self.gate_half_outer_m = float(getattr(cfg, "gate_outer_m", 2.72)) / 2.0     # 1.36 m
 
-        # recompute the parent's next-gate-relative lookahead for OUR gate count/geometry
-        self.gate_rel_pos = torch.zeros(self.n_gates, 3, device=device)
-        self.gate_yaw_rel = torch.zeros(self.n_gates, device=device)
-        for i in range(self.n_gates):
-            self.gate_rel_pos[i] = get_gate_rotmat_w2g(self.gate_yaw[i - 1]) @ (self.gate_pos[i] - self.gate_pos[i - 1])
-            yaw_diff = self.gate_yaw[i] - self.gate_yaw[i - 1]
-            self.gate_yaw_rel[i] = torch.atan2(torch.sin(yaw_diff), torch.cos(yaw_diff))
+        # per-env course tensors (broadcast VQ1 or sampled); + standing-start pads
+        from peregrine_course import (sample_courses, VQ1_SPAWN_POS_ZUP, VQ1_SPAWN_YAW,
+                                      VQ1_SPAWN_PITCH_RAD)
+        self._sample_courses = sample_courses
+        self._spawn_pitch = float(VQ1_SPAWN_PITCH_RAD)
+        self._vq1 = {
+            "gate_pos": vq1_pos, "gate_yaw": vq1_yaw,
+            "spawn_pos": torch.tensor(VQ1_SPAWN_POS_ZUP, device=device, dtype=torch.float32),
+            "spawn_yaw": float(VQ1_SPAWN_YAW),
+        }
+        self.gate_pos = vq1_pos.unsqueeze(0).expand(n, -1, -1).clone()     # (N, G, 3)
+        self.gate_yaw = vq1_yaw.unsqueeze(0).expand(n, -1).clone()         # (N, G)
+        self.spawn_pos = self._vq1["spawn_pos"].unsqueeze(0).expand(n, -1).clone()
+        self.spawn_yaw = torch.full((n,), self._vq1["spawn_yaw"], device=device)
+        if self.course_mode == "random":
+            self._assign_courses(self._arange)
+        self.gate_rel_pos, self.gate_yaw_rel = rel_tables(self.gate_pos, self.gate_yaw)
+        self._update_boxes(self._arange)
 
-        # non-looping finish bookkeeping
-        self.finished = torch.zeros(self.n_envs, dtype=torch.bool, device=device)
-
-        # reward shaping bonuses (the parent supplies progress/collision/jerk; we add these)
-        self.passage_bonus = float(getattr(cfg, "passage_bonus", 10.0))
-        self.finish_bonus = float(getattr(cfg, "finish_bonus", 20.0))
-
-        # STANDING START (S1.3, from the S1.2 live-validation findings 2026-06-10): with this
-        # fraction, a reset env spawns at the REAL race start instead of 1 m in front of a random
-        # gate: 23.3 m up-course of gate 0, at rest, on the tilted pad. Pose measured from race
-        # recordings (first ODOMETRY at GO: NED pos (0,0,+0.02), true rpy (0, -17.8deg, -179.9deg))
-        # and mapped through the DEPLOYMENT VIRTUAL FLIP (pi about body z -- rl/fly_rl.py flies the
-        # policy in that frame because training is tail-first): zup euler (roll 0, pitch -17.8deg,
-        # yaw ~0) = quat XYZW [-0.000135, -0.15471, -0.000862, 0.987959]. Default 0.0 = off.
-        # (defined BEFORE the OOB box so the box can include the spawn corridor -- see below.)
+        # --- episode bookkeeping ---
+        self.finished = torch.zeros(n, dtype=torch.bool, device=device)
+        self.rw = RewardWeights.from_cfg(cfg)
         self.standing_start_frac = float(getattr(cfg, "standing_start_frac", 0.0))
-        self._spawn_pos_zup = torch.tensor([0.0, 0.0, -0.02], device=device)
-        self._spawn_quat_xyzw = torch.tensor(
-            [-0.000135, -0.15471, -0.000862, 0.987959], device=device)
+        # per-episode diagnostics (running)
+        self._peak_tilt = torch.zeros(n, device=device)          # rad
+        self._speed_sum = torch.zeros(n, device=device)          # sum of |v| per step
+        # action span for the R5 normalization (set lazily: dynamics bounds exist after init)
+        span = (self.dynamics.max_action - self.dynamics.min_action).clamp(min=1e-6)
+        self._act_lo, self._act_span = self.dynamics.min_action, span
 
-        # generous out-of-bounds box around the course bbox AND the standing-start spawn (only lost
-        # drones truncate). The spawn sits ~23 m up-course of gate 0 at x_zup~0, which is OUTSIDE the
-        # gate bbox on +x (gates span x_zup in [-159, -23]); without folding the spawn into the box,
-        # every standing-start env truncates on step 1 (S1.3 bug found 2026-06-10). Include it so the
-        # full start->gate-0 approach corridor is in-bounds.
-        margin_xy, margin_z = 15.0, 12.0
-        pts = torch.cat([self.gate_pos, self._spawn_pos_zup.unsqueeze(0)], dim=0)
-        lo = pts.amin(dim=0) - torch.tensor([margin_xy, margin_xy, margin_z], device=device)
-        hi = pts.amax(dim=0) + torch.tensor([margin_xy, margin_xy, margin_z], device=device)
-        self.box_min, self.box_max = lo, hi
-
-        # obs = parent's 13 + body rates (3) + collective (1)
+        # obs = parent's 13 + body rates (3) + collective (1) -- FROZEN deployment contract
         self.obs_dim = 17
 
-    # ---- observation: parent's gate-relative obs + body rates + last collective ----
+    # ---- course plumbing ---------------------------------------------------------------------
+    def _assign_courses(self, env_idx: Tensor) -> None:
+        """Sample fresh courses for ``env_idx`` (random mode) and update the per-env tensors."""
+        m = int(env_idx.numel())
+        if m == 0:
+            return
+        c = self._sample_courses(m, device=self.device)
+        self.gate_pos[env_idx] = c["gate_pos"].to(self.gate_pos.dtype)
+        self.gate_yaw[env_idx] = c["gate_yaw"].to(self.gate_yaw.dtype)
+        self.spawn_pos[env_idx] = c["spawn_pos"].to(self.spawn_pos.dtype)
+        self.spawn_yaw[env_idx] = c["spawn_yaw"].to(self.spawn_yaw.dtype)
+
+    def _update_boxes(self, env_idx: Tensor) -> None:
+        """Per-env OOB box: course bbox INCLUDING the spawn pad, +-15 m xy / +-12 m z margins
+        (the S1.3 lesson: exclude the spawn corridor and every standing start truncates on step 1)."""
+        if not hasattr(self, "box_min"):
+            self.box_min = torch.zeros(self.n_envs, 3, device=self.device)
+            self.box_max = torch.zeros(self.n_envs, 3, device=self.device)
+        margin = torch.tensor([15.0, 15.0, 12.0], device=self.device)
+        pts = torch.cat([self.gate_pos[env_idx], self.spawn_pos[env_idx].unsqueeze(1)], dim=1)
+        self.box_min[env_idx] = pts.amin(dim=1) - margin
+        self.box_max[env_idx] = pts.amax(dim=1) + margin
+
+    # ---- observation: parent's gate-relative obs + body rates + last collective (FROZEN) ------
     def get_observations(self, with_grad=False):
-        gate_pos = self.gate_pos[self.target_gates]
-        gate_yaw = self.gate_yaw[self.target_gates]
+        ar, tg = self._arange, self.target_gates.long()
+        gate_pos = self.gate_pos[ar, tg]
+        gate_yaw = self.gate_yaw[ar, tg]
         rotmat_w2g = get_gate_rotmat_w2g(gate_yaw)
 
-        pos_g = mvp(rotmat_w2g, gate_pos - self._p)            # target gate rel pos, gate frame (3)
+        pos_g = mvp(rotmat_w2g, gate_pos - self._p)             # target gate rel pos, gate frame (3)
         vel_g = mvp(rotmat_w2g, self._v)                        # velocity, gate frame (3)
         rotmat_b2w = T.quaternion_to_matrix(self.q.roll(1, dims=-1))
         rotmat_b2g = torch.matmul(rotmat_w2g, rotmat_b2w)
-        rpy_g = T.matrix_to_euler_angles(rotmat_b2g, "ZYX")[..., [2, 1, 0]]  # attitude vs gate (3)
+        rpy_g = T.matrix_to_euler_angles(rotmat_b2g, "ZYX")[..., [2, 1, 0]]   # attitude vs gate (3)
 
-        next_gate_idx = torch.clamp(self.target_gates.long() + 1, max=self.n_gates - 1)
-        collective = self.last_action[..., 0:1]                # last normed-thrust command (1)
+        nxt = torch.clamp(tg + 1, max=self.n_gates - 1)
+        collective = self.last_action[..., 0:1]                 # last RESCALED normed thrust (1)
 
         obs = torch.cat([
             pos_g, vel_g, rpy_g,
             self._w,                                            # body rates (3)
             collective,                                         # collective (1)
-            self.gate_rel_pos[next_gate_idx],                  # next gate rel pos (3)
-            self.gate_yaw_rel[next_gate_idx].unsqueeze(-1),    # next gate rel yaw (1)
+            self.gate_rel_pos[ar, nxt],                         # next gate rel pos (3)
+            self.gate_yaw_rel[ar, nxt].unsqueeze(-1),           # next gate rel yaw (1)
         ], dim=-1)
         return obs if with_grad else obs.detach()
 
-    # ---- pass / collision on OUR 1.5 m square opening (L-inf), plane-crossing on gate +X ----
-    def is_passed(self, prev_pos):
-        gate_pos = self.gate_pos[self.target_gates]
-        gate_yaw = self.gate_yaw[self.target_gates]
-        rotmat = get_gate_rotmat_w2g(gate_yaw)
-        prev_rel = mvp(rotmat, prev_pos - gate_pos)
-        curr_rel = mvp(rotmat, self.p - gate_pos)
-        pass_through = (prev_rel[:, 0] < 0) & (curr_rel[:, 0] > 0)
-        h = self.gate_half_opening_m
-        inside_gate = (curr_rel[:, 1].abs() < h) & (curr_rel[:, 2].abs() < h)
-        return pass_through & inside_gate, pass_through & ~inside_gate
+    # ---- state (asymmetric-critic input; also keeps check_dims honest): clamped, not wrapped --
+    def get_state(self, with_grad=False):
+        ar = self._arange
+        states = [self._v, self.q]
+        for i in range(3):
+            gi = torch.clamp(self.target_gates.long() + i, max=self.n_gates - 1)
+            gate_pos = self.gate_pos[ar, gi]
+            gate_yaw = self.gate_yaw[ar, gi]
+            rotmat_w2g = get_gate_rotmat_w2g(gate_yaw)
+            pos_g = mvp(rotmat_w2g, gate_pos - self._p)
+            vel_g = mvp(rotmat_w2g, self._v)
+            rotmat_b2w = T.quaternion_to_matrix(self.q.roll(1, dims=-1))
+            rotmat_b2g = torch.matmul(rotmat_w2g, rotmat_b2w)
+            rpy_g = T.matrix_to_euler_angles(rotmat_b2g, "ZYX")[..., [2, 1, 0]]
+            states += [pos_g, vel_g, rpy_g]
+        states = torch.cat(states, dim=-1)
+        return states if with_grad else states.detach()
 
-    # ---- bounds: course-sized box (replaces the parent's figure-8 box) ----
-    def truncated(self):
-        oob = (
-            (self.p[:, 0] < self.box_min[0]) | (self.p[:, 0] > self.box_max[0]) |
-            (self.p[:, 1] < self.box_min[1]) | (self.p[:, 1] > self.box_max[1]) |
-            (self.p[:, 2] < self.box_min[2]) | (self.p[:, 2] > self.box_max[2])
-        )
-        return oob | (self.progress >= self.max_steps)
-
-    # ---- step: parent's loop, but NON-looping with a finish + passage/finish bonuses ----
+    # ---- step: event classification -> termination/truncation -> reward -----------------------
     def step(self, action, next_obs_before_reset=False, next_state_before_reset=False):
         # type: (Tensor, bool, bool) -> Tuple[Tensor, Tuple[Tensor, Tensor], Tensor, Dict[str, Union[Dict[str, Tensor], Tensor]]]
         prev_pos = self._p.clone()
         self.dynamics.step(action)
+        curr_pos = self._p
+        ar, G = self._arange, self.n_gates
 
-        gate_passed, gate_collision = self.is_passed(prev_pos)
-        is_last = self.target_gates == (self.n_gates - 1)
+        # crossing events against ALL gates (gates are physical everywhere)
+        rel_prev = world_to_gateframe(prev_pos[:, None, :] - self.gate_pos, self.gate_yaw)
+        rel_curr = world_to_gateframe(curr_pos[:, None, :] - self.gate_pos, self.gate_yaw)
+        ev = crossing_events(rel_prev, rel_curr,
+                             self.gate_half_opening_m, self.gate_half_outer_m)   # all (N, G)
+
+        tg = self.target_gates.long()
+        fwd_t = ev["fwd"][ar, tg]
+        gate_passed = fwd_t & ev["pass_ok"][ar, tg]
+        gate_miss = fwd_t & ~ev["pass_ok"][ar, tg] & ~ev["in_frame"][ar, tg]   # beyond the frame
+        frame_target = (ev["fwd"] | ev["bwd"])[ar, tg] & ev["in_frame"][ar, tg]
+        strike_any = (ev["fwd"] | ev["bwd"]) & ev["in_frame"]
+        strike_any[ar, tg] = False
+        gate_collision = frame_target | strike_any.any(dim=1)
+        pass_linf = ev["linf"][ar, tg]                                          # diag: pass offset
+
+        # target advance / finish (non-looping point-to-point course)
+        is_last = tg == (G - 1)
         newly_finished = gate_passed & is_last & ~self.finished
         advance = gate_passed & ~is_last
-        self.target_gates[advance] = self.target_gates[advance] + 1   # NO wraparound
+        self.target_gates[advance] = self.target_gates[advance] + 1
         self.n_passed_gates[gate_passed] += 1
         self.finished |= newly_finished
-        self.target_pos.copy_(self.gate_pos[self.target_gates])
+        tg_new = self.target_gates.long()
+        self.target_pos.copy_(self.gate_pos[ar, tg_new])
 
-        terminated = gate_collision | self.finished
-        truncated = self.truncated()
+        # out of bounds (per-env box) -- TERMINAL with penalty (audit C1)
+        oob = ((curr_pos < self.box_min) | (curr_pos > self.box_max)).any(dim=-1)
+
+        terminated = gate_collision | gate_miss | oob | self.finished
+        truncated = self.truncated()             # parent timing: evaluated pre-increment
         self.progress += 1
         if self.renderer is not None:
             self.renderer.render(self.states_for_render())
             truncated = torch.full_like(truncated, self.renderer.gui_states["reset_all"]) | truncated
+        truncated = truncated & ~terminated      # a terminal step is not also a truncation
         success = self.finished.clone()
+
+        # per-episode diagnostics
+        tilt = torch.arccos(tilt_cos_from_quat_xyzw(self._q).clamp(-1.0, 1.0))
+        self._peak_tilt = torch.maximum(self._peak_tilt, tilt)
+        speed = torch.linalg.norm(self._v, dim=-1)
+        self._speed_sum += speed
+
+        # reward (see module docstring; d2g measured against the POST-advance target for both
+        # endpoints -- the parent convention, no spike at passage)
+        gate_pos_t = self.gate_pos[ar, tg_new]
+        prev_d2g = torch.linalg.norm(prev_pos - gate_pos_t, dim=-1)
+        curr_d2g = torch.linalg.norm(curr_pos - gate_pos_t, dim=-1)
+        time_left_s = (self.max_steps - self.progress).clamp(min=0).float() * self.dt
+        a_norm = (action - self._act_lo) / self._act_span
+        last_norm = (self.last_action - self._act_lo) / self._act_span
+        reward, loss_components = compute_reward_terms(
+            self.rw, prev_d2g=prev_d2g, curr_d2g=curr_d2g, gate_passed=gate_passed,
+            gate_collision=gate_collision, gate_miss=gate_miss, oob=oob,
+            newly_finished=newly_finished, time_left_s=time_left_s, quat_xyzw=self._q,
+            omega=self._w, action_norm=a_norm, last_action_norm=last_norm)
+        loss = (-reward).detach()        # PPO-only env: loss kept for runner logging, NOT for BPTT
+        reward = reward.detach()
         self.last_action.copy_(action.detach())
 
         reset = terminated | truncated
         reset_indices = reset.nonzero().view(-1)
-        loss, reward, loss_components = self.loss_and_reward(action, prev_pos, gate_passed, gate_collision)
-        reward = reward + self.passage_bonus * gate_passed.float() + self.finish_bonus * newly_finished.float()
-
         extra = {
             "truncated": truncated,
             "l": self.progress.clone(),
@@ -180,9 +549,16 @@ class PeregrineRacing(Racing):
             "loss_components": loss_components,
             "stats_raw": {
                 "success_rate": success[reset].float(),
-                "survive_rate": truncated[reset].float(),
+                "survive_rate": truncated[reset].float(),          # now == timeout rate (audit C6)
                 "l_episode": ((self.progress.clone() - 1) * self.dt)[reset],
                 "n_passed_gates": self.n_passed_gates[reset].float(),
+                "collision_rate": gate_collision[reset].float(),
+                "miss_rate": gate_miss[reset].float(),
+                "oob_rate": oob[reset].float(),
+                "peak_tilt_deg": torch.rad2deg(self._peak_tilt)[reset],
+                "mean_speed": (self._speed_sum / self.progress.clamp(min=1).float())[reset],
+                "finish_time_s": ((self.progress.clone() - 1).float() * self.dt)[newly_finished],
+                "pass_offset_m": pass_linf[gate_passed],
             },
         }
         if next_obs_before_reset:
@@ -193,32 +569,77 @@ class PeregrineRacing(Racing):
             self.reset_idx(reset_indices)
         return self.get_observations(), (loss, reward), terminated, extra
 
-    # ---- reset: parent places the drone 1 m in front of a random gate; we also clear `finished`
-    # and (optionally) respawn a fraction at the real standing start ----
+    # ---- legacy aperture API (kept for any external callers; target gate only) -----------------
+    def is_passed(self, prev_pos):
+        ar, tg = self._arange, self.target_gates.long()
+        gate_pos = self.gate_pos[ar, tg]
+        gate_yaw = self.gate_yaw[ar, tg]
+        rel_prev = world_to_gateframe(prev_pos - gate_pos, gate_yaw)
+        rel_curr = world_to_gateframe(self.p - gate_pos, gate_yaw)
+        ev = crossing_events(rel_prev, rel_curr,
+                             self.gate_half_opening_m, self.gate_half_outer_m)
+        return ev["fwd"] & ev["pass_ok"], ev["fwd"] & ~ev["pass_ok"]
+
+    # ---- truncation: timeout only (OOB is a termination now; see step()) -----------------------
+    def truncated(self):
+        return self.progress >= self.max_steps
+
+    # ---- reset: full override (per-env courses; parent's reset indexes shared-course tensors) --
     def reset_idx(self, env_idx: Tensor):
-        super().reset_idx(env_idx)
+        self.randomizer.refresh(env_idx)
+        m = int(env_idx.numel())
+        if m == 0:
+            return
+        dev = self.device
+
+        if self.course_mode == "random":
+            self._assign_courses(env_idx)
+            self.gate_rel_pos[env_idx], self.gate_yaw_rel[env_idx] = \
+                (t[env_idx] for t in rel_tables(self.gate_pos, self.gate_yaw))
+            self._update_boxes(env_idx)
+
+        # spawn selection: standing start (the pad) vs 1 m up-course of a random target gate
+        standing = torch.rand(m, device=dev) < self.standing_start_frac
+        tg_new = torch.randint(0, self.n_gates, (m,), device=dev, dtype=torch.int32)
+        tg_new[standing] = 0
+
+        gp = self.gate_pos[env_idx, tg_new.long()]
+        gy = self.gate_yaw[env_idx, tg_new.long()]
+        near_pos = gp - torch.stack([torch.cos(gy), torch.sin(gy), torch.zeros_like(gy)], dim=-1)
+        near_yaw = gy + math.pi                       # tail-first w.r.t. the target gate
+        sp = self.spawn_pos[env_idx]
+        sy = self.spawn_yaw[env_idx]
+
+        pos = torch.where(standing.unsqueeze(-1), sp, near_pos)
+        yaw = torch.where(standing, sy, near_yaw)
+        pitch = torch.where(standing, torch.full_like(yaw, self._spawn_pitch),
+                            torch.zeros_like(yaw))
+        # pose jitter: +-0.25 m xy + +-0.15 rad axis-angle (robustness around the nominal pose)
+        pos = pos + torch.cat([0.5 * (torch.rand(m, 2, device=dev) - 0.5),
+                               torch.zeros(m, 1, device=dev)], dim=-1)
+        q = quat_xyzw_from_yaw_pitch(yaw, pitch)
+        q = quat_xyzw_mul(q, quat_xyzw_from_axis_angle(0.3 * (torch.rand(m, 3, device=dev) - 0.5)))
+
+        state = torch.zeros(m, self.dynamics.state_dim, device=dev)
+        state[:, 0:3] = pos
+        state[:, 3:7] = q                              # XYZW; v = w = 0 (at rest)
+        mask = torch.zeros_like(self.dynamics._state, dtype=torch.bool)
+        mask[env_idx] = True
+        full = torch.zeros_like(self.dynamics._state)
+        full[env_idx] = state
+        self.dynamics._state = torch.where(mask, full, self.dynamics._state)
+        self.dynamics.reset_idx(env_idx)               # DR resample + aux state (thrust, buffers)
+
+        self.target_gates[env_idx] = tg_new
+        self.n_passed_gates[env_idx] = 0
         self.finished[env_idx] = False
-        if self.standing_start_frac > 0.0 and env_idx.numel() > 0:
-            pick = env_idx[torch.rand(env_idx.numel(), device=self.device)
-                           < self.standing_start_frac]
-            if pick.numel() > 0:
-                n = pick.numel()
-                # pose jitter: +-0.25 m xy, +-0.15 rad axis-angle (robustness around the fixed pad)
-                pos = self._spawn_pos_zup.expand(n, 3).clone()
-                pos = pos + torch.cat([0.5 * (torch.rand(n, 2, device=self.device) - 0.5),
-                                       torch.zeros(n, 1, device=self.device)], dim=-1)
-                jit = 0.3 * (torch.rand(n, 3, device=self.device) - 0.5)        # axis-angle
-                q_jit = T.axis_angle_to_quaternion(jit)                          # wxyz
-                q_spawn = self._spawn_quat_xyzw.expand(n, 4).roll(1, dims=-1)    # xyzw -> wxyz
-                q = T.quaternion_multiply(q_spawn, q_jit).roll(-1, dims=-1)      # -> xyzw
-                state = torch.zeros(n, self.dynamics.state_dim, device=self.device)
-                state[:, 0:3] = pos
-                state[:, 3:7] = q
-                mask = torch.zeros_like(self.dynamics._state, dtype=torch.bool)
-                mask[pick] = True
-                full = torch.zeros_like(self.dynamics._state)
-                full[pick] = state
-                self.dynamics._state = torch.where(mask, full, self.dynamics._state)
-                self.target_gates[pick] = 0
-                self.init_pos[pick] = pos
-                self.target_pos.copy_(self.gate_pos[self.target_gates])
+        self.init_pos[env_idx] = pos
+        self.progress[env_idx] = 0
+        self.arrive_time[env_idx] = 0
+        self.last_action[env_idx] = 0.0                # collective obs starts at 0 (contract)
+        self._peak_tilt[env_idx] = 0.0
+        self._speed_sum[env_idx] = 0.0
+        self.max_vel[env_idx] = (torch.rand(m, device=dev)
+                                 * (self.max_target_vel - self.min_target_vel)
+                                 + self.min_target_vel)
+        self.target_pos.copy_(self.gate_pos[self._arange, self.target_gates.long()])

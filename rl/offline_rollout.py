@@ -37,7 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import numpy as np
 
-from racer.rl_plant import PlantParams, PlantState, quat_rotate, step as plant_step
+from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams, PlantState,
+                            SUPER_RATE_S_MEASURED, quat_rotate, step as plant_step)
 from fly_rl import (
     N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST, _ODO_RATE_SIGN,
     _TRAIN_DT, build_obs, load_actor, obs_from_zup, policy_step,
@@ -45,6 +46,7 @@ from fly_rl import (
 
 _GATE_POS_NED = _GATE_POS_ZUP * _FLIP   # opening centres, NED
 _HALF_OPEN = 0.75                       # 1.5 m inner opening, L-inf half-width
+_HALF_OUTER = 1.36                      # 2.72 m outer frame, L-inf half-width (S1.4 geometry)
 
 
 def _R_from_quat(q: np.ndarray) -> np.ndarray:
@@ -99,13 +101,36 @@ def check_build_obs(rng: np.random.Generator) -> float:
 
 
 def gate_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int) -> str | None:
-    """'pass' | 'collision' | None -- plane crossing on the gate +X axis (Z-up frame),
-    L-inf 0.75 m aperture; mirrors PeregrineRacing.is_passed."""
+    """'pass' | 'collision' | 'miss' | None for the TARGET gate -- the S1.4 classification
+    (mirrors peregrine_racing.crossing_events): the plane crossing is INTERPOLATED to the
+    crossing point; L-inf < 0.75 m = pass, in (0.75, 1.36] = frame collision, beyond = clean
+    miss. Backward crossings through the frame band also collide."""
     prev_rel = _R_W2G @ (prev_ned * _FLIP - _GATE_POS_ZUP[gate])
     cur_rel  = _R_W2G @ (cur_ned * _FLIP - _GATE_POS_ZUP[gate])
-    if prev_rel[0] < 0.0 and cur_rel[0] > 0.0:
-        inside = (abs(cur_rel[1]) < _HALF_OPEN) and (abs(cur_rel[2]) < _HALF_OPEN)
-        return "pass" if inside else "collision"
+    fwd = prev_rel[0] < 0.0 and cur_rel[0] >= 0.0
+    bwd = prev_rel[0] > 0.0 and cur_rel[0] <= 0.0
+    if not (fwd or bwd):
+        return None
+    f = -prev_rel[0] / ((cur_rel[0] - prev_rel[0]) or 1e-9)
+    y = prev_rel[1] + f * (cur_rel[1] - prev_rel[1])
+    z = prev_rel[2] + f * (cur_rel[2] - prev_rel[2])
+    linf = max(abs(y), abs(z))
+    if fwd and linf < _HALF_OPEN:
+        return "pass"
+    if _HALF_OPEN <= linf <= _HALF_OUTER:      # frame band only -- bwd through the OPEN
+        return "collision"                     # aperture is a non-event (matches the env)
+    return "miss" if fwd else None
+
+
+def frame_strike_other_gates(prev_ned: np.ndarray, cur_ned: np.ndarray, target: int) -> int | None:
+    """S1.4: gates are physical EVERYWHERE -- a frame-band crossing of any non-target gate
+    (either direction) is a collision. Returns the struck gate id or None."""
+    for g in range(N_GATES):
+        if g == target:
+            continue
+        ev = gate_event(prev_ned, cur_ned, g)
+        if ev == "collision":
+            return g
     return None
 
 
@@ -149,7 +174,14 @@ def make_start(kind: str, args) -> tuple[PlantState, int]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--checkpoint", default=r"C:\Users\Shadow\Downloads\stage1_inc1_actor.pth")
+    ap.add_argument("--checkpoint",
+                    default=str(Path(__file__).resolve().parent / "checkpoints"
+                                / "stage1_inc4_actor.pth"))
+    ap.add_argument("--plant", default="map", choices=["map", "flat"],
+                    help="map (DEFAULT, S1.4+): measured super-rate gain map + slew limits "
+                         "(SUPER_RATE_S_MEASURED / ALPHA_MAX_RPS2_MEASURED). flat: the legacy "
+                         "flat-2.5 plant -- ONLY correct for flat-trained checkpoints "
+                         "(stage1_inc1/inc3)")
     ap.add_argument("--start", default="simstart",
                     choices=["trainreset", "racestart", "simstart", "handoff"])
     ap.add_argument("--gate", type=int, default=0, help="trainreset: which gate")
@@ -157,9 +189,10 @@ def main() -> int:
     ap.add_argument("--handoff-speed", type=float, default=10.0)
     ap.add_argument("--max-rate",   type=float, default=0.0,
                     help="PATH A: cap |rate_flu| rad/s before the plant; 0=off")
-    ap.add_argument("--virtual-flip", action="store_true",
+    ap.add_argument("--virtual-flip", action=argparse.BooleanOptionalAction, default=True,
                     help="π body-z conjugation (policy flies tail-first; sim spawns "
-                         "nose-first — maps the spawn into distribution)")
+                         "nose-first). DEFAULT ON -- matches fly_rl.py's deployment default; "
+                         "--no-virtual-flip for raw-frame diagnostics")
     ap.add_argument("--max-thrust", type=float, default=0.0,
                     help="cap normed_thrust (training units, hover=1); 0=off")
     ap.add_argument("--cap-gates", type=int, default=99,
@@ -185,12 +218,17 @@ def main() -> int:
         if worst >= 1e-5:
             return 1
 
-    params = PlantParams(transport_delay_steps=args.latency_steps)  # faithful plant, g=9.80665
+    if args.plant == "map":
+        params = PlantParams(transport_delay_steps=args.latency_steps,
+                             super_rate_s=SUPER_RATE_S_MEASURED,
+                             alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)
+    else:
+        params = PlantParams(transport_delay_steps=args.latency_steps)   # legacy flat-2.5
     st, gate = make_start(args.start, args)
     print(f"[start] {args.start}: pos_ned={np.round(st.pos,2).tolist()} "
           f"vel={np.round(st.vel,2).tolist()} target_gate={gate} thrust0={float(st.thrust):.3f} "
-          f"max_rate={args.max_rate or 'off'} live_clip={args.live_thrust_clip} "
-          f"vflip={args.virtual_flip}")
+          f"plant={args.plant} max_rate={args.max_rate or 'off'} "
+          f"live_clip={args.live_thrust_clip} vflip={args.virtual_flip}")
 
     last_normed = 0.0             # training reset: last_action = 0
     n_steps = int(round(args.max_time / args.dt))
@@ -224,6 +262,12 @@ def main() -> int:
         log["vel"].append(st.vel.copy()); log["act"].append(action)
 
         ev = gate_event(prev_pos, st.pos, gate)
+        struck = frame_strike_other_gates(prev_pos, st.pos, gate)
+        if struck is not None:
+            print(f"  t={t:6.2f}s  gate {struck} FRAME STRIKE (non-target)  "
+                  f"speed={np.linalg.norm(st.vel):5.1f}")
+            outcome = "COLLISION"
+            break
         if ev == "pass":
             passed.append(gate)
             print(f"  t={t:6.2f}s  gate {gate} PASS   speed={np.linalg.norm(st.vel):5.1f} m/s "
@@ -238,13 +282,19 @@ def main() -> int:
                   f"speed={np.linalg.norm(st.vel):5.1f}")
             outcome = "COLLISION"
             break
+        elif ev == "miss":
+            rel = _R_W2G @ (st.pos * _FLIP - _GATE_POS_ZUP[gate])
+            print(f"  t={t:6.2f}s  gate {gate} CLEAN MISS  off=[{rel[1]:+.2f},{rel[2]:+.2f}] m "
+                  f"speed={np.linalg.norm(st.vel):5.1f}")
+            outcome = "MISS"
+            break
 
-        # out-of-bounds box (training: course bbox + 15/12 m margins)
+        # out-of-bounds box, EXACTLY the training box: bbox of gates + the spawn pad
+        # (0,0,-0.02 zup), then +-15/12 m margins (peregrine_racing._update_boxes)
         zup = st.pos * _FLIP
-        lo = _GATE_POS_ZUP.min(0) - [15, 15, 12]
-        hi = _GATE_POS_ZUP.max(0) + [15, 15, 12]
-        # the start pad (x_zup ~ 0) is outside the gate bbox on x; allow it
-        hi[0] = max(hi[0], 5.0)
+        pts = np.vstack([_GATE_POS_ZUP, [0.0, 0.0, -0.02]])
+        lo = pts.min(0) - [15, 15, 12]
+        hi = pts.max(0) + [15, 15, 12]
         if np.any(zup < lo) or np.any(zup > hi):
             print(f"  t={t:6.2f}s  OUT OF BOUNDS  pos_ned={np.round(st.pos,1).tolist()} "
                   f"speed={np.linalg.norm(st.vel):5.1f}")

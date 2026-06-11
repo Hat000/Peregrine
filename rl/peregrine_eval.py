@@ -1,23 +1,26 @@
-"""Stage-1 OFFLINE twin sanity: roll the trained actor in PeregrineRacing from the STANDING START
-and report (a) 6/6 success rate and (b) PEAK ROLL -- the two checks the S1.3 retrain must pass before
-live validation (the inc-1 "backflip-diver" rolled 104-126 deg before every gate; S1.3 must keep peak
-roll < ~80 deg so it never enters the sim's untwinned +-180 deg yaw-spin regime).
+"""S1.4 OFFLINE twin eval: roll a trained actor in PeregrineRacing and report the acceptance
+metrics: success rate, lap time, peak roll/tilt, outcome breakdown (collision/miss/oob/timeout),
+command saturation, pass offsets.
 
-Runs the EXACT training substrate (DiffAero env + our system-ID'd torch plant), but in a CLEAN twin:
-``standing_start_frac=1.0`` (every reset spawns at the real 23.3 m start) and ``dynamics.dr=False``
-(nominal plant -- we are checking the policy, not its DR robustness). Mirrors diffaero's TestRunner
-inner loop (agent.act test=True -> env.rescale_action -> env.step) and reads attitude straight from
-env.dynamics._q each step.
+Two eval axes (cfg-independent of how the checkpoint was trained):
+  --course vq1     the HELD-OUT VQ1 course (the acceptance gate: success >= S1.3's 1.00)
+  --course random  freshly sampled procedural courses (the generalization number)
+  --plant map      measured super-rate plant (DEFAULT -- the S14 integration; ALL S1.4+ evals)
+  --plant flat     legacy flat-2.5 plant (ONLY for flat-trained checkpoints: inc-1 / S1.3)
+
+Runs the EXACT training substrate (DiffAero env + our torch plant) with ``dynamics.dr=False``
+(nominal plant -- we check the policy, not its DR robustness); ``--standing-frac 1.0`` (default)
+spawns every reset at the standing start. Mirrors diffaero's TestRunner inner loop.
 
 Usage (on Adroit, diffaero env active, PYTHONPATH = repo/rl:repo/src:diffaero):
-  python peregrine_eval.py --ckpt <run>/checkpoints --n-envs 256 --max-time 40
+  python peregrine_eval.py --ckpt <run>/checkpoints --course vq1
+  python peregrine_eval.py --ckpt <run>/checkpoints --course random --n-envs 512
 ``--ckpt`` is the directory containing actor.pth; the training cfg is read from its run's
 .hydra/config.yaml (walked up from --ckpt), exactly as diffaero's script/test.py does.
 """
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -31,12 +34,10 @@ import diffaero.env as _env
 from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
 
-_dyn.DYNAMICS_ALIAS["peregrine_plant"] = lambda cfg, device: PeregrinePlantDynamics(
-    cfg, device, backend="torch")
-_env.ENV_ALIAS["peregrine_racing"] = PeregrineRacing
+from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams,  # noqa: E402
+                            SUPER_RATE_S_MEASURED)
 
-from diffaero.env import build_env          # noqa: E402
-from diffaero.algo import build_agent        # noqa: E402
+_env.ENV_ALIAS["peregrine_racing"] = PeregrineRacing
 
 N_GATES = 6
 
@@ -53,12 +54,27 @@ def find_run_root(ckpt: Path) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True, help="dir containing actor.pth")
+    ap.add_argument("--course", default="vq1", choices=["vq1", "random"],
+                    help="vq1 = the held-out acceptance course; random = generalization")
+    ap.add_argument("--plant", default="map", choices=["map", "flat"],
+                    help="map = measured super-rate plant (S1.4+ default); flat = legacy, "
+                         "ONLY for flat-trained checkpoints")
+    ap.add_argument("--standing-frac", type=float, default=1.0)
     ap.add_argument("--n-envs", type=int, default=256)
     ap.add_argument("--max-time", type=float, default=40.0)
     ap.add_argument("--horizons", type=float, default=2.5,
                     help="run this many max_time horizons to gather completed episodes")
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
+
+    params = (PlantParams(super_rate_s=SUPER_RATE_S_MEASURED,
+                          alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)
+              if args.plant == "map" else None)
+    _dyn.DYNAMICS_ALIAS["peregrine_plant"] = lambda cfg, device: PeregrinePlantDynamics(
+        cfg, device, backend="torch", params=params)
+
+    from diffaero.env import build_env          # noqa: E402  (after alias registration)
+    from diffaero.algo import build_agent       # noqa: E402
 
     ckpt = Path(args.ckpt).resolve()
     run_root = find_run_root(ckpt)
@@ -67,9 +83,10 @@ def main() -> int:
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
-    # clean standing-start twin: force the start, kill DR, set env size + horizon
+    # clean twin: chosen course, forced standing start, DR OFF (nominal plant), sized horizon
     OmegaConf.update(cfg, "n_envs", args.n_envs, force_add=True)
-    OmegaConf.update(cfg, "env.standing_start_frac", 1.0, force_add=True)
+    OmegaConf.update(cfg, "env.course_mode", args.course, force_add=True)
+    OmegaConf.update(cfg, "env.standing_start_frac", float(args.standing_frac), force_add=True)
     OmegaConf.update(cfg, "dynamics.dr", False, force_add=True)
     OmegaConf.update(cfg, "env.max_time", float(args.max_time), force_add=True)
 
@@ -77,40 +94,60 @@ def main() -> int:
     agent = build_agent(cfg.algo, env, device)
     agent.load(ckpt)
     dt = float(cfg.env.dt)
-    print(f"[eval] n_envs={args.n_envs} dt={dt} max_time={args.max_time} "
-          f"backend=torch dr=False standing_start_frac=1.0")
+    print(f"[eval] n_envs={args.n_envs} dt={dt} max_time={args.max_time} course={args.course} "
+          f"plant={args.plant} dr=False standing_frac={args.standing_frac}")
 
     obs = env.reset()
     n = args.n_envs
     cur_peak_roll = torch.zeros(n, device=device)
     cur_peak_tilt = torch.zeros(n, device=device)
     ep_success, ep_roll, ep_tilt = [], [], []
+    counts = {"collision": 0.0, "miss": 0.0, "oob": 0.0, "timeout": 0.0, "finish": 0.0}
+    finish_times, pass_offsets, mean_speeds = [], [], []
+    sat_steps = torch.zeros(4, device=device)
+    n_steps_total = 0
 
     n_steps = int(args.horizons * args.max_time / dt)
     body_up = torch.tensor([0.0, 0.0, 1.0], device=device)
     with torch.no_grad():
         for _ in range(n_steps):
             action, _ = agent.act(obs, test=True)
+            sat_steps += (action.abs() > 0.95).float().sum(dim=0)
+            n_steps_total += action.shape[0]
             action = env.rescale_action(action)
             obs, _loss, _term, info = env.step(action)
 
             q = env.dynamics._q                                  # XYZW (Z-up)
             R = T.quaternion_to_matrix(q.roll(1, dims=-1)).clamp(-1 + 1e-6, 1 - 1e-6)
             _, _, roll = T.matrix_to_euler_angles(R, "ZYX").unbind(-1)
-            # total tilt = angle of body-up from world-up (sign-free; >90 = inverted regime)
             up_w = torch.matmul(R, body_up)
             tilt = torch.arccos(up_w[..., 2].clamp(-1 + 1e-6, 1 - 1e-6))
             cur_peak_roll = torch.maximum(cur_peak_roll, roll.abs())
             cur_peak_tilt = torch.maximum(cur_peak_tilt, tilt)
 
+            sr = info["stats_raw"]
+            counts["collision"] += float(sr["collision_rate"].sum())
+            counts["miss"] += float(sr["miss_rate"].sum())
+            counts["oob"] += float(sr["oob_rate"].sum())
+            counts["timeout"] += float(sr["survive_rate"].sum())
+            counts["finish"] += float(sr["success_rate"].sum())
+            finish_times += sr["finish_time_s"].tolist()
+            pass_offsets += sr["pass_offset_m"].tolist()
+            mean_speeds += sr["mean_speed"].tolist()
+
             reset = info["reset"]
             if reset.any():
                 ridx = reset.nonzero().flatten()
                 succ = info["success"]
-                for i in ridx.tolist():
+                # TILT: the env's own tracker (stats_raw.peak_tilt_deg) -- recorded PRE-reset
+                # inside step(), so it includes the terminal attitude; our outside-the-env
+                # tracker only sees post-reset states. ROLL: tracked here (the env does not),
+                # so it misses the terminal step -- a documented, slightly-optimistic proxy
+                # kept for comparability with the S1.3 numbers.
+                for k, i in enumerate(ridx.tolist()):
                     ep_success.append(bool(succ[i]))
                     ep_roll.append(float(cur_peak_roll[i]))
-                    ep_tilt.append(float(cur_peak_tilt[i]))
+                    ep_tilt.append(float(sr["peak_tilt_deg"][k]) * np.pi / 180.0)
                 cur_peak_roll[ridx] = 0.0
                 cur_peak_tilt[ridx] = 0.0
 
@@ -118,8 +155,26 @@ def main() -> int:
     roll = np.degrees(np.array(ep_roll))
     tilt = np.degrees(np.array(ep_tilt))
     n_ep = len(succ)
-    sr = float(succ.mean()) if n_ep else 0.0
-    print(f"\n[RESULT] episodes={n_ep}  SUCCESS_RATE_6of6={sr:.3f}")
+    sr_rate = float(succ.mean()) if n_ep else 0.0
+    print(f"\n[RESULT] course={args.course} plant={args.plant} episodes={n_ep}  "
+          f"SUCCESS_RATE_6of6={sr_rate:.3f}")
+    tot = max(sum(counts.values()), 1.0)
+    print("[RESULT] outcomes: " + "  ".join(f"{k}={v:.0f} ({v / tot:.1%})"
+                                            for k, v in counts.items()))
+    if finish_times:
+        ft = np.array(finish_times)
+        print(f"[RESULT] FINISH_TIME_S med {np.median(ft):6.2f}  p10 {np.percentile(ft,10):6.2f} "
+              f" p90 {np.percentile(ft,90):6.2f}  min {ft.min():6.2f}")
+    if pass_offsets:
+        po = np.array(pass_offsets)
+        print(f"[RESULT] PASS_OFFSET_M med {np.median(po):.3f}  p90 {np.percentile(po,90):.3f} "
+              f" max {po.max():.3f}  (frame at 0.75)")
+    if mean_speeds:
+        ms = np.array(mean_speeds)
+        print(f"[RESULT] MEAN_SPEED med {np.median(ms):5.2f} m/s  p90 {np.percentile(ms,90):5.2f}")
+    sat = (sat_steps / max(n_steps_total, 1)).cpu().numpy()
+    print(f"[RESULT] CMD_SATURATION |a|>0.95: thrust {sat[0]:.1%}  "
+          f"roll {sat[1]:.1%}  pitch {sat[2]:.1%}  yaw {sat[3]:.1%}")
     if n_ep:
         print(f"[RESULT] PEAK_ROLL_DEG all:     max {roll.max():6.1f}  p90 {np.percentile(roll,90):6.1f}  median {np.median(roll):6.1f}")
         print(f"[RESULT] PEAK_TILT_DEG all:     max {tilt.max():6.1f}  p90 {np.percentile(tilt,90):6.1f}  median {np.median(tilt):6.1f}")
@@ -128,9 +183,11 @@ def main() -> int:
         print(f"[RESULT] PEAK_ROLL_DEG success: max {rs.max():6.1f}  p90 {np.percentile(rs,90):6.1f}  median {np.median(rs):6.1f}")
         print(f"[RESULT] PEAK_TILT_DEG success: max {ts.max():6.1f}  p90 {np.percentile(ts,90):6.1f}  median {np.median(ts):6.1f}")
     # machine-readable summary line
-    print(f"EVAL_SUMMARY sr={sr:.3f} n_ep={n_ep} "
-          f"roll_succ_max={ (roll[succ].max() if succ.any() else -1):.1f} "
-          f"roll_all_p90={ (np.percentile(roll,90) if n_ep else -1):.1f}")
+    print(f"EVAL_SUMMARY course={args.course} plant={args.plant} sr={sr_rate:.3f} n_ep={n_ep} "
+          f"t_med={np.median(finish_times) if finish_times else -1:.2f} "
+          f"tilt_succ_max={(tilt[succ].max() if succ.any() else -1):.1f} "
+          f"roll_succ_max={(roll[succ].max() if succ.any() else -1):.1f} "
+          f"coll={counts['collision']:.0f} miss={counts['miss']:.0f} oob={counts['oob']:.0f}")
     return 0
 
 

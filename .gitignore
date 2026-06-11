@@ -43,3 +43,6 @@ Academic/
 
 # Claude Code local config (user-specific)
 .claude/settings.local.json
+
+# session-local scratch (S15)
+/.s15_ref/

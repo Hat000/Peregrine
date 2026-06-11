@@ -1,4 +1,9 @@
-"""Convert the VQ1 captured gate map (NED) into a DiffAero-frame fixed gate layout for the RL env.
+"""VQ1 course conversion (NED -> DiffAero Z-up) + PROCEDURAL 6-gate course sampling for RL training.
+
+Part 1 (original): convert the VQ1 captured gate map (NED) into a DiffAero-frame fixed gate layout.
+Part 2 (S1.4, 2026-06-10): ``sample_courses`` -- draw random spec-plausible 6-gate courses so the
+policy trains on a DISTRIBUTION of tracks and holds the exact VQ1 course out for eval
+(stack-review meta-gap #1: a one-track policy on the unseen VQ2 course may score zero).
 
 The Peregrine offline twin / RL plant lives in world NED (Z DOWN); DiffAero's world is Z-UP. Our
 dynamics adapter (``rl.diffaero_dynamics``) bridges them with the involutory flip
@@ -92,6 +97,148 @@ def course_to_diffaero(gates: list[dict]) -> tuple[np.ndarray, np.ndarray, dict]
         "seg_yaw_deg": np.degrees(seg_yaw),
     }
     return gate_pos_zup, gate_yaw, diag
+
+
+# ================================================================================================
+# Part 2 -- PROCEDURAL COURSE SAMPLING (S1.4 / session S15, 2026-06-10).
+#
+# Torch-based (the env consumes tensors on the training device); torch import is GUARDED so the
+# numpy json-conversion CLI above still runs anywhere.
+#
+# VQ1-derived geometry stats (Z-up, computed from peregrine_course_diffaero.json; re-derived and
+# pinned by tests/test_peregrine_course.py so drift in the json breaks the test, not the training):
+#   horizontal segment length   [23.69, 27.95, 37.43, 24.38, 23.97] m   (gate->gate)
+#   per-segment descent         [ 5.10,  8.60, 10.90,  0.79,  0.61] m   (all descending)
+#   heading change per segment  ~[12.7, 17.3, 19.9, 18.8] deg          (gentle weave about a line)
+#   max grade |dz|/horiz        0.31
+#   gate yaw vs segment heading within ~10 deg (all map yaws are exactly pi)
+#   spawn                       23.3 m up-course of gate 0; gate-0 centre +1.41 m ABOVE the pad
+#
+# Sampling ranges = those stats widened to "sane multiples". Turns go to +-60 deg (3x VQ1's max):
+# VQ1 is nearly straight, and multiples of ~0 degrees would still be ~0 -- the whole point is
+# insurance against an unseen VQ2 layout, so the turn budget comes from "what a 6-gate drone-racing
+# course plausibly does", bounded so courses stay flyable (no hairpins beyond 60 deg/segment).
+# The VQ1 course is INTERIOR to every range => training on this distribution with VQ1 held out is a
+# genuine generalization test (VQ1 itself has measure zero in the sampler).
+# ================================================================================================
+try:
+    import torch
+except Exception:                      # pragma: no cover - torch absent in some tooling contexts
+    torch = None
+
+DEFAULT_COURSE_RANGES = dict(
+    n_gates=6,
+    seg_len_m=(15.0, 45.0),       # horizontal gate->gate distance; VQ1 [23.7, 37.4]
+    turn_rad=1.047,               # |heading change| per segment <= 60 deg (uniform in +-); VQ1 <= ~20 deg
+    drop_m=(-3.0, 12.0),          # descent per segment, +down (z_up DECREASES); VQ1 [0.6, 10.9]
+    max_grade=0.45,               # |dz| <= max_grade * horizontal length; VQ1 max 0.31
+    yaw_jitter_rad=0.21,          # gate plane yaw = path bisector +- 12 deg; VQ1 deviates <= ~10 deg
+    spawn_dist_m=(18.0, 28.0),    # standing-start pad -> gate 0 horizontal; VQ1 23.3
+    spawn_below_g0_m=(0.5, 2.5),  # gate-0 centre this far ABOVE the pad; VQ1 1.41
+    min_pair_dist_m=10.0,         # reject layouts with any two gates (or a gate and the pad) closer
+)
+
+# VQ1 standing-start pad (Z-up), from the S1.2 live recordings (see peregrine_racing.py).
+VQ1_SPAWN_POS_ZUP = (0.0, 0.0, -0.02)
+VQ1_SPAWN_YAW = 0.0          # body yaw at spawn; gates at yaw pi => tail-first (gate-frame yaw ~ pi)
+VQ1_SPAWN_PITCH_RAD = -0.31  # -17.8 deg tilted pad (measured)
+
+
+def _circ_mean(a, b):
+    """Circular mean of two angles (torch tensors), elementwise."""
+    return torch.atan2(torch.sin(a) + torch.sin(b), torch.cos(a) + torch.cos(b))
+
+
+def sample_courses(n, device="cpu", generator=None, **overrides):
+    """Draw ``n`` random 6-gate courses (Z-up frame). Returns a dict of torch tensors:
+
+        gate_pos  (n, G, 3)  gate opening centres
+        gate_yaw  (n, G)     gate plane yaw (exit/down-course direction = +x of the gate frame)
+        spawn_pos (n, 3)     standing-start pad position
+        spawn_yaw (n,)       nominal body yaw at spawn = gate_yaw[0] + pi  (TAIL-FIRST, matching the
+                             VQ1 deployment convention: fly_rl.py runs the policy behind a virtual
+                             pi body-z flip, so training spawns must stay tail-first w.r.t. gate 0)
+
+    Construction: a heading random walk. Segment 0 is pad->gate0; segments 1..G-1 are gate->gate.
+    Headings turn by U(-turn, +turn) per segment; horizontal lengths and per-segment descents are
+    uniform in their ranges (descent clamped to ``max_grade``); gate yaw = circular mean of the
+    incoming/outgoing segment headings (pure incoming for the last gate) + jitter. Layouts where any
+    two gates (or a gate and the pad) come within ``min_pair_dist_m`` horizontally are redrawn
+    (vectorized rejection; with these defaults the reject rate is small and redraws only replace the
+    offending courses, so the loop terminates fast).
+    """
+    if torch is None:
+        raise RuntimeError("sample_courses requires torch")
+    unknown = set(overrides) - set(DEFAULT_COURSE_RANGES)
+    if unknown:
+        raise TypeError(f"sample_courses: unknown range override(s) {sorted(unknown)} "
+                        f"(valid: {sorted(DEFAULT_COURSE_RANGES)})")
+    R = {**DEFAULT_COURSE_RANGES, **overrides}
+    G = int(R["n_gates"])
+
+    def U(lo, hi, *shape):
+        return lo + (hi - lo) * torch.rand(*shape, device=device, generator=generator)
+
+    def draw(m):
+        # heading random walk: heading[k] = direction of segment k (segment 0 = pad->gate0)
+        h0 = U(-np.pi, np.pi, m, 1)
+        turns = U(-R["turn_rad"], R["turn_rad"], m, G - 1)
+        headings = torch.cat([h0, h0 + torch.cumsum(turns, dim=1)], dim=1)          # (m, G)
+        seg_len = torch.empty(m, G, device=device)
+        seg_len[:, 0] = U(*R["spawn_dist_m"], m)
+        seg_len[:, 1:] = U(*R["seg_len_m"], m, G - 1)
+        dz = torch.empty(m, G, device=device)
+        dz[:, 0] = U(*R["spawn_below_g0_m"], m)                                     # gate 0 ABOVE pad
+        drop = U(*R["drop_m"], m, G - 1)
+        dz[:, 1:] = -torch.clamp(drop, -R["max_grade"] * seg_len[:, 1:],
+                                 R["max_grade"] * seg_len[:, 1:])
+        seg = torch.stack([seg_len * torch.cos(headings),
+                           seg_len * torch.sin(headings), dz], dim=-1)              # (m, G, 3)
+        gate_pos = torch.cumsum(seg, dim=1)                                         # pad at origin
+        # gate yaw: bisector of incoming/outgoing headings; last gate = incoming heading
+        yaw = torch.empty(m, G, device=device)
+        yaw[:, :-1] = _circ_mean(headings[:, :-1], headings[:, 1:])
+        yaw[:, -1] = headings[:, -1]
+        yaw = yaw + U(-R["yaw_jitter_rad"], R["yaw_jitter_rad"], m, G)
+        return gate_pos, yaw
+
+    def too_close(gp):
+        pts = torch.cat([torch.zeros(gp.shape[0], 1, 3, device=device), gp], dim=1)  # pad+gates
+        d = torch.linalg.norm(pts[:, :, None, :2] - pts[:, None, :, :2], dim=-1)     # horizontal
+        d = d + torch.eye(G + 1, device=device) * 1e9
+        return d.amin(dim=(1, 2)) < R["min_pair_dist_m"]
+
+    gate_pos, gate_yaw = draw(n)
+    for _ in range(12):                       # rejection loop: redraw layouts with close pairs
+        bad = too_close(gate_pos)
+        if not bad.any():
+            break
+        m = int(bad.sum())
+        rp, ry = draw(m)
+        gate_pos[bad], gate_yaw[bad] = rp, ry
+    bad = too_close(gate_pos)
+    if bad.any():
+        # exhausted-rejection fallback (vanishingly rare): a straight course ALWAYS satisfies
+        # min separation (segment lengths >= seg_len_m[0] > min_pair_dist) -- never return a
+        # silently-violating layout.
+        saved = R["turn_rad"]
+        R["turn_rad"] = 0.0
+        rp, ry = draw(int(bad.sum()))
+        R["turn_rad"] = saved
+        gate_pos[bad], gate_yaw[bad] = rp, ry
+
+    spawn_pos = torch.zeros(n, 3, device=device)
+    spawn_yaw = torch.atan2(torch.sin(gate_yaw[:, 0] + np.pi), torch.cos(gate_yaw[:, 0] + np.pi))
+    return {"gate_pos": gate_pos, "gate_yaw": gate_yaw,
+            "spawn_pos": spawn_pos, "spawn_yaw": spawn_yaw}
+
+
+def load_course_zup(path):
+    """Load a fixed course json (e.g. the VQ1 hold-out) -> (gate_pos (G,3), gate_yaw (G,)) numpy."""
+    data = json.loads(Path(path).read_text())
+    gp = np.array([g["pos_zup"] for g in data["gates"]], dtype=np.float64)
+    gy = np.array([g["yaw"] for g in data["gates"]], dtype=np.float64)
+    return gp, gy
 
 
 def main() -> int:
