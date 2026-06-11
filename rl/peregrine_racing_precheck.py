@@ -7,6 +7,7 @@ width, course sampling, spawn poses, per-env DR, and the reward/stat machinery a
 before spending a GPU SLURM job. Ends with PRECHECK_DONE.
 """
 import math
+import sys
 
 import torch
 from hydra import compose, initialize_config_dir
@@ -28,6 +29,8 @@ OVERRIDES = [
     "dynamics.controller.max_normed_thrust=3.765",
     "algo=ppo", "n_envs=64", "n_updates=2", "headless=True", "device=-1",
 ]
+# extra hydra overrides from the command line (e.g. +dynamics.dr_aero=true for the S1.5 cfg)
+OVERRIDES += sys.argv[1:]
 
 with initialize_config_dir(version_base="1.3", config_dir="/scratch/network/fl3689/diffaero_repo/cfg"):
     cfg = compose(config_name="config_train", overrides=OVERRIDES)
