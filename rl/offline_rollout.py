@@ -208,6 +208,11 @@ def main() -> int:
                     help="apply --max-rate/--max-thrust only while target gate < N")
     ap.add_argument("--latency-steps", type=int, default=0,
                     help="plant transport delay in control steps (live ~40 ms ≈ 1)")
+    ap.add_argument("--obs-extrap-steps", type=float, default=0.0,
+                    help="latency compensation: build the obs from the state "
+                         "extrapolated forward this many control steps (pos += vel*tau, "
+                         "attitude integrated by omega*tau). Pair with --latency-steps "
+                         "to validate the live compensator")
     ap.add_argument("--thrust0",    type=float, default=-1.0,
                     help="initial realized collective state; <0 = hover (adapter reset)")
     ap.add_argument("--live-thrust-clip", action="store_true",
@@ -261,9 +266,21 @@ def main() -> int:
     print(f"[step0] action: rate_frd={np.round(r0,3).tolist()} collective={c0:.3f} "
           f"normed_thrust={n0:.3f}")
 
+    from racer.rl_plant import quat_multiply, quat_normalize, rotvec_to_quat
+    from dataclasses import replace as _dc_replace
+
+    def _extrap(s: PlantState, tau: float) -> PlantState:
+        """First-order state prediction for the obs (latency compensation)."""
+        if tau <= 0.0:
+            return s
+        return _dc_replace(
+            s, pos=s.pos + s.vel * tau,
+            quat=quat_normalize(quat_multiply(s.quat, rotvec_to_quat(s.omega * tau))))
+
     for k in range(n_steps):
         capped = gate < args.cap_gates
-        obs = obs_from_truth(st, gate, last_normed, args.virtual_flip)
+        obs = obs_from_truth(_extrap(st, args.obs_extrap_steps * args.dt),
+                             gate, last_normed, args.virtual_flip)
         rate_frd, collective, last_normed = policy_step(
             actor, obs, args.max_rate if capped else 0.0, args.virtual_flip,
             args.max_thrust if capped else 0.0, yaw_scale=args.yaw_scale)
