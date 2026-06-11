@@ -1,0 +1,7 @@
+# Per-frame characterize dumps are regenerable from the canonical recording + committed
+# weights via the commands in WRITEUP.md (deterministic detector); keep the repo lean.
+before_g*.json
+fixedframe_g*.json
+after_g*.json
+task2_fixedframe.json
+after_task2.json
