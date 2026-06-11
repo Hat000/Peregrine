@@ -4,7 +4,8 @@ The closed-loop CTBR runs (data/runs/*_ctbr_*) showed roll/yaw stable (sign fix 
 pitch oscillating to +/-4.4 rad/s vs a 2.0 clamp -- but a closed loop can't separate a steady
 GAIN from a transient OVERSHOOT (the command is always changing). This probe injects a FIXED,
 OPEN-LOOP body rate on ONE axis at a time and measures the actual ODOMETRY rate, so the steady
-gain, the per-axis sign, and the damping fall out cleanly. Offline: ``analyze_sysid.py``.
+gain, the per-axis sign, and the damping fall out cleanly. Offline analysis:
+``handoff/shadowpc-2ndorder-resysid-2026-06-10/fit_2nd_order.py``.
 
 Two modes (same live scaffolding -- race-wait, recording, abort guards, force-disarm):
   --mode rate   per-axis doublets (+r for ~1s, re-level, -r, re-level). Measures sign + steady
@@ -19,8 +20,11 @@ SAFETY: bounded magnitudes, short per-phase holds, hard abort on collision / pos
 near the origin + level so a multi-axis sweep does not drift into a wall. Start with --dry-run
 (prints the schedule, never arms/sends), then --mode hover (gentlest), then --mode rate.
 
-Respects the race countdown: reuses fly_vq1._wait_for_race (waits for a FRESH GO, refuses a
-non-origin start). The teammate drives the sim home -> Race; connect at the home page.
+Respects the race countdown: waits for a FRESH GO (fly_vq1 mechanics) and runs UNATTENDED --
+if no fresh GO shows up for --reset-after seconds it fires MAV_CMD 31000 (send_sim_reset; a
+fresh ~3 s countdown when a race context exists, NO-OP from HOME), and if there is no telemetry
+at all after two resets it focuses the AI-GP window and sends Enter twice (home -> waiting room
+-> race; the S1.2 cold-start mechanics). Probes chain without touching the sim GUI.
 
 Usage:
   python scripts/rate_sysid.py --dry-run
@@ -41,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import numpy as np
 
 # reuse the live-session plumbing already validated against the sim
-from fly_vq1 import _LatestFrame, _arm_cmd, _wait_for_race
+from fly_vq1 import _LatestFrame, _arm_cmd
 
 from racer.contracts import ControlCommand, ControlMode
 from racer.controller import level_hold_body_rate
@@ -53,6 +57,115 @@ from racer.vision.jpeg_receiver import VIDEO_PORT, JpegUdpReceiver
 
 _AXIS_NAME = {0: "roll", 1: "pitch", 2: "yaw"}
 _NAME_AXIS = {v: k for k, v in _AXIS_NAME.items()}
+
+
+def _kick_sim_from_home(title_substr: str = "AI-GP", n_enter: int = 2,
+                        settle_s: float = 1.5) -> bool:
+    """HOME-page recovery (S1.2 mechanics): MAV_CMD 31000 is a NO-OP at the home page
+    (no telemetry there), so focus the sim window via Win32 SetForegroundWindow
+    (WScript AppActivate alone returns False) and send Enter twice
+    (home -> waiting room -> race + countdown)."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def _cb(hwnd, _lp):
+        if user32.IsWindowVisible(hwnd):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                if title_substr.lower() in buf.value.lower():
+                    found.append(hwnd)
+        return True
+
+    user32.EnumWindows(_cb, None)
+    if not found:
+        print(f"  home-kick: no visible window titled *{title_substr}*", file=sys.stderr)
+        return False
+    user32.SetForegroundWindow(found[0])
+    time.sleep(0.5)
+    VK_RETURN, KEYEVENTF_KEYUP = 0x0D, 0x0002
+    for _ in range(n_enter):
+        user32.keybd_event(VK_RETURN, 0, 0, 0)
+        user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(settle_s)
+    return True
+
+
+def _wait_fresh_go(client, frames, args) -> bool:
+    """Pump until a FRESH race GO (fly_vq1 mechanics: GO within ~2 s, drone at the
+    origin) with UNATTENDED recovery: every --reset-after s without a fresh GO fire
+    send_sim_reset(); after two ineffective resets _kick_sim_from_home() (31000 is
+    ignored both at HOME and on the off-race/paused screen the sim parks on after
+    an old race -- measured 2026-06-10: stale RACE_STATUS, frozen sim_time, 22x
+    31000 no-ops; one focus+2xEnter produced a fresh countdown). Never resets into
+    a ticking countdown. A corrupt start (drone far from the origin at GO) waits
+    for the reset timer instead of refusing."""
+    deadline = time.monotonic() + args.wait_seconds
+    margin_ms = args.start_margin_s * 1000.0
+    auto = not args.no_auto_reset
+    next_reset = time.monotonic() + (args.reset_after if auto else 1e18)
+    stale_strikes = 0          # reset attempts since the last fresh countdown
+    last_print = 0.0
+    while time.monotonic() < deadline:
+        client.pump()
+        s = client.state
+        rs = client.race_status
+        live = s.position_ned is not None and s.sim_time_ns > 0
+        now = time.monotonic()
+
+        if args.no_wait_start and live:
+            print(f"\n  (--no-wait-start) proceeding without the countdown: {telemetry_summary(client)}")
+            return True
+
+        if rs and rs["started"] and live:
+            to_go_ms = rs["race_start_boot_time_ms"] - rs["sim_boot_time_ms"]
+            fresh = rs["race_start_boot_time_ms"] >= 0 and to_go_ms > -2000.0
+            if fresh:
+                stale_strikes = 0
+                pos_off = float(np.linalg.norm(s.position_ned))
+                if to_go_ms <= -margin_ms:
+                    if pos_off <= args.max_start_offset_m:
+                        print(f"\n  GO! countdown elapsed, drone at origin (pos_off={pos_off:.2f} m). "
+                              f"{telemetry_summary(client)}")
+                        return True
+                    if now - last_print >= 1.0:
+                        print(f"  corrupt start (pos_off={pos_off:.0f} m) -> waiting on the reset timer   ",
+                              end="\r", flush=True)
+                        last_print = now
+                else:
+                    next_reset = max(next_reset, now + args.reset_after)   # never reset into a countdown
+                    if now - last_print >= 0.25:
+                        print(f"  countdown {to_go_ms / 1000:+.2f}s to GO  pos_off={pos_off:.1f}m "
+                              f"map={len(client.track_gates or [])}   ", end="\r", flush=True)
+                        last_print = now
+                time.sleep(0.005)
+                continue
+
+        if auto and now >= next_reset:
+            stale_strikes += 1
+            if stale_strikes >= 3 and not args.no_home_kick:
+                print("\n  31000 ineffective (off-race screen or HOME) -> focusing AI-GP + Enter x2 ...")
+                _kick_sim_from_home()
+                stale_strikes = 0
+            else:
+                print("\n  no fresh GO -> requesting sim reset (MAV_CMD 31000) ...")
+                try:
+                    client.send_sim_reset()
+                except Exception as exc:
+                    print(f"  sim reset send failed: {exc}", file=sys.stderr)
+            next_reset = now + args.reset_after
+        elif now - last_print >= 2.0:
+            print(f"  waiting: started={bool(rs and rs['started'])} "
+                  f"pos={'yes' if live else 'no'} map={len(client.track_gates or [])} "
+                  f"frame={'yes' if frames.get() else 'no'}   ", end="\r", flush=True)
+            last_print = now
+        time.sleep(0.005)
+    print("\n  timed out waiting for a fresh race GO.", file=sys.stderr)
+    return False
 
 
 class _Phase:
@@ -81,6 +194,26 @@ def _build_rate_schedule(args) -> list[_Phase]:
     return phases
 
 
+def _build_anomaly_schedule(args) -> list[_Phase]:
+    """Payload-2 probe (anomaly boundary): init level-hold, CLIMB for altitude headroom
+    (the drone will tumble and fall -- the floor collision is the bounded end of the
+    attempt), then ONE sustained open-loop step on ONE axis with ZERO command on the
+    other axes (no doublet, no re-level; the level-hold math is meaningless past 90
+    deg anyway). Uses the FIRST --axes axis and FIRST --mag magnitude (signed). The
+    tilt abort is OFF by default in this mode; collision/position/altitude/time stay."""
+    mags = [float(m) for m in args.mag.split(",") if m.strip()]
+    axes = [_NAME_AXIS[a.strip()] for a in args.axes.split(",") if a.strip()]
+    vec = np.zeros(3)
+    for axis, mag in zip(axes, mags):
+        vec[axis] = mag                      # paired element-wise: --axes roll,yaw --mag 3.14,3.14
+    name = "anom_" + "_".join(f"{_AXIS_NAME[a]}{m:+g}" for a, m in zip(axes, mags))
+    return [
+        _Phase("init_level", "hold", args.init_hold_s),
+        _Phase("climb", "hold", args.climb_s, thrust=args.climb_thrust),
+        _Phase(name[:14], "astep", args.step_s, axis=axes[0], value=vec),
+    ]
+
+
 def _build_hover_schedule(args) -> list[_Phase]:
     """init level-hold, then a level-hold at each thrust level (measure the vertical drift)."""
     levels = [float(t) for t in args.thrust_levels.split(",") if t.strip()]
@@ -94,7 +227,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--endpoint", default="udp:127.0.0.1:14550")
     ap.add_argument("--video-port", type=int, default=VIDEO_PORT)
-    ap.add_argument("--mode", choices=["rate", "hover"], default="rate")
+    ap.add_argument("--mode", choices=["rate", "hover", "anomaly"], default="rate")
     # rate-step schedule
     ap.add_argument("--mag", default="0.3", help="rad/s step magnitude(s), comma list (e.g. 0.2,0.35)")
     ap.add_argument("--axes", default="pitch,roll,yaw", help="which axes to probe, in order")
@@ -104,6 +237,9 @@ def main() -> int:
     # hover sweep
     ap.add_argument("--thrust-levels", default="0.22,0.25,0.28", help="hover mode: thrust sweep (~hover 0.25)")
     ap.add_argument("--dwell-s", type=float, default=0.9, help="hover mode: hold per thrust level")
+    # anomaly probe
+    ap.add_argument("--climb-s", type=float, default=2.5, help="anomaly mode: climb-phase duration")
+    ap.add_argument("--climb-thrust", type=float, default=0.33, help="anomaly mode: climb-phase thrust")
     # control
     ap.add_argument("--thrust", type=float, default=0.26, help="base collective thrust (~hover)")
     ap.add_argument("--alt-hold", action="store_true", help="hold altitude via velocity-damped thrust (keeps z bounded)")
@@ -113,6 +249,19 @@ def main() -> int:
     ap.add_argument("--alt-thr-hi", type=float, default=0.34, help="alt-hold thrust clamp high")
     ap.add_argument("--kp-hold", type=float, default=1.0, help="level-hold attitude gain (low BW = delay-tolerant)")
     ap.add_argument("--kd-hold", type=float, default=1.0, help="level-hold rate damping")
+    # velocity damping / station-keeping (2026-06-10: the pure attitude hold ratchets horizontal
+    # velocity -- each step's tilt adds a kick that only drag (~5 s) removes -> 18 m drift abort.
+    # Mapping measured from run 20260610_223428: a_body ~= -g * reported tilt (corr -0.95..-0.99),
+    # so a damping tilt target is tilt_des = +(c/g) * (v_body - v_des) subtracted from the
+    # reported attitude fed to the hold. Applies to the NON-probed axes only during steps.)
+    ap.add_argument("--vel-damp", type=float, default=1.0,
+                    help="hold-phase velocity damping c (1/s): decel = c * v_horiz. 0 = off")
+    ap.add_argument("--vel-damp-max-deg", type=float, default=12.0,
+                    help="clamp on the damping tilt target")
+    ap.add_argument("--pos-pull", type=float, default=0.3,
+                    help="station-keep: velocity setpoint = -pos_pull * offset_from_origin (1/s)")
+    ap.add_argument("--pos-pull-vmax", type=float, default=2.0,
+                    help="clamp on the station-keep velocity setpoint (m/s)")
     ap.add_argument("--ff-gain", type=float, default=2.7, help="divide hold cmd by the measured rate scaling (~2.7x)")
     ap.add_argument("--rate-ema", type=float, default=0.5, help="EMA weight on the finite-diff rate (lower=smoother)")
     ap.add_argument("--max-hold-rate", type=float, default=1.5, help="clamp on the level-hold body rate")
@@ -123,23 +272,37 @@ def main() -> int:
     ap.add_argument("--max-alt-m", type=float, default=8.0, help="abort if |z| exceeds (climb/sink)")
     ap.add_argument("--max-tilt-deg", type=float, default=70.0, help="abort if |roll|/|pitch| exceeds")
     ap.add_argument("--max-seconds", type=float, default=40.0, help="hard wall-clock cap")
-    # race wait (consumed by fly_vq1._wait_for_race)
+    # race wait (unattended: auto-reset + HOME kick; see _wait_fresh_go)
     ap.add_argument("--wait-seconds", type=float, default=180.0)
     ap.add_argument("--start-margin-s", type=float, default=0.3)
     ap.add_argument("--max-start-offset-m", type=float, default=5.0)
     ap.add_argument("--no-wait-start", action="store_true")
+    ap.add_argument("--reset-after", type=float, default=8.0,
+                    help="fire MAV_CMD 31000 whenever no fresh GO for this many seconds")
+    ap.add_argument("--no-auto-reset", action="store_true",
+                    help="never send MAV_CMD 31000; wait for a manual race start")
+    ap.add_argument("--no-home-kick", action="store_true",
+                    help="never focus the sim window / send Enter (HOME-page recovery)")
     ap.add_argument("--dry-run", action="store_true", help="print the schedule; never arm or send")
     ap.add_argument("--label", default="ratesysid")
     ap.add_argument("--connect-timeout", type=float, default=15.0)
     args = ap.parse_args()
 
     sign = np.array([float(x) for x in args.rate_sign.split(",")], dtype=np.float64)
-    schedule = _build_rate_schedule(args) if args.mode == "rate" else _build_hover_schedule(args)
+    schedule = {"rate": _build_rate_schedule, "hover": _build_hover_schedule,
+                "anomaly": _build_anomaly_schedule}[args.mode](args)
+    if args.mode == "anomaly" and args.max_tilt_deg == 70.0:
+        args.max_tilt_deg = 1e9          # the tumble IS the measurement
+        print("[anomaly] tilt abort OFF (collision/position/altitude/time aborts stay)")
     total_s = sum(p.dur for p in schedule)
     print(f"== rate_sysid mode={args.mode} ==  {len(schedule)} phases, ~{total_s:.1f}s actuation")
     for p in schedule:
-        extra = (f" step {_AXIS_NAME[p.axis]}={p.value:+.2f}rad/s" if p.kind == "step"
-                 else (f" thrust={p.thrust:.2f}" if p.thrust is not None else ""))
+        if p.kind == "step":
+            extra = f" step {_AXIS_NAME[p.axis]}={p.value:+.2f}rad/s"
+        elif p.kind == "astep":
+            extra = " step " + ",".join(f"{v:+.2f}" for v in np.atleast_1d(p.value))
+        else:
+            extra = f" thrust={p.thrust:.2f}" if p.thrust is not None else ""
         print(f"   {p.name:14s} {p.kind:5s} {p.dur:4.1f}s{extra}")
     if args.dry_run:
         print("\n[dry-run] not connecting/arming. Schedule above is what WOULD be flown.")
@@ -187,7 +350,7 @@ def main() -> int:
     aborted_reason = None
     n_rows = 0
     try:
-        if not _wait_for_race(client, frames, args):
+        if not _wait_fresh_go(client, frames, args):
             print("no fresh race GO -> aborting before any actuation.", file=sys.stderr)
             return 1
         print(f"  backend: {backend_summary(client)}")
@@ -255,14 +418,31 @@ def main() -> int:
                     trusted_rate = args.rate_ema * new_rate + (1.0 - args.rate_ema) * trusted_rate
                     prev_q = np.asarray(s.orientation_ned_wxyz, dtype=np.float64).copy()
                     prev_t = int(s.sim_time_ns)
+                roll_des = pitch_des = 0.0
+                if args.vel_damp > 0.0 and s.velocity_ned is not None and s.position_ned is not None:
+                    cpsi, spsi = np.cos(s.yaw), np.sin(s.yaw)
+                    rel = np.asarray(s.position_ned, dtype=np.float64) - origin
+                    v_des = -args.pos_pull * rel[:2]                  # world-frame pull to origin
+                    nv = float(np.hypot(v_des[0], v_des[1]))
+                    if nv > args.pos_pull_vmax:
+                        v_des *= args.pos_pull_vmax / nv
+                    dv = np.asarray(s.velocity_ned, dtype=np.float64)[:2] - v_des
+                    dv_bx = cpsi * dv[0] + spsi * dv[1]               # body-horizontal frame
+                    dv_by = -spsi * dv[0] + cpsi * dv[1]
+                    tmax = np.radians(args.vel_damp_max_deg)
+                    kva = args.vel_damp / 9.80665                     # tilt per (m/s): a_b = -g*tilt
+                    pitch_des = float(np.clip(kva * dv_bx, -tmax, tmax))
+                    roll_des = float(np.clip(kva * dv_by, -tmax, tmax))
                 omega = level_hold_body_rate(
-                    s.roll, s.pitch, s.yaw, yaw_hold, trusted_rate,    # trusted (sign-correct) rate
+                    s.roll - roll_des, s.pitch - pitch_des, s.yaw, yaw_hold, trusted_rate,
                     kp=args.kp_hold, kd=args.kd_hold, body_rate_sign=sign,
                     max_rate=args.max_hold_rate, ff_gain=args.ff_gain,
                 )
                 if phase.kind == "step":
                     omega = omega.copy()
                     omega[phase.axis] = phase.value          # RAW open-loop override (measures sign)
+                elif phase.kind == "astep":                  # anomaly probe: pure open-loop vector
+                    omega = np.asarray(phase.value, dtype=np.float64).copy()
                 if phase.thrust is not None:
                     thr = phase.thrust                       # hover-sweep: explicit per-phase thrust
                 elif args.alt_hold:
@@ -332,7 +512,7 @@ def main() -> int:
     print("\n==== rate_sysid summary ====")
     print(f"  mode={args.mode}  rows={n_rows}  aborted={aborted_reason}")
     print(f"  recording: {session}")
-    print(f"  analyze:   python scripts/analyze_sysid.py {session}")
+    print(f"  analyze:   handoff/shadowpc-2ndorder-resysid-2026-06-10/fit_2nd_order.py (sweep loader)")
     return 0 if aborted_reason in (None, "max-seconds cap") else 1
 
 
