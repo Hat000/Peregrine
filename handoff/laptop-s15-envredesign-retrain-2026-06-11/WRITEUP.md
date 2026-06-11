@@ -3,7 +3,22 @@
 **Session:** LAPTOP-S15-ENVREDESIGN-RETRAIN (fable + adroit-connector).
 **Scope:** Part A env-coherence redesign · Part B procedural track randomization (stack-review
 meta-gap #1) · Part C S1.4 retrain on the map-ON plant · Part D eval + delivery.
-**Outcome:** *(filled at the end — see §6/§7)*
+
+**OUTCOME (all acceptance gates met): `rl/checkpoints/stage1_inc4_actor.pth`**
+(md5 `766ea71b9136a65ed9c3b211a0aeea4e`, + its `.json` sidecar) — trained on PROCEDURAL random
+courses with the coherent reward/termination and the measured map-ON plant DR:
+- **Held-out VQ1 (never trained on): sr = 1.000 over 3582 episodes** (1 collision in 3582),
+  median lap **7.03 s** (model-based VQ1 stack: 35.3 s; TOGT time-optimal bound: 4.55 s).
+- **Style inside the smoothness envelope**: peak roll median 72.8° / p90 78.1° (S1.3 envelope
+  < ~80°); roll/pitch command saturation 2.1%/0.5% (round-2 policies: ~94%).
+- **Generalization across random unseen courses: 0.845** (the rank-impact-#1 insurance).
+- Laptop deploy-pipeline rollouts (fly_rl path, map plant): **6/6 from every realistic start**
+  (standing start 7.16 s; +1/+2-step latency 7.23/8.03 s; handoff 6.59 s; live-clip 7.16 s).
+- Transfer-CANDIDATE only: in-twin success ≠ transfer; next session flies it on ShadowPC via
+  `fly_rl.py --flights N` (zero code changes needed; sidecar handles the 3.765 bound).
+Also fixed en route: **the S1.3/S1.4 training-killer NaN** (unclamped Euler extraction in obs —
+see §6) and a **critical deploy bug** (no sidecar generation: every 3.765-trained checkpoint
+deployed through a [0,5] thrust rescale — see §5).
 
 ---
 
@@ -183,7 +198,22 @@ gate0→gate5 time-optimal bound **4.55 s** (thrust 3.765, ω_max [11,11,7], dra
 margin). S1.3's offline standing-start lap splits gate0→gate5 at ~5.4 s = within ~18% of the
 bound already.
 
-*(TODO: job ids, durations, curve extracts, nan-guard counts)*
+Final job ledger (all gpu partition, 2048 envs, 6000 updates target, ~74K env-steps/s):
+
+| round | job | tag | config delta | fate |
+|---|---|---|---|---|
+| 1 | 3267229 | s14_seed0 | rw defaults | obs-NaN at upd 848 → emergency ckpt evaluated |
+| 1 | 3267230 | s14_seed1 | rw defaults (pre-fix) | obs-NaN at upd ~3319 → emergency ckpt evaluated |
+| 2 | 3267259 | s14_t10_s0 | rw_tilt 10 | completed 6000 |
+| 2 | 3267260 | s14_t16_s0 | rw_tilt 16 | completed 6000 |
+| 2 | 3267261 | s14_t10_s1 | rw_tilt 10, seed 1 | completed 6000 |
+| 3 | 3267359 | s14_valid_s0 | tilt 16, coll 75, miss 40, oob 75, ftime 0.25, dact 1.0 | completed 6000 |
+| 3 | **3267360** | **s14_valid_s1** | same, seed 1 | completed 6000 → **stage1_inc4** |
+
+Winner curves (tb, `s14_valid_s1`): training success_rate (random courses, DR ON) 0 → ~0.82 by
+upd 460, plateau ~0.83; total_reward 4.04 → 4.85 (still climbing at 6000); per-step
+collision_loss ~0–0.002. Zero nan-guard skips, zero obs_nonfinite events across all 5 post-fix
+runs (the round-1 crash diagnosis + clamp held).
 
 ### Ops notes (durable)
 - The adroit-connector `serve` daemon idle-drops AND a missed Duo push leaves it hung
@@ -241,8 +271,65 @@ virtual flip ON): **6/6 from the standing start in ALL configs** — nominal 8.3
 latency 8.36 s; +2-step latency 9.06 s; handoff\@10 m/s 7.36 s; live-thrust-clip 8.39 s
 (vmax 27–30 m/s). md5 `1be41f9839ff7cfa78e120f1260a83ce` (job 3267229, update 848, rw defaults).
 
-*(TODO: round-3 results; final candidate; acceptance verdict)*
+### 7.3 Round 3 (validity config) — the winner
 
-## 8. Checkpoint provenance
+| ckpt | VQ1 sr (n_ep) | VQ1 t_med | VQ1 coll | gen sr | roll med/p90/max (succ) | tilt med/max | sat thr/r/p/y |
+|---|---|---|---|---|---|---|---|
+| valid_s0 (3267359) | 0.999 (3586) | 6.73 | 4 | 0.811 | 60.5/65.4/75.4° | 81.2/84.3° | 94/0.2/0.5/94 % |
+| **valid_s1 (3267360) = stage1_inc4** | **1.000 (3582)** | 7.03 | 1 | **0.845** | 72.8/78.1/95.4° | 80.5/90.6° | 94/2.1/0.5/95 % |
 
-*(TODO: run dir, update count, md5, sidecar, commit)*
+The asymmetry change did exactly what the round-2 analysis predicted: VQ1 crash rate 5.4–16.4%
+→ 0.0–0.1%, roll/pitch saturation 93% → ~1%, style into the envelope — at the cost of ~0.2–0.9 s
+of lap and some random-course generalization (0.931 → 0.845; random courses are far turnier than
+VQ1's ±20° weave). Both seeds landed within seed-noise of each other (vs round 2's 0.832-vs-0.946
+spread) — the validity config is also more REPRODUCIBLE. Residual style notes for the next
+session: thrust and yaw still ride their bounds ~94% (thrust-pinned is racing-rational; yaw is
+the worst-modeled axis — watch it in the live data); the offline `trainreset` start must be run
+`--no-virtual-flip` (training-native frame; flipping it is OOD — eval-usage nuance, documented).
+
+### 7.4 Acceptance verdict
+
+| gate | requirement | result |
+|---|---|---|
+| held-out VQ1 success | ≥ S1.3's 100% | **1.000 over 3582 eps** ✓ (S1.3's 100% was measured over far fewer) |
+| peak tilt | within smoothness envelope | roll med 72.8°, p90 78.1° (< ~80°) ✓ |
+| generalization | nonzero across random courses | 0.845 ✓ |
+| tests | all green, extended | **528 passed** (409 → 456 this session's +47; concurrent aero session +72) ✓ |
+| parity | re-passed if plant/adapter touched | plant/adapter NOT touched by this session; local gate re-run anyway: GATE_PASS 8.9e-16 over 6 configs (incl. the concurrent session's aero config) ✓ |
+
+In-twin success ≠ transfer — the deliverable is a transfer-CANDIDATE + this writeup.
+
+## 8. Checkpoint provenance (exact)
+
+- **Artifact:** `rl/checkpoints/stage1_inc4_actor.pth`, md5 **`766ea71b9136a65ed9c3b211a0aeea4e`**
+  + sidecar `stage1_inc4_actor.json` = `{"act_max_thrust": 3.765, "act_max_rate": 3.14}`
+  (launcher-emitted at save time, md5 `beb64dd33775ba3a61719596f0f0144c`).
+- **Source:** Adroit SLURM job **3267360**, run dir `/scratch/network/fl3689/s14_runs/s14_valid_s1`,
+  final `checkpoints/actor.pth` after the full **6000 PPO updates** (196.6M env-steps), seed **1**.
+  Pulled chunked-base64 over the x daemon, md5-verified end-to-end.
+- **Training config:** `peregrine_racing_s14.sbatch` @ commit `99fbed1` with
+  `SEED=1 RW_TILT=16 RW_COLL=75 RW_MISS=40 RW_OOB=75 RW_FTIME=0.25 RW_DACT=1.0`;
+  env: `course_mode=random`, `standing_start_frac=0.3`, all other `RewardWeights` at code
+  defaults (progress 10, passage 10, finish 20, time 0.02, tilt_free 60°, rate 0.05);
+  dynamics: torch backend, `+dynamics.dr=true` (map ALWAYS on: s∈U[0.25,0.35]/axis,
+  τ∈U[0.015,0.030], α_max r/p∈U[200,320] yaw×80/260, hover ±5%, drag ±30%, latency {0,1,2}),
+  `max_normed_thrust=3.765`, `g=9.80665`; PPO: n_envs 2048, l_rollout 16, lr 2.6e-3, γ 0.99,
+  λ 0.95, 8 minibatch × 4 epoch. Env/launcher code = commit `09500e0` (the obs-NaN-fix push).
+- **Alternates (on Adroit, not committed):** `s14_valid_s0/checkpoints` md5 `de2bc3c9…`
+  (VQ1 0.999 @ 6.73 s — faster, marginally less valid); `s14_seed0/emergency` md5 `1be41f98…`
+  (tilt4@848: VQ1 1.000 @ 8.52 s, gen 0.927, but median tilt 97° — style outside envelope;
+  local copy in `.s15_ref/ckpt_candidates/`).
+
+## 9. Deployment notes for the next (live ShadowPC) session
+
+1. `fly_rl.py --flights N` works with **zero changes**: `--checkpoint` now defaults to
+   `rl/checkpoints/stage1_inc4_actor.pth`; the sidecar auto-sets the [0,3.765] thrust rescale
+   (watch for the `[load_actor] sidecar` line in the log — if you instead see the WARNING about
+   legacy bounds, the json didn't travel with the .pth). Virtual flip stays default-ON.
+2. Expected live behavior if transfer holds: standing-start launch, ~7–8 s lap, peak roll ≲80°,
+   roll/pitch commands smooth (the dact term), thrust/yaw frequently at their bounds (normal).
+3. The model-based CTBR bridge remains the fallback (`--bridge`), and `--max-rate`/`--max-thrust`
+   remain available as deployment safety caps for a first cautious flight.
+4. Failure triage order, given S1.2 history: (a) sidecar applied? (b) virtual flip on? (c) replay
+   the live handoff state through `offline_rollout.py` (map plant) — if it passes offline but
+   fails live, suspect telemetry/timing, not the policy.

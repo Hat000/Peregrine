@@ -191,8 +191,10 @@ def main() -> int:
                     help="PATH A: cap |rate_flu| rad/s before the plant; 0=off")
     ap.add_argument("--virtual-flip", action=argparse.BooleanOptionalAction, default=True,
                     help="π body-z conjugation (policy flies tail-first; sim spawns "
-                         "nose-first). DEFAULT ON -- matches fly_rl.py's deployment default; "
-                         "--no-virtual-flip for raw-frame diagnostics")
+                         "nose-first). DEFAULT ON -- matches fly_rl.py's deployment default "
+                         "and is correct for the telemetry-frame starts (simstart/racestart/"
+                         "handoff). Use --no-virtual-flip with --start trainreset: that start "
+                         "is already in the training-native frame, and flipping it lands OOD")
     ap.add_argument("--max-thrust", type=float, default=0.0,
                     help="cap normed_thrust (training units, hover=1); 0=off")
     ap.add_argument("--cap-gates", type=int, default=99,
