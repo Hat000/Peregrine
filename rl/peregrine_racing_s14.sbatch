@@ -33,14 +33,15 @@ cd /scratch/network/fl3689/diffaero
 SEED=${SEED:-0}
 NUPD=${NUPD:-6000}
 NENVS=${NENVS:-2048}
+RW_TILT=${RW_TILT:-4.0}
 TAG=${TAG:-s14_seed${SEED}}
 RUNDIR=/scratch/network/fl3689/s14_runs/${TAG}
 rm -rf "$RUNDIR"; mkdir -p "$RUNDIR"
 
-echo "=== STAGE1.4: coherent env + random courses + map-ON plant (seed=$SEED nupd=$NUPD) ==="
+echo "=== STAGE1.4: coherent env + random courses + map-ON plant (seed=$SEED nupd=$NUPD rw_tilt=$RW_TILT) ==="
 python /scratch/network/fl3689/peregrine_repo/rl/peregrine_train_racing.py \
   env=racing env.name=peregrine_racing \
-  +env.course_mode=random +env.standing_start_frac=0.3 \
+  +env.course_mode=random +env.standing_start_frac=0.3 +env.rw_tilt=${RW_TILT} \
   dynamics=quad dynamics.name=peregrine_plant dynamics.g=9.80665 +dynamics.dr=true \
   dynamics.controller.max_normed_thrust=3.765 \
   algo=ppo n_envs=${NENVS} n_updates=${NUPD} save_freq=200 log_freq=10 \

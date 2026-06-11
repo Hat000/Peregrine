@@ -405,6 +405,7 @@ class PeregrineRacing(Racing):
         self._peak_tilt = torch.zeros(n, device=device)          # rad
         self._peak_roll = torch.zeros(n, device=device)          # rad (ZYX Euler |roll|)
         self._speed_sum = torch.zeros(n, device=device)          # sum of |v| per step
+        self._nonfinite_obs = 0                                  # lifetime count (see get_observations)
         # action span for the R5 normalization (set lazily: dynamics bounds exist after init)
         span = (self.dynamics.max_action - self.dynamics.min_action).clamp(min=1e-6)
         self._act_lo, self._act_span = self.dynamics.min_action, span
@@ -445,7 +446,13 @@ class PeregrineRacing(Racing):
         pos_g = mvp(rotmat_w2g, gate_pos - self._p)             # target gate rel pos, gate frame (3)
         vel_g = mvp(rotmat_w2g, self._v)                        # velocity, gate frame (3)
         rotmat_b2w = T.quaternion_to_matrix(self.q.roll(1, dims=-1))
-        rotmat_b2g = torch.matmul(rotmat_w2g, rotmat_b2w)
+        # CLAMP before the Euler extraction: pytorch3d's matrix_to_euler_angles takes an asin of
+        # matrix entries with NO clamping -- float32 products can land at |entry| = 1+1e-7, and
+        # asin(1+eps) = NaN. One poisoned env then NaNs the actor mean and kills the whole run at
+        # Normal(loc) validation (S1.4 seed-0 job 3267229 died at update 848 exactly here; the
+        # S1.3 5000-update NaN had the same signature). The parent clamps in its LOSS path
+        # (racing.py:331) but not in get_observations -- same fix, same epsilon.
+        rotmat_b2g = torch.matmul(rotmat_w2g, rotmat_b2w).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
         rpy_g = T.matrix_to_euler_angles(rotmat_b2g, "ZYX")[..., [2, 1, 0]]   # attitude vs gate (3)
 
         nxt = torch.clamp(tg + 1, max=self.n_gates - 1)
@@ -458,6 +465,14 @@ class PeregrineRacing(Racing):
             self.gate_rel_pos[ar, nxt],                         # next gate rel pos (3)
             self.gate_yaw_rel[ar, nxt].unsqueeze(-1),           # next gate rel yaw (1)
         ], dim=-1)
+        # LAST-RESORT lifeline, observable not silent: any residual non-finite entry is counted
+        # (exported via loss_components as obs_nonfinite) and zeroed, so a one-in-30M numerical
+        # edge costs one weird-but-finite obs instead of the training run. The clamp above removes
+        # the only KNOWN source; this guard exists for the unknown ones.
+        finite = torch.isfinite(obs)
+        if not bool(finite.all()):
+            self._nonfinite_obs += int((~finite).sum())
+            obs = torch.where(finite, obs, torch.zeros_like(obs))
         return obs if with_grad else obs.detach()
 
     # ---- state (asymmetric-critic input; also keeps check_dims honest): clamped, not wrapped --
@@ -472,7 +487,7 @@ class PeregrineRacing(Racing):
             pos_g = mvp(rotmat_w2g, gate_pos - self._p)
             vel_g = mvp(rotmat_w2g, self._v)
             rotmat_b2w = T.quaternion_to_matrix(self.q.roll(1, dims=-1))
-            rotmat_b2g = torch.matmul(rotmat_w2g, rotmat_b2w)
+            rotmat_b2g = torch.matmul(rotmat_w2g, rotmat_b2w).clamp(-1.0 + 1e-6, 1.0 - 1e-6)
             rpy_g = T.matrix_to_euler_angles(rotmat_b2g, "ZYX")[..., [2, 1, 0]]
             states += [pos_g, vel_g, rpy_g]
         states = torch.cat(states, dim=-1)
@@ -546,6 +561,7 @@ class PeregrineRacing(Racing):
             omega=self._w, action_norm=a_norm, last_action_norm=last_norm)
         loss = (-reward).detach()        # PPO-only env: loss kept for runner logging, NOT for BPTT
         reward = reward.detach()
+        loss_components["obs_nonfinite"] = float(self._nonfinite_obs)
         self.last_action.copy_(action.detach())
 
         reset = terminated | truncated
