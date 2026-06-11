@@ -234,7 +234,10 @@ class Quadrotor(object):
         self._J = np.diag([0.01, 0.01, 0.02])     # inertia
         self._J_inv = np.linalg.inv(self._J)
         self._D = np.diag([0.6, 0.6, 0.6])
-        self._drag = 0.0  # PEREGRINE: isotropic linear drag (1/s) on world velocity
+        self._drag = 0.0       # PEREGRINE: isotropic linear drag (1/s) on world velocity
+        self._quad_drag = 0.0  # PEREGRINE: isotropic quadratic drag (1/m): a -= c2*|v|*v
+                               # (twin-falsify 2026-06-11 measured c2~0.052 body-frame; the
+                               # isotropic approximation here brackets the corrected bound)
         
         self._v_xy_max = ca.inf
         self._v_z_max = ca.inf
@@ -318,6 +321,9 @@ class Quadrotor(object):
         if "linear_drag" in cfg:  # PEREGRINE
           self._drag = float(cfg["linear_drag"])
           print("Linear drag (1/s): ", self._drag)
+        if "quad_drag" in cfg:  # PEREGRINE
+          self._quad_drag = float(cfg["quad_drag"])
+          print("Quadratic drag (1/m): ", self._quad_drag)
 
     def dynamics(self):
       p = ca.MX.sym('p', 3)
@@ -337,7 +343,8 @@ class Quadrotor(object):
         tbm = self._tbm
         x_dot = vertcat(
           v,
-          rotate_quat(q, vertcat(0, 0, (T[0]+T[1]+T[2]+T[3])/self._m)) + g - self._drag * v,  # PEREGRINE
+          rotate_quat(q, vertcat(0, 0, (T[0]+T[1]+T[2]+T[3])/self._m)) + g - self._drag * v
+            - self._quad_drag * ca.sqrt(v.T@v + 1e-6) * v,  # PEREGRINE: linear + quadratic drag
           0.5*quat_mult(q, vertcat(0, w)),
           mtimes(self._J_inv, vertcat(
             (tbm.item((0, 0))*T[0]+tbm.item((0, 1))*T[1]+tbm.item((0, 2))*T[2]+tbm.item((0, 3))*T[3]),
@@ -354,7 +361,8 @@ class Quadrotor(object):
         lcb = self._arm_l * np.cos(self._beta * np.pi  / 180.0)
         x_dot = vertcat(
           v,
-          rotate_quat(q, vertcat(0, 0, (T[0]+T[1]+T[2]+T[3])/self._m)) + g - self._drag * v,  # PEREGRINE
+          rotate_quat(q, vertcat(0, 0, (T[0]+T[1]+T[2]+T[3])/self._m)) + g - self._drag * v
+            - self._quad_drag * ca.sqrt(v.T@v + 1e-6) * v,  # PEREGRINE: linear + quadratic drag
           0.5*quat_mult(q, vertcat(0, w)),
           mtimes(self._J_inv, vertcat(
             (-lsb*T[0]+lsb*T[1]-lsb*T[2]+lsb*T[3]),
@@ -369,7 +377,8 @@ class Quadrotor(object):
         print("Default drone frame configuration used")
         x_dot = vertcat(
           v,
-          rotate_quat(q, vertcat(0, 0, (T[0]+T[1]+T[2]+T[3])/self._m)) + g - self._drag * v,  # PEREGRINE
+          rotate_quat(q, vertcat(0, 0, (T[0]+T[1]+T[2]+T[3])/self._m)) + g - self._drag * v
+            - self._quad_drag * ca.sqrt(v.T@v + 1e-6) * v,  # PEREGRINE: linear + quadratic drag
           0.5*quat_mult(q, vertcat(0, w)),
           mtimes(self._J_inv, vertcat(
             self._arm_l*(T[0]-T[1]-T[2]+T[3]),

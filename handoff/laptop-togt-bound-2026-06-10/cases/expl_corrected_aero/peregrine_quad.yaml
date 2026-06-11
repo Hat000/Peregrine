@@ -1,0 +1,14 @@
+# Peregrine plant mapped to the TOGT quad model -- see gen_cases.py docstring.
+mass:               1.00
+gravity:            9.8066
+inertia:            [0.001, 0.001, 0.0017]
+armLength:          0.15
+beta:               45.0
+torCoeff:           0.05
+
+# refine (13-state multiple shooting): per-rotor thrust + body-rate state bounds
+thrust_min: 0.0
+thrust_max: 19.6132   # = 8.0000 g total on 1 kg
+omega_max:  [11.0, 11.0, 7.0]         # [rad/s]
+linear_drag: 0.0         # 1/s, PEREGRINE refine-only (isotropic, world frame)
+quad_drag: 0.052      # 1/m, PEREGRINE refine-only (isotropic |v|*v)

@@ -4,6 +4,7 @@
 | bound_free | 3.77 | 11 | 0.6 | 5.80 | 4.43 | 0.35 | 52.6 | 85 | 11 | Solve_Succeeded |
 | bound_nodrag | 3.77 | 11 | 0 | 5.07 | 4.05 | 1.06 | 55.7 | 84 | 12 | Solve_Succeeded |
 | bound_nominal | 3.77 | 11 | 0 | 5.07 | 4.13 | 1.06 | 55.2 | 84 | 9 | Solve_Succeeded |
+| expl_corrected_aero | 8.00 | 11 | 0 | 4.12 | 4.71 | 0.77 | 39.3 | 91 | 9 | Solve_Succeeded |
 | ref_circle | 3.77 | 11 | 0.7 | 5.81 | 4.55 | 0.14 | 51.1 | 83 | 11 | Solve_Succeeded |
 | ref_margin | 3.77 | 11 | 0.7 | 5.49 | 4.31 | 0.61 | 53.7 | 82 | 10 | Solve_Succeeded |
 | sens_omega785 | 3.77 | 7.85 | 0 | 5.09 | 4.18 | 1.06 | 55.2 | 84 | 13 | Solve_Succeeded |

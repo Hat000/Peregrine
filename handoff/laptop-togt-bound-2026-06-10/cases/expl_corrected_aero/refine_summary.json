@@ -1,0 +1,10 @@
+{
+ "lap_time_total_s": 5.643637244130014,
+ "ipopt_status": "Solve_Succeeded",
+ "ipopt_success": true,
+ "iter_count": 188,
+ "tol": 0.01,
+ "tol_term": 0.05,
+ "dt": 0.02,
+ "quad_yaml": "/mnt/c/Users/Fengy/Downloads/Projects/Anduril/handoff/laptop-togt-bound-2026-06-10/cases/expl_corrected_aero/peregrine_quad.yaml"
+}

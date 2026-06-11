@@ -80,8 +80,16 @@ CASES = [
     ("ref_circle",       TW_NOMINAL,  OMEGA_NOMINAL,        0.7,    0.10, DRAG, "ball"),
 ]
 
+# EXPLORATORY (twin-falsify 2026-06-11, banked mid-session): linear drag + the 3.765 g
+# linear collective ceiling were FALSIFIED -- real aero is quadratic body-frame drag
+# c2~0.052/m (measured to 7.6 m/s, EXTRAPOLATED above) and the convex thrust curve
+# reaches ~8 g at full stick. This case brackets where the corrected bound likely lands
+# (isotropic c2, box thrust to 8 g); the authoritative re-run is queued post-S16.
+CASES.append(
+    ("expl_corrected_aero", 8.0, OMEGA_NOMINAL, 0.0, 0.01, 0.0, "ball", 0.052))
 
-def quad_yaml(tw: float, omega: tuple, drag: float) -> str:
+
+def quad_yaml(tw: float, omega: tuple, drag: float, quad_drag: float = 0.0) -> str:
     thr_max = tw * G / 4.0
     return f"""# Peregrine plant mapped to the TOGT quad model -- see gen_cases.py docstring.
 mass:               1.00
@@ -96,6 +104,7 @@ thrust_min: 0.0
 thrust_max: {thr_max:.4f}   # = {tw:.4f} g total on 1 kg
 omega_max:  [{omega[0]}, {omega[1]}, {omega[2]}]         # [rad/s]
 linear_drag: {drag}         # 1/s, PEREGRINE refine-only (isotropic, world frame)
+quad_drag: {quad_drag}      # 1/m, PEREGRINE refine-only (isotropic |v|*v)
 """
 
 
@@ -215,15 +224,16 @@ def main() -> int:
 
     course = json.loads(Path(args.course).read_text())
     out_root = Path(args.out)
-    for name, tw, omega, margin, tol, drag, shape in CASES:
+    for name, tw, omega, margin, tol, drag, shape, *rest in CASES:
         if args.only is not None and name not in args.only:
             continue
+        quad_drag = rest[0] if rest else 0.0
         d = out_root / name
         (d / "init").mkdir(parents=True, exist_ok=True)
         (d / "refine").mkdir(parents=True, exist_ok=True)
         thr_max = tw * G / 4.0
         _write_lf(d / "peregrine_setups.yaml", SETUPS_YAML)
-        _write_lf(d / "peregrine_quad.yaml", quad_yaml(tw, omega, drag))
+        _write_lf(d / "peregrine_quad.yaml", quad_yaml(tw, omega, drag, quad_drag))
         _write_lf(d / "init" / "peregrine_planning.yaml", planning_yaml(1, omega, thr_max))
         _write_lf(d / "init" / "peregrine_lbfgs.yaml", LBFGS_YAML)
         _write_lf(d / "refine" / "peregrine_planning.yaml", planning_yaml(5, omega, thr_max))
@@ -232,13 +242,13 @@ def main() -> int:
         (d / "meta.json").write_text(json.dumps({
             "case": name, "thrust_to_weight": tw, "omega_max": list(omega),
             "gate_margin_m": margin, "refine_tol_m": tol, "linear_drag": drag,
-            "gate_shape": shape,
+            "quad_drag": quad_drag, "gate_shape": shape,
             "half_opening_effective_m": (course["inner_opening_m"] - margin) / 2,
             "max_center_miss_m": (course["inner_opening_m"] - margin) / 2 + tol,
             "refine_pieces_per_segment": 5,
         }, indent=1))
         print(f"{name}: T/W {tw:.3f}, omega {omega}, margin {margin}, tol {tol}, "
-              f"drag {drag}, shape {shape}")
+              f"drag {drag}, quad_drag {quad_drag}, shape {shape}")
     print(f"-> {out_root}")
     return 0
 

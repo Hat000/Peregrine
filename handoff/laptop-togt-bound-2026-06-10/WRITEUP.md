@@ -14,6 +14,12 @@ tracked through the faithful twin with the existing geometric controller it flie
 **valid 6/6 at ~8.3 s** (the line time-dilated 1.85×) — the ideal-vs-tracked gap is the
 controller/architecture cost, not the plant's.
 
+**Mid-session plant correction (twin-falsify, 2026-06-11, §8):** linear drag and the
+3.765 g ceiling were both falsified while this ran (real: quadratic drag c2≈0.052/m +
+convex collective to ~8 g). An exploratory re-plan with the corrected aero lands at
+**4.71 s** — the two corrections nearly cancel, so the **~4.3–4.7 s ceiling is robust**
+to the plant-model revision (authoritative re-run queued post-S16).
+
 Pipeline + env: `scripts/togt/` (README has build steps + hard-won environment facts).
 Per-case configs/outputs: `cases/<case>/` here; combined table: `results_table.md`.
 
@@ -127,11 +133,14 @@ tilt+collective → rotvec rate law, ff_gain 2.5, race clamps: tilt 80°, ω 11.
 
 ## 5. Caveats (ranked)
 
-1. **Aero at racing airspeed is unmeasured.** All sysid was near hover; the bound's
-   52 m/s assumes the linear 0.21/s drag + full thrust authority hold there. If the sim
-   adds airspeed-dependent thrust loss / quadratic drag, the true ceiling is slower.
-   (The 20 km/h "cap" in old memory was the VQ1 planner's cruise setting, not a plant
-   limit; S1.2 reached 33+ m/s live with no sign of a hard cap.)
+1. **The plant aero model was falsified mid-session** (twin-falsify 2026-06-11): real
+   drag is quadratic body-frame (c2≈0.052/m, measured to 7.6 m/s, extrapolated above)
+   and the collective curve is convex to ~8 g — both replace the linear 0.21/s + 3.765 g
+   used by the main table. §8 brackets the corrected bound at **4.71 s** (isotropic-v²
+   extrapolation); the corrections nearly cancel, but the per-case numbers above are
+   linear-model figures. Authoritative re-run after S16 lands the measured
+   CandidatePlant. (The 20 km/h "cap" in old memory was the VQ1 planner's cruise
+   setting, not a plant limit.)
 2. **Corner validity unverified** (§3) — bracketed: 4.13 (corners) vs 4.27 (circle).
 3. Planner ignores inner-loop lag/slew (§2) — bracketed by the twin replay: the
    gap to 8.3 s is real for today's controller; the bound stands as a plant property.
@@ -171,3 +180,33 @@ crash, minThr 0.05, RaceParams absolute paths): `scripts/togt/README.md` §"hard
 - Cheap live probes when convenient: (a) one deliberate corner pass → does race_outcome
   accept it (closes the 4.13/4.27 bracket); (b) a full-throttle straight-line speed run
   → drag/thrust validity at 40+ m/s (caveat #1, the big one).
+
+## 8. Post-scriptum: the twin-falsify correction (banked mid-session, 2026-06-11)
+
+While this session ran, the ShadowPC twin-falsify campaign (commit 9684ae1, memory
+fc6194b) falsified two inputs of §2: real drag is **quadratic body-frame**
+(c2 ≈ 0.052/m: 0.042 nose-first … 0.076 climb; measured to 7.6 m/s, arena-limited) and
+the collective map is **convex** — full stick reaches **~8 g**, not the linear-model
+3.765 g. The banked note says "the TOGT bound is conservative; re-run after S16" — that
+reasoning counted only the thrust correction. Both together, the exploratory case
+**`expl_corrected_aero`** (T/W 8.0, isotropic quadratic drag 0.052·|v|·v in the refine
+dynamics, circle gates, otherwise nominal):
+
+| case | model | refined lap (s) | vmax (m/s) | collective sat |
+|---|---|---|---|---|
+| bound_circle | linear drag 0.21/s, 3.765 g | 4.27 | 52.4 | 84 % |
+| expl_corrected_aero | quad drag 0.052/m, 8 g | **4.71** | 39.3 | 91 % |
+
+The corrections **nearly cancel — net +0.44 s**: v² drag walls the top speed at
+~39 m/s (drag accel ≈ 79 m/s² ≈ the full 8 g there) long before the extra thrust pays.
+Thrust/drag remains the binding constraint axis (collective 91 % saturated); rates still
+don't bind. Standing of this number: **exploratory** — it extrapolates v² far beyond the
+7.6 m/s measurement and flattens the direction-dependence to isotropic; the
+post-S16 re-run with the measured CandidatePlant (drag knots + collective knot table) is
+the authoritative correction, and a single high-speed coast probe (§7) would pin the
+extrapolation. Consequences meanwhile: (a) the **headline ceiling ~4.3–4.7 s is robust**
+to the plant revision — the strategic picture (8× headroom, thrust-bound) is unchanged;
+(b) the committed reference line (4.55 s geometry) sits inside the corrected envelope's
+speeds below ~35 m/s for most of the lap, but its >40 m/s tail segments are NOT flyable
+under v² drag — regenerate the line at the S16 re-run before using it for fine
+time-targets (its geometry + progress() use is unaffected).
