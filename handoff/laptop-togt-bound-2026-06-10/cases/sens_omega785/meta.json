@@ -1,0 +1,15 @@
+{
+ "case": "sens_omega785",
+ "thrust_to_weight": 3.765,
+ "omega_max": [
+  7.85,
+  7.85,
+  7.0
+ ],
+ "gate_margin_m": 0.0,
+ "refine_tol_m": 0.01,
+ "linear_drag": 0.21,
+ "half_opening_effective_m": 0.75,
+ "max_center_miss_m": 0.76,
+ "refine_pieces_per_segment": 5
+}

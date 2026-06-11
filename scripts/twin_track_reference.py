@@ -103,7 +103,13 @@ def plane_misses(P: np.ndarray, T: np.ndarray, gates: list[dict]):
 
 
 def track(ref: ReferenceLine, *, dt: float = 0.01, latency_s: float = 0.0,
-          gains: dict | None = None, t_extra: float = 1.5) -> dict:
+          gains: dict | None = None, t_extra: float = 1.5,
+          timescale: float = 1.0, lead_s: float = 0.0) -> dict:
+    """Track the reference played back ``timescale``x slower (same geometry; velocity ff
+    scaled 1/k, accel ff 1/k^2 -- exact time dilation). A time-OPTIMAL reference is thrust-
+    saturated ~84% of the lap, leaving no control headroom to recover any lag, so k=1 pure
+    time-indexed tracking diverges by design; the smallest k the twin flies VALIDLY is the
+    twin-tracked lap. ``lead_s`` samples the reference slightly ahead (lag compensation)."""
     cfg = canonical_telemetry_config(latency_s)
     sp0 = ref.sample(0.0)
     q0 = Rotation.from_euler("ZYX", [sp0.yaw, 0.0, 0.0]).as_quat()      # level at ref yaw
@@ -111,7 +117,7 @@ def track(ref: ReferenceLine, *, dt: float = 0.01, latency_s: float = 0.0,
                       q_wxyz=np.array([q0[3], q0[0], q0[1], q0[2]]))
     ctrl = Controller(**{**TRACK_GAINS, **(gains or {})})
 
-    n_steps = int((ref.total_duration_s + t_extra) / dt)
+    n_steps = int((ref.total_duration_s * timescale + t_extra) / dt)
     P, T = np.empty((n_steps, 3)), np.empty(n_steps)
     sat_rate = 0
     for k in range(n_steps):
@@ -120,11 +126,12 @@ def track(ref: ReferenceLine, *, dt: float = 0.01, latency_s: float = 0.0,
         nav = NavState(sim_time_ns=st.sim_time_ns, position_ned=st.position_ned,
                        velocity_ned=st.velocity_ned, roll=st.roll, pitch=st.pitch,
                        yaw=st.yaw, angular_rate_body=st.angular_rate_body)
-        s = ref.sample(t)
+        s = ref.sample(t / timescale + lead_s)
         cmd = ctrl.command(nav, Setpoint(sim_time_ns=st.sim_time_ns,
                                          position_ned=s.position_ned,
-                                         velocity_ned=s.velocity_ned,
-                                         accel_ned=s.accel_ned, yaw=s.yaw))
+                                         velocity_ned=s.velocity_ned / timescale,
+                                         accel_ned=s.accel_ned / timescale ** 2,
+                                         yaw=s.yaw))
         if cmd.body_rate is not None and np.linalg.norm(cmd.body_rate) >= 0.99 * 11.5:
             sat_rate += 1
         plant.step(cmd, dt)
@@ -134,7 +141,8 @@ def track(ref: ReferenceLine, *, dt: float = 0.01, latency_s: float = 0.0,
     g = gates_ned(course)
     misses = plane_misses(P, T, g)
     lap = misses[-1]["t"] if misses[-1] else None
-    ref_xyz = np.stack([np.interp(T, ref.t, ref.pos[:, i]) for i in range(3)], axis=1)
+    ref_xyz = np.stack([np.interp(T / timescale, ref.t, ref.pos[:, i]) for i in range(3)],
+                       axis=1)
     track_rmse = float(np.sqrt(np.mean(np.sum((P - ref_xyz) ** 2, axis=1))))
     return {"lap_time_s": lap, "misses": misses,
             "max_miss_m": max((m["miss"] for m in misses if m), default=None),
@@ -142,7 +150,8 @@ def track(ref: ReferenceLine, *, dt: float = 0.01, latency_s: float = 0.0,
             "valid": all(m is not None and m["miss"] < g[i]["half_opening"]
                          for i, m in enumerate(misses)),
             "track_rmse_m": track_rmse, "frac_rate_sat": sat_rate / n_steps,
-            "latency_s": latency_s, "P": P, "T": T}
+            "latency_s": latency_s, "timescale": timescale, "lead_s": lead_s,
+            "P": P, "T": T}
 
 
 def main() -> int:
@@ -159,32 +168,52 @@ def main() -> int:
           f"({len(ref.t)} samples)\n")
 
     if args.sweep:
+        # Gains x timescale: find the smallest k any gain set flies VALIDLY (latency 20 ms,
+        # lead 100 ms -- the middle row of the default scan). Reports the frontier.
         best = None
-        for kp_pos in (1.5, 2.5, 4.0):
-            for kd_vel in (2.4, 3.2, 4.5):
-                for kp_att in (8.0, 10.0, 14.0):
-                    r = track(ref, dt=args.dt, latency_s=0.0,
-                              gains=dict(kp_pos=kp_pos, kd_vel=kd_vel, kp_att=kp_att))
-                    key = (-r["n_crossed"], r["max_miss_m"] if r["max_miss_m"] else 9e9)
-                    tag = f"kp_pos={kp_pos} kd_vel={kd_vel} kp_att={kp_att}"
-                    print(f"  {tag}: crossed {r['n_crossed']}/6 max_miss "
-                          f"{r['max_miss_m'] if r['max_miss_m'] is not None else float('nan'):.2f} "
-                          f"lap {r['lap_time_s'] if r['lap_time_s'] else float('nan'):.2f} "
-                          f"rmse {r['track_rmse_m']:.2f}")
-                    if best is None or key < best[0]:
-                        best = (key, tag, r)
-        print(f"\nBEST: {best[1]}")
+        for ts in (1.3, 1.4, 1.5, 1.6, 1.7):
+            for kp_pos in (2.5, 6.0, 10.0):
+                for kd_vel in (3.2, 5.0, 7.0):
+                    for kp_att in (10.0, 16.0):
+                        r = track(ref, dt=args.dt, latency_s=0.02, timescale=ts, lead_s=0.10,
+                                  gains=dict(kp_pos=kp_pos, kd_vel=kd_vel, kp_att=kp_att))
+                        if r["valid"]:
+                            tag = f"k={ts} kp_pos={kp_pos} kd_vel={kd_vel} kp_att={kp_att}"
+                            print(f"  VALID {tag}: lap {r['lap_time_s']:.2f}s "
+                                  f"max_miss {r['max_miss_m']:.2f} rmse {r['track_rmse_m']:.2f}")
+                            if best is None or r["lap_time_s"] < best[1]["lap_time_s"]:
+                                best = (tag, r)
+            if best is not None:
+                break              # found the frontier timescale; no need to go slower
+        print(f"\nBEST: {best[0] if best else 'none valid <= 1.7'}")
         return 0
 
     latencies = [args.latency] if args.latency is not None else [0.0, 0.02, 0.04]
     for lat in latencies:
-        r = track(ref, dt=args.dt, latency_s=lat)
-        miss_str = "  ".join(
-            ("g%d ----" % i) if m is None else f"g{i} {m['miss']:.2f}m" for i, m in enumerate(r["misses"]))
-        print(f"[latency {lat * 1000:>4.0f} ms] lap "
-              f"{(r['lap_time_s'] if r['lap_time_s'] else float('nan')):.2f}s vs ref "
-              f"{ref.lap_time_s:.2f}s | crossed {r['n_crossed']}/6 valid={r['valid']} | "
-              f"rmse {r['track_rmse_m']:.2f}m | rate-sat {100 * r['frac_rate_sat']:.0f}% | {miss_str}")
+        found = None
+        for ts in np.arange(1.0, 2.51, 0.05):
+            best = None
+            for lead in (0.0, 0.05, 0.10):
+                r = track(ref, dt=args.dt, latency_s=lat, timescale=float(ts), lead_s=lead)
+                if best is None or (r["max_miss_m"] or 9e9) < (best["max_miss_m"] or 9e9):
+                    best = r
+            r = best
+            miss_str = "  ".join(
+                ("g%d ----" % i) if m is None else f"g{i} {m['miss']:.2f}m"
+                for i, m in enumerate(r["misses"]))
+            print(f"[latency {lat * 1000:>4.0f} ms] k={ts:.2f} lead={r['lead_s'] * 1000:.0f}ms lap "
+                  f"{(r['lap_time_s'] if r['lap_time_s'] else float('nan')):.2f}s vs ref "
+                  f"{ref.lap_time_s:.2f}s | crossed {r['n_crossed']}/6 valid={r['valid']} | "
+                  f"rmse {r['track_rmse_m']:.2f}m | rate-sat {100 * r['frac_rate_sat']:.0f}% | {miss_str}")
+            if r["valid"]:
+                found = r
+                break
+        if found:
+            print(f"  => twin-tracked VALID lap at latency {lat * 1000:.0f} ms: "
+                  f"{found['lap_time_s']:.2f}s (timescale {found['timescale']:.2f} of the "
+                  f"{ref.lap_time_s:.2f}s ideal)\n")
+        else:
+            print(f"  => NO valid timescale <= 2.5 at latency {lat * 1000:.0f} ms\n")
     return 0
 
 

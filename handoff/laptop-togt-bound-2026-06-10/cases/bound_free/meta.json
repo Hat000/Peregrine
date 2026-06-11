@@ -1,0 +1,15 @@
+{
+ "case": "bound_free",
+ "thrust_to_weight": 3.765,
+ "omega_max": [
+  11.0,
+  11.0,
+  7.0
+ ],
+ "gate_margin_m": 0.6,
+ "refine_tol_m": 0.3,
+ "linear_drag": 0.21,
+ "half_opening_effective_m": 0.45,
+ "max_center_miss_m": 0.75,
+ "refine_pieces_per_segment": 5
+}

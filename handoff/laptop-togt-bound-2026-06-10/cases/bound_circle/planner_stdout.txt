@@ -1,0 +1,28 @@
+Running main() from /home/fengyou/peregrine_togt/TOGT-Planner/build/_deps/gtest-src/googletest/src/gtest_main.cc
+Note: Google Test filter = PeregrineTOGT.plan
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from PeregrineTOGT
+[ RUN      ] PeregrineTOGT.plan
+TrajExtremum:
+maxVel:     42.9409 [m/s]
+maxAcc:     35.4676 [m^2/s]
+maxTilt:    177.8052 [deg]
+minOmg:     -7.4942 -7.1705 -0.9301 [rad/s]
+maxOmg:     5.5217 7.8275 7.1925 [rad/s]
+minEuler:   -179.9912  -87.8036 -180.0000 [deg]
+maxEuler:   179.9259  75.2605 179.9999 [deg]
+minThrusts: 1.2851 1.3355 1.4866 1.5735 [N]
+maxThrusts: 9.2289 9.2479 9.2299 9.2514 [N]
+minCthrust: 5.6806 [N]
+maxCthrust: 36.9581 [N]
+-----------------------------------------
+Length:   189.7432 [m]
+Duration:   6.9442 [s]
+
+[       OK ] PeregrineTOGT.plan (387 ms)
+[----------] 1 test from PeregrineTOGT (388 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (392 ms total)
+[  PASSED  ] 1 test.

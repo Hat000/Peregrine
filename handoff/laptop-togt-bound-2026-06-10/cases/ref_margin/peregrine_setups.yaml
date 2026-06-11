@@ -1,0 +1,7 @@
+planningInit: "init/peregrine_planning.yaml"
+lbfgsInit:     "init/peregrine_lbfgs.yaml"
+
+planningRefine: "refine/peregrine_planning.yaml"
+lbfgsRefine:     "refine/peregrine_lbfgs.yaml"
+
+quadrotor: "peregrine_quad.yaml"

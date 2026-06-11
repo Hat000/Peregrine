@@ -1,0 +1,67 @@
+initState:
+  pos: [0.0000, 0.0000, -0.0200]
+  vel: [0.0, 0.0, 0.0]
+  acc: [0.0, 0.0, 0.0]
+  jer: [0.0, 0.0, 0.0]
+  rot: [1.0, 0.0, 0.0, 0.0]
+  cthrustmass: 9.8066
+  euler: [0.0, 0.0, 0.0]
+
+endState:
+  pos: [-184.1937, 4.4000, -24.6080]
+  vel: [0.0, 0.0, 0.0]
+  acc: [0.0, 0.0, 0.0]
+  jer: [0.0, 0.0, 0.0]
+  rot: [1.0, 0.0, 0.0, 0.0]
+  cthrustmass: 9.8066
+  euler: [0.0, 0.0, 0.0]
+
+orders: ['Gate1', 'Gate2', 'Gate3', 'Gate4', 'Gate5', 'Gate6']
+
+Gate1:
+  type: 'SingleBall'
+  name: 'vq1_gate'
+  position: [-23.2980, 0.3999, 1.3920]
+  radius: 0.75
+  margin: 0.7
+  stationary: true
+
+Gate2:
+  type: 'SingleBall'
+  name: 'vq1_gate'
+  position: [-46.8937, 2.5000, -3.7080]
+  radius: 0.75
+  margin: 0.7
+  stationary: true
+
+Gate3:
+  type: 'SingleBall'
+  name: 'vq1_gate'
+  position: [-74.5938, -1.2000, -12.3080]
+  radius: 0.75
+  margin: 0.7
+  stationary: true
+
+Gate4:
+  type: 'SingleBall'
+  name: 'vq1_gate'
+  position: [-111.4937, 5.1000, -23.2080]
+  radius: 0.75
+  margin: 0.7
+  stationary: true
+
+Gate5:
+  type: 'SingleBall'
+  name: 'vq1_gate'
+  position: [-135.4937, 0.8000, -23.9957]
+  radius: 0.75
+  margin: 0.7
+  stationary: true
+
+Gate6:
+  type: 'SingleBall'
+  name: 'vq1_gate'
+  position: [-159.1937, 4.4000, -24.6080]
+  radius: 0.75
+  margin: 0.7
+  stationary: true
