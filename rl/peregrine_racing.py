@@ -66,12 +66,6 @@ class PeregrineRacing(Racing):
         # non-looping finish bookkeeping
         self.finished = torch.zeros(self.n_envs, dtype=torch.bool, device=device)
 
-        # generous out-of-bounds box around the course bbox (only lost drones truncate)
-        margin_xy, margin_z = 15.0, 12.0
-        lo = self.gate_pos.amin(dim=0) - torch.tensor([margin_xy, margin_xy, margin_z], device=device)
-        hi = self.gate_pos.amax(dim=0) + torch.tensor([margin_xy, margin_xy, margin_z], device=device)
-        self.box_min, self.box_max = lo, hi
-
         # reward shaping bonuses (the parent supplies progress/collision/jerk; we add these)
         self.passage_bonus = float(getattr(cfg, "passage_bonus", 10.0))
         self.finish_bonus = float(getattr(cfg, "finish_bonus", 20.0))
@@ -83,10 +77,22 @@ class PeregrineRacing(Racing):
         # and mapped through the DEPLOYMENT VIRTUAL FLIP (pi about body z -- rl/fly_rl.py flies the
         # policy in that frame because training is tail-first): zup euler (roll 0, pitch -17.8deg,
         # yaw ~0) = quat XYZW [-0.000135, -0.15471, -0.000862, 0.987959]. Default 0.0 = off.
+        # (defined BEFORE the OOB box so the box can include the spawn corridor -- see below.)
         self.standing_start_frac = float(getattr(cfg, "standing_start_frac", 0.0))
         self._spawn_pos_zup = torch.tensor([0.0, 0.0, -0.02], device=device)
         self._spawn_quat_xyzw = torch.tensor(
             [-0.000135, -0.15471, -0.000862, 0.987959], device=device)
+
+        # generous out-of-bounds box around the course bbox AND the standing-start spawn (only lost
+        # drones truncate). The spawn sits ~23 m up-course of gate 0 at x_zup~0, which is OUTSIDE the
+        # gate bbox on +x (gates span x_zup in [-159, -23]); without folding the spawn into the box,
+        # every standing-start env truncates on step 1 (S1.3 bug found 2026-06-10). Include it so the
+        # full start->gate-0 approach corridor is in-bounds.
+        margin_xy, margin_z = 15.0, 12.0
+        pts = torch.cat([self.gate_pos, self._spawn_pos_zup.unsqueeze(0)], dim=0)
+        lo = pts.amin(dim=0) - torch.tensor([margin_xy, margin_xy, margin_z], device=device)
+        hi = pts.amax(dim=0) + torch.tensor([margin_xy, margin_xy, margin_z], device=device)
+        self.box_min, self.box_max = lo, hi
 
         # obs = parent's 13 + body rates (3) + collective (1)
         self.obs_dim = 17

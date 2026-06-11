@@ -73,9 +73,11 @@ INTERFACE MISMATCHES / ASSUMPTIONS (each tagged ``# RECONCILE`` at its use site)
  7. ACCELERATION ``_a``: rl_plant doesn't emit accel; we expose world accel by finite-difference
     (v_new - v_old)/dt, converted to DiffAero frame. Good enough for observations; not a true
     accelerometer reading. # RECONCILE if the policy/reward needs specific force.
- 8. TRANSPORT DELAY: rl_plant supports it (default OFF; validated config is OFF). The torch mirror
-    here OMITS the action ring-buffer for brevity -- add it (carry a per-env buffer tensor) only if
-    you enable latency DR. The numpy backend honours it via PlantState.act_buf. # RECONCILE
+ 8. TRANSPORT DELAY: rl_plant supports it internally (default OFF; validated config is OFF). We model
+    control latency at a HIGHER level instead -- a per-env action ring buffer applied in ``step()``
+    (item 4a, ``_apply_latency``), NOT inside the integrators. This keeps ``check_against_rl_plant``
+    (which calls the integrators directly) bit-for-bit, and is a clean transport wrapper around either
+    backend. Active only under DR (``dynamics.dr=true``, ``dr_latency_max_steps>0``).
  9. n_agents: handled via rl_plant's leading-batch convention; we mirror DiffAero's squeeze at
     n_agents==1. State stored in DiffAero layout/frame so _p/_v/_q/_w/R/body2world all work unchanged.
 """
@@ -255,7 +257,11 @@ class PeregrinePlantDynamics(BaseDynamics):
         # _step_torch runs unchanged -> the check_against_rl_plant gate (4.4e-16) is preserved bit-for-bit.
         self._dr_enabled = bool(getattr(cfg, "dr", False))
         self._dr_bands = {
-            "rate_gain": float(getattr(cfg, "dr_rate_gain_frac", 0.10)),   # +-10% per axis
+            # rate_gain is ASYMMETRIC (item 4b): the live overshoot (S1.2: 9.7 vs 7.85 rad/s realized on
+            # saturated steps) says the real inner-loop gain runs HIGH transiently, so bias the band up:
+            # multiplier ~ U[1-lo, 1+hi] = U[0.90, 1.30].
+            "rate_gain_lo": float(getattr(cfg, "dr_rate_gain_lo", 0.10)),  # -10%
+            "rate_gain_hi": float(getattr(cfg, "dr_rate_gain_hi", 0.30)),  # +30%
             "hover":     float(getattr(cfg, "dr_hover_frac", 0.05)),       # +- 5%
             "drag":      float(getattr(cfg, "dr_drag_frac", 0.30)),        # +-30%
             "rate_tau":  float(getattr(cfg, "dr_rate_tau_frac", 0.30)),    # +-30%
@@ -266,6 +272,25 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._dr_hover = torch.full((n,), float(self.params.hover_thrust), device=device)
             self._dr_drag = torch.full((n,), float(self.params.linear_drag), device=device)
             self._dr_rate_tau = torch.full((n,), float(self.params.rate_tau_s), device=device)
+
+        # --- control-latency DR (item 4a): a per-env action RING BUFFER. The policy's command is
+        # delayed by a per-episode integer number of control steps (resampled at reset) to model the
+        # measured ~40 ms transport lag and randomize over the unmeasurable VQ1->VQ2 latency delta.
+        # CRITICAL (parity): the delay is applied in `step()` (a transport wrapper) -- NOT inside
+        # `_step_torch`/`_step_numpy`. `check_against_rl_plant` calls those backends DIRECTLY, so it
+        # never sees the buffer => the 4.4e-16 parity gate is preserved bit-for-bit. The buffer is a
+        # pure pass-through when latency is OFF or a given env's delay == 0. Active only when DR is on
+        # AND max>0. At env.dt=0.02 s, {0,1,2} steps span 0/20/40 ms (~the measured 40 ms lag).
+        # NOTE: actions are detached into the buffer -- correct for PPO (no pathwise grad through the
+        # env); a BPTT algo (SHAC/APG) with latency-DR would need a differentiable buffer instead.
+        self._latency_max = int(getattr(cfg, "dr_latency_max_steps", 2))   # delay in {0..max} steps
+        self._latency_enabled = self._dr_enabled and self._latency_max > 0
+        if torch is not None and self._latency_enabled:
+            n, K = self.n_envs, self._latency_max
+            buf = torch.zeros(n, K + 1, self.action_dim, device=device)    # [:, 0] = newest
+            buf[..., 0] = 1.0                                              # hover (normed_thrust=1)
+            self._act_buf = buf
+            self._latency_steps = torch.randint(0, K + 1, (n,), device=device)  # per-env delay
 
     # ---- abstract API ----------------------------------------------------------------------------
     @property
@@ -287,12 +312,23 @@ class PeregrinePlantDynamics(BaseDynamics):
     # ---- step --------------------------------------------------------------------------------------
     def step(self, U: Tensor) -> None:
         """Advance all envs one control dt under action ``U`` (..., 4). Updates ``self._state``."""
+        if self._latency_enabled:
+            U = self._apply_latency(U)          # item 4a: per-env transport delay (parity-safe wrapper)
         if self.backend == "rl_plant_numpy":
             self._step_numpy(U)
         elif self.backend == "torch":
             self._step_torch(U)
         else:
             raise ValueError(f"unknown backend {self.backend!r}")
+
+    def _apply_latency(self, U: Tensor) -> Tensor:
+        """Push the newest action to the front of the ring buffer, drop the oldest, and return each
+        env's action delayed by its per-episode ``_latency_steps`` count. delay==0 -> returns U as-is
+        (the front of the buffer). Detached: the delayed command feeds the plant but carries no
+        policy gradient (PPO-appropriate; see __init__ note)."""
+        self._act_buf = torch.cat([U.detach().unsqueeze(1), self._act_buf[:, :-1, :]], dim=1)
+        idx = self._latency_steps.view(-1, 1, 1).expand(-1, 1, self.action_dim)
+        return torch.gather(self._act_buf, 1, idx).squeeze(1)
 
     # ---- backend A: literal delegation to racer.rl_plant (verified, CPU, NON-differentiable) ------
     def _step_numpy(self, U: Tensor) -> None:
@@ -402,6 +438,12 @@ class PeregrinePlantDynamics(BaseDynamics):
         tmask = torch.zeros_like(self._thrust, dtype=torch.bool)
         tmask[env_idx] = True
         self._thrust = torch.where(tmask, hover, self._thrust)
+        if self._latency_enabled and env_idx.numel() > 0:
+            # new per-episode delay + flush the buffer to hover for the reset envs (no stale commands)
+            self._latency_steps[env_idx] = torch.randint(
+                0, self._latency_max + 1, (env_idx.numel(),), device=self._latency_steps.device)
+            self._act_buf[env_idx] = 0.0
+            self._act_buf[env_idx, :, 0] = 1.0
 
     def _resample_dr(self, env_idx) -> None:
         """Resample per-env plant params uniformly within the fractional bands, for the reset envs."""
@@ -410,10 +452,14 @@ class PeregrinePlantDynamics(BaseDynamics):
             return
         dev = self._dr_rate_gain.device
 
-        def u(shape, frac):                   # uniform multiplier in [1-frac, 1+frac]
+        def u(shape, frac):                   # symmetric uniform multiplier in [1-frac, 1+frac]
             return 1.0 + frac * (2.0 * torch.rand(*shape, device=dev) - 1.0)
 
-        self._dr_rate_gain[env_idx] = self._rate_gain.unsqueeze(0) * u((m, 3), self._dr_bands["rate_gain"])
+        def u_asym(shape, lo, hi):            # asymmetric uniform multiplier in [1-lo, 1+hi]
+            return (1.0 - lo) + (lo + hi) * torch.rand(*shape, device=dev)
+
+        self._dr_rate_gain[env_idx] = self._rate_gain.unsqueeze(0) * u_asym(
+            (m, 3), self._dr_bands["rate_gain_lo"], self._dr_bands["rate_gain_hi"])  # item 4b
         self._dr_hover[env_idx] = float(self.params.hover_thrust) * u((m,), self._dr_bands["hover"])
         self._dr_drag[env_idx] = float(self.params.linear_drag) * u((m,), self._dr_bands["drag"])
         self._dr_rate_tau[env_idx] = float(self.params.rate_tau_s) * u((m,), self._dr_bands["rate_tau"])

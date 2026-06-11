@@ -18,7 +18,14 @@ import diffaero.env as _env
 from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
 
-_dyn.DYNAMICS_ALIAS["peregrine_plant"] = PeregrinePlantDynamics
+# Register with backend="torch": build_dynamics(cfg, device) passes no backend kwarg, so the class
+# would otherwise default to the slow, NON-differentiable, DR-IGNORING numpy path (_step_numpy reads
+# only the scalar self.params -- the per-env DR tensors + latency apply ONLY in _step_torch/step()).
+# S1.3's item-4 DR (asymmetric rate-gain band + control-latency) therefore REQUIRES the torch backend
+# to take effect. The torch mirror is parity-proven to the numpy plant (check_against_rl_plant
+# DIV_FLOAT64 2.2e-16), so this changes throughput + DR-awareness, NOT the physics.
+_dyn.DYNAMICS_ALIAS["peregrine_plant"] = lambda cfg, device: PeregrinePlantDynamics(
+    cfg, device, backend="torch")
 _env.ENV_ALIAS["peregrine_racing"] = PeregrineRacing
 
 from diffaero.script.train import main  # noqa: E402  (must follow the registrations above)
