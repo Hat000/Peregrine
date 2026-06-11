@@ -124,11 +124,13 @@ rejected)**, a two-regime ωₙ/ζ envelope (saturated ωₙ 21–28 / ζ 0.39�
 - §5 integration plan (amplitude-scheduled ωₙ/ζ, `omega_dot` state) — ❌ DO NOT USE; replaced by the
   static map (sweep WRITEUP §3). Writeup: `handoff/shadowpc-2ndorder-resysid-2026-06-10/`.
 
-### 🚩 The "+30% rate_gain band" DR proxy is DISPROVEN — replacement = the STATIC-MAP DR (updated 2026-06-10)
-The asymmetric rate_gain DR band **[0.90, 1.30]** (item ④, in `rl/diffaero_dynamics.py`, used by S1.3) is
-the wrong model. ~~Replace with the ωₙ/ζ-envelope DR~~ — **that replacement is ITSELF superseded** (the
-envelope was the LTI shadow of cc6921d's wrong anchor). **At retrain, replace with the static-map DR:
-s ∈ [0.25, 0.35], τ ∈ [0.015, 0.03], alpha_max ∈ [200, 320]** (next section).
+### 🚩 The "+30% rate_gain band" DR proxy is DISPROVEN — ✅ REPLACED by the STATIC-MAP DR (S14, 2026-06-10)
+The asymmetric rate_gain DR band **[0.90, 1.30]** (item ④, in `rl/diffaero_dynamics.py`, used by S1.3) was
+the wrong model. ~~Replace with the ωₙ/ζ-envelope DR~~ — **that replacement was ITSELF superseded** (the
+envelope was the LTI shadow of cc6921d's wrong anchor). **✅ DONE (S14): the band is REMOVED from
+`rl/diffaero_dynamics.py` (G0 fixed at nominal under DR) and the static-map DR ships — per-env per-axis
+s ∈ U[0.25, 0.35], τ ∈ U[0.015, 0.030] abs, alpha_max r/p ∈ U[200, 320] (yaw scaled ×80/260)** (see the
+S14 section below).
 
 ### ✅ CHARACTERIZE-SWEEP DONE (510da24, fable, 2026-06-10/11) — the static gain map; NO sim anomaly
 The "NEXT CHEAP EXPERIMENT" ran: 15 controlled runs (magnitude sweep + anomaly probes, n=1→n=11),
@@ -142,11 +144,12 @@ unattended on `scripts/rate_sysid.py`. Source of truth: `handoff/shadowpc-charac
   real-but-minor ~10% overshoot (ωₙ≈73, ζ≈0.5 — the 2nd-order refinement is optional, ~10% fidelity);
   input delay 5–15 ms → belongs in the transport-delay mechanism, NOT in τ.
 - **Integration spec = sweep WRITEUP §3** (~4 lines in the plant: g(|cmd|) target + existing first-order
-  lag τ≈0.020 + alpha_max slew clamp), **parity-gated twin → rl_plant → torch adapter.** **🚩 The
-  twin/plant max body-rate clamp must be raised ≥ ~11.5 rad/s (roll/pitch)** or it re-introduces the old
-  ceiling artifact. **DR: s ∈ [0.25, 0.35], τ ∈ [0.015, 0.03], alpha_max ∈ [200, 320]** — replaces both
-  the +30% band and the ωₙ/ζ-envelope plan. **UPSIDE: real authority at full stick is ~11 rad/s, not
-  7.85 — a HIGHER speed ceiling for VQ2.**
+  lag τ≈0.020 + alpha_max slew clamp), **parity-gated twin → rl_plant → torch adapter — ✅ IMPLEMENTED
+  (S14, 2026-06-10, next section).** The max-clamp concern resolved without raising it: `max_omega_rps`
+  25.0 already sits above the map's DC ceiling (~11.2 rad/s/axis) — never bites. **DR: s ∈ [0.25, 0.35],
+  τ ∈ [0.015, 0.03], alpha_max ∈ [200, 320]** — replaces both the +30% band and the ωₙ/ζ-envelope plan
+  (✅ shipped in S14). **UPSIDE: real authority at full stick is ~11 rad/s, not 7.85 — a HIGHER speed
+  ceiling for VQ2.**
 - **THERE IS NO SIM ANOMALY (open-loop).** Sustained rotations through full inversion (up to 11.2 rad/s,
   multiple revolutions, multi-axis combos including the exact S1.2 tumble command [+3.14,−3.14,+3.14],
   tilt abort off) are ALL clean rigid-body; uncommanded axes flat zero. The S1.2 "±180° yaw-spin anomaly"
@@ -160,10 +163,11 @@ unattended on `scripts/rate_sysid.py`. Source of truth: `handoff/shadowpc-charac
   + keeping the policy in well-modeled regimes — NOT anomaly avoidance. **The env/reward redesign is
   therefore UNGATED** (its gate was the anomaly-boundary measurement — there is none to encode).
 - **Checkpoint impact: S1.3 + inc-1 trained on the WRONG plant** (2.5-flat; under-predict their own
-  authority by up to 42% at full stick) → **retrain after the static-map integration.** The S13-LIVE
-  transfer test is **DEMOTED from disambiguator to optional cheap datum** (fly opportunistically,
-  non-blocking — the sweep answered the plant-fidelity question directly). **Critical path:
-  static-map integration (parity-gated) → env/reward redesign → retrain.**
+  authority by up to 42% at full stick) → retrain on the map-ON plant — **gating now SATISFIED (S14
+  integration done)**. The S13-LIVE transfer test is **DEMOTED from disambiguator to optional cheap
+  datum** (fly opportunistically, non-blocking — the sweep answered the plant-fidelity question
+  directly). **Critical path: static-map integration ✅ DONE (S14, 2026-06-10) → env/reward redesign +
+  retrain = S1.4, NEXT.**
 - **Durable sim/ops facts:** (1) **🚩 THIRD sim idle state** — after ~90 min idle post-race the sim parks
   on an off-race screen where MAV_CMD 31000 is a NO-OP while telemetry still streams (stale RACE_STATUS
   `started=True`, frozen sim_time); recovery = Win32-focus the AI-GP window + Enter ×2 — wired as
@@ -172,6 +176,43 @@ unattended on `scripts/rate_sysid.py`. Source of truth: `handoff/shadowpc-charac
   pass only if it ever matters (racing yaw cmds are small). (3) All probes near hover; aero at racing
   airspeed unmeasured (the DR band covers; live course RMSE 0.22–0.41 at ≲3 rad/s says small-signal is
   unaffected). (4) `rate_sysid.py` gained `--vel-damp`/`--pos-pull` station-keeping + `--mode anomaly`.
+
+### ✅ S14 STATIC-MAP INTEGRATION COMPLETE (2026-06-10, fable; commits f730bd6, b14ca2e, 77a0186) — critical-path step 1 DONE
+Sweep WRITEUP §3 implemented across all three plant implementations, parity-gated at every seam.
+Report: `handoff/laptop-s14-staticmap-integration-2026-06-10/REPORT.md`. **Tests 376→409.**
+- **twin.py**: `CtbrPlantConfig` gains `super_rate_s` + `alpha_max_rps2`; g = rate_gain/(1−s·min(|cmd|,π)/π),
+  per-step omega increment clamped ±alpha_max·dt. Defaults None ⇒ bit-identical legacy (test-pinned).
+  `max_omega_rps` stays 25.0 — never bites (the map's DC ceiling is ~11.2 rad/s/axis).
+- **twin_fit.py**: `faithful_config(super_rate=True)` = the measured map-ON config (s=0.30,
+  alpha_max=[260,260,80]); default False = the exact legacy faithful twin.
+- **rl_plant.py**: mirror (omega bit-identical to twin); exports `SUPER_RATE_S_MEASURED` /
+  `ALPHA_MAX_RPS2_MEASURED` as the canonical nominals (DR centers).
+- **diffaero_dynamics.py** (torch): mirror; the disproven +30% rate_gain band REMOVED (G0 fixed at nominal
+  under DR), replaced with per-env per-axis s∈U[0.25,0.35], τ∈U[0.015,0.030] abs, alpha_max
+  r/p∈U[200,320] (yaw scaled ×80/260 ⇒ U[61.5,98.5] — same relative width around yaw's own nominal);
+  map+slew ALWAYS ON under DR. Also ports the params-level `transport_delay_steps` ring buffer to BOTH
+  backends (**S12 item 4a closed** — it had been a silent no-op: the adapter passed `act_buf=None`).
+  Wrapper latency DR untouched; measured input delay 5–15 ms < one 33 ms control step — do NOT
+  double-count delay into τ.
+- **Gates:** gain-table anchor within +1.6–2.9% of measured at all 8 r/p points (within the documented
+  ~3% one-param fit); twin↔rl_plant omega BIT-identical (60-case parity battery); **V100 gate (job
+  3265870): legacy 8.9e-16 / super_rate 1.8e-15 / delay2 8.9e-16 / map_delay 1.8e-15 — PASS** (acceptance
+  ≤1e-6); negative controls prove teeth (1e-6 s-bias caught at 8e-5; dropped delay caught at 13.7).
+  `check_diffaero_gate.py` is now a config-matrix gate ({legacy, super_rate, delay2, map_delay} ×
+  {float64 gate, float32 advisory}); NEW `rl/local_gate_harness.py` dry-runs it on laptop CPU-torch
+  BEFORE any Adroit roundtrip.
+- **Resolved ambiguities:** s/alpha_max DR are per-axis (n,3); the level-attitude ~7.4 rad/s yaw cap is
+  comment-documented in all three files (NOT modeled; own measurement pass only if racing yaw cmds grow).
+  The optional 2nd-order refinement (~10% small-signal overshoot fidelity) was SKIPPED per WRITEUP §3's
+  own "static map is the load-bearing fix"; τ default stays 0.019, the DR band [0.015,0.03] covers the
+  saturated τ_eq 25–33 ms.
+- **🚩 CAVEAT:** eval/rollout scripts (`peregrine_eval.py`, `offline_rollout.py`) still DEFAULT to the
+  legacy FLAT plant — correct for the flat-trained checkpoints (inc-1/S1.3), but **the S1.4 retrain + all
+  future evals must switch to map-ON** (construct `PlantParams(super_rate_s=SUPER_RATE_S_MEASURED,
+  alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)`, or just enable DR — DR forces the map on).
+- **🚩 ADROIT OPS:** `/scratch/network/fl3689/peregrine_repo` is a FILE COPY, not a git clone (the GitHub
+  repo is private) — S14 pushed via md5-verified base64 over the x daemon; stage a real clone with a
+  deploy key if Adroit sessions grow.
 
 ## Depth model / ~100 TOPS budget (user) — OFFLINE flywheel
 After a recorded run (legal between-runs processing): **multi-view triangulation** from logged poses
@@ -237,7 +278,7 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   - **🚩 THE REAL transfer failure (the key finding) = the policy is a "backflip-diver":** its NOMINAL twin maneuver rolls through **104–126° before every gate** (fine offline). Live the maneuver diverges — realized rates hit **9.7 rad/s vs the twin's first-order 7.85 ceiling** (=3.14·2.5; ❌ diagnosis SUPERSEDED 2026-06-10: unmodeled static super-rate DC gain, NOT transient overshoot — see the characterize-sweep section), it blows through ±180° tilt (the then-suspected "yaw-spin anomaly" — **DISSOLVED by the sweep**: super-rate gain + Euler yaw-flip artifact + a gate-post COLLISION), and tumbles into the gate post within 0.35 s. NOT reproducible in the twin (replay from the exact live handoff state passes gate 0 at any latency ≤100 ms and gain ×1.24) → **no deployment-side knob fixes it.** The BRIDGE worked perfectly: CTBR delivered the drone dead-centre (dy +0.04, dz +0.05 m) at 5.1 m/s, 3 m before gate 0; the policy's first action = exactly the offline-twin prediction.
   - **OOD verdicts (offline, measured via `rl/offline_rollout.py`):** training reset (1 m, rest) = **6/6 finish 3.3 s** (validates ALL deployment math); raw standing start (23.3 m, rest) ≈ 0–1/6 (arrives at gate 0 at 33–44 m/s, unrecoverable); **bridge handoff + virtual flip = 6/6 under training physics, 4/6 under the live collective ceiling** — the gate-4 wall is purely the thrust clip (trained max_normed_thrust 5.0 ≈ 5 g vs live collective≤1.0 ≈ 3.765 normed ≈ 3.77 g), unfixable at deployment, fixed in retrain.
   - **🆕 UNATTENDED SIM CONTROL ACHIEVED here (the user's standing ask; durable capability for ALL future sim work):** **MAV_CMD 31000** (`client.send_sim_reset()`) restarts the race once a race context exists (fresh ~3 s countdown) — **NO-OP from HOME** (no telemetry there). From HOME: Win32 `SetForegroundWindow` to focus the `AI-GP` window (`WScript.Shell.AppActivate` alone returns False) + Enter twice (home → waiting room → race+countdown). The session **cold-launched FlightSim.exe and raced with NO human.** `rl/fly_rl.py --flights N` chains attempts (never resets into a ticking countdown).
-  - **✅ S1.3 RETRAIN SPEC (Path C, ~30 min A100, `rl/peregrine_racing_s13.sbatch` staged):** ① `dynamics.controller.max_normed_thrust=3.765` (live ceiling; one-line override); ② **standing-start resets** (`+env.standing_start_frac`, reset at ~23 m from gate 0 at rest = real race start; **implemented** cfg-gated in `peregrine_racing.py`, spawn pose mapped through the deployment virtual flip → fly_rl.py needs no change; removes the CTBR bridge, bridge stays as fallback); ③ **tilt/jerk regularization** (`reward_weights.quadrotor.attitude≈2.0`/`jerk≈0.3`, sweep — kills the >90°-roll style; then framed as anomaly avoidance, NOW (510da24) justified for smoothness/VQ2 style + staying in the well-modeled envelope only — no anomaly exists; + the VQ2 aggression fix); ④ **latency DR** (port the transport-delay ring buffer to the torch backend of `rl/diffaero_dynamics.py` — rl_plant already supports it, parity-checkable via `check_against_rl_plant` with `transport_delay_steps>0`; DR per-env delay ∈ {0,1,2}) + asymmetric rate-gain DR band **[−10%,+30%]** (cheap transient-overshoot proxy — ❌ later DISPROVEN; replace with the static-map DR, see above). **④ needs an Adroit session on diffaero_dynamics.py FIRST + must re-pass the parity gate** (not yet implemented). Reward shaping (smoothness/time) folds in here.
+  - **✅ S1.3 RETRAIN SPEC (Path C, ~30 min A100, `rl/peregrine_racing_s13.sbatch` staged):** ① `dynamics.controller.max_normed_thrust=3.765` (live ceiling; one-line override); ② **standing-start resets** (`+env.standing_start_frac`, reset at ~23 m from gate 0 at rest = real race start; **implemented** cfg-gated in `peregrine_racing.py`, spawn pose mapped through the deployment virtual flip → fly_rl.py needs no change; removes the CTBR bridge, bridge stays as fallback); ③ **tilt/jerk regularization** (`reward_weights.quadrotor.attitude≈2.0`/`jerk≈0.3`, sweep — kills the >90°-roll style; then framed as anomaly avoidance, NOW (510da24) justified for smoothness/VQ2 style + staying in the well-modeled envelope only — no anomaly exists; + the VQ2 aggression fix); ④ **latency DR** (port the transport-delay ring buffer to the torch backend of `rl/diffaero_dynamics.py` — rl_plant already supports it, parity-checkable via `check_against_rl_plant` with `transport_delay_steps>0`; DR per-env delay ∈ {0,1,2}) + asymmetric rate-gain DR band **[−10%,+30%]** (cheap transient-overshoot proxy — ❌ later DISPROVEN; ✅ REMOVED + replaced with the static-map DR in S14, see above). Reward shaping (smoothness/time) folds in here.
 
   Reward shaping (smoothness/time) = part of S1.3, AFTER the transfer fixes.
 
@@ -253,13 +294,15 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   - **🚩 CHECKPOINT CAVEAT (updated 2026-06-10, sweep 510da24): S1.3 + inc-1 were trained on the WRONG plant** (2.5-flat; they under-predict their own authority by up to 42% at full stick — and ④'s +30% band perturbs the wrong mechanism). **Retrain after the static-map integration.**
   - **🚩 The S13-LIVE transfer test is DEMOTED from disambiguator to optional cheap datum** (fly opportunistically via `fly_rl.py --flights N`, non-blocking) — the sweep answered the plant-fidelity question directly. **Critical path: static-map integration (parity-gated twin→rl_plant→torch) → env/reward redesign (UNGATED) → retrain.**
 
-  **🆕 NEXT RETRAIN = an ENV-COHERENCE REDESIGN, not just a policy re-tune (user directive 2026-06-10) — now UNGATED (sweep 510da24 done; there is no anomaly boundary to encode).**
+  **🆕 NEXT = S1.4: ENV-COHERENCE REDESIGN + RETRAIN on the map-ON plant (user directive 2026-06-10) — now FULLY UNBLOCKED (sweep 510da24 done = no anomaly boundary to encode; S14 done = measured static-map DR in place).**
   The user flagged that the **reward CONFLICTS with the termination**, and we need **more reward terms with
   more explicit logic on how each works.** Reframe the next retrain as redesigning the ENV: reward +
-  termination designed TOGETHER + the **static-map DR** (s/τ/alpha_max, see the characterize-sweep section)
+  termination designed TOGETHER + the **static-map DR** (s/τ/alpha_max — ✅ shipped in S14, just enable it)
   + **COLLISION-based crash-termination** (DiffAero's racing env already has it; NOT a tilt threshold —
   ~~crash-termination at the measured anomaly boundary~~ superseded, no anomaly exists). Hand to a dedicated
-  **fable + adroit-connector** session. Non-trivial, objectively-checkable → good fable fit.
+  **fable + adroit-connector** session (one session, scope already banked). Non-trivial,
+  objectively-checkable → good fable fit. Remember the S14 caveat: training configs + evals must run
+  map-ON (DR forces it; eval scripts still default flat).
   **🆕 Scope now ALSO includes procedural track randomization + VQ1-course-as-held-out-eval** (STACK-REVIEW-VQ2
   meta-gap ①, see that section — potentially binary for the unseen VQ2 course).
 
