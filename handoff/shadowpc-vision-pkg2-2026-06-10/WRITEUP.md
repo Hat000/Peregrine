@@ -1,7 +1,7 @@
 # Vision pkg-2: measured attitude/fix-covariance model (ShadowPC, 2026-06-10)
 
-Repo @ `d05796e` pulled, work committed as `6a077ed` (map-frame fix) + `4ed014b` (covariance
-model). venv `.venv` (torch CPU + ultralytics, unchanged). Task: replace the guessed
+Repo @ `d05796e` pulled, work committed as `37e7ab1` (map-frame fix) + `1b7e753` (covariance
+model) (hashes post-rebase onto the concurrent laptop S14 commits). venv `.venv` (torch CPU + ultralytics, unchanged). Task: replace the guessed
 `attitude_noise_std = 1.0 deg` with a measured model — (1) split the published ~3.6 deg yaw
 bias into fixed CALIBRATION vs noise, (2) re-derive `attitude_noise_std` from residuals, one
 value, all three call sites. Data: the canonical 6/6 recording `20260607_194615_course_60s`
@@ -19,7 +19,8 @@ via the 6 per-gate bundles (`perception-char-2026-06-08/pg/course_g0..5`, 360 fr
 | accepted-fix \|err\| p50 / p90 | 0.83 / 1.68 m | 0.85 / 1.72 m | (quality held) |
 
 Per-gate good<1m rejection: g0 6/17→0, g1 1/14→0, g2 1/13→0, g3 0→0, g4 3/27→0, g5 1/19→0.
-**Full suite green: 379 passed** (incl. 4 new tests). Given-pose navigation untouched
+**Full suite green: 379 passed** (incl. 4 new tests; **412 passed** after the rebase onto the
+concurrent laptop S14 commits — re-verified on the integrated tree). Given-pose navigation untouched
 (`use_given_position` default True, `fly_vq1` unchanged, vision stays out-of-loop for VQ1);
 `twin.py` / `rl_plant.py` / `diffaero_dynamics.py` not touched.
 
@@ -186,4 +187,4 @@ gone). Twin fix-covariance should mirror: K=2 analytic + 1.4 deg lever + 0.40 m 
 - `before_g*.stdout.txt` / `fixedframe_g*.stdout.txt` / `after_g*.stdout.txt` /
   `after_task2.stdout.txt` / `task2_fixedframe.stdout.txt` — the measured runs (JSONs regenerable).
 - analysis scripts as listed above; `aggregate_before_after.py` prints the acceptance table.
-- Source commits: `6a077ed` (map frame), `4ed014b` (covariance model + harness + tests).
+- Source commits: `37e7ab1` (map frame), `1b7e753` (covariance model + harness + tests).
