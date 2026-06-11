@@ -80,7 +80,7 @@ Do NOT conflate them:
   (87 catastrophic fixes eliminated); depth-sanity flip disambiguation kills the scale-error mode (not a
   solver-flip mode — key insight: geometry consistency, not solver tie-breaking, is the lever). Catastrophic
   tail 46%→6.3%, leak 1.6%→1.1%, 370 tests green. Residual 2 leaks = long-range depth noise → next lever
-  = `attitude_noise_std` (Stage-2 / vision pkg 2). Vision workstream (b) COMPLETE for VQ1+Stage-1.**
+  = `attitude_noise_std` — **✅ DONE (VISION-PKG2, 2026-06-10; see that section below)**. Vision workstream (b) COMPLETE for VQ1+Stage-1.**
 
 ### Perception characterization (this session) — `scripts/characterize_perception.py`
 Ran the navigator's ACTUAL chain (detector v2 → estimate_gate_pose → gate_pose_to_world_position) on the
@@ -89,7 +89,8 @@ measured on REAL frames in-loop (v2 had only been eval'd on synthetic; the VQ1 P
 - **Detection 100%** (40/40, 1.8–34 m; reproj p50 1.6 px) — detector is NOT the bottleneck.
 - **Depth IS recoverable** (clean-subset N-bias ~0 — user was right: known size + intrinsics = AprilTag-like).
 - Real errors: the **flip tail (31% of fixes, 3–24 m)** + the **+3.5°/range yaw bias** (cross-validates
-  Task-2's −3.6° via the full PnP) + the **analytic PnP covariance ~30× too optimistic**.
+  Task-2's −3.6° via the full PnP — ❌ later REFUTED as a fixed calibration, VISION-PKG2 2026-06-10, see
+  below) + the **analytic PnP covariance ~30× too optimistic**.
 - VQ1-irrelevant (flies given pose; the Mahalanobis gate rejects the whole tail). **RL-perception-model
   lesson: position-fix noise is anisotropic + heavy-tailed + range-growing + has a discrete flip mode + a
   systematic bias → inject THIS into the RL twin, NOT isotropic Gaussian** (master-plan C1 "measured
@@ -99,12 +100,55 @@ measured on REAL frames in-loop (v2 had only been eval'd on synthetic; the VQ1 P
 Ran the REAL YOLO→PnP→KF chain on the canonical VQ1 6/6 recording `data/runs/20260607_194615_course_60s`
 (1159 frames; per-gate bundles pooled, N=312 solved fixes). **This is the measured speed-ceiling model.**
 - **Per-axis bias ± σ** (KF-ACCEPTED fixes, the in-loop cut): N −0.42 ± 0.73 · E +0.06 ± 0.47 · D −0.28 ± 0.29 m. |fix| p50 0.82 / p90 1.66 m. Vertical (D) tightest.
-- **Range-FLAT to 24 m — NO growth** (⚠️ CORRECTS the earlier "range-growing" guess above). Per-axis slope ≈ −3.8°…+4.1° = the ~3.6°/range yaw bias, now confirmed through the full chain.
-- **Catastrophic tail:** raw |fix|≥3 m = 46%→6.3% (143→12) with association+depth-sanity (commit 4673517, 2026-06-09). The KF χ²₀.₉₉₉ gate rejects further → **residual leak ≈ 1.1% (0.6% of frames) = UPDATED bad-fix rate the twin MUST model.** Good <1 m fixes went UP (103→107).
+- **Range-FLAT to 24 m — NO growth** (⚠️ CORRECTS the earlier "range-growing" guess above). Per-axis slope ≈ −3.8°…+4.1° = the ~3.6°/range "yaw bias" (❌ VISION-PKG2 2026-06-10: NOT a fixed calibration — the both-signed per-gate slopes were the tell; it decomposes into a depth-scale artifact + per-gate lateral offsets + flight-specific roll wander, see §VISION-PKG2 below).
+- **Catastrophic tail:** raw |fix|≥3 m = 46%→6.3% (143→12) with association+depth-sanity (commit 4673517, 2026-06-09). The KF χ²₀.₉₉₉ gate rejects further → **residual leak ≈ 1.1% (0.6% of frames)** (⚠️ SUPERSEDED by VISION-PKG2 2026-06-10: leak 0.53% of solved — see §VISION-PKG2). Good <1 m fixes went UP (103→107).
   - **Key insight:** the "56 frontal depth flips" were NOT solver flips — wrong-scale detector boxes (solved depth 1.2–13× true, p50 2.3×, reproj p50 1.0 px). Geometry/depth-sanity kills them; better solver tie-breaking couldn't have.
-  - **2 residual leaks** = honest long-range depth noise (25–38 m range, errors 3–5 m) on correctly-associated next-gate fixes. Next lever = `attitude_noise_std` (queued, Stage-2), NOT tighter geometry gates.
+  - **2 residual leaks** = honest long-range depth noise (25–38 m range, errors 3–5 m) on correctly-associated next-gate fixes. Next lever = `attitude_noise_std` — ✅ DONE (VISION-PKG2, 2026-06-10): the 38 m leak is killed by the 32 m range cap, the 25 m one remains (documented trade-off), NOT tighter geometry gates.
 - **PNP_FIX_COV_INFLATION task CLOSED:** behind the depth-sanity gate K=1.0 and K=2.0 leak identically (prior objection — K=2.0 worsens leak — evaporates). No revert needed.
-- **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **~1.1% catastrophic leak** after χ²₀.₉₉₉ + association + depth-sanity (commit 4673517, 2026-06-09; prior figure was ~1.6%). **Use 1.1% as the Stage-2 twin input.** Detail: `handoff/perception-char-2026-06-08/`.
+- **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **~1.1% catastrophic leak** after χ²₀.₉₉₉ + association + depth-sanity (commit 4673517, 2026-06-09; prior figure was ~1.6%). **⚠️ leak/acceptance SUPERSEDED by VISION-PKG2 (2026-06-10): leak 0.53% of solved (bounded ≈3 m), acceptance ~47% of race-window frames, covariance = K2·analytic + 1.4° lever + 0.40 m floor + 32 m cap — see §VISION-PKG2 below.** Detail: `handoff/perception-char-2026-06-08/`.
+
+### ✅ VISION-PKG2 COMPLETE (2026-06-10, ShadowPC fable; commits 37e7ab1, 1b7e753, 9ccc88c, 4831991; suite 412 green) — measured attitude/fix covariance; yaw bias REFUTED as calibration
+Vision pkg 2 / the `attitude_noise_std` lever is DONE — and it overturned two banked beliefs.
+Source of truth: `handoff/shadowpc-vision-pkg2-2026-06-10/WRITEUP.md`.
+- **🚩 THE ~3.6°/RANGE YAW BIAS IS NOT A FIXED CALIBRATION — REFUTED.** It decomposes into
+  (a) an along-track depth-scale artifact misread as an angle, (b) gate-specific lateral offsets of
+  BOTH signs (global rotation fit |e|≈1–1.7° only; per-gate fits swing −6…+8°), and (c) a roll-coupled
+  wander (δ_yaw ≈ −0.52°/° roll, r²=0.87 in-flight) whose tilt-before-roll composition fit (τ_pre≈29°,
+  nails it in-flight) was REFUTED by cross-validation on the June-05 task2 flight — the coupling
+  FLIPS SIGN (+2.7°/°) and the correction makes that data WORSE; constant image/telemetry latency
+  also refuted. Trajectory-specific ⇒ belongs in COVARIANCE, not calibration. **Follow-up:** re-measure
+  the roll-wander on the NEXT fresh 6/6 flight recorded with `--dump-extras` (`composition_fit.py`
+  runs as-is); if τ_pre reproduces with consistent sign across two flights, a composition correction
+  becomes shippable.
+- **🚩 REAL BUG FOUND+FIXED (37e7ab1): `corner_to_center`'s gate frame was rotated 180° in-plane vs
+  the detector's corner convention** — invisible to position (square symmetry) but the PnP
+  disambiguation prior fed to IPPE/P3P was ANTI-ALIGNED, making the frontal tie-break + P3P branch
+  selection effectively random on real detections (and 3-corner association compared against
+  diagonally-opposite predicted corners). Fixed in `gates_from_track_records` (axes from the
+  approach-view `_frame_from_through` convention); `through_dir` + `mission._passed` invariants
+  verified; convention test added. Population effect on this data nil — the value is correctness of
+  the prior-dependent paths + any future use of solved rotations (predicted-corner IDENTITIES changed;
+  downstream per-corner consumers inherit the corrected convention).
+- **Shipped noise model (joint MLE over 165 offered fixes; exact-replication harness to 0 ulp):**
+  `frames.ATTITUDE_NOISE_STD_RAD = 1.4°` — ONE constant now feeding all three former 1.0° sites
+  (`localization.py`, `navigator.py`, `state_estimator.py`) — plus NEW `FIX_COV_FLOOR_STD = 0.40 m`
+  isotropic floor in `localization.py` (covers the measured constant systematics: +0.3 m-high
+  vertical, per-gate lateral, close-range depth bias; a σθ-only fit distorts to 3.21° and mis-shapes
+  the covariance — the floor is NOT optional), plus `vision_max_range_m` 40→32 (kills the 38 m
+  depth-tail leak at zero measured cost). Per-fix cov = K2·analytic(R Σ_pnp Rᵀ) + 1.4° attitude
+  lever + 0.40 m floor + 32 m range cap.
+- **Acceptance (canonical 6/6 recording, before→after):** good-fix over-rejection <3 m
+  **15.7%→1.2%** (<1 m: 11.2%→0.0%; gate-0's 35% close-range rejection →0); catastrophic leak
+  **1.06%→0.53%**; KF-accepted fixes 147→171; accepted quality held (p50 0.85 / p90 1.72 m).
+  Before-baseline reproduced the published numbers bit-for-bit first.
+- **UPDATED STAGE-2 RL-TWIN PERCEPTION MODEL (supersedes the 1.1% leak figure):** fix acceptance
+  ~47% of race-window frames (was ~41%), leak 0.53% of solved (bounded ≈3 m), covariance =
+  K2·analytic + 1.4° attitude lever + 0.40 m floor + 32 m range cap.
+- **Caveats/queued:** the +0.3 m vertical constant is ambiguous (map opening-centre height vs
+  camera-height offset) — disambiguating needs varied-attitude frames near one gate; a map fix would
+  move planner carrots (given-pose behavior!), so it deliberately stays in covariance. Remaining
+  single leak = a borderline 3.00 m fix at 25 m; documented optional trade-off
+  `fix_range_rel_tol` 0.15→0.115 (cuts into the good depth-noise band — not taken).
 
 ### 2nd-order inner-loop re-system-ID (cc6921d, fable, 2026-06-10) — ❌ STRUCTURALLY SUPERSEDED by the characterize-sweep (510da24, next section)
 Kept as the record of WHY the windup/2nd-order picture was wrong (do NOT re-litigate). cc6921d re-ID'd
@@ -317,10 +361,12 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
   OFF** in VQ1 sim ← the right home for the user's "test the control policy with real YOLO vision."
-  **Use updated 1.1% leak figure (commit 4673517)** for the twin injection, not the prior 1.6%. Next
-  vision-engineering lever at this stage = `attitude_noise_std` (see perception-char findings above).
-- **Vision engineering workstream (b) COMPLETE for VQ1+Stage-1** (commit 4673517, 2026-06-09). Residual
-  lever for Stage-2 / vision pkg 2: `attitude_noise_std` (currently inert for given-pose nav).
+  **Use the VISION-PKG2 model (2026-06-10) for the twin injection — leak 0.53% of solved, acceptance
+  ~47%, cov = K2·analytic + 1.4° lever + 0.40 m floor + 32 m cap** (supersedes both the 1.6% and 1.1%
+  figures). The `attitude_noise_std` lever is ✅ SHIPPED (see §VISION-PKG2 above).
+- **Vision engineering workstream (b) COMPLETE for VQ1+Stage-1** (commit 4673517, 2026-06-09).
+  **✅ Vision pkg 2 (`attitude_noise_std`) DONE 2026-06-10 — measured covariance model shipped; see
+  §VISION-PKG2 above** (still inert for given-pose nav; given-pose tracking untouched, vq1 flow unchanged).
 - **Vision engineering (a) runs PARALLEL** (detector training, Adroit, decoupled by design).
 
 ## STACK-REVIEW-VQ2 (2026-06-10, fable, report-only — full report: handoff/stack-review-2026-06-10/REPORT.md)
@@ -346,10 +392,14 @@ in any component but in **3 META gaps**:
   **delayed-fix KF rewind ring buffer** (apply fix at capture time — exact + cheap for a linear KF; at
   15 m/s a 50 ms stale fix mis-applied "at now" = 0.75 m; buys more than any factor graph);
   **range-anisotropic R** (depth-axis ∝ r² in the gate-bearing frame — dilution-of-precision is the correct
-  model for the 2 residual long-range leaks, NOT learned depth, NOT tighter gates); **offline yaw-bias
-  calibration solve** against known gate geometry over a recording (exactly what MonoRace did to win A2RL);
+  model for the 2 residual long-range leaks, NOT learned depth, NOT tighter gates); ~~offline yaw-bias
+  calibration solve~~ — **✅ RESOLVED-AS-REFUTED (VISION-PKG2, 2026-06-10): there is NO fixed yaw rotation to
+  solve for** (both-signed per-gate offsets + flight-specific roll wander that fails cross-validation) — the
+  shipped covariance model covers it; the MonoRace-style solve only becomes live again if the roll-wander
+  τ_pre reproduces with consistent sign across two flights (see §VISION-PKG2 follow-up);
   **in-loop perception latency measurement** (🚩 ShadowPC torch is **CPU-ONLY** — decode→detect→PnP→KF has
   NEVER been measured in-loop; YOLO11s@640 on CPU plausibly 30–80 ms; first-order unknown for vision-only VQ2).
+  Rewind buffer + anisotropic R + latency measurement remain OPEN; the yaw-calibration sub-piece is closed.
 
 **Secondary keepers:**
 - **Learned residual dynamics on the twin** (UZH Learning-on-the-Fly, 2508.21065): fit a small
