@@ -457,9 +457,12 @@ def main() -> int:
         run_deadline = t0 + args.max_seconds
         last_print = 0.0
 
+        n_coll0 = len(client.collisions)      # collisions BEFORE this run are residue (the
+                                              # prior race's post-disarm fall arrives pre-GO)
+
         def abort_check() -> str | None:
             s = client.state
-            if any(c["threat_level"] >= 2 for c in client.collisions):
+            if any(c["threat_level"] >= 2 for c in client.collisions[n_coll0:]):
                 return "hard collision"
             if not np.all(np.isfinite(s.position_ned if s.position_ned is not None else [0.0])):
                 return "non-finite state"

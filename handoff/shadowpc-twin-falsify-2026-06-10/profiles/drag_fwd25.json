@@ -2,7 +2,7 @@
  "phases": [
   {
    "name": "init",
-   "dur": 2.0,
+   "dur": 3.5,
    "vel_damp": true,
    "alt_target_m": 0.0
   },
@@ -14,15 +14,15 @@
   },
   {
    "name": "yawramp",
-   "dur": 4.0,
+   "dur": 6.0,
    "yaw_ramp_deg": -180.0,
-   "yaw_rate_dps": 60.0,
+   "yaw_rate_dps": 45.0,
    "vel_damp": true,
    "alt_target_m": -6.0
   },
   {
    "name": "settle",
-   "dur": 1.0,
+   "dur": 2.0,
    "vel_damp": true,
    "alt_target_m": -6.0
   },

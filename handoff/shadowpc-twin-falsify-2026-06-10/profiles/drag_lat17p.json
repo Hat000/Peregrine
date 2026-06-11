@@ -2,7 +2,7 @@
  "phases": [
   {
    "name": "init",
-   "dur": 2.0,
+   "dur": 3.5,
    "vel_damp": true,
    "alt_target_m": 0.0
   },

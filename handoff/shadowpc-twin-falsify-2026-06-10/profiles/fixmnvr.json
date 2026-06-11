@@ -2,7 +2,7 @@
  "phases": [
   {
    "name": "init",
-   "dur": 2.0,
+   "dur": 3.5,
    "vel_damp": true,
    "alt_target_m": 0.0
   },
@@ -26,7 +26,7 @@
   },
   {
    "name": "roll+1",
-   "dur": 0.8,
+   "dur": 0.4,
    "kind": "step",
    "axis": "roll",
    "value": 1.0,

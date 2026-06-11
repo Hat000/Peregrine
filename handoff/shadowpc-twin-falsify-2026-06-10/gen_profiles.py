@@ -27,7 +27,9 @@ def ph(name, dur, **kw):
     return {"name": name, "dur": dur, **kw}
 
 
-def init(alt=0.0, dur=2.0):
+def init(alt=0.0, dur=3.5):
+    # 3.5 s: the -17.8 deg resting tilt kicks ~2.6 m/s of -X drift (smoke run fix100b2 reached
+    # x=-8 with a 2 s init); the longer hold lets vel-damp + pos-pull re-center before climbing.
     return ph("init", dur, vel_damp=True, alt_target_m=alt)
 
 
@@ -47,10 +49,13 @@ for theta, t_acc, t_coast in ((8, 4.0, 6.0), (17, 4.0, 6.0), (25, 3.5, 5.5), (32
 
 # ---- P1 drag: true forward runs (yaw ramp to face +X first; body +x) ----------------
 for theta, t_acc, t_coast in ((17, 4.0, 6.0), (25, 3.5, 5.5)):
+    # ramp 6 s + settle 2 s: the hold's yaw authority (~50 deg/s realized) lagged the original
+    # 4 s/60 dps ramp by ~100 deg -- fwd17's accel phase had a rotating heading (data still
+    # usable, world-frame fit; fwd25 starts the accel actually pointed +X).
     PROFILES[f"drag_fwd{theta:02d}"] = [
         init(), climb(-6.0, 5.0),
-        ph("yawramp", 4.0, yaw_ramp_deg=-180.0, yaw_rate_dps=60.0, vel_damp=True, alt_target_m=-6.0),
-        ph("settle", 1.0, vel_damp=True, alt_target_m=-6.0),
+        ph("yawramp", 6.0, yaw_ramp_deg=-180.0, yaw_rate_dps=45.0, vel_damp=True, alt_target_m=-6.0),
+        ph("settle", 2.0, vel_damp=True, alt_target_m=-6.0),
         ph("accel", t_acc, pitch_deg=-theta, alt_target_m=-6.0, tilt_ff=True),
         ph("coast", t_coast, alt_target_m=-6.0),
     ]
@@ -141,7 +146,9 @@ PROFILES["fixmnvr"] = [
     init(), climb(-6.0, 4.0),
     ph("accel", 2.5, pitch_deg=+17.0, alt_target_m=-6.0, tilt_ff=True),
     ph("relevel", 0.5, alt_target_m=-6.0),
-    ph("roll+1", 0.8, kind="step", axis="roll", value=1.0, alt_target_m=-6.0),
+    # 0.4 s: realized ~2.77 rad/s -> ~63 deg excursion, just under the 70 deg abort
+    # (0.8 s aborted the smoke run at 72 deg mid-step)
+    ph("roll+1", 0.4, kind="step", axis="roll", value=1.0, alt_target_m=-6.0),
     ph("catch", 1.5, vel_damp=True, alt_target_m=-6.0),
 ]
 
