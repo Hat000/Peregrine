@@ -536,6 +536,9 @@ in any component but in **3 META gaps**:
   persist. The TOGT line is cheap and needed either way.
 
 **Examined and REJECTED (do not re-litigate without new evidence):**
+- **Contact-tolerant racing lines** — rules-invalid (gate contact = invalid run, 2026-06-11). TOGT 1.06 m corner-clip optimum is illegal; plan to ≤~0.5 m from centre.
+- **Graded/non-terminal contact reward in RL training** — S15's terminal-collision-penalty-75 design is EXACTLY right for these rules; do not soften.
+- **Recovery-from-contact curriculum** — DEMOTED to near-miss/disturbance recovery only; covered better by the queued MPC-shadow watchdog. Contact itself = run over, no recovery to train.
 - **DA3 for gate depth** — re-verified, HOLDS: metric mono-depth error at 25–38 m ≥ the PnP noise it would
   replace; known-size+intrinsics PnP is the geometrically correct tool. DA3 = offline OBSTACLE flywheel only.
 - **RT-DETR / D-FINE / RF-DETR** — bbox-first, no 4-keypoint pose path beating ultralytics-pose; YOLO26 is the in-family upgrade.
@@ -643,11 +646,11 @@ Probe goal: does the sim's `race_outcome` accept a gate pass that clips the corn
 | 0.60 m | Gate ADVANCES + contact event |
 | 0.74 m | Inconclusive — nav overshot into outer frame (CTBR precision limit, NOT a validity reject) |
 
-### Implications
-- Racing lines should hold **~0.6 m clearance** to stay contact-free.
-- Corner-clipping to ~0.64+ m counts but risks contact dynamics.
-- **TOGT 4.13-vs-4.27 s bracket:** partially closed; **lean 4.27 s (inscribed-circle) as the planning-valid bound**.
-- The 0.74 m inconclusive result is a nav-precision artefact, not a sim reject — 0.75 m half-opening may still be fully available; a cleaner probe (smaller speed / tighter nav) would close it.
+### Implications (REVISED 2026-06-11 — rules context)
+- **🚩 CONTACT = INVALID RUN (rules-confirmed):** "0.60 m WITH contact" is a RULES-INVALID pass. The usable planning aperture = ≤~0.5 m offset from center (0.6 m logged a contact event; 0.64+ is moot — contact invalidates regardless of gate-advance).
+- **TOGT corner-clipping optimum (~1.06 m Euclidean clips) is definitively ILLEGAL.** The shipped margined reference line (crossings ≤0.14 m from centre = 0.6 m tracking budget) is the correct planning artifact.
+- **TOGT 4.13-vs-4.27 s bracket:** 4.27 s (inscribed-circle, contact-free) is the planning-valid bound. 4.13 s assumed contact-tolerant corner cuts — INVALID.
+- The 0.74 m inconclusive result is a nav-precision artefact; moot given contact rule.
 
 ---
 
@@ -670,6 +673,9 @@ Add unrecovered-spin detection (angular rate magnitude > threshold for N consecu
 
 ### (c) Between-flight reset protocol
 Between flights, do a **FULL escape→Enter reset** so every run starts from a fresh countdown. Observed weird autoreset-from-crash states when reusing the same post-crash context without a full reset.
+
+### (d) Sticky-contact physics artifact (low priority)
+During broken-pipe flights the drone was observed **PINNED against a vertical gate surface with zero commanded thrust** — probable sticky contact physics. One-look check in recordings during diagnosis; not an anomaly to model, just a harness edge case.
 
 ### SIM LAUNCH PATH (all future ShadowPC prompts)
 `exe = "C:\Users\Shadow\Downloads\AI-GP Simulator v1.0.3364\AIGP_3364\FlightSim.exe"`

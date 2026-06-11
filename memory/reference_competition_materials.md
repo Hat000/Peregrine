@@ -21,6 +21,7 @@ metadata:
 
 **Grounded rules facts (verified 2026-05-28, do not re-assume):**
 - Gates must be passed in CORRECT ORDER; runs must pass gates "to count." Missed/out-of-order ⇒ invalid run. VQ2 ranks on fastest VALID time.
+- **🚩 GATE CONTACT = INVALID RUN (user-confirmed from rules, 2026-06-11): "contact and you're out."** Zero-contact is the VALIDITY condition, not a style preference. Consistent with our datum: the VQ1 run logging 5 collisions was rejected. *(User-attested; re-verify against the rules PDF if re-read.)*
 - FAQ: "The drone will not know the track... Gate position details may be provided only at a rough level; flight-path optimization is the team's responsibility." (So coarse gate data MAY be provided — fidelity unknown.)
 - VQ1: desaturated, gates highlighted, "visual guidance aids may be active." VQ2: aids OFF, "real 3D-scanned environment" (photoreal).
 - Software: external libraries/compilers/acceleration layers permitted; gen-AI coding tools allowed. FLOSS allowed BUT must be disclosed in writing to organizers + must not violate third-party license terms. ⇒ YOLO (AGPL) is usable; obligation is disclosure + AGPL compliance (trivial for internal/non-distributed use).
