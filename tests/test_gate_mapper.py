@@ -437,6 +437,44 @@ def test_generator_visibility_uses_camera_model():
     assert visible_gate_indices(np.zeros(3), R_level, far, MEASURED_NOISE) == []
 
 
+def test_run_mapper_offline_cli(tmp_path):
+    """End-to-end through the CLI seam: sightings file in -> live-loadable map out."""
+    import subprocess
+    import sys as _sys
+
+    root = __import__("pathlib").Path(__file__).resolve().parents[1]
+    s = generate_pose_aided_sightings(_path(), rng=np.random.default_rng(50))
+    sfile = dump_sightings_json(tmp_path / "s.json", s)
+    out = tmp_path / "map.json"
+    r = subprocess.run(
+        [_sys.executable, str(root / "scripts" / "run_mapper_offline.py"), str(sfile),
+         "--out", str(out), "--n-gates", "6", "--report", "--bias-correct"],
+        capture_output=True, text=True, cwd=root, timeout=300)
+    assert r.returncode == 0, r.stderr
+    from racer.navigator import load_track_map
+
+    gates = load_track_map(out, corner_to_center=True)
+    assert len(gates) == 6
+    for g in gates:
+        assert min(np.linalg.norm(g.position_ned - c) for c in CENTRES) < 0.6
+
+    # relative mode (case C) on a short two-gate slice, prior ignored with a notice
+    poses = _path()
+    sc = [x for x in generate_relative_sightings(poses, rng=np.random.default_rng(51))
+          if x.t < poses[len(poses) // 3][0]]
+    cfile = dump_sightings_json(tmp_path / "c.json", sc)
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps({"gates": VQ1_TRACK_RECORDS}))
+    out2 = tmp_path / "map_c.json"
+    r2 = subprocess.run(
+        [_sys.executable, str(root / "scripts" / "run_mapper_offline.py"), str(cfile),
+         "--out", str(out2), "--prior", str(prior)],
+        capture_output=True, text=True, cwd=root, timeout=300)
+    assert r2.returncode == 0, r2.stderr
+    assert "ignored in relative" in r2.stderr
+    assert len(load_track_map(out2, corner_to_center=True)) >= 2
+
+
 def test_case_c_matches_case_a_information():
     """The same noise core feeds both generators: with pose RESTORED externally, case-C
     levers reproduce case-A implied gate measurements (frame/sign consistency)."""

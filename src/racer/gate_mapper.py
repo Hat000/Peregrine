@@ -799,7 +799,6 @@ def _chain_init(frames, levers, frame_t_chain, cfg: MapperConfig):
         gate_pts: list[list[np.ndarray]] = [[] for _ in gate_pos]
         first_seen: dict[int, int] = {}
         obs, pose_init = [], []
-        n_rej = 0
         prev_pose = np.zeros(3)
         prev_t = None
         recent: list[tuple[float, np.ndarray]] = []   # last chained (t, pose) for velocity fit
@@ -851,10 +850,10 @@ def _chain_init(frames, levers, frame_t_chain, cfg: MapperConfig):
                 obs.append((fi, gi, L, s))
             prev_pose = pose
             prev_t = t_f
-        return obs, gate_pos, pose_init, first_seen, n_rej
+        return obs, gate_pos, pose_init, first_seen
 
-    _obs1, gp1, _pi1, _fs1, _ = run_pass(seeds=None)
-    obs, gate_pos, pose_init, first_seen, _ = run_pass(seeds=gp1)
+    _obs1, gp1, _pi1, _fs1 = run_pass(seeds=None)
+    obs, gate_pos, pose_init, first_seen = run_pass(seeds=gp1)
     # final sanity sweep: drop sightings contradicting their (frozen-seed) gate
     kept = []
     n_rejected = 0
