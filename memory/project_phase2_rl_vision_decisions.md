@@ -573,6 +573,71 @@ submission interface spec + VQ1 deadline + confirm registration active. **🆕 (
 stack carry state (map, tuned line) BETWEEN attempts in the controlled eval? (decides track-randomization
 mandatory-vs-insurance) + ⑤ the eval-hardware compute envelope — does the submitted stack get a GPU?**
 
+## ✅ INC5 SHIPPED — AERO-ON TRANSFER CANDIDATE (2026-06-11, laptop fable + Adroit; commit 02fcce1; writeup handoff/laptop-inc5-aero-retrain-2026-06-11/)
+
+**SUPERSEDES inc4. inc4 = KNOWN-BROKEN on corrected physics: aero-ON eval sr 0.461, 53.9% collisions, dies at +1-step latency. Its "transfer-candidate" status rested on the falsified linear drag — VOID.**
+
+### V100 parity gate (prerequisite; deferred from S16)
+Job 3267545 + re-verified. Worst DIV 2.665e-15 across all 6 configs (legacy / super_rate / delay2 / map_delay / aero / aero_delay). PASS (acceptance ≤1e-6). `run_parity.sh` md5 tripwire confirmed.
+
+### Round 1 — inc4 warm-start (unconstrained speed datum)
+Inc4 weights verbatim → aero-ON plant → 5 jobs round 1. Outcome: 6.89 s median but roll p90 145° (with real ~8 g convex thrust, the tilt-16 hinge makes aggressive flight too cheap → policy tilts hard). **This is the UNCONSTRAINED SPEED DATUM** (fastest the current reward allows on corrected physics). Not shipped.
+
+### Round 2 — tilt-weight sweep rw_tilt ∈ {48, 96}
+Winner: **inc5_t96_s1** (seed 1, job 3267805, 6000 PPO updates):
+- VQ1 held-out: sr **1.000** / 2560 eps / 0 collisions / median **9.52 s**
+- Generalization: **0.939** (random unseen courses)
+- Style: roll p90 **64.5°** (envelope met)
+- Deploy: **6/6** incl. +2-step latency (50 ms extra) — robust
+- Shipped: `rl/checkpoints/stage1_inc5_actor.pth` md5 **bd1d670f7878eb938119ea173379e7d5** + sidecar `stage1_inc5_actor.json`; sidecar auto-loads via `load_actor`
+
+Alternate banked (not shipped): **t48_s0** (9.22 s median, gen 0.960) — fails +2-step latency → not robust enough for the unattended eval. Kept for reference.
+
+### Key findings
+1. **Style envelope cost is now MEASURED:** rw_tilt=96 → 9.52 s; unconstrained (Round 1) → 6.89 s. **~2.3 s/lap cost on real aero.** This is a physics cost, not a tuning knob. The envelope's original anomaly-avoidance rationale is DISSOLVED (no anomaly; plant measured to full stick + full inversion). Envelope relaxation = candidate speed ladder (tilt 96→48→…, one live-verified step at a time) post live-transfer.
+2. **Zero NaN** (S15 obs-clamp holds on aero plant across all seeds/jobs).
+3. **`fly_rl.py` default checkpoint still points at inc4** — all live sessions must pass `--checkpoint rl/checkpoints/stage1_inc5_actor.pth` explicitly until the default is flipped.
+
+### Deployment
+Same recipe as inc4. `fly_rl.py --checkpoint rl/checkpoints/stage1_inc5_actor.pth --flights N`. Sidecar auto-applies correct thrust bound (watch `[load_actor] sidecar` line). Virtual flip ON by default. Expected: standing start, ~9–10 s lap, peak roll ≲65°, smooth commands.
+
+### NEXT
+① Live transfer on ShadowPC (`fly_rl.py --checkpoint stage1_inc5_actor.pth --flights N`) + fold in corner-pass probe; ② if live transfer confirms: envelope relaxation ladder + 60/100 Hz decision-rate experiment + TOGT re-solve with corrected aero; ③ S2 architecture decision post verdict.
+
+---
+
+## 🚩 POLICY DECISION RATE: 30 Hz WAS NEVER A CHOICE (2026-06-11 finding)
+
+The 30 Hz control rate was inherited from DiffAero `racing.yaml` `dt=0.0333` — not a deliberate decision. Confirmed non-issue for the plant (control-rate probe: rate map + dynamics identical at 50/100/200 Hz ±0.2%; inference microseconds). **However at VQ2 speeds (20–39 m/s) 30 Hz = 0.7–1.3 m between decisions vs 0.75 m gate half-opening.** This is a non-trivial precision risk at the top of the speed envelope.
+
+**QUEUED experiment (after live transfer verdict, not before):** retrain at 60 Hz then 100 Hz — dt override + PPO horizon retune (keep same env-steps per episode) + latency-DR step rescale (delay steps scale with control freq). Compare: median lap, gate precision (in-plane miss distribution), +2-step latency robustness vs 30 Hz baseline. If 60 Hz wins without latency regression → flip.
+
+---
+
+## PARALLEL ONBOARD SYSTEMS LEDGER (2026-06-11 brainstorm)
+
+Design rule: all parallel threads feed the sacred 30 Hz control loop **only at tick boundaries**, preserving determinism. Keystone enabler = **KF rewind buffer** (makes any slow perception pipeline usable regardless of compute latency; a 50 ms stale fix mis-applied at 15 m/s = 0.75 m error; the rewind costs nothing for a linear KF). **Gated on organizer answers ① (VQ2 stream) and ⑤ (eval GPU).**
+
+### Tier 1 (high value, known feasible)
+- **Async heavyweight detector ~5 Hz full-res → rewind-corrected KF:** run YOLO11s at full resolution on every N-th frame in a background thread; correct into KF at frame timestamp via rewind buffer. Buys better detections at cost of batched latency.
+- **ROI re-detection "zoom":** after a full-frame detection, crop a tight ROI around predicted gate position for the next K frames → potentially extends effective range past 32 m cap → could crack the case-C co-visibility wall (24–32 m gate spacing vs ~32 m range cap). **Free offline experiment** on existing recordings.
+- **MPC-shadow safety floor + watchdog demotion:** run analytic twin one-step ahead in parallel; if predicted trajectory diverges from RL policy output beyond threshold → demote to model-based controller for that tick. Upgrades the validity supervisor from alarm to actuator.
+- **Critic-as-risk-monitor:** run the learned value function alongside the policy; low V(s) = anomaly signal; can trigger watchdog demotion. Free (critic already trained). Needs one recording-replay calibration check to set the threshold.
+
+### Tier 2 (conditional on live data / organizer answers)
+- **Multi-frame far-gate PnP:** accumulate detector keypoints across 3–5 frames before solving PnP → lower noise at long range; helpful if >32 m gates matter.
+- **Optical-flow velocity witness:** monocular flow cross-checks ODOMETRY velocity during blind transits (zero fixes).
+- **Between-attempts residual fitting:** fit a small (state,action)→accel-residual on the just-flown recording, update the live twin for next attempt. Gated on organizer Q④ (can stack carry state between attempts?).
+- **IMM filter bank:** multiple motion models (hover / cruise / gate-transit) → auto-switch; helpful if the KF diverges on sharp maneuvers.
+
+### REJECTED (do not re-litigate without new evidence)
+- **In-race map mutation:** determinism risk + planner-carrot hazard (changing gate positions mid-flight destabilizes the RL obs → policy OOD).
+- **Policy-ensemble voting:** chattering on disagreement; disagreement-as-uncertainty-signal is OK (= critic risk monitor, already Tier 1).
+- **Wind estimator:** sim has none; adds complexity for zero modeled benefit.
+- **In-race policy adaptation:** gradient updates in the live loop on unknown eval hardware; risk >> reward.
+
+---
+
 ## Open
 - ~~Substrate bake-off verdict~~ ✅ RESOLVED: **DiffAero** — proven on Adroit (plant injected, gate PASS, trains our plant).
 - Structural pilot-stack changes (user brainstorming — the Setpoint/ControlCommand seam keeps a
