@@ -193,6 +193,9 @@ def main() -> int:
     ap.add_argument("--handoff-speed", type=float, default=10.0)
     ap.add_argument("--max-rate",   type=float, default=0.0,
                     help="PATH A: cap |rate_flu| rad/s before the plant; 0=off")
+    ap.add_argument("--yaw-scale",  type=float, default=1.0,
+                    help="scale the policy yaw-rate command (0 = drop yaw): twin "
+                         "validation of the S17 live mixer mitigation")
     ap.add_argument("--virtual-flip", action=argparse.BooleanOptionalAction, default=True,
                     help="π body-z conjugation (policy flies tail-first; sim spawns "
                          "nose-first). DEFAULT ON -- matches fly_rl.py's deployment default "
@@ -252,7 +255,7 @@ def main() -> int:
 
     obs0 = obs_from_truth(st, gate, last_normed, args.virtual_flip)
     r0, c0, n0 = policy_step(actor, obs0, args.max_rate, args.virtual_flip,
-                             args.max_thrust)
+                             args.max_thrust, yaw_scale=args.yaw_scale)
     print(f"[step0] obs pos_g={np.round(obs0[0:3],2).tolist()} vel_g={np.round(obs0[3:6],2).tolist()} "
           f"rpy_g={np.round(obs0[6:9],2).tolist()}")
     print(f"[step0] action: rate_frd={np.round(r0,3).tolist()} collective={c0:.3f} "
@@ -263,7 +266,7 @@ def main() -> int:
         obs = obs_from_truth(st, gate, last_normed, args.virtual_flip)
         rate_frd, collective, last_normed = policy_step(
             actor, obs, args.max_rate if capped else 0.0, args.virtual_flip,
-            args.max_thrust if capped else 0.0)
+            args.max_thrust if capped else 0.0, yaw_scale=args.yaw_scale)
         if not args.live_thrust_clip:
             collective = last_normed * _HOVER_THRUST   # un-clipped, exactly training
         action = np.concatenate([rate_frd, [collective]])

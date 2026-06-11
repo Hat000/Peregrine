@@ -1,0 +1,18 @@
+{
+ "phases": [
+  {"name": "init", "dur": 3.5, "vel_damp": true, "alt_target_m": 0.0},
+  {"name": "climb", "dur": 6.0, "vel_damp": true, "alt_target_m": -12.0},
+  {"name": "z00_r0", "dur": 0.8, "kind": "astep", "value": [0.0, 0.0, 0.0], "thrust": 0.0},
+  {"name": "catch1", "dur": 2.5, "vel_damp": true, "alt_target_m": -12.0},
+  {"name": "z00_y12", "dur": 0.8, "kind": "astep", "value": [0.0, 0.0, 1.2], "thrust": 0.0},
+  {"name": "catch2", "dur": 2.5, "vel_damp": true, "alt_target_m": -12.0},
+  {"name": "z00_y31", "dur": 0.8, "kind": "astep", "value": [0.0, 0.0, 3.14], "thrust": 0.0},
+  {"name": "catch3", "dur": 2.5, "vel_damp": true, "alt_target_m": -12.0},
+  {"name": "zhov_y31", "dur": 0.8, "kind": "astep", "value": [0.0, 0.0, 3.14], "thrust": 0.2656},
+  {"name": "catch4", "dur": 3.0, "vel_damp": true, "alt_target_m": -12.0},
+  {"name": "z00_rp15", "dur": 0.6, "kind": "astep", "value": [1.5, 1.5, 0.0], "thrust": 0.0},
+  {"name": "catch5", "dur": 3.0, "vel_damp": true, "alt_target_m": -12.0},
+  {"name": "z00_all", "dur": 0.6, "kind": "astep", "value": [1.5, 1.5, 3.14], "thrust": 0.0},
+  {"name": "catch6", "dur": 3.5, "vel_damp": true, "alt_target_m": -12.0}
+ ]
+}

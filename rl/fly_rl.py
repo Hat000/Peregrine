@@ -279,7 +279,8 @@ def load_actor(path: str) -> nn.Module:
 @torch.no_grad()
 def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
                 virtual_flip: bool = False, max_thrust: float = 0.0,
-                debug: dict | None = None) -> tuple[np.ndarray, float, float]:
+                debug: dict | None = None, yaw_scale: float = 1.0
+                ) -> tuple[np.ndarray, float, float]:
     """One forward pass, replicating the TRAINING action pipeline exactly:
     test-mode action = tanh(actor_mean(obs)), then env.rescale_action onto
     [_ACT_MIN, _ACT_MAX].
@@ -291,6 +292,12 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
 
     ``debug``: pass a dict to receive the pipeline internals (raw mean, tanh,
     rescaled action) for the --debug-obs per-step dump.
+
+    ``yaw_scale``: scale on the policy's yaw-rate command (S17 mixer mitigation).
+    The policy dithers yaw at the action rail every tick — net yaw ≈ 0 in-twin, but
+    live the never-converging yaw demand is the largest motor-differential source,
+    and at low collective the mixer's idle-floor clipping turns it into ~0.2-0.4 of
+    PARASITIC collective (measured: mixer_probe 2026-06-11). 0 = drop yaw entirely.
     """
     obs_t = torch.as_tensor(obs_np[None], dtype=torch.float32)   # (1, 17)
     mean  = actor(obs_t)[0].cpu().numpy().astype(np.float64)     # (4,) raw mean
@@ -303,6 +310,9 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     rate_flu = act[1:4]
     if max_rate > 0.0:
         rate_flu = np.clip(rate_flu, -max_rate, max_rate)        # OOD diagnostic cap
+    if yaw_scale != 1.0:
+        rate_flu = rate_flu.copy()
+        rate_flu[2] *= yaw_scale       # body z is body z under both flip and FLU->FRD
     if virtual_flip:
         rate_flu = _RZ_PI_BODY @ rate_flu       # virtual body frame -> real body
     rate_frd = rate_flu * _ACT_FLU_TO_FRD
@@ -596,6 +606,7 @@ def fly_once(client, actor, args, flight_idx: int,
     # ------------------------------------------------------------------
     print(f"\n[fly] RL policy  rate={args.rate:g} Hz  max_rate="
           f"{args.max_rate if args.max_rate > 0 else 'off'}  "
+          f"yaw_scale={args.yaw_scale:g}  "
           f"virtual_flip={args.virtual_flip}  max={args.max_seconds:g}s ...")
     final_state  = "IDLE"
     tick         = 1.0 / args.rate
@@ -629,7 +640,8 @@ def fly_once(client, actor, args, flight_idx: int,
             "type": "header", "flight": flight_idx, "checkpoint": str(args.checkpoint),
             "act_min": _ACT_MIN.tolist(), "act_max": _ACT_MAX.tolist(),
             "hover_thrust": _HOVER_THRUST, "rate_hz": args.rate,
-            "max_rate": args.max_rate, "virtual_flip": args.virtual_flip,
+            "max_rate": args.max_rate, "yaw_scale": args.yaw_scale,
+            "virtual_flip": args.virtual_flip,
             "obs_labels": OBS_LABELS,
         }) + "\n")
 
@@ -715,7 +727,8 @@ def fly_once(client, actor, args, flight_idx: int,
             obs = build_obs(s, gate_index, last_normed, virtual_flip=args.virtual_flip)
             dbg: dict | None = {} if dbg_f is not None else None
             rate_frd, collective, last_normed = policy_step(
-                actor, obs, args.max_rate, virtual_flip=args.virtual_flip, debug=dbg)
+                actor, obs, args.max_rate, virtual_flip=args.virtual_flip, debug=dbg,
+                yaw_scale=args.yaw_scale)
 
             client.send_command(ControlCommand(
                 mode=ControlMode.BODY_RATE,
@@ -837,6 +850,12 @@ def main() -> int:
     ap.add_argument("--max-rate",     type=float, default=0.0,
                     help="cap |body-rate| (rad/s, per-axis, FLU) before sending; "
                          "0 = off. OOD-start diagnostic (PATH A).")
+    ap.add_argument("--yaw-scale",    type=float, default=1.0,
+                    help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
+                         "mixer mitigation: the policy's per-tick yaw rail dither is "
+                         "net-zero motion but forces large motor differentials, which "
+                         "the mixer's idle floor turns into ~0.2-0.4 PARASITIC "
+                         "collective at low commanded thrust (mixer_probe 2026-06-11).")
     ap.add_argument("--virtual-flip", action=argparse.BooleanOptionalAction, default=True,
                     help="run the policy in a body frame rotated π about body z "
                          "(training flies the course tail-first; the sim spawns "
@@ -938,7 +957,7 @@ def main() -> int:
             recorder.start()
             recorder.add_meta(
                 endpoint=args.endpoint, label=args.label, flight=flight,
-                rate_hz=args.rate, max_rate=args.max_rate,
+                rate_hz=args.rate, max_rate=args.max_rate, yaw_scale=args.yaw_scale,
                 virtual_flip=args.virtual_flip, bridge=args.bridge,
                 handoff_dist=args.handoff_dist,
                 handoff_speed_min=args.handoff_speed_min,
