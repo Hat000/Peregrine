@@ -8,7 +8,7 @@ conda activate diffaero
 ln -sfn /scratch/network/fl3689/diffaero_repo /scratch/network/fl3689/diffaero
 export PYTHONPATH=/scratch/network/fl3689:/scratch/network/fl3689/peregrine_repo/src:/scratch/network/fl3689/peregrine_repo/rl:$PYTHONPATH
 cd /scratch/network/fl3689/peregrine_repo/rl
-echo "=== diffaero_dynamics md5 (should be 9ffb426a2e23299ae9c6f070f5f06f17) ==="
+echo "=== diffaero_dynamics md5 (should be a49919eb4b3eaffa5fc2cb2f04d31183) ==="
 md5sum diffaero_dynamics.py
 echo "=== parity gate ==="
 nice -n 19 python check_diffaero_gate.py

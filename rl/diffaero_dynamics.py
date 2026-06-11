@@ -65,19 +65,26 @@ INTERFACE MISMATCHES / ASSUMPTIONS (each tagged ``# RECONCILE`` at its use site)
     body-rate FLU->FRD = diag(1,-1,-1). # RECONCILE the policy's action SCALING/bounds with the
     training cfg (we expose min_action/max_action from cfg.controller, unchanged by the sign-flip).
  5. DOMAIN RANDOMIZATION: DiffAero randomizes m/J/D/arm_l/c_tau via build_randomizer -- we use NONE
-    of those (different plant). Randomize OUR params instead (rate_gain, hover_thrust, linear_drag,
-    cmd latency, thrust_tau) -- the correct DR for this plant. Hooks left in __init__. # RECONCILE
+    of those (different plant). Randomize OUR params instead -- since the characterize-sweep
+    (2026-06-10): super_rate_s, rate_tau, alpha_max (absolute measured bands) + hover/drag
+    (fractional), NOT rate_gain (the old asymmetric "+30% band" was the flat-gain model's shadow of
+    the unmodeled static map -- disproven; G0 stays fixed at the shipped nominal). # RECONCILE
  6. INTEGRATOR: DiffAero applies solver(euler|rk4) x n_substeps to X_dot. Our plant integrates
     INTERNALLY (semi-implicit Euler) at its own dt; we bypass DiffAero's solver and call rl_plant per
     substep with dt/n_substeps. (rate/thrust lags use exp(-dt/tau), so substepping is consistent.)
  7. ACCELERATION ``_a``: rl_plant doesn't emit accel; we expose world accel by finite-difference
     (v_new - v_old)/dt, converted to DiffAero frame. Good enough for observations; not a true
     accelerometer reading. # RECONCILE if the policy/reward needs specific force.
- 8. TRANSPORT DELAY: rl_plant supports it internally (default OFF; validated config is OFF). We model
-    control latency at a HIGHER level instead -- a per-env action ring buffer applied in ``step()``
-    (item 4a, ``_apply_latency``), NOT inside the integrators. This keeps ``check_against_rl_plant``
-    (which calls the integrators directly) bit-for-bit, and is a clean transport wrapper around either
-    backend. Active only under DR (``dynamics.dr=true``, ``dr_latency_max_steps>0``).
+ 8. TRANSPORT DELAY -- two INDEPENDENT mechanisms (do not enable both):
+    (a) per-episode latency DR: a per-env action ring buffer applied in ``step()`` (item 4a,
+        ``_apply_latency``), randomized delay in {0..max} control steps, active only under DR.
+        The integrators never see it, so the parity gate is unaffected.
+    (b) ``params.transport_delay_steps`` (rl_plant's internal ring buffer): now mirrored in BOTH
+        backends (S12 handoff item 4a) via the persistent ``self._plant_act_buf`` carried across
+        ``step()`` calls -- ``_step_numpy`` threads it through rl_plant's own ``PlantState.act_buf``;
+        ``_step_torch`` replicates the push/pop per SUBSTEP exactly. Default OFF (0) -- the
+        validated config; used for eval-time fixed latency and for the parity gate's
+        ``transport_delay_steps>0`` configs. Delay counts SUBSTEPS (rl_step is called per substep).
  9. n_agents: handled via rl_plant's leading-batch convention; we mirror DiffAero's squeeze at
     n_agents==1. State stored in DiffAero layout/frame so _p/_v/_q/_w/R/body2world all work unchanged.
 """
@@ -101,9 +108,12 @@ except Exception:                       # pragma: no cover - diffaero absent off
 # Our parity-tested numpy plant (the physics source of truth). On Adroit, make it importable by
 # `pip install -e` of the Peregrine repo, or copy rl_plant.py next to this file. # RECONCILE path.
 try:
-    from racer.rl_plant import PlantParams, PlantState, step as rl_step
+    from racer.rl_plant import (PlantParams, PlantState, step as rl_step,
+                                SUPER_RATE_S_MEASURED, ALPHA_MAX_RPS2_MEASURED)
 except Exception:                       # pragma: no cover
     PlantParams = PlantState = None     # RECONCILE: ensure racer.rl_plant is on PYTHONPATH on Adroit
+    SUPER_RATE_S_MEASURED = 0.30                                  # characterize-sweep nominals
+    ALPHA_MAX_RPS2_MEASURED = np.array([260.0, 260.0, 80.0])
 
 
 # ================================================================================================
@@ -216,8 +226,8 @@ class PeregrinePlantDynamics(BaseDynamics):
         # RECONCILE: optionally read overrides from cfg.peregrine_plant.* ; align g with cfg.g.
         self.params = params or PlantParams()
         self.params.g = float(getattr(cfg, "g", self.params.g))
-        # DR hook (mismatch #5): randomize OUR params per-env here (rate_gain/hover/linear_drag/...),
-        # NOT DiffAero's m/J/D. Left scalar in this DRAFT. # RECONCILE
+        # DR (mismatch #5) randomizes OUR params per-env (super_rate_s/rate_tau/alpha_max/hover/
+        # drag), NOT DiffAero's m/J/D -- see the DR block below. rate_gain (G0) stays fixed.
 
         # cached torch params for the torch backend
         if torch is not None:
@@ -225,6 +235,19 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._rate_sign = torch.tensor(self.params.rate_sign, device=device, dtype=torch.float32)
             self._BODY_UP = torch.tensor([0.0, 0.0, -1.0], device=device, dtype=torch.float32)
             self._g_vec_ned = torch.tensor([0.0, 0.0, self.params.g], device=device, dtype=torch.float32)
+            # super-rate map / slew (None -> legacy flat gain / unlimited; see rl_plant docstring)
+            self._super_s = (None if self.params.super_rate_s is None else
+                             torch.tensor(np.broadcast_to(self.params.super_rate_s, (3,)).copy(),
+                                          device=device, dtype=torch.float32))
+            self._alpha_max = (None if self.params.alpha_max_rps2 is None else
+                               torch.tensor(np.broadcast_to(self.params.alpha_max_rps2, (3,)).copy(),
+                                            device=device, dtype=torch.float32))
+        # params-level transport-delay ring buffer (mismatch #8b): the NED CTBR action queue carried
+        # across step() calls, SHARED by both backends (numpy threads it through rl_plant's
+        # PlantState.act_buf; torch mirrors the push/pop). None = cold; rl_plant cold-seeds with the
+        # first action, so None here reproduces rl_plant's exact warm-up. Only used when
+        # params.transport_delay_steps > 0 (default OFF).
+        self._plant_act_buf = None
 
         # --- state in DiffAero layout/frame; hover init (identity attitude, normed_thrust=1) ---
         bshape = (self.n_envs,) if self.n_agents == 1 else (self.n_envs, self.n_agents)
@@ -252,23 +275,34 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._max_action = torch.tensor([2.0, 8.0, 8.0, 8.0], device=device)
 
         # --- domain randomization of OUR plant params (mismatch #5), per-env, resampled at reset ----
-        # Enabled with `+dynamics.dr=true` (hydra adds the key). Bands are fractions of the nominal
-        # faithful params; g and thrust_tau_s are held fixed. When DISABLED the validated scalar path in
-        # _step_torch runs unchanged -> the check_against_rl_plant gate (4.4e-16) is preserved bit-for-bit.
+        # Enabled with `+dynamics.dr=true` (hydra adds the key). Since the characterize-sweep
+        # (2026-06-10): the static super-rate map is ALWAYS ON under DR (it IS the measured plant);
+        # s / rate_tau / alpha_max take ABSOLUTE measured bands; hover/drag stay fractional;
+        # rate_gain (G0) is FIXED at the shipped nominal -- the old asymmetric "+30% rate_gain band"
+        # (S1.2 overshoot proxy) was the flat-gain model's shadow of the unmodeled static map and is
+        # REPLACED by it. g and thrust_tau_s are held fixed. When DISABLED the validated scalar path
+        # in _step_torch runs unchanged -> the check_against_rl_plant gate stays bit-for-bit.
         self._dr_enabled = bool(getattr(cfg, "dr", False))
         self._dr_bands = {
-            # rate_gain is ASYMMETRIC (item 4b): the live overshoot (S1.2: 9.7 vs 7.85 rad/s realized on
-            # saturated steps) says the real inner-loop gain runs HIGH transiently, so bias the band up:
-            # multiplier ~ U[1-lo, 1+hi] = U[0.90, 1.30].
-            "rate_gain_lo": float(getattr(cfg, "dr_rate_gain_lo", 0.10)),  # -10%
-            "rate_gain_hi": float(getattr(cfg, "dr_rate_gain_hi", 0.30)),  # +30%
-            "hover":     float(getattr(cfg, "dr_hover_frac", 0.05)),       # +- 5%
-            "drag":      float(getattr(cfg, "dr_drag_frac", 0.30)),        # +-30%
-            "rate_tau":  float(getattr(cfg, "dr_rate_tau_frac", 0.30)),    # +-30%
+            "s_lo":        float(getattr(cfg, "dr_s_lo", 0.25)),           # super-rate s (absolute;
+            "s_hi":        float(getattr(cfg, "dr_s_hi", 0.35)),           #  measured 0.30 +- ~0.02)
+            "rate_tau_lo": float(getattr(cfg, "dr_rate_tau_lo", 0.015)),   # seconds (absolute;
+            "rate_tau_hi": float(getattr(cfg, "dr_rate_tau_hi", 0.030)),   #  tau_eq 25-33 ms sat.)
+            "alpha_lo":    float(getattr(cfg, "dr_alpha_max_lo", 200.0)),  # rad/s^2 roll/pitch
+            "alpha_hi":    float(getattr(cfg, "dr_alpha_max_hi", 320.0)),  #  (yaw scales by 80/260)
+            "hover":       float(getattr(cfg, "dr_hover_frac", 0.05)),     # +- 5%
+            "drag":        float(getattr(cfg, "dr_drag_frac", 0.30)),      # +-30%
         }
+        # DR nominal for alpha_max (the yaw column scales with it): the params' value if map-ON
+        # params were passed, else the measured nominal [260, 260, 80].
+        self._alpha_nom = np.broadcast_to(
+            ALPHA_MAX_RPS2_MEASURED if self.params.alpha_max_rps2 is None
+            else self.params.alpha_max_rps2, (3,)).astype(np.float64)
         if torch is not None and self._dr_enabled:
             n = self.n_envs
-            self._dr_rate_gain = self._rate_gain.unsqueeze(0).expand(n, 3).clone()   # (n,3)
+            self._dr_s = torch.full((n, 3), float(SUPER_RATE_S_MEASURED), device=device)
+            self._dr_alpha_max = (torch.tensor(self._alpha_nom, device=device,
+                                               dtype=torch.float32).unsqueeze(0).expand(n, 3).clone())
             self._dr_hover = torch.full((n,), float(self.params.hover_thrust), device=device)
             self._dr_drag = torch.full((n,), float(self.params.linear_drag), device=device)
             self._dr_rate_tau = torch.full((n,), float(self.params.rate_tau_s), device=device)
@@ -281,6 +315,9 @@ class PeregrinePlantDynamics(BaseDynamics):
         # never sees the buffer => the 4.4e-16 parity gate is preserved bit-for-bit. The buffer is a
         # pure pass-through when latency is OFF or a given env's delay == 0. Active only when DR is on
         # AND max>0. At env.dt=0.02 s, {0,1,2} steps span 0/20/40 ms (~the measured 40 ms lag).
+        # Characterize-sweep 2026-06-10: the measured INPUT delay is 5-15 ms -- one control step
+        # (33 ms @ 30 Hz, 20 ms @ 50 Hz) already covers it, so keep delay HERE (transport mechanism)
+        # and do NOT double-count it into rate_tau (whose DR band is the loop dynamics, not delay).
         # NOTE: actions are detached into the buffer -- correct for PPO (no pathwise grad through the
         # env); a BPTT algo (SHAC/APG) with latency-DR would need a differentiable buffer instead.
         self._latency_max = int(getattr(cfg, "dr_latency_max_steps", 2))   # delay in {0..max} steps
@@ -342,8 +379,12 @@ class PeregrinePlantDynamics(BaseDynamics):
         action = np.concatenate([rate_frd, collective[..., None]], axis=-1)
 
         thrust0 = self._thrust.detach().cpu().numpy()
+        # params-level transport delay (mismatch #8b): thread the persistent ring buffer through
+        # rl_plant's own PlantState.act_buf (None = cold; rl_step seeds it from the first action).
+        buf0 = (None if self._plant_act_buf is None
+                else self._plant_act_buf.detach().cpu().numpy().astype(np.float64))
         ps = PlantState(pos=p.copy(), vel=v.copy(), quat=q.copy(), omega=w.copy(),
-                        thrust=thrust0.copy(), act_buf=None)
+                        thrust=thrust0.copy(), act_buf=buf0)
         v_prev = v.copy()
         sub_dt = self.dt / self.n_substeps
         for _ in range(self.n_substeps):                              # mismatch #6
@@ -356,6 +397,9 @@ class PeregrinePlantDynamics(BaseDynamics):
         self._state = torch.from_numpy(new).to(dev).to(self._state.dtype)
         self._acc = torch.from_numpy(acc_d).to(dev).to(self._acc.dtype)
         self._thrust = torch.from_numpy(np.asarray(ps.thrust)).to(dev).to(self._thrust.dtype)
+        self._plant_act_buf = (None if ps.act_buf is None else
+                               torch.from_numpy(np.ascontiguousarray(ps.act_buf)).to(dev)
+                               .to(self._state.dtype))
         # NOTE: grad_decay intentionally skipped -- this path is non-differentiable. # RECONCILE
 
     # ---- backend B: torch-native MIRROR of rl_plant.step (GPU + autograd; UNVERIFIED until checked)-
@@ -373,30 +417,58 @@ class PeregrinePlantDynamics(BaseDynamics):
         sub_dt = self.dt / self.n_substeps
 
         # --- param sources: per-env DR tensors (training) OR the validated scalars (gate/eval). The
-        # scalar branch is identical to the pre-DR code, so check_against_rl_plant stays bit-for-bit. ---
+        # scalar branch is identical to rl_plant op-for-op (incl. map-ON params), so
+        # check_against_rl_plant stays bit-for-bit. Under DR the super-rate map + slew are ALWAYS on
+        # (they ARE the measured plant; s/alpha_max are the randomized quantities, G0 is fixed). ---
         if self._dr_enabled:
-            rate_gain = self._dr_rate_gain                                       # (n_envs, 3)
             hover = self._dr_hover                                               # (n_envs,)
             drag = self._dr_drag.unsqueeze(-1)                                   # (n_envs, 1)
             alpha = (1.0 - torch.exp(-sub_dt / self._dr_rate_tau)).unsqueeze(-1) # (n_envs, 1)
+            super_s = self._dr_s                                                 # (n_envs, 3)
+            alpha_max = self._dr_alpha_max                                       # (n_envs, 3)
         else:
-            rate_gain = self._rate_gain                                          # (3,)
             hover = self.params.hover_thrust                                     # float
             drag = self.params.linear_drag                                      # float
             alpha = 1.0 - np.exp(-sub_dt / max(self.params.rate_tau_s, 1e-9))    # float (const over substeps)
+            super_s = self._super_s                                              # (3,) or None (legacy)
+            alpha_max = self._alpha_max                                          # (3,) or None (legacy)
         collective = U[..., 0] * hover                                           # (n_envs,)
+
+        # params-level transport delay (mismatch #8b): mirror rl_plant's ring buffer EXACTLY --
+        # the post-mapping NED CTBR action is pushed per SUBSTEP; the oldest queued one applies.
+        k = int(self.params.transport_delay_steps)
+        action_ned = (torch.cat([rate_frd, collective.unsqueeze(-1)], dim=-1) if k > 0 else None)
 
         thrust = self._thrust
         v_prev = v
         for _ in range(self.n_substeps):
-            target = rate_gain * self._rate_sign * rate_frd
-            w = _t_clip_to_norm(w + alpha * (target - w), self.params.max_omega_rps)
+            if k > 0:
+                buf = self._plant_act_buf
+                if buf is None:                                  # cold buffer -> seed with this action
+                    buf = action_ned[..., None, :].expand(
+                        *action_ned.shape[:-1], k, 4).clone()
+                applied = buf[..., 0, :]                         # oldest queued command
+                self._plant_act_buf = torch.cat([buf[..., 1:, :], action_ned[..., None, :]], dim=-2)
+                cmd_rate, cmd_coll = applied[..., 0:3], applied[..., 3]
+            else:
+                cmd_rate, cmd_coll = rate_frd, collective
+            # inner rate loop: flat gain (legacy) or the static super-rate map; optional slew clamp.
+            if super_s is not None:
+                gain = self._rate_gain / (1.0 - super_s * torch.clamp(cmd_rate.abs(), max=np.pi) / np.pi)
+            else:
+                gain = self._rate_gain
+            target = gain * self._rate_sign * cmd_rate
+            domega = alpha * (target - w)
+            if alpha_max is not None:
+                lim = alpha_max * sub_dt
+                domega = torch.clamp(domega, -lim, lim)
+            w = _t_clip_to_norm(w + domega, self.params.max_omega_rps)
             q = _t_quat_normalize(_t_quat_multiply(q, _t_rotvec_to_quat(w * sub_dt)))
             if self.params.thrust_tau_s > 0.0:
                 beta = 1.0 - np.exp(-sub_dt / self.params.thrust_tau_s)
-                thrust = thrust + beta * (collective - thrust)
+                thrust = thrust + beta * (cmd_coll - thrust)
             else:
-                thrust = torch.broadcast_to(collective, thrust.shape)
+                thrust = torch.broadcast_to(cmd_coll, thrust.shape)
             a_up = self.params.g * thrust / hover
             f_world = a_up.unsqueeze(-1) * _t_quat_rotate(q, self._BODY_UP)
             f_world = f_world - drag * v
@@ -416,10 +488,13 @@ class PeregrinePlantDynamics(BaseDynamics):
     # ---- reset / validation ----------------------------------------------------------------------
     def detach(self) -> None:
         """Detach carried state from the autograd graph between rollouts. BaseDynamics.detach only
-        detaches _state; mirror QuadrotorModel and also detach our extra _acc / _thrust state."""
+        detaches _state; mirror QuadrotorModel and also detach our extra _acc / _thrust state (and
+        the params-level delay buffer, whose entries are pushed grad-carrying for BPTT)."""
         super().detach()
         self._acc = self._acc.detach()
         self._thrust = self._thrust.detach()
+        if self._plant_act_buf is not None:
+            self._plant_act_buf = self._plant_act_buf.detach()
 
     def reset_idx(self, env_idx) -> None:
         """RECONCILED (vs Adroit clone): reset ONLY our carried aux state (_acc, _thrust), OUT-OF-PLACE.
@@ -438,6 +513,18 @@ class PeregrinePlantDynamics(BaseDynamics):
         tmask = torch.zeros_like(self._thrust, dtype=torch.bool)
         tmask[env_idx] = True
         self._thrust = torch.where(tmask, hover, self._thrust)
+        # params-level transport-delay buffer (mismatch #8b): re-seed the reset envs' queue with the
+        # hover command [0,0,0,hover] -- the exact analog of PlantState.hover's act_buf seeding.
+        # torch.where (out-of-place) because the buffer can carry grads mid-rollout.
+        if self._plant_act_buf is not None and env_idx.numel() > 0:
+            hov = (hover if torch.is_tensor(hover) else
+                   torch.full((self.n_envs,), float(hover), device=self._plant_act_buf.device))
+            hov_ned = torch.zeros_like(self._plant_act_buf[:, :1, :])          # (n, 1, 4)
+            hov_ned[..., 3] = hov.to(hov_ned.dtype).view(-1, 1)
+            bmask = torch.zeros(self.n_envs, 1, 1, dtype=torch.bool,
+                                device=self._plant_act_buf.device)
+            bmask[env_idx] = True
+            self._plant_act_buf = torch.where(bmask, hov_ned, self._plant_act_buf)
         if self._latency_enabled and env_idx.numel() > 0:
             # new per-episode delay + flush the buffer to hover for the reset envs (no stale commands)
             self._latency_steps[env_idx] = torch.randint(
@@ -446,37 +533,58 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._act_buf[env_idx, :, 0] = 1.0
 
     def _resample_dr(self, env_idx) -> None:
-        """Resample per-env plant params uniformly within the fractional bands, for the reset envs."""
+        """Resample per-env plant params for the reset envs: super-rate s / rate_tau / alpha_max
+        uniform within their ABSOLUTE measured bands, hover/drag within the fractional ones.
+        rate_gain (G0) is deliberately NOT resampled -- fixed at the shipped nominal (the old
+        "+30% band" is superseded by the static map; characterize-sweep 2026-06-10)."""
         m = int(env_idx.numel())
         if m == 0:
             return
-        dev = self._dr_rate_gain.device
+        dev = self._dr_s.device
+        b = self._dr_bands
 
         def u(shape, frac):                   # symmetric uniform multiplier in [1-frac, 1+frac]
             return 1.0 + frac * (2.0 * torch.rand(*shape, device=dev) - 1.0)
 
-        def u_asym(shape, lo, hi):            # asymmetric uniform multiplier in [1-lo, 1+hi]
-            return (1.0 - lo) + (lo + hi) * torch.rand(*shape, device=dev)
+        def u_abs(shape, lo, hi):             # absolute uniform in [lo, hi]
+            return lo + (hi - lo) * torch.rand(*shape, device=dev)
 
-        self._dr_rate_gain[env_idx] = self._rate_gain.unsqueeze(0) * u_asym(
-            (m, 3), self._dr_bands["rate_gain_lo"], self._dr_bands["rate_gain_hi"])  # item 4b
-        self._dr_hover[env_idx] = float(self.params.hover_thrust) * u((m,), self._dr_bands["hover"])
-        self._dr_drag[env_idx] = float(self.params.linear_drag) * u((m,), self._dr_bands["drag"])
-        self._dr_rate_tau[env_idx] = float(self.params.rate_tau_s) * u((m,), self._dr_bands["rate_tau"])
+        self._dr_s[env_idx] = u_abs((m, 3), b["s_lo"], b["s_hi"])
+        # alpha_max: roll/pitch sampled in the absolute [alpha_lo, alpha_hi] rad/s^2 band; the yaw
+        # column scales by its nominal ratio (80/260 by default) so every axis randomizes with the
+        # same relative width around its own measured nominal.
+        amax = u_abs((m, 3), b["alpha_lo"], b["alpha_hi"])
+        amax[:, 2] = amax[:, 2] * float(self._alpha_nom[2] / self._alpha_nom[0])
+        self._dr_alpha_max[env_idx] = amax
+        self._dr_hover[env_idx] = float(self.params.hover_thrust) * u((m,), b["hover"])
+        self._dr_drag[env_idx] = float(self.params.linear_drag) * u((m,), b["drag"])
+        self._dr_rate_tau[env_idx] = u_abs((m,), b["rate_tau_lo"], b["rate_tau_hi"])
 
     def check_against_rl_plant(self, U: Tensor, atol: float = 1e-5) -> float:
-        """Validate the torch backend against the parity-tested numpy plant for one step from the
-        CURRENT state. Returns the max abs state divergence (also asserts < atol). Run this on Adroit
-        before trusting backend='torch'. (Delegates to ``rl_plant`` -- the source of truth.)"""
+        """Validate the torch backend against the parity-tested numpy plant from the CURRENT state.
+        ``U`` is one action ``(..., 4)`` or a stack ``(T, ..., 4)``: both backends are stepped
+        through the whole stack from an identical start -- including an identical copy of the
+        params-level transport-delay buffer, so ``transport_delay_steps > 0`` configs are genuinely
+        exercised (S12 handoff item 4a) -- and EVERY intermediate state is compared. Returns the max
+        abs state divergence over the trajectory (also asserts < atol). Run on Adroit before
+        trusting backend='torch'. (Delegates to ``rl_plant`` -- the source of truth.)"""
+        Us = U if U.dim() == self._state.dim() + 1 else U.unsqueeze(0)
         snap = self._state.clone(); thr = self._thrust.clone()
-        # numpy reference
-        self.backend = "rl_plant_numpy"; self._step_numpy(U)
-        ref = self._state.detach().cpu().numpy()
-        # torch candidate from the same start
-        self._state = snap.clone(); self._thrust = thr.clone(); self.backend = "torch"
-        self._step_torch(U)
-        cand = self._state.detach().cpu().numpy()
-        div = float(np.max(np.abs(cand - ref)))
+        abuf = None if self._plant_act_buf is None else self._plant_act_buf.clone()
+        # numpy reference trajectory
+        self.backend = "rl_plant_numpy"
+        refs = []
+        for u in Us:
+            self._step_numpy(u)
+            refs.append(self._state.detach().cpu().numpy().copy())
+        # torch candidate from the identical start
+        self._state = snap.clone(); self._thrust = thr.clone()
+        self._plant_act_buf = None if abuf is None else abuf.clone()
+        self.backend = "torch"
+        div = 0.0
+        for u, ref in zip(Us, refs):
+            self._step_torch(u)
+            div = max(div, float(np.max(np.abs(self._state.detach().cpu().numpy() - ref))))
         assert div < atol, f"torch backend diverges from rl_plant: {div:.2e} >= {atol:.0e}"
         return div
 

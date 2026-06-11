@@ -21,9 +21,10 @@ from peregrine_racing import PeregrineRacing
 # Register with backend="torch": build_dynamics(cfg, device) passes no backend kwarg, so the class
 # would otherwise default to the slow, NON-differentiable, DR-IGNORING numpy path (_step_numpy reads
 # only the scalar self.params -- the per-env DR tensors + latency apply ONLY in _step_torch/step()).
-# S1.3's item-4 DR (asymmetric rate-gain band + control-latency) therefore REQUIRES the torch backend
-# to take effect. The torch mirror is parity-proven to the numpy plant (check_against_rl_plant
-# DIV_FLOAT64 2.2e-16), so this changes throughput + DR-awareness, NOT the physics.
+# The DR (super-rate map s/rate_tau/alpha_max bands + control-latency; the disproven asymmetric
+# rate-gain band was REPLACED by the static map, characterize-sweep 2026-06-10) therefore REQUIRES
+# the torch backend to take effect. The torch mirror is parity-proven to the numpy plant
+# (check_against_rl_plant), so this changes throughput + DR-awareness, NOT the physics.
 _dyn.DYNAMICS_ALIAS["peregrine_plant"] = lambda cfg, device: PeregrinePlantDynamics(
     cfg, device, backend="torch")
 _env.ENV_ALIAS["peregrine_racing"] = PeregrineRacing

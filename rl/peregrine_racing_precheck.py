@@ -48,10 +48,13 @@ print("RESET obs.shape=%s match_obs_dim=%s" % (tuple(obs.shape), obs.shape[-1] =
 
 dyn = env.dynamics
 if getattr(dyn, "_dr_enabled", False):
-    rg = dyn._dr_rate_gain
-    print("DR ON  rate_gain per-env min=%s max=%s (nominal [2.50,2.50,2.23])"
-          % (rg.amin(0).cpu().numpy().round(3), rg.amax(0).cpu().numpy().round(3)))
-    print("DR hover [%.3f,%.3f] drag [%.3f,%.3f] tau [%.4f,%.4f]  (distinct=%s)"
+    s = dyn._dr_s
+    am = dyn._dr_alpha_max
+    print("DR ON  super_rate_s per-env min=%s max=%s (band [0.25,0.35]; G0 FIXED at nominal)"
+          % (s.amin(0).cpu().numpy().round(3), s.amax(0).cpu().numpy().round(3)))
+    print("DR alpha_max per-env min=%s max=%s (r/p band [200,320]; yaw scaled 80/260)"
+          % (am.amin(0).cpu().numpy().round(1), am.amax(0).cpu().numpy().round(1)))
+    print("DR hover [%.3f,%.3f] drag [%.3f,%.3f] tau [%.4f,%.4f] (band [0.015,0.030]; distinct=%s)"
           % (dyn._dr_hover.min(), dyn._dr_hover.max(), dyn._dr_drag.min(), dyn._dr_drag.max(),
              dyn._dr_rate_tau.min(), dyn._dr_rate_tau.max(),
              bool((dyn._dr_hover.std() > 0).item())))
