@@ -260,6 +260,8 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   + **COLLISION-based crash-termination** (DiffAero's racing env already has it; NOT a tilt threshold —
   ~~crash-termination at the measured anomaly boundary~~ superseded, no anomaly exists). Hand to a dedicated
   **fable + adroit-connector** session. Non-trivial, objectively-checkable → good fable fit.
+  **🆕 Scope now ALSO includes procedural track randomization + VQ1-course-as-held-out-eval** (STACK-REVIEW-VQ2
+  meta-gap ①, see that section — potentially binary for the unseen VQ2 course).
 
   **🆕 PENDING ARCHITECTURE DECISION (2026-06-10 discussion) — S2 = decomposed plan-line + RL-tracker?**
   Consider making S2 a **decomposed plan-line + RL-tracker** (plan an explicit smooth/feasible racing line;
@@ -278,12 +280,88 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   lever for Stage-2 / vision pkg 2: `attitude_noise_std` (currently inert for given-pose nav).
 - **Vision engineering (a) runs PARALLEL** (detector training, Adroit, decoupled by design).
 
+## STACK-REVIEW-VQ2 (2026-06-10, fable, report-only — full report: handoff/stack-review-2026-06-10/REPORT.md)
+Adversarial whole-stack architecture review (user ask: "is YOLO-pose corners the best we can field? Depth
+Anything 3? VSLAM?"); 2025–26 landscape swept, settled-decision ledger honored, verdicts grounded in our
+measured anchors. **HEADLINE: architecture AFFIRMED — no component needs replacement.** The 2025 A2RL
+champion stack (**MonoRace**, TU Delft/MAVLab, arXiv 2601.15222) validates our exact class (monocular gate
+perception + known-geometry calibration refinement + learned controller). The rank-relevant exposure is not
+in any component but in **3 META gaps**:
+- **① Single-track training vs unseen VQ2 course — potentially BINARY; rank-impact #1.** We train on the
+  ONE VQ1 course; VQ2 is an unseen track run unattended in THEIR eval (a one-track policy may score zero).
+  Obs are already gate-relative (translation-invariant) — the architecture is ready, only the training
+  distribution isn't; literature is unambiguous that randomized tracks generalize (2411.04246, 2512.09571,
+  Environment-as-Policy 2410.22308). **FIX = procedural track randomization** (sample spec-plausible 6-gate
+  layouts) **+ VQ1-course-as-HELD-OUT-eval** — first experiment: 1k random courses, S1.3 recipe, report
+  held-out-VQ1 success vs the single-track baseline. **FOLDED INTO the env-coherence redesign scope.**
+- **② No time-optimal bound for the VQ1 course** (35.3 s vs WHAT denominator?). **Upgrade #2 =
+  TOGT-Planner** (FSC-Lab + Run-TOGT-Planner Python wrapper; plans through the gate OPENING — frees the
+  crossing point, where corner-cut time lives) **+ CPC (Foehn 2021) as the true offline bound.** Serves
+  three masters: the gap meter, the RL progress-reward reference, and the explicit line if decomposed S2
+  wins. ~3–5 days; feed the new ~11 rad/s authority + measured thrust ceiling.
+- **③ Vision-only (VQ2 case C) readiness pieces UNBUILT** (cheap, champion-validated, useful in A/B too):
+  **delayed-fix KF rewind ring buffer** (apply fix at capture time — exact + cheap for a linear KF; at
+  15 m/s a 50 ms stale fix mis-applied "at now" = 0.75 m; buys more than any factor graph);
+  **range-anisotropic R** (depth-axis ∝ r² in the gate-bearing frame — dilution-of-precision is the correct
+  model for the 2 residual long-range leaks, NOT learned depth, NOT tighter gates); **offline yaw-bias
+  calibration solve** against known gate geometry over a recording (exactly what MonoRace did to win A2RL);
+  **in-loop perception latency measurement** (🚩 ShadowPC torch is **CPU-ONLY** — decode→detect→PnP→KF has
+  NEVER been measured in-loop; YOLO11s@640 on CPU plausibly 30–80 ms; first-order unknown for vision-only VQ2).
+
+**Secondary keepers:**
+- **Learned residual dynamics on the twin** (UZH Learning-on-the-Fly, 2508.21065): fit a small
+  (state,action)→accel-residual model on course recordings — closes the ~25% latency under-model + the
+  unmeasured racing-airspeed aero, the last transfer-gap term. Additive module BEHIND the parity gate, OFF
+  by default; first experiment = one-step prediction RMSE vs the analytic twin on a held-out run.
+- **YOLO26-pose at the photoreal v4 retrain** (NOT before): RLE per-keypoint σ feeds weighted-PnP directly
+  (replacing conf-derived σ), NMS-free deterministic latency; same pipeline/sbatch, near-zero marginal cost —
+  train v4 as YOLO26-m AND YOLO11s, A/B on the fixed eval set. Doctrine stands: never fine-tune on clean VQ1 frames.
+- **Runtime validity supervisor**: watchdog demoting policy→model-based floor on divergence
+  (tilt/track-error threshold) for the unattended they-run eval; ~1 day; optional pending submission mechanics.
+- **Offline gate-landmark mapper skeleton** (scipy `least_squares`, GTSAM only if conditioning bites):
+  serves VQ2 cases B+C, the one missing infra piece used in 2 of 3 cases; a weekend, zero risk — pre-build now.
+- **Reviewer's read on the pending S2 architecture decision** (decided on live data, not this review):
+  retrain MONOLITHIC first on the corrected plant — the backflip-dive root cause (wrong plant + no DR +
+  reward/termination conflict) is understood and fixed; decomposition = the fallback if style pathologies
+  persist. The TOGT line is cheap and needed either way.
+
+**Examined and REJECTED (do not re-litigate without new evidence):**
+- **DA3 for gate depth** — re-verified, HOLDS: metric mono-depth error at 25–38 m ≥ the PnP noise it would
+  replace; known-size+intrinsics PnP is the geometrically correct tool. DA3 = offline OBSTACLE flywheel only.
+- **RT-DETR / D-FINE / RF-DETR** — bbox-first, no 4-keypoint pose path beating ultralytics-pose; YOLO26 is the in-family upgrade.
+- **Foundation-model distillation for corners** — solves an open-vocabulary problem we don't have.
+- **PVNet-class learned 6DoF gate pose** — parked; measured failures (scale-error boxes, yaw calibration) aren't what dense voting fixes.
+- **Tightly-coupled VIO (OpenVINS/VINS-Fusion)** — attitude is given; case-C bounded gate-SLAM covers the rest.
+- **GTSAM in-loop** — offline mapper only; linear KF + rewind buffer is near-optimal for a linear problem.
+- **Isaac Lab re-promotion** — no 2026 development changes the calculus vs DiffAero+injected-plant (88.9K steps/s, machine-epsilon parity).
+- **Crazyflow switch** — JAX throughput we don't need; re-pays the whole plant-injection + parity cost.
+- **In-loop MPPI reference-free racing** (2509.14726) — needs GPU rollouts inside the live control loop on
+  unknown eval hardware; our RL policy is the same objective baked offline. Revisit only if RL transfer fails twice.
+- **Direct motor commands / G&CNets** (the MonoRace control layer) — interface-impossible: we command CTBR
+  into a black-box stabilizer; take their calibration practice, not their actuator level.
+- **Pixel-to-control RL** — re-affirmed; even 2025–26 "vision-based" racing papers (2512.09571) feed DEPTH,
+  not RGB, and still need privileged→visual curricula.
+- **Conditional EXPERIMENT (not rejected):** tightly-coupled corner-reprojection EKF (arXiv 2603.02742 —
+  handles 2-corner transit frames without PnP) ONLY if VQ2 is vision-only AND transit dropout is measured to hurt.
+
+**New measured-data gaps exposed:**
+1. **In-loop perception latency** — no number exists anywhere (ShadowPC torch CPU-only); blocks honest Stage-2 latency injection.
+2. **Submission-eval state persistence between attempts** (map, tuned line carried over?) — decides whether
+   track-randomized generalization is MANDATORY (no persistence) vs insurance (persistence). **ADD TO THE ORGANIZER EMAIL.**
+3. **Eval-hardware compute envelope** (does our stack get a GPU?) — gates detector sizing + any in-loop
+   learned component; do NOT size to 100 TOPS for virtual quals (that governs the physical round). **ADD TO THE ORGANIZER EMAIL.**
+4. **Aero at racing airspeed** — all probes near hover; one cheap high-speed pass-through probe would bound it (DR band covers meanwhile).
+5. **Zero VQ2 photoreal frames exist** — the detector's true VQ2 axis (appearance) is unmeasurable until
+   organizers release anything — exactly why the DR doctrine must not be diluted.
+
 ## #1 ORGANIZER ASK (user offered to email info@theaigrandprix.com)
 **"In Round Two (VQ2), does the sim still stream LOCAL_POSITION_NED / ODOMETRY (drone position+velocity),
 or is position vision-only?"** — architecture-defining: if VQ2 gives pose, the vision→map→path→RL risk
 largely evaporates (RL flies on given pose; vision just confirms gates). The spec is SILENT (grepped: says
 "GPS not available / no absolute global position" but nothing on VQ2 LOCAL_POSITION_NED). Secondary: the
-submission interface spec + VQ1 deadline + confirm registration active.
+submission interface spec + VQ1 deadline + confirm registration active. **🆕 (STACK-REVIEW-VQ2): + ④ can the
+stack carry state (map, tuned line) BETWEEN attempts in the controlled eval? (decides track-randomization
+mandatory-vs-insurance) + ⑤ the eval-hardware compute envelope — does the submitted stack get a GPU?**
 
 ## Open
 - ~~Substrate bake-off verdict~~ ✅ RESOLVED: **DiffAero** — proven on Adroit (plant injected, gate PASS, trains our plant).
