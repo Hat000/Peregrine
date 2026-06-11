@@ -129,6 +129,25 @@ def test_corner_to_center_lifts_vertically_and_uses_quat_normal():
     np.testing.assert_allclose(center2[0].normal_ned, [-1.0, 0.0, 0.0], atol=1e-6)
 
 
+def test_corner_to_center_in_plane_axes_match_approach_view():
+    # [vision-pkg2 2026-06-10] The in-plane axes of the corner_to_center frame must follow the
+    # APPROACH-VIEW convention (X=image-right, Y=image-DOWN for a drone flying down-course),
+    # i.e. the same _frame_from_through construction the segment branch uses -- NOT the raw
+    # quaternion columns, which are authored for the opposite facing and left right/down BOTH
+    # flipped: a 180-deg in-plane offset vs the detector's corner-identity convention that
+    # anti-aligned the PnP disambiguation prior (measured: solved-vs-predicted gate rotation
+    # p50 174 deg on the course bundles; ~27 deg once fixed).
+    recs = _records([[-5, 0, 0], [-10, 0, 0], [-15, 0, 0]])   # course runs -X, gates face -X
+    for g in gates_from_track_records(recs, corner_to_center=True):
+        R = g.R_world_gate
+        # Y (image-down) must point DOWN in NED (+D), and the frame must be right-handed with
+        # Z = the down-course normal: X = down x normal = -E for a -X-facing gate.
+        assert R[2, 1] > 0.99                                   # down column ~ +D
+        np.testing.assert_allclose(R[:, 0], [0.0, -1.0, 0.0], atol=1e-9)   # right = -E
+        np.testing.assert_allclose(R[:, 2], [-1.0, 0.0, 0.0], atol=1e-9)   # normal down-course
+        np.testing.assert_allclose(np.cross(R[:, 0], R[:, 1]), R[:, 2], atol=1e-12)
+
+
 # ---------------------------------------------------------------------------
 # given-state estimation (no detector)
 # ---------------------------------------------------------------------------
@@ -220,10 +239,14 @@ def test_association_refuses_wrong_scale_gate():
 def test_innovation_gate_rejects_inconsistent_fix():
     # Given position ON + tight at the origin; the detection is geometry-consistent with the
     # map gate (right scale + centre + depth, so it passes association AND the depth sanity)
-    # but was actually taken from 1 m above where the navigator believes it is -> the fix
-    # implies a 1 m innovation against a cm-tight prior; the Mahalanobis gate rejects it.
+    # but was actually taken from 2.2 m above where the navigator believes it is -> the fix
+    # implies a 2.2 m innovation against a cm-tight prior; the Mahalanobis gate rejects it.
+    # (2.2 m, not the original 1 m: under the MEASURED fix-covariance model [vision-pkg2
+    # 2026-06-10: attitude 1.4 deg + 0.40 m floor] a 1 m disagreement is ~2 sigma -- genuinely
+    # within the chain's real noise -- so the honest gate now keeps it; ~2.2 m is chi2 ~ 22 >
+    # 16.27 while still associating (centre offset ~2.1 < 2.5 predicted-size units).)
     gate = _gate_facing_north([9.0, 0.0, -2.5], gate_id=0)
-    nav = Navigator(gates=[gate], detector=_FakeDetector(gate, [0.0, 0.0, -1.0]),
+    nav = Navigator(gates=[gate], detector=_FakeDetector(gate, [0.0, 0.0, -2.2]),
                     config=NavigatorConfig(use_given_position=True, given_pos_std=0.05))
     nav.update(_ds(0, position=[0.0, 0.0, 0.0]), _frame(0, 0))
     ns = None

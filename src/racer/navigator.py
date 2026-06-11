@@ -48,8 +48,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, NavState
-from racer.frames import R_world_from_body
-from racer.localization import gate_pose_to_world_position
+from racer.frames import ATTITUDE_NOISE_STD_RAD, R_world_from_body
+from racer.localization import FIX_COV_FLOOR_STD, gate_pose_to_world_position
 from racer.state_estimator import LinearKF, make_nav_state
 from racer.vision.association import (
     ASSOC_MAX_CENTER_UNITS,
@@ -101,16 +101,26 @@ def gates_from_track_records(
         R = _frame_from_through(seg)
         pos = positions[i]
         if corner_to_center:
-            # Use the gate's TRUE orientation quaternion (verified 2026-06-04) for BOTH the frame and
+            # Use the gate's TRUE orientation quaternion (verified 2026-06-04) for the NORMAL and
             # the centre. The segment-derived frame faces along the COURSE PATH (gate-to-gate), which
             # is tilted; the real gates all face -X. With the tilted frame the cross-track "gate
             # axis" line, extended back to the start, sits ~1.7 m off to the side, so the controller
             # detours sideways to reach it then oscillates (measured gate0_front2). The quaternion
             # gives a straight -X axis -> the gate sits directly ahead, no sideways detour.
-            #   convention: col0 = +width, col1 = normal(-X), col2 = +height(down).
+            #   quat convention: col0 = +width, col1 = normal(-X), col2 = +height(down).
             # The map position is the gate's BOTTOM-CENTRE (centred in width, base in height), so the
             # only correction is VERTICAL: lift half the height (no lateral shift). gate0 z -0.03 ->
             # -1.39.
+            # The IN-PLANE axes come from the down-course geometric convention
+            # (_frame_from_through: X=image-right, Y=image-down for the approaching drone), NOT the
+            # raw quaternion columns: the quat axes are authored for the OPPOSITE facing, so using
+            # them left right/down BOTH sign-flipped -- a 180-deg in-plane offset against the
+            # detector's corner-identity convention. Measured on the course bundles (vision-pkg2
+            # 2026-06-10): solved-vs-predicted gate rotation 174 deg p50 -> 27 deg with the flip
+            # removed. With the raw columns the PnP disambiguation prior was ANTI-aligned, so the
+            # IPPE frontal tie-break / P3P branch pick was effectively random and the 3-corner
+            # association compared a detection against the diagonally-opposite predicted corners.
+            # through_dir (col Z) and mission._passed (|rel @ col|) are invariant to the flip.
             h = float(r.get("height_m") or 2.72)
             q = r.get("orientation_ned_wxyz")
             if q is not None:
@@ -119,9 +129,7 @@ def gates_from_track_records(
                 if nrm @ seg < 0.0:                     # orient it down-course (exit side)
                     nrm = -nrm
                 col2 = Rq[:, 2] if Rq[:, 2][2] >= 0.0 else -Rq[:, 2]  # height axis, pointing down
-                right = Rq[:, 0]
-                down = np.cross(nrm, right)
-                R = np.column_stack([right, down, nrm])
+                R = _frame_from_through(nrm)            # in-plane axes: approach-view convention
                 pos = pos - 0.5 * h * col2             # lift to the opening centre (no lateral shift)
             else:                                       # fallback: lift straight up (gates ~upright)
                 pos = pos - np.array([0.0, 0.0, 0.5 * h])
@@ -170,7 +178,12 @@ class NavigatorConfig:
 
     # Vision -> KF (kept in-loop; never the crutch). Off when no detector is supplied.
     use_vision: bool = True
-    vision_max_range_m: float = 40.0       # ignore PnP fixes beyond this (too noisy at range)
+    # Ignore PnP fixes beyond this range. 40 -> 32 [vision-pkg2 2026-06-10]: the long-range
+    # depth-noise tail (sigma ~3% of range, occasional -12% events) produced the residual
+    # catastrophic leak (a 4.9 m fix error at 38 m passed every gate); the course bundles show
+    # ZERO good sub-metre fixes beyond 30 m, and no point on the course is further than ~30 m
+    # from the next gate, so the cap costs nothing and removes the worst leak at the source.
+    vision_max_range_m: float = 32.0
     # Robust association (racer.vision.association): a detection must agree with a map
     # gate's PREDICTED shape -- apparent-size ratio hard-gated, centre offset normalised by
     # the predicted size. Replaces the naive fixed-150px nearest-centre gate that caused
@@ -187,7 +200,12 @@ class NavigatorConfig:
     # healthy fix is never dropped. The right form of "gate the fix on agreement-with-prediction"
     # (nu^T S^-1 nu, breathing with S), per project-estimator-robustness.
     vision_gate_chi2: float = 16.27
-    attitude_noise_std: float = np.deg2rad(1.0)   # given-attitude 1-sigma for the lever-arm cov
+    # Fix-covariance model constants, MEASURED on the canonical course recording [vision-pkg2
+    # 2026-06-10]: the given-attitude/chain 1-sigma for the lever-arm term (was a 1.0-deg guess)
+    # and the isotropic floor covering the range-independent systematics (map-centre vertical,
+    # per-gate lateral, close-range depth). One source of truth each; see frames/localization.
+    attitude_noise_std: float = ATTITUDE_NOISE_STD_RAD
+    fix_cov_floor_std: float = FIX_COV_FLOOR_STD
 
 
 @dataclass
@@ -357,7 +375,8 @@ class Navigator:
             return
 
         position_ned, cov = gate_pose_to_world_position(
-            pose, gate, R_wb, attitude_noise_std=self.config.attitude_noise_std
+            pose, gate, R_wb, attitude_noise_std=self.config.attitude_noise_std,
+            fix_cov_floor_std=self.config.fix_cov_floor_std
         )
         if pose.n_corners < 4:
             from racer.localization import P3P_FIX_COV_INFLATION
