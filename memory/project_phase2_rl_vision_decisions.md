@@ -217,9 +217,9 @@ unattended on `scripts/rate_sysid.py`. Source of truth: `handoff/shadowpc-charac
   `started=True`, frozen sim_time); recovery = Win32-focus the AI-GP window + Enter ×2 — wired as
   automatic escalation in `scripts/rate_sysid.py` (15+ runs chained, zero GUI touching). (2) **Yaw gain
   is maneuver-dependent**: ~2.35 level (looks like a ~7.4 rad/s cap) vs ~3.1 tumbling — caveated, own
-  pass only if it ever matters (racing yaw cmds are small). (3) All probes near hover; aero at racing
-  airspeed unmeasured (the DR band covers; live course RMSE 0.22–0.41 at ≲3 rad/s says small-signal is
-  unaffected). (4) `rate_sysid.py` gained `--vel-damp`/`--pos-pull` station-keeping + `--mode anomaly`.
+  pass only if it ever matters (racing yaw cmds are small). (3) All probes near hover; ~~aero at racing
+  airspeed unmeasured~~ — ✅ since MEASURED (TWIN-FALSIFY 2026-06-11): the rate map is airspeed-INVARIANT
+  but the twin's linear drag + linear collective are FALSIFIED at speed/full-stick — see §TWIN-FALSIFY. (4) `rate_sysid.py` gained `--vel-damp`/`--pos-pull` station-keeping + `--mode anomaly`.
 
 ### ✅ S14 STATIC-MAP INTEGRATION COMPLETE (2026-06-10, fable; commits f730bd6, b14ca2e, 77a0186) — critical-path step 1 DONE
 Sweep WRITEUP §3 implemented across all three plant implementations, parity-gated at every seam.
@@ -257,6 +257,39 @@ Report: `handoff/laptop-s14-staticmap-integration-2026-06-10/REPORT.md`. **Tests
 - **🚩 ADROIT OPS:** `/scratch/network/fl3689/peregrine_repo` is a FILE COPY, not a git clone (the GitHub
   repo is private) — S14 pushed via md5-verified base64 over the x daemon; stage a real clone with a
   deploy key if Adroit sessions grow.
+
+### ✅ TWIN-FALSIFY CAMPAIGN COMPLETE (2026-06-11, ShadowPC fable) — quad drag + convex collective FALSIFY the twin's aero; S16 integration queued
+7 probes, predictions committed BEFORE any probe flew (9c240df/cbe9215) — the falsification discipline
+held. Source of truth: `handoff/shadowpc-twin-falsify-2026-06-10/WRITEUP.md` (commits cbe9215+0a52bc2+9684ae1).
+**TWO FALSIFICATIONS, four survivals:**
+- **🚩 LINEAR DRAG FALSIFIED.** The twin's `linear_drag 0.2111/s` world-isotropic is WRONG: real sim drag
+  is **QUADRATIC, body-direction-dependent** — c2≈0.052/m (0.042 nose-first / 0.058 tail-first /
+  0.055 lateral / 0.076 climb / 0.054 descend). At 9 m/s the sim brakes ~4.2 m/s² where the twin says 1.9
+  (**2.2× wrong, growing with speed**). Coast-replay speed RMS 0.81→0.24 m/s with the measured model.
+  **Policies trained on linear drag have learned ~2× UNDER-BRAKING at speed.**
+- **🚩 LINEAR COLLECTIVE MAP FALSIFIED.** The real thrust curve is **CONVEX**: full-stick vertical accel
+  ≈78 m/s² = 2.12× the linear model's 37; sub-linear below hover; motor witness 1:1 ⇒ thrust physics, not
+  motor lag. **CORRECTS the banked "live collective≤1.0 ≈ 3.765 normed ≈ 3.77 g ceiling" — that figure
+  was a LINEAR-MODEL artifact; real full-stick is ~8 g.** Implications: (a) the S1.3/S1.4 training thrust
+  model (max_normed_thrust=3.765 linear) under-states top-end authority ~2×; (b) **the TOGT time-optimal
+  bound (committed 35f451d) was computed with T/W≈3.77 ⇒ it is CONSERVATIVE — re-run the TOGT pipeline
+  with the corrected thrust curve after S16.**
+- **Survivals (4):** rate map **airspeed-INVARIANT** (ratios 0.95–0.98 of the hover map at 6 m/s, all
+  magnitudes); **control-rate invariant** 50/100/200 Hz (±0.2%); **NO battery sag** (−0.02% over 8 min);
+  **determinism** run-to-run SD ~0.03 m/s.
+- **Ready-to-port `CandidatePlant`** (quadratic body-frame drag + collective knot table) in the handoff's
+  `replay_twin.py`; proposed DR bands in WRITEUP §7. **Integration = S16, a separate parity-gated session
+  (same twin→rl_plant→torch recipe as S14). Retrain gating now extends to AERO: any checkpoint trained
+  pre-S16 under-brakes ~2× at speed.**
+- **Caveats:** drag above 7.6 m/s extrapolated (quad form unverified there; arena corridor proven clear
+  to ~43 m — a longer pass is possible); fwd/back anisotropy rests on 2 forward runs.
+- **Durable sim-ops facts:** (a) **🚩 ZOMBIE DUAL-INSTANCE mode** — two sim instances both streaming
+  MAVLink to 14550 → pymavlink send-peer flaps between them → drone ARMS but IGNORES all commands;
+  killing the zombie kills BOTH (shared launcher) → relaunch fresh via the documented login chain
+  (WRITEUP §0). (b) **Measurement footgun:** the harness's quaternion-finite-difference rate channel
+  ALIASES against the LPN/ODO telemetry stagger (produced a false "rate gain +20% at airspeed/100 Hz" —
+  refuted); use raw ODOMETRY rate + euler-slope cross-check (WRITEUP §6). (c) `rate_sysid.py` gained
+  `--mode profile` (JSON phase schedules) + a stale-collision fix.
 
 ## Depth model / ~100 TOPS budget (user) — OFFLINE flywheel
 After a recorded run (legal between-runs processing): **multi-view triangulation** from logged poses
@@ -320,7 +353,7 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   - **🚩 "OOD-at-start = root cause" RETRACTED** — an artifact of sonnet's wrong action transfer function, not a real diagnosis; reset saturation is the policy's NORMAL launch behavior (it saturates in training too, then modulates).
   - **Tail-first spawn bug + fix:** policy trained identity-reset + all gates at yaw π ⇒ flies the course tail-first; sim spawns nose-first on a 17.8°-tilted pad ⇒ ~180° attitude-OOD. Fixed with a **virtual π body-z flip in fly_rl.py** (`--virtual-flip`, default ON; exact rigid-body symmetry). Offline: handoff-state rollouts 0/6 → 6/6 under training physics.
   - **🚩 THE REAL transfer failure (the key finding) = the policy is a "backflip-diver":** its NOMINAL twin maneuver rolls through **104–126° before every gate** (fine offline). Live the maneuver diverges — realized rates hit **9.7 rad/s vs the twin's first-order 7.85 ceiling** (=3.14·2.5; ❌ diagnosis SUPERSEDED 2026-06-10: unmodeled static super-rate DC gain, NOT transient overshoot — see the characterize-sweep section), it blows through ±180° tilt (the then-suspected "yaw-spin anomaly" — **DISSOLVED by the sweep**: super-rate gain + Euler yaw-flip artifact + a gate-post COLLISION), and tumbles into the gate post within 0.35 s. NOT reproducible in the twin (replay from the exact live handoff state passes gate 0 at any latency ≤100 ms and gain ×1.24) → **no deployment-side knob fixes it.** The BRIDGE worked perfectly: CTBR delivered the drone dead-centre (dy +0.04, dz +0.05 m) at 5.1 m/s, 3 m before gate 0; the policy's first action = exactly the offline-twin prediction.
-  - **OOD verdicts (offline, measured via `rl/offline_rollout.py`):** training reset (1 m, rest) = **6/6 finish 3.3 s** (validates ALL deployment math); raw standing start (23.3 m, rest) ≈ 0–1/6 (arrives at gate 0 at 33–44 m/s, unrecoverable); **bridge handoff + virtual flip = 6/6 under training physics, 4/6 under the live collective ceiling** — the gate-4 wall is purely the thrust clip (trained max_normed_thrust 5.0 ≈ 5 g vs live collective≤1.0 ≈ 3.765 normed ≈ 3.77 g), unfixable at deployment, fixed in retrain.
+  - **OOD verdicts (offline, measured via `rl/offline_rollout.py`):** training reset (1 m, rest) = **6/6 finish 3.3 s** (validates ALL deployment math); raw standing start (23.3 m, rest) ≈ 0–1/6 (arrives at gate 0 at 33–44 m/s, unrecoverable); **bridge handoff + virtual flip = 6/6 under training physics, 4/6 under the live collective ceiling** — the gate-4 wall is purely the thrust clip (trained max_normed_thrust 5.0 ≈ 5 g vs live collective≤1.0 ≈ 3.765 normed ≈ "3.77 g" — ❌ that ceiling FALSIFIED 2026-06-11: a linear-model artifact, real full-stick ≈8 g via a CONVEX thrust curve; see §TWIN-FALSIFY), unfixable at deployment, fixed in retrain.
   - **🆕 UNATTENDED SIM CONTROL ACHIEVED here (the user's standing ask; durable capability for ALL future sim work):** **MAV_CMD 31000** (`client.send_sim_reset()`) restarts the race once a race context exists (fresh ~3 s countdown) — **NO-OP from HOME** (no telemetry there). From HOME: Win32 `SetForegroundWindow` to focus the `AI-GP` window (`WScript.Shell.AppActivate` alone returns False) + Enter twice (home → waiting room → race+countdown). The session **cold-launched FlightSim.exe and raced with NO human.** `rl/fly_rl.py --flights N` chains attempts (never resets into a ticking countdown).
   - **✅ S1.3 RETRAIN SPEC (Path C, ~30 min A100, `rl/peregrine_racing_s13.sbatch` staged):** ① `dynamics.controller.max_normed_thrust=3.765` (live ceiling; one-line override); ② **standing-start resets** (`+env.standing_start_frac`, reset at ~23 m from gate 0 at rest = real race start; **implemented** cfg-gated in `peregrine_racing.py`, spawn pose mapped through the deployment virtual flip → fly_rl.py needs no change; removes the CTBR bridge, bridge stays as fallback); ③ **tilt/jerk regularization** (`reward_weights.quadrotor.attitude≈2.0`/`jerk≈0.3`, sweep — kills the >90°-roll style; then framed as anomaly avoidance, NOW (510da24) justified for smoothness/VQ2 style + staying in the well-modeled envelope only — no anomaly exists; + the VQ2 aggression fix); ④ **latency DR** (port the transport-delay ring buffer to the torch backend of `rl/diffaero_dynamics.py` — rl_plant already supports it, parity-checkable via `check_against_rl_plant` with `transport_delay_steps>0`; DR per-env delay ∈ {0,1,2}) + asymmetric rate-gain DR band **[−10%,+30%]** (cheap transient-overshoot proxy — ❌ later DISPROVEN; ✅ REMOVED + replaced with the static-map DR in S14, see above). Reward shaping (smoothness/time) folds in here.
 
@@ -349,6 +382,10 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   map-ON (DR forces it; eval scripts still default flat).
   **🆕 Scope now ALSO includes procedural track randomization + VQ1-course-as-held-out-eval** (STACK-REVIEW-VQ2
   meta-gap ①, see that section — potentially binary for the unseen VQ2 course).
+  **🚩 2026-06-11 (TWIN-FALSIFY): S16 AERO integration (quadratic body-frame drag + convex collective knot
+  table, §TWIN-FALSIFY) inserts into the critical path BEFORE the final retrain — parity-gated separate
+  session, same twin→rl_plant→torch recipe as S14. Retrain gating now extends to aero: any pre-S16
+  checkpoint under-brakes ~2× at speed and trains under a phantom 3.77 g ceiling (real ~8 g).**
 
   **🆕 PENDING ARCHITECTURE DECISION (2026-06-10 discussion) — S2 = decomposed plan-line + RL-tracker?**
   Consider making S2 a **decomposed plan-line + RL-tracker** (plan an explicit smooth/feasible racing line;
@@ -387,7 +424,10 @@ in any component but in **3 META gaps**:
   TOGT-Planner** (FSC-Lab + Run-TOGT-Planner Python wrapper; plans through the gate OPENING — frees the
   crossing point, where corner-cut time lives) **+ CPC (Foehn 2021) as the true offline bound.** Serves
   three masters: the gap meter, the RL progress-reward reference, and the explicit line if decomposed S2
-  wins. ~3–5 days; feed the new ~11 rad/s authority + measured thrust ceiling.
+  wins. ~3–5 days; feed the new ~11 rad/s authority + measured thrust ceiling. **Pipeline since BUILT
+  (35f451d: TOGT-Planner + multiple-shooting refine, WSL) — but the bound used T/W≈3.77, since FALSIFIED
+  (real full-stick ≈8 g, §TWIN-FALSIFY) ⇒ the bound is CONSERVATIVE; re-run with the corrected convex
+  thrust curve after S16.**
 - **③ Vision-only (VQ2 case C) readiness pieces UNBUILT** (cheap, champion-validated, useful in A/B too):
   **delayed-fix KF rewind ring buffer** (apply fix at capture time — exact + cheap for a linear KF; at
   15 m/s a 50 ms stale fix mis-applied "at now" = 0.75 m; buys more than any factor graph);
@@ -404,7 +444,8 @@ in any component but in **3 META gaps**:
 **Secondary keepers:**
 - **Learned residual dynamics on the twin** (UZH Learning-on-the-Fly, 2508.21065): fit a small
   (state,action)→accel-residual model on course recordings — closes the ~25% latency under-model + the
-  unmeasured racing-airspeed aero, the last transfer-gap term. Additive module BEHIND the parity gate, OFF
+  ~~unmeasured~~ racing-airspeed aero (since measured directly — TWIN-FALSIFY 2026-06-11; S16 closes it
+  analytically, residual model = the mop-up), the last transfer-gap term. Additive module BEHIND the parity gate, OFF
   by default; first experiment = one-step prediction RMSE vs the analytic twin on a held-out run.
 - **YOLO26-pose at the photoreal v4 retrain** (NOT before): RLE per-keypoint σ feeds weighted-PnP directly
   (replacing conf-derived σ), NMS-free deterministic latency; same pipeline/sbatch, near-zero marginal cost —
@@ -443,7 +484,7 @@ in any component but in **3 META gaps**:
    track-randomized generalization is MANDATORY (no persistence) vs insurance (persistence). **ADD TO THE ORGANIZER EMAIL.**
 3. **Eval-hardware compute envelope** (does our stack get a GPU?) — gates detector sizing + any in-loop
    learned component; do NOT size to 100 TOPS for virtual quals (that governs the physical round). **ADD TO THE ORGANIZER EMAIL.**
-4. **Aero at racing airspeed** — all probes near hover; one cheap high-speed pass-through probe would bound it (DR band covers meanwhile).
+4. ~~**Aero at racing airspeed**~~ — ✅ MEASURED (TWIN-FALSIFY 2026-06-11): quadratic body-frame drag c2≈0.052/m, rate map airspeed-invariant; linear drag + linear collective FALSIFIED (§TWIN-FALSIFY; >7.6 m/s extrapolated).
 5. **Zero VQ2 photoreal frames exist** — the detector's true VQ2 axis (appearance) is unmeasurable until
    organizers release anything — exactly why the DR doctrine must not be diluted.
 
