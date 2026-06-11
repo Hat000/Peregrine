@@ -38,7 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams, PlantState,
-                            SUPER_RATE_S_MEASURED, quat_rotate, step as plant_step)
+                            SUPER_RATE_S_MEASURED, QUAD_DRAG_C2_MEASURED,
+                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                            quat_rotate, step as plant_step)
 from fly_rl import (
     N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST, _ODO_RATE_SIGN,
     _TRAIN_DT, build_obs, load_actor, obs_from_zup, policy_step,
@@ -177,11 +179,13 @@ def main() -> int:
     ap.add_argument("--checkpoint",
                     default=str(Path(__file__).resolve().parent / "checkpoints"
                                 / "stage1_inc4_actor.pth"))
-    ap.add_argument("--plant", default="map", choices=["map", "flat"],
+    ap.add_argument("--plant", default="map", choices=["map", "flat", "aero"],
                     help="map (DEFAULT, S1.4+): measured super-rate gain map + slew limits "
                          "(SUPER_RATE_S_MEASURED / ALPHA_MAX_RPS2_MEASURED). flat: the legacy "
                          "flat-2.5 plant -- ONLY correct for flat-trained checkpoints "
-                         "(stage1_inc1/inc3)")
+                         "(stage1_inc1/inc3). aero: map + measured aero (quad body drag + "
+                         "convex collective, linear_drag=0) -- the fully measured plant, "
+                         "for aero-trained checkpoints (stage1_inc5+)")
     ap.add_argument("--start", default="simstart",
                     choices=["trainreset", "racestart", "simstart", "handoff"])
     ap.add_argument("--gate", type=int, default=0, help="trainreset: which gate")
@@ -220,7 +224,15 @@ def main() -> int:
         if worst >= 1e-5:
             return 1
 
-    if args.plant == "map":
+    if args.plant == "aero":     # the fully measured plant (S16 fixed-params form)
+        params = PlantParams(transport_delay_steps=args.latency_steps,
+                             super_rate_s=SUPER_RATE_S_MEASURED,
+                             alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED.copy(),
+                             linear_drag=0.0,
+                             quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
+                             coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
+                             coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
+    elif args.plant == "map":
         params = PlantParams(transport_delay_steps=args.latency_steps,
                              super_rate_s=SUPER_RATE_S_MEASURED,
                              alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)

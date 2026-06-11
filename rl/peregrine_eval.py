@@ -34,7 +34,8 @@ from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
 
 from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams,  # noqa: E402
-                            SUPER_RATE_S_MEASURED)
+                            SUPER_RATE_S_MEASURED, QUAD_DRAG_C2_MEASURED,
+                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED)
 
 _env.ENV_ALIAS["peregrine_racing"] = PeregrineRacing
 
@@ -55,9 +56,11 @@ def main() -> int:
     ap.add_argument("--ckpt", required=True, help="dir containing actor.pth")
     ap.add_argument("--course", default="vq1", choices=["vq1", "random"],
                     help="vq1 = the held-out acceptance course; random = generalization")
-    ap.add_argument("--plant", default="map", choices=["map", "flat"],
+    ap.add_argument("--plant", default="map", choices=["map", "flat", "aero"],
                     help="map = measured super-rate plant (S1.4+ default); flat = legacy, "
-                         "ONLY for flat-trained checkpoints")
+                         "ONLY for flat-trained checkpoints; aero = map + measured aero "
+                         "(quad body drag + convex collective, linear_drag=0; twin-falsify "
+                         "2026-06-11) -- ALL S1.5+ (aero-trained) evals")
     ap.add_argument("--standing-frac", type=float, default=1.0)
     ap.add_argument("--n-envs", type=int, default=256)
     ap.add_argument("--max-time", type=float, default=40.0)
@@ -66,9 +69,18 @@ def main() -> int:
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
-    params = (PlantParams(super_rate_s=SUPER_RATE_S_MEASURED,
-                          alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)
-              if args.plant == "map" else None)
+    if args.plant == "aero":     # the fully measured plant (S16 fixed-params form)
+        params = PlantParams(super_rate_s=SUPER_RATE_S_MEASURED,
+                             alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED.copy(),
+                             linear_drag=0.0,
+                             quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
+                             coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
+                             coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
+    elif args.plant == "map":
+        params = PlantParams(super_rate_s=SUPER_RATE_S_MEASURED,
+                             alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)
+    else:
+        params = None
     _dyn.DYNAMICS_ALIAS["peregrine_plant"] = lambda cfg, device: PeregrinePlantDynamics(
         cfg, device, backend="torch", params=params)
 
