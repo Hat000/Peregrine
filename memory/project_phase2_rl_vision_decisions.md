@@ -55,6 +55,10 @@ differentiable sims that ALSO supply the infra:
   adroit-h11g1..3] and V100-32GB), `import diffaero` works, configs `cfg/env/racing.yaml` +
   `cfg/algo/{ppo,shac,sha2c,apg}.yaml` present, action space = **body-rate + collective = our exact CTBR**,
   **plant-injection point = `dynamics/base_dynamics.py`** (+ `quadrotor.py`, `controller.py`). BSD-3.
+  - **✅ pytorch3d RESOLVED (2026-06-08): prebuilt wheel `0.7.8+pt2.5.1cu121-cp311`** (miropsota/
+    torch_packages_builder) + torchvision/open3d — env GREEN; smoke racing-PPO n_envs=64 ≈ **3,220
+    env-steps/s on a V100, success 0.97** (a FLOOR — scales to thousands of envs; 2048-env smoke hit
+    ~88.9K steps/s, see Stage 0 below). Historical note kept below:
   - **ONE remaining env step: `pytorch3d`** (required by `diffaero/env` transforms — NOT skippable; the
     "skip rendering deps" guess was wrong). **🚩 Adroit COMPUTE NODES HAVE NO INTERNET → install on the
     LOGIN node.** pytorch3d builds from source → needs the CUDA toolchain ON PATH: the naive
@@ -104,7 +108,7 @@ Ran the REAL YOLO→PnP→KF chain on the canonical VQ1 6/6 recording `data/runs
 - **Catastrophic tail:** raw |fix|≥3 m = 46%→6.3% (143→12) with association+depth-sanity (commit 4673517, 2026-06-09). The KF χ²₀.₉₉₉ gate rejects further → **residual leak ≈ 1.1% (0.6% of frames)** (⚠️ SUPERSEDED by VISION-PKG2 2026-06-10: leak 0.53% of solved — see §VISION-PKG2). Good <1 m fixes went UP (103→107).
   - **Key insight:** the "56 frontal depth flips" were NOT solver flips — wrong-scale detector boxes (solved depth 1.2–13× true, p50 2.3×, reproj p50 1.0 px). Geometry/depth-sanity kills them; better solver tie-breaking couldn't have.
   - **2 residual leaks** = honest long-range depth noise (25–38 m range, errors 3–5 m) on correctly-associated next-gate fixes. Next lever = `attitude_noise_std` — ✅ DONE (VISION-PKG2, 2026-06-10): the 38 m leak is killed by the 32 m range cap, the 25 m one remains (documented trade-off), NOT tighter geometry gates.
-- **PNP_FIX_COV_INFLATION task CLOSED:** behind the depth-sanity gate K=1.0 and K=2.0 leak identically (prior objection — K=2.0 worsens leak — evaporates). No revert needed.
+- **PNP_FIX_COV_INFLATION task CLOSED:** behind the depth-sanity gate K=1.0 and K=2.0 leak identically (prior objection — K=2.0 worsens leak — evaporates). No revert needed. Detail: `handoff/laptop-pnp-cov-inflation-2026-06-08`.
 - **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **~1.1% catastrophic leak** after χ²₀.₉₉₉ + association + depth-sanity (commit 4673517, 2026-06-09; prior figure was ~1.6%). **⚠️ leak/acceptance SUPERSEDED by VISION-PKG2 (2026-06-10): leak 0.53% of solved (bounded ≈3 m), acceptance ~47% of race-window frames, covariance = K2·analytic + 1.4° lever + 0.40 m floor + 32 m cap — see §VISION-PKG2 below.** Detail: `handoff/perception-char-2026-06-08/`.
 
 ### ✅ VISION-PKG2 COMPLETE (2026-06-10, ShadowPC fable; commits 37e7ab1, 1b7e753, 9ccc88c, 4831991; suite 412 green) — measured attitude/fix covariance; yaw bias REFUTED as calibration
@@ -380,7 +384,7 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   shaping + DR on rate_gain/hover/linear_drag (g=9.80665); validate the trained policy in VQ1 sim via
   `race_outcome`.
   **✅ Start-transient issue ① RESOLVED at the control level (2026-06-09, commit 260972e):** `launch_ramp_s=0.6 s` authority ramp eliminates the rate-clamp saturation / tick-phase dice-roll — 4× deterministic 6/6 confirmed on 1.0.3364. RL subsumption (smoother racing line, faster transitions) remains the VQ2 path; the VQ1 blocker is gone.
-  **Stage 1 increment 1 ✅ COMPLETE (2026-06-09):** CTBR policy threads 6-gate course on our plant, given pose, zero vision. success_rate 0→0.97 (A100, 30:48 wall). obs_dim=17, DR on. Checkpoint `stage1_inc1_actor.pth`. Caveats: (1) over-aggressive (l_ep ~1.9s, no speed shaping — VQ2 target); (2) real test = live sim transfer.
+  **Stage 1 increment 1 ✅ COMPLETE (2026-06-09, job 3261393):** CTBR policy threads 6-gate course on our plant, given pose, zero vision. racing-PPO n_envs=2048, 5000 updates → success_rate 0→0.97, ~89K env-steps/s (A100, 30:48 wall). obs_dim=17 (vel+quat+gate_relpos+gate_normal+body_rates+collective), action=CTBR, DR configured (rate_gain±10%/hover±5%/drag±30%/τ±30% — 🚩 but see the S1.3 correction below: the numpy backend silently ignored it, inc-1 effectively had NO plant DR). Checkpoint `stage1_inc1_actor.pth`. Caveats: (1) over-aggressive (l_ep ~1.9s, no speed shaping — VQ2 target); (2) real test = live sim transfer.
 
   **✅ S1.2 — increment-1 LIVE DEPLOYMENT (2026-06-10, fable session): pipeline VERIFIED end-to-end, checkpoint NOT transfer-ready (flight 1: 0 gates, tumbled into gate-0 post). Detail: `handoff/shadowpc-s12-rl-live-2026-06-10/`.**
   - **🚩 CORRECTED DEPLOYMENT RECIPE (fixes 3 sonnet S1.1 bugs — the verified-correct way to deploy a DiffAero-trained actor live, in `rl/fly_rl.py`):** ① actor output = **tanh(mean) → rescale** to thrust [0,5] / rates ±3.14 rad/s (NOT raw actor mean); ② FLU→FRD action sign = **[1,−1,−1]** (sonnet's [−1,+1,+1] wrong on all 3 axes; the plant applies rate_gain·rate_sign identically in train + live — no ff/rate_gain algebra); ③ collective obs init = **0.0** with **rescaled** feedback (NOT 1.0); ④ training control rate = **30 Hz** (racing.yaml dt 0.0333; NOT 100); ⑤ training **resets at rest** 1 m in front of a random gate (NOT "racing velocity"). Verified-correct from sonnet: obs layout (17), `R_W2G=diag(−1,−1,1)`, gate yaws all π, final-gate clamp, Euler-ZYX, actor arch (NormedLinear [256,128]).

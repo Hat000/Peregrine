@@ -40,6 +40,22 @@
 > under-models live latency by ~25% even calibrated to 40 ms (0.19 vs live 0.29) — do not trust offline
 > "holds" claims.** Re-derive: `scripts/fit_vertical.py`, `scripts/twin_hover.py`.
 
+> **[2026-06-09 UPDATE — SIM BUILD 1.0.3364 REGRESSION FIXED (moved from MEMORY.md index)]**
+> 4× deterministic 6/6 @ 34–35 s, race_outcome-certified (commits 260972e+883b725+57f287f). Root
+> cause: a one-tick attitude step at takeoff→RUN → body-rate clamp → tumble (the yaw≈−180° course
+> geometry coupled the clamped correction onto roll). Fix: **`launch_ramp_s=0.6 s`** — a 0→1
+> authority ramp keyed off the SIM clock at takeoff→RUN (rate/tick-phase invariant), + `--rate 100`
+> pinned. This closed VQ1-stack issue ① (start transient); RL subsumption remains VQ2 polish.
+
+> **[2026-06-10 UPDATE — S1.2 RATE SIGN SETTLED DEFINITIVELY (moved from MEMORY.md index)]**
+> Raw ODOMETRY `angular_rate` → TRUE angular rate = **[−1,−1,1]** (correlation [+0.998,−0.998,+0.999]
+> vs quaternion-finite-difference). The two prior memory values (plant `[−1,−1,1]` vs controller.py
+> `[+1,−1,+1]`) were EACH self-consistent — measured against different references (true rate vs the
+> derivative of the reported, roll-inverted attitude). **`state.velocity_ned` is PRISTINE** — the
+> reported quat + reported body twist reproduce LOCAL_POSITION_NED world velocity to **0.00 m/s**
+> even at high roll (the sim's reporting frame is internally self-consistent; only the physical roll
+> RESPONSE is inverted). No client change needed.
+
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the
 "Fly on CTBR" bullet in [[reference-sim-interface]]; raw run data in `data/runs/*_gate0_*`,
