@@ -106,56 +106,72 @@ Ran the REAL YOLO→PnP→KF chain on the canonical VQ1 6/6 recording `data/runs
 - **PNP_FIX_COV_INFLATION task CLOSED:** behind the depth-sanity gate K=1.0 and K=2.0 leak identically (prior objection — K=2.0 worsens leak — evaporates). No revert needed.
 - **TWIN ONE-LINER:** world-fix σ≈[0.73, 0.47, 0.29] m (N,E,D), bias [−0.4, +0.06, −0.28] m, **range-flat to ~24 m**, ±~3° angular term, assoc ~85–95% at 5–15 m, **~1.1% catastrophic leak** after χ²₀.₉₉₉ + association + depth-sanity (commit 4673517, 2026-06-09; prior figure was ~1.6%). **Use 1.1% as the Stage-2 twin input.** Detail: `handoff/perception-char-2026-06-08/`.
 
-### 2nd-order inner-loop re-system-ID ✅ DONE (cc6921d, fable, 2026-06-10) — AMPLITUDE-DEPENDENT / PI-windup
-The first-order twin (`rate_gain`, `τ` steady-state) under-modeled the live transient overshoot (twin
-capped 7.85 vs live 9.7 rad/s). Fable re-system-ID'd the inner loop from the S1.2 tumble recordings.
-Writeup + fitter: `handoff/shadowpc-2ndorder-resysid-2026-06-10/{WRITEUP.md,fit_2nd_order.py}`.
-- **CORE FINDING — the inner loop is AMPLITUDE-DEPENDENT (a PI-windup signature):**
-  - **Zero overshoot at small targets** (0.75 rad/s) → the shipped first-order model (τ≈20 ms) is CORRECT
-    where it was originally fit (normal flight). This is exactly why the twin was faithful in normal flight
-    and wrong ONLY in the aggressive dive.
-  - **20–26% overshoot at saturation** = PI-windup. ONE linear 2nd-order cannot fit both regimes (each
-    regime's params degrade the other's data ~3×).
-  - **DC gain is FIXED** at the validated steady gains (roll 2.501 / pitch 2.504 / yaw 2.231) — overshoot is
-    a TRANSIENT phenomenon at the SAME DC gain, NOT a gain change. (G=3.8 was explicitly rejected — saturated
-    steady gain is unobservable in the tumble because commands flip every ~100 ms.)
-- **Recovered 2nd-order params (DC gain anchored):**
+### 2nd-order inner-loop re-system-ID (cc6921d, fable, 2026-06-10) — ❌ STRUCTURALLY SUPERSEDED by the characterize-sweep (510da24, next section)
+Kept as the record of WHY the windup/2nd-order picture was wrong (do NOT re-litigate). cc6921d re-ID'd
+the inner loop from the **n=1** S1.2 tumble and concluded: amplitude-dependent **PI-windup**, 20–26%
+transient overshoot at saturation, **DC gain anchored at the steady 2.5 gains (G=3.8 explicitly
+rejected)**, a two-regime ωₙ/ζ envelope (saturated ωₙ 21–28 / ζ 0.39–0.47; small-signal ωₙ ~67 / ζ
+0.7–0.8), and an ωₙ/ζ-envelope DR plan. The controlled 15-run sweep DISPROVED the structure:
+- **PI-windup DISPROVEN** — cmd 3.14 holds 11.1 rad/s for 1.2+ s with ZERO decay (a wound integrator
+  must bleed back toward the 2.5-gain target; the windup fit predicts exactly that decay).
+- **"DC anchored at 2.5 / G=3.8 rejected" was the WRONG CALL** — the optimizer was measuring the REAL
+  saturated gain (sweep: sustained 3.50/3.53 at full stick). Saturated steady gain was unobservable in
+  the tumble (commands flip every ~100 ms) — n=1 bit us exactly there.
+- The **ωₙ∈[21,68]/ζ∈[0.39,0.85] two-regime envelope was the LTI shadow of the wrong DC anchor**:
+  per-regime LTI fits are 10–25× worse on each other's data (sweep-3.14 params on the tumble RMSE 6.5
+  vs own-fit 0.25) — nonlinearity misattributed to dynamics lands on whatever maneuver you fit.
+- The S1.2 "9.7 rad/s vs 7.85 ceiling" was **unmodeled DC gain, NOT transient overshoot**.
+- §5 integration plan (amplitude-scheduled ωₙ/ζ, `omega_dot` state) — ❌ DO NOT USE; replaced by the
+  static map (sweep WRITEUP §3). Writeup: `handoff/shadowpc-2ndorder-resysid-2026-06-10/`.
 
-  | regime | axis | ωₙ (rad/s) | ζ | delay | step overshoot |
-  |---|---|---|---|---|---|
-  | saturated | roll | 21.0 | 0.393 | 15 ms | 26% |
-  | saturated | pitch | 28.3 | 0.467 | 30 ms | 19% |
-  | saturated | yaw | 11.3 | 0.273 | 0 | 41% (caveated) |
-  | small/mid | roll | 67.6 | 0.824 | 0 | 1% |
-  | small/mid | pitch | 66.9 | 0.699 | 0 | 5% |
+### 🚩 The "+30% rate_gain band" DR proxy is DISPROVEN — replacement = the STATIC-MAP DR (updated 2026-06-10)
+The asymmetric rate_gain DR band **[0.90, 1.30]** (item ④, in `rl/diffaero_dynamics.py`, used by S1.3) is
+the wrong model. ~~Replace with the ωₙ/ζ-envelope DR~~ — **that replacement is ITSELF superseded** (the
+envelope was the LTI shadow of cc6921d's wrong anchor). **At retrain, replace with the static-map DR:
+s ∈ [0.25, 0.35], τ ∈ [0.015, 0.03], alpha_max ∈ [200, 320]** (next section).
 
-- **Validation (before/after on the tumble):** overshoot reproduced — measured peak rates 9.77/9.72/8.14;
-  shipped 1st-order capped 7.82/7.84/7.00; fitted 2nd-order 10.14/9.50/7.75. Fit RMSE 20–30× better
-  (roll 7.70→0.25, pitch 5.02→0.39, yaw 6.92→0.28). Fit window cut at 90° tilt to exclude the sim yaw-spin
-  anomaly regime.
-- **Integration recommendation (writeup §5, for a future COORDINATED session — do NOT integrate on n=1):**
-  - **RL training:** DR over the regime envelope — per-env blend λ: ωₙ ∈ [21, 68], ζ ∈ [0.39, 0.85]
-    (roll/pitch). **This SUPERSEDES the +30% rate_gain proxy (item ④) — see 🚩 below.**
-  - **Deterministic twin:** amplitude-scheduled ωₙ(|target|), ζ(|target|) between anchors at 3.0 and
-    7.85 rad/s. New `omega_dot` state; discretization stability bounds (substeps vs exact ZOH) in §5.
-  - **Backward-compat:** none ⇒ legacy 1st-order, all tests stay green.
-  - **Parity-gate sequence:** twin first → rl_plant → torch adapter.
-  - **Caveats:** yaw rests on anomaly-adjacent data + was the worst-modeled axis all along (small-signal
-    prefers τ≈97 ms vs shipped 19 ms — deserves its own pass); the saturated regime rests on ONE maneuver.
-
-### 🚩 The "+30% rate_gain band" DR proxy is DISPROVEN (replace at retrain)
-The asymmetric rate_gain DR band **[0.90, 1.30]** (item ④, currently in `rl/diffaero_dynamics.py` and LIVE
-in the S1.3 run training 2026-06-10) is the **WRONG model for the overshoot**: it inflates **DC GAIN**, which
-the validated steady-gain anchor contradicts (G=3.8 was explicitly rejected). The current S1.3 run is
-therefore suboptimal in the saturated regime. **When we retrain, REPLACE the rate_gain band with the ωₙ/ζ
-envelope DR** (per-env blend λ: ωₙ ∈ [21, 68], ζ ∈ [0.39, 0.85] roll/pitch).
-
-### 🆕 NEXT CHEAP EXPERIMENT — buy confidence in the env before integrating
-The saturated regime + yaw both rest on n=1 maneuver. **Cheap definitive follow-up = a `rate_sysid.py`
-magnitude sweep (`--mag 0.3,1.0,2.0,3.14`, ~10 min sim time) to map the windup curve DIRECTLY — run BEFORE
-the 2nd-order integration lands.** Bundle it with the **anomaly-boundary characterization sweep** (both are
-controlled-maneuver sweeps on the unattended harness). The anomaly boundary is also a GATE for the env
-redesign below (the crash-termination needs the measured boundary).
+### ✅ CHARACTERIZE-SWEEP DONE (510da24, fable, 2026-06-10/11) — the static gain map; NO sim anomaly
+The "NEXT CHEAP EXPERIMENT" ran: 15 controlled runs (magnitude sweep + anomaly probes, n=1→n=11),
+unattended on `scripts/rate_sysid.py`. Source of truth: `handoff/shadowpc-characterize-sweep-2026-06-10/WRITEUP.md`.
+- **THE PLANT MODEL (supersedes cc6921d): a STATIC amplitude-dependent gain map ("super-rate" style) in
+  front of a fast ~critically-damped loop.** `g(|c|) = G0/(1 − s·min(|c|,π)/π)`, **G0 = shipped
+  [2.501, 2.504, 2.231], s ≈ 0.29–0.30** (roll/pitch, ±0.02; roll ≡ pitch to 3 digits; one-param form
+  fits within ~3%). Sustained gains **2.50 → 3.50/3.53** (roll/pitch) from |cmd| 0.3 → 3.14.
+- **Transient on top:** rise t80 ≈ 31–52 ms at ALL magnitudes; slew ≈ 250–280 rad/s² (r/p), ~78 (yaw
+  level); saturated step ~critically damped (ζ 0.84–1.04, 0–1% overshoot); small-signal keeps a
+  real-but-minor ~10% overshoot (ωₙ≈73, ζ≈0.5 — the 2nd-order refinement is optional, ~10% fidelity);
+  input delay 5–15 ms → belongs in the transport-delay mechanism, NOT in τ.
+- **Integration spec = sweep WRITEUP §3** (~4 lines in the plant: g(|cmd|) target + existing first-order
+  lag τ≈0.020 + alpha_max slew clamp), **parity-gated twin → rl_plant → torch adapter.** **🚩 The
+  twin/plant max body-rate clamp must be raised ≥ ~11.5 rad/s (roll/pitch)** or it re-introduces the old
+  ceiling artifact. **DR: s ∈ [0.25, 0.35], τ ∈ [0.015, 0.03], alpha_max ∈ [200, 320]** — replaces both
+  the +30% band and the ωₙ/ζ-envelope plan. **UPSIDE: real authority at full stick is ~11 rad/s, not
+  7.85 — a HIGHER speed ceiling for VQ2.**
+- **THERE IS NO SIM ANOMALY (open-loop).** Sustained rotations through full inversion (up to 11.2 rad/s,
+  multiple revolutions, multi-axis combos including the exact S1.2 tumble command [+3.14,−3.14,+3.14],
+  tilt abort off) are ALL clean rigid-body; uncommanded axes flat zero. The S1.2 "±180° yaw-spin anomaly"
+  decomposes into: (a) unmodeled super-rate gain (the real divergence driver), (b) an Euler yaw-flip
+  representation artifact near inversion (quaternion smooth), (c) a **gate-post COLLISION (id 1001,
+  threat 2) at sim_t≈11.145 imparting −63 rad/s roll** — the "spin" was contact dynamics. **VQ2 open
+  item (A) "untwinned yaw-spin anomaly = RL-killer" DISSOLVES.**
+- **Env-redesign consequence: crash-termination = COLLISION-based** (DiffAero's racing env already has
+  it); do NOT encode a tilt-threshold pseudo-anomaly (it would forbid attitudes the sim handles fine and
+  fast racing may legitimately visit). Tilt/jerk regularization stays justified for smoothness/VQ2 style
+  + keeping the policy in well-modeled regimes — NOT anomaly avoidance. **The env/reward redesign is
+  therefore UNGATED** (its gate was the anomaly-boundary measurement — there is none to encode).
+- **Checkpoint impact: S1.3 + inc-1 trained on the WRONG plant** (2.5-flat; under-predict their own
+  authority by up to 42% at full stick) → **retrain after the static-map integration.** The S13-LIVE
+  transfer test is **DEMOTED from disambiguator to optional cheap datum** (fly opportunistically,
+  non-blocking — the sweep answered the plant-fidelity question directly). **Critical path:
+  static-map integration (parity-gated) → env/reward redesign → retrain.**
+- **Durable sim/ops facts:** (1) **🚩 THIRD sim idle state** — after ~90 min idle post-race the sim parks
+  on an off-race screen where MAV_CMD 31000 is a NO-OP while telemetry still streams (stale RACE_STATUS
+  `started=True`, frozen sim_time); recovery = Win32-focus the AI-GP window + Enter ×2 — wired as
+  automatic escalation in `scripts/rate_sysid.py` (15+ runs chained, zero GUI touching). (2) **Yaw gain
+  is maneuver-dependent**: ~2.35 level (looks like a ~7.4 rad/s cap) vs ~3.1 tumbling — caveated, own
+  pass only if it ever matters (racing yaw cmds are small). (3) All probes near hover; aero at racing
+  airspeed unmeasured (the DR band covers; live course RMSE 0.22–0.41 at ≲3 rad/s says small-signal is
+  unaffected). (4) `rate_sysid.py` gained `--vel-damp`/`--pos-pull` station-keeping + `--mode anomaly`.
 
 ## Depth model / ~100 TOPS budget (user) — OFFLINE flywheel
 After a recorded run (legal between-runs processing): **multi-view triangulation** from logged poses
@@ -218,10 +234,10 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   - **🚩 CORRECTED DEPLOYMENT RECIPE (fixes 3 sonnet S1.1 bugs — the verified-correct way to deploy a DiffAero-trained actor live, in `rl/fly_rl.py`):** ① actor output = **tanh(mean) → rescale** to thrust [0,5] / rates ±3.14 rad/s (NOT raw actor mean); ② FLU→FRD action sign = **[1,−1,−1]** (sonnet's [−1,+1,+1] wrong on all 3 axes; the plant applies rate_gain·rate_sign identically in train + live — no ff/rate_gain algebra); ③ collective obs init = **0.0** with **rescaled** feedback (NOT 1.0); ④ training control rate = **30 Hz** (racing.yaml dt 0.0333; NOT 100); ⑤ training **resets at rest** 1 m in front of a random gate (NOT "racing velocity"). Verified-correct from sonnet: obs layout (17), `R_W2G=diag(−1,−1,1)`, gate yaws all π, final-gate clamp, Euler-ZYX, actor arch (NormedLinear [256,128]).
   - **🚩 "OOD-at-start = root cause" RETRACTED** — an artifact of sonnet's wrong action transfer function, not a real diagnosis; reset saturation is the policy's NORMAL launch behavior (it saturates in training too, then modulates).
   - **Tail-first spawn bug + fix:** policy trained identity-reset + all gates at yaw π ⇒ flies the course tail-first; sim spawns nose-first on a 17.8°-tilted pad ⇒ ~180° attitude-OOD. Fixed with a **virtual π body-z flip in fly_rl.py** (`--virtual-flip`, default ON; exact rigid-body symmetry). Offline: handoff-state rollouts 0/6 → 6/6 under training physics.
-  - **🚩 THE REAL transfer failure (the key finding) = the policy is a "backflip-diver":** its NOMINAL twin maneuver rolls through **104–126° before every gate** (fine offline). Live the maneuver diverges — realized rates hit **9.7 rad/s vs the twin's first-order 7.85 ceiling** (=3.14·2.5; unmodeled transient overshoot), it blows through **±180° tilt = the sim's yaw-spin anomaly the twin does NOT model** (VQ2 open item (A), now CONFIRMED an RL-killer), and tumbles into the gate post within 0.35 s. NOT reproducible in the twin (replay from the exact live handoff state passes gate 0 at any latency ≤100 ms and gain ×1.24) → **no deployment-side knob fixes it.** The BRIDGE worked perfectly: CTBR delivered the drone dead-centre (dy +0.04, dz +0.05 m) at 5.1 m/s, 3 m before gate 0; the policy's first action = exactly the offline-twin prediction.
+  - **🚩 THE REAL transfer failure (the key finding) = the policy is a "backflip-diver":** its NOMINAL twin maneuver rolls through **104–126° before every gate** (fine offline). Live the maneuver diverges — realized rates hit **9.7 rad/s vs the twin's first-order 7.85 ceiling** (=3.14·2.5; ❌ diagnosis SUPERSEDED 2026-06-10: unmodeled static super-rate DC gain, NOT transient overshoot — see the characterize-sweep section), it blows through ±180° tilt (the then-suspected "yaw-spin anomaly" — **DISSOLVED by the sweep**: super-rate gain + Euler yaw-flip artifact + a gate-post COLLISION), and tumbles into the gate post within 0.35 s. NOT reproducible in the twin (replay from the exact live handoff state passes gate 0 at any latency ≤100 ms and gain ×1.24) → **no deployment-side knob fixes it.** The BRIDGE worked perfectly: CTBR delivered the drone dead-centre (dy +0.04, dz +0.05 m) at 5.1 m/s, 3 m before gate 0; the policy's first action = exactly the offline-twin prediction.
   - **OOD verdicts (offline, measured via `rl/offline_rollout.py`):** training reset (1 m, rest) = **6/6 finish 3.3 s** (validates ALL deployment math); raw standing start (23.3 m, rest) ≈ 0–1/6 (arrives at gate 0 at 33–44 m/s, unrecoverable); **bridge handoff + virtual flip = 6/6 under training physics, 4/6 under the live collective ceiling** — the gate-4 wall is purely the thrust clip (trained max_normed_thrust 5.0 ≈ 5 g vs live collective≤1.0 ≈ 3.765 normed ≈ 3.77 g), unfixable at deployment, fixed in retrain.
   - **🆕 UNATTENDED SIM CONTROL ACHIEVED here (the user's standing ask; durable capability for ALL future sim work):** **MAV_CMD 31000** (`client.send_sim_reset()`) restarts the race once a race context exists (fresh ~3 s countdown) — **NO-OP from HOME** (no telemetry there). From HOME: Win32 `SetForegroundWindow` to focus the `AI-GP` window (`WScript.Shell.AppActivate` alone returns False) + Enter twice (home → waiting room → race+countdown). The session **cold-launched FlightSim.exe and raced with NO human.** `rl/fly_rl.py --flights N` chains attempts (never resets into a ticking countdown).
-  - **✅ S1.3 RETRAIN SPEC (Path C, ~30 min A100, `rl/peregrine_racing_s13.sbatch` staged):** ① `dynamics.controller.max_normed_thrust=3.765` (live ceiling; one-line override); ② **standing-start resets** (`+env.standing_start_frac`, reset at ~23 m from gate 0 at rest = real race start; **implemented** cfg-gated in `peregrine_racing.py`, spawn pose mapped through the deployment virtual flip → fly_rl.py needs no change; removes the CTBR bridge, bridge stays as fallback); ③ **tilt/jerk regularization** (`reward_weights.quadrotor.attitude≈2.0`/`jerk≈0.3`, sweep — kills the >90°-roll style that lands in the untwinned sim-anomaly regime; THE load-bearing transfer fix + the VQ2 aggression fix); ④ **latency DR** (port the transport-delay ring buffer to the torch backend of `rl/diffaero_dynamics.py` — rl_plant already supports it, parity-checkable via `check_against_rl_plant` with `transport_delay_steps>0`; DR per-env delay ∈ {0,1,2}) + asymmetric rate-gain DR band **[−10%,+30%]** (cheap transient-overshoot proxy, measured +24%). **④ needs an Adroit session on diffaero_dynamics.py FIRST + must re-pass the parity gate** (not yet implemented). Reward shaping (smoothness/time) folds in here.
+  - **✅ S1.3 RETRAIN SPEC (Path C, ~30 min A100, `rl/peregrine_racing_s13.sbatch` staged):** ① `dynamics.controller.max_normed_thrust=3.765` (live ceiling; one-line override); ② **standing-start resets** (`+env.standing_start_frac`, reset at ~23 m from gate 0 at rest = real race start; **implemented** cfg-gated in `peregrine_racing.py`, spawn pose mapped through the deployment virtual flip → fly_rl.py needs no change; removes the CTBR bridge, bridge stays as fallback); ③ **tilt/jerk regularization** (`reward_weights.quadrotor.attitude≈2.0`/`jerk≈0.3`, sweep — kills the >90°-roll style; then framed as anomaly avoidance, NOW (510da24) justified for smoothness/VQ2 style + staying in the well-modeled envelope only — no anomaly exists; + the VQ2 aggression fix); ④ **latency DR** (port the transport-delay ring buffer to the torch backend of `rl/diffaero_dynamics.py` — rl_plant already supports it, parity-checkable via `check_against_rl_plant` with `transport_delay_steps>0`; DR per-env delay ∈ {0,1,2}) + asymmetric rate-gain DR band **[−10%,+30%]** (cheap transient-overshoot proxy — ❌ later DISPROVEN; replace with the static-map DR, see above). **④ needs an Adroit session on diffaero_dynamics.py FIRST + must re-pass the parity gate** (not yet implemented). Reward shaping (smoothness/time) folds in here.
 
   Reward shaping (smoothness/time) = part of S1.3, AFTER the transfer fixes.
 
@@ -234,22 +250,24 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   - **🚩 CHECKPOINT PROVENANCE — CORRECTED (supersedes the prior f2347db bank, which had it INVERTED).** The S1.3 deliverable is the **2000-update ATT=2.0 (att2) checkpoint** — committed as **c05362f** at `rl/checkpoints/stage1_inc3_actor.pth`, md5 **ea2bf8a24eb4d149ff5dde2fda9432d9**, 158807 bytes (force-added past the `*.pth` gitignore). It hit **success 1.000 by update 2000 and plateaued** — the converged, correct deliverable. The **5000-update run NaN'd** in the PPO policy at update ~2243 (`Expected parameter loc ... to satisfy Real()`) and **NEVER wrote a checkpoint**; with seed=0 a blind re-run would likely re-diverge (deterministic). A true 5000-update policy would need a different seed and/or PPO grad-NaN guards — a cheap follow-up, NOT needed for transfer (the 2000-update already plateaued). **Tilt-reg sweep:** ATT swept {2,4,8} → **2.0 won** (success 1.000 + peak roll 65°); 4 and 8 over-regularize and converge worse.
     **S1.3 SOURCE changes (committed separately):** `rl/diffaero_dynamics.py` (item ④ adapter robustness), `rl/peregrine_racing.py` (OOB-box / standing-start fix), `rl/peregrine_train_racing.py` (torch backend), `rl/peregrine_eval.py` (new), `rl/peregrine_s13_sweep.sbatch`, `rl/run_parity.sh`.
     Loose end: cosmetic `TRAIN_RC=1` from diffaero's post-checkpoint export not supporting `action_frame="body"` — it fires AFTER `agent.save()`, so the checkpoint + eval are unaffected.
-  - **🚩 INTERIM-CHECKPOINT CAVEAT:** S1.3's ④ DR uses the **+30% rate-gain band that the 2nd-order re-sysID (cc6921d) DISPROVED** (it perturbs DC gain, not transient overshoot — see "+30% rate_gain band DISPROVEN" above). So S1.3 is an INTERIM checkpoint for a TRANSFER TEST, NOT the final policy. The final policy still awaits: characterization sweep → 2nd-order integration → env/reward redesign → retrain. S1.3 remains a valid live-transfer test because ③ (peak roll 65°) should keep it in the faithful envelope regardless of the DR mechanism.
-  - **🆕 NEXT = the disambiguator: live VQ1-sim transfer test of S1.3 via `fly_rl.py` (unattended, `--flights N`).** If it threads gates live, ③ ("stay in the faithful envelope") is VALIDATED and the 2nd-order/characterization chain demotes to a VQ2 ceiling-raiser. If it still fails live, plant fidelity (2nd-order) becomes critical-path.
+  - **🚩 CHECKPOINT CAVEAT (updated 2026-06-10, sweep 510da24): S1.3 + inc-1 were trained on the WRONG plant** (2.5-flat; they under-predict their own authority by up to 42% at full stick — and ④'s +30% band perturbs the wrong mechanism). **Retrain after the static-map integration.**
+  - **🚩 The S13-LIVE transfer test is DEMOTED from disambiguator to optional cheap datum** (fly opportunistically via `fly_rl.py --flights N`, non-blocking) — the sweep answered the plant-fidelity question directly. **Critical path: static-map integration (parity-gated twin→rl_plant→torch) → env/reward redesign (UNGATED) → retrain.**
 
-  **🆕 STASHED — NEXT RETRAIN = an ENV-COHERENCE REDESIGN, not just a policy re-tune (user directive 2026-06-10).**
+  **🆕 NEXT RETRAIN = an ENV-COHERENCE REDESIGN, not just a policy re-tune (user directive 2026-06-10) — now UNGATED (sweep 510da24 done; there is no anomaly boundary to encode).**
   The user flagged that the **reward CONFLICTS with the termination**, and we need **more reward terms with
   more explicit logic on how each works.** Reframe the next retrain as redesigning the ENV: reward +
-  termination designed TOGETHER + the new **ωₙ/ζ DR** (above) + a **crash-termination at the MEASURED anomaly
-  boundary**. Hand to a dedicated **fable + adroit-connector** session. **GATED on the characterization sweep**
-  (the crash-termination needs the measured boundary). Non-trivial, objectively-checkable → good fable fit.
+  termination designed TOGETHER + the **static-map DR** (s/τ/alpha_max, see the characterize-sweep section)
+  + **COLLISION-based crash-termination** (DiffAero's racing env already has it; NOT a tilt threshold —
+  ~~crash-termination at the measured anomaly boundary~~ superseded, no anomaly exists). Hand to a dedicated
+  **fable + adroit-connector** session. Non-trivial, objectively-checkable → good fable fit.
 
   **🆕 PENDING ARCHITECTURE DECISION (2026-06-10 discussion) — S2 = decomposed plan-line + RL-tracker?**
   Consider making S2 a **decomposed plan-line + RL-tracker** (plan an explicit smooth/feasible racing line;
   RL only TRACKS it) INSTEAD of another monolithic racer. Rationale: the monolithic policy's freedom to choose
   the trajectory is what produced the **backflip-dive** — an explicit line makes inversion STRUCTURALLY
   impossible. Tradeoff: lower speed ceiling than SWIFT-style learn-the-line, bought back via the offline
-  line-iteration flywheel. **DECISION PENDING the S1.3 result.** (Mapping is PERCEPTION — conservative lap +
+  line-iteration flywheel. **DECISION PENDING the post-static-map retrain result** (the S1.3 live datum is
+  now optional — see the characterize-sweep section). (Mapping is PERCEPTION — conservative lap +
   detector→PnP→KF — NOT an RL task, and only needed if VQ2 hides the map; open organizer question.)
 - **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
