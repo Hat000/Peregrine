@@ -1,4 +1,4 @@
----
+﻿---
 name: project-phase2-rl-vision-decisions
 description: Phase-2 (post-VQ1) planning decisions — RL substrate landscape (DiffAero/Crazyflow over Isaac), vision investment plan, RL policy I/O + rewards, gate-map/SLAM cases, the authoritative collision signal, Adroit-as-edge. From the 2026-06-07 planning session.
 metadata:
@@ -282,10 +282,7 @@ held. Source of truth: `handoff/shadowpc-twin-falsify-2026-06-10/WRITEUP.md` (co
 - **Survivals (4):** rate map **airspeed-INVARIANT** (ratios 0.95–0.98 of the hover map at 6 m/s, all
   magnitudes); **control-rate invariant** 50/100/200 Hz (±0.2%); **NO battery sag** (−0.02% over 8 min);
   **determinism** run-to-run SD ~0.03 m/s.
-- **Ready-to-port `CandidatePlant`** (quadratic body-frame drag + collective knot table) in the handoff's
-  `replay_twin.py`; proposed DR bands in WRITEUP §7. **Integration = S16, a separate parity-gated session
-  (same twin→rl_plant→torch recipe as S14). Retrain gating now extends to AERO: any checkpoint trained
-  pre-S16 under-brakes ~2× at speed.**
+- **✅ S16 AERO INTEGRATION COMPLETE (2026-06-11, laptop fable; commit eba4349; report handoff/laptop-s16-aero-integration-2026-06-11/REPORT.md):** quad body-frame drag + convex collective knot table integrated through all three plants (twin→rl_plant→DiffAero adapter), S14 recipe, defaults OFF ⇒ legacy bit-identical (pinned by inline-reference test). Suite 457→497 green. Parity: local CPU-torch gate worst 8.9e-16; twin↔rl_plant 80-case battery: omega+thrust exactly 0.0, pos/vel ≤5.1e-13. Anchors reproduce measurements exactly: per-direction decel 3.40/4.70/4.46 m/s² at 9 m/s; all 12 collective knots exact; §3 ratio column 0.38→2.12 within ±0.005. Notable deviations (8 total; key 3): bottom knots FLOORED at 0 (extrapolation gave −5.6 m/s² at zero stick, contradicting free-fall); c2 DR band per-slot RELATIVE; `dr_aero` is a separate OPT-IN flag (S15 trained concurrently — folding would have changed their plant mid-campaign). 🚩 Adroit V100 gate NOT yet run (connector contention; `run_parity.sh` md5 tripwire updated — the next Adroit session MUST run it FIRST). Successor enables aero training with one flag: `+dynamics.dr_aero=true`. Proposed DR bands in WRITEUP §7. **Retrain gating: the definitive retrain is now gated ONLY on S15 finishing.**
 - **Caveats:** drag above 7.6 m/s extrapolated (quad form unverified there; arena corridor proven clear
   to ~43 m — a longer pass is possible); fwd/back anisotropy rests on 2 forward runs.
 - **Durable sim-ops facts:** (a) **🚩 ZOMBIE DUAL-INSTANCE mode** — two sim instances both streaming
