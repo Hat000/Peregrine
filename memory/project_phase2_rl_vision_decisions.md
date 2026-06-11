@@ -606,6 +606,77 @@ Same recipe as inc4. `fly_rl.py --checkpoint rl/checkpoints/stage1_inc5_actor.pt
 
 ---
 
+## 🚩 SHADOWPC-INC5-LIVE — LIVE TRANSFER BLOCKED (2026-06-11, handoff/shadowpc-inc5-live-2026-06-11/)
+
+**0/10 inc5, 0/10 inc4, IDENTICAL failure signature: collective=0.000 from step 0, yaw_rate pinned ±3.14 (tanh rails) → ballistic crash into gate-0 frame at steps 0–2.**
+
+### Offline cross-check
+Offline rollout (`offline_rollout.py`) from the EXACT live handoff state:
+- inc5: **8.23 s, 6/6**
+- inc4: **8.72 s, 6/6**
+→ **Policies are fine. The live obs/action path is broken.**
+
+### Diagnoses
+- **Commander (leading hypothesis): all-outputs-saturated = GARBAGE OBSERVATIONS in `fly_rl.py`** — NaN or out-of-range values in at least one obs input causing the network to rail all outputs. Prime suspect: the sidecar-reading code path in `fly_rl.py` which had **never been exercised live** (inc5's entire deploy matrix used `offline_rollout.py` — a different code path; inc4 was never live-tested post-sidecar-fix).
+- **Worker alternative (demoted):** normed_thrust=0.000 read as motor-cutoff floor; proposed fix = 5% collective floor. DEMOTED — the all-rails saturation signature points upstream to obs corruption, not a collective-clamp edge case.
+
+### Ruled out
+- **Gate-position miscalibration** — model-based CTBR stack threads the same map at 0.03–0.37 m; corner-pass probe steered to offsets accurately; offline-from-live-state rollout 6/6.
+- **Policy OOD** — both inc4 and inc5 pass 6/6 offline from the live handoff state.
+
+### NEXT
+Fable live-deploy diagnosis session on ShadowPC:
+1. Add step-0 obs/action logging to `fly_rl.py` (log raw obs vector + actor output before rescaling).
+2. Compare live step-0 obs vs the offline handoff state obs — find the diverging element.
+3. Fix the broken obs/action path; re-test live.
+
+---
+
+## ✅ CORNER-PASS PROBE (2026-06-11) — closes live validity bracket for TOGT
+
+Probe goal: does the sim's `race_outcome` accept a gate pass that clips the corner (as the TOGT-optimal line does at ~1.06 m Euclidean miss)?
+
+### Results
+| Offset from gate center | Outcome |
+|---|---|
+| ≤0.64 m | Gate ADVANCES (clean accept) |
+| 0.60 m | Gate ADVANCES + contact event |
+| 0.74 m | Inconclusive — nav overshot into outer frame (CTBR precision limit, NOT a validity reject) |
+
+### Implications
+- Racing lines should hold **~0.6 m clearance** to stay contact-free.
+- Corner-clipping to ~0.64+ m counts but risks contact dynamics.
+- **TOGT 4.13-vs-4.27 s bracket:** partially closed; **lean 4.27 s (inscribed-circle) as the planning-valid bound**.
+- The 0.74 m inconclusive result is a nav-precision artefact, not a sim reject — 0.75 m half-opening may still be fully available; a cleaner probe (smaller speed / tighter nav) would close it.
+
+---
+
+## ✅ COAST-REPLAY CONFIRMED through S16 aero plant (2026-06-11)
+
+Replay of the real-flight coast segment through the integrated S16 plant:
+- **Speed RMS: 0.224 m/s** (target from campaign fits ~0.24 m/s)
+- Result: **PASS** — the S16 aero integration faithfully reproduces the campaign-measured drag on real recordings.
+- Confirms twin aero is correct; no further recalibration needed.
+
+---
+
+## 🚩 NEW SIM OPS (2026-06-11, user-observed — MANDATORY for all future live harness work)
+
+### (a) Autoreset-latched-throttle hazard
+The sim **AUTORESETS** on sustained gate contact (not just crash). If the RL pilot keeps commanding through an autoreset, the drone enters an **uncontrolled spin with throttle latched**. Rule: **NEVER leave the RL pilot commanding without a clean sim reset**. Harness must detect reset/contact event → cut commands immediately.
+
+### (b) Spin detection
+Add unrecovered-spin detection (angular rate magnitude > threshold for N consecutive steps) + auto-flag to the harness; treat as a terminal failure state.
+
+### (c) Between-flight reset protocol
+Between flights, do a **FULL escape→Enter reset** so every run starts from a fresh countdown. Observed weird autoreset-from-crash states when reusing the same post-crash context without a full reset.
+
+### SIM LAUNCH PATH (all future ShadowPC prompts)
+`exe = "C:\Users\Shadow\Downloads\AI-GP Simulator v1.0.3364\AIGP_3364\FlightSim.exe"`
+Launch sequence: any button → login page → Enter → cached logins → homepage (existing mechanics from there).
+
+---
+
 ## 🚩 POLICY DECISION RATE: 30 Hz WAS NEVER A CHOICE (2026-06-11 finding)
 
 The 30 Hz control rate was inherited from DiffAero `racing.yaml` `dt=0.0333` — not a deliberate decision. Confirmed non-issue for the plant (control-rate probe: rate map + dynamics identical at 50/100/200 Hz ±0.2%; inference microseconds). **However at VQ2 speeds (20–39 m/s) 30 Hz = 0.7–1.3 m between decisions vs 0.75 m gate half-opening.** This is a non-trivial precision risk at the top of the speed envelope.
