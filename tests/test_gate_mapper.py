@@ -179,6 +179,25 @@ def test_case_a_empty_input():
     assert est.gates == [] and est.diagnostics["n_sightings"] == 0
 
 
+def test_case_a_partial_coverage_phantom_label_group_merged():
+    """Partial coverage hazard: an unseen gate's label can be 100% neighbour mislabels —
+    a tight phantom at the WRONG gate that no internal outlier screen can catch. The
+    geometry cross-check must fold it into the real gate instead of emitting a 24 m-off
+    'gate 1' (measured 24-40 m map errors on quarter-lap sweeps before the fix)."""
+    poses = _path()
+    cut = poses[len(poses) // 4][0]                       # quarter lap: only gate 0 seen
+    for seed in range(3):
+        s = [x for x in generate_pose_aided_sightings(poses, rng=np.random.default_rng(seed))
+             if x.t < cut]
+        labs = {x.gate_id for x in s}
+        est = estimate_map_pose_aided(s)
+        ev = evaluate_map(est)
+        assert ev["pos_err_max_m"] < 1.0                  # no phantom parked at a wrong gate
+        if len(labs) > 1:                                 # mislabels existed -> were merged
+            assert est.diagnostics["n_label_groups_merged"] >= 1
+            assert len(est.gates) < len(labs)
+
+
 # ---------------------------------------------------------------------------
 # case B — prior fusion
 # ---------------------------------------------------------------------------

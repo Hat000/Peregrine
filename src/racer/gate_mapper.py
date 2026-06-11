@@ -426,9 +426,29 @@ def estimate_map_pose_aided(sightings: list[GateSighting],
     times = np.array([s.t for s in sightings], dtype=np.float64)
 
     labeled = all(s.gate_id is not None for s in sightings)
+    n_label_groups_merged = 0
     if labeled:
         labels = np.array([int(s.gate_id) for s in sightings])
         association = "labels"
+        # Geometry cross-check: a label group whose robust centre coincides with a BIGGER
+        # group's is not a gate — it is that gate's mislabel debris. With partial coverage
+        # a yet-unseen gate's label can consist 100% of neighbour mislabels: a tight
+        # phantom at the wrong gate that no outlier screen can catch from the inside
+        # (measured 24-40 m map errors on quarter-lap sweeps). Real gates are >=23.7 m
+        # apart, so coincidence within the merge radius identifies one physical gate.
+        meds = {int(u): np.median(pts[labels == u], axis=0) for u in np.unique(labels)}
+        sizes = {u: int((labels == u).sum()) for u in meds}
+        for u in sorted(meds, key=lambda k: sizes[k]):
+            others = [v for v in meds if v != u and sizes[v] >= sizes[u]]
+            if not others:
+                continue
+            d = [np.linalg.norm(meds[u] - meds[v]) for v in others]
+            j = int(np.argmin(d))
+            if d[j] <= cfg.dup_merge_radius_m:
+                labels[labels == u] = others[j]
+                sizes[others[j]] += sizes.pop(u)
+                meds.pop(u)
+                n_label_groups_merged += 1
     else:
         labels = cluster_sightings(pts, np.argsort(times, kind="stable"), cfg.cluster_radius_m)
         association = "cluster"
@@ -499,6 +519,7 @@ def estimate_map_pose_aided(sightings: list[GateSighting],
     diag = {"mode": "pose_aided", "association": association,
             "n_sightings": len(sightings), "n_rejected": n_rejected,
             "n_dropped_clusters": dropped_clusters,
+            "n_label_groups_merged": n_label_groups_merged,
             "bias_corrected": cfg.bias_correction_ned is not None,
             "prior_used": prior is not None}
     return GateMapEstimate(gates=gates, diagnostics=diag)
