@@ -604,34 +604,48 @@ Alternate banked (not shipped): **t48_s0** (9.22 s median, gen 0.960) — fails 
 ### Deployment
 Same recipe as inc4. `fly_rl.py --checkpoint rl/checkpoints/stage1_inc5_actor.pth --flights N`. Sidecar auto-applies correct thrust bound (watch `[load_actor] sidecar` line). Virtual flip ON by default. Expected: standing start, ~9–10 s lap, peak roll ≲65°, smooth commands.
 
-### NEXT
-① Live transfer on ShadowPC (`fly_rl.py --checkpoint stage1_inc5_actor.pth --flights N`) + fold in corner-pass probe; ② if live transfer confirms: envelope relaxation ladder + 60/100 Hz decision-rate experiment + TOGT re-solve with corrected aero; ③ S2 architecture decision post verdict.
+### NEXT (superseded — see §SHADOWPC-LIVE-DEPLOY-DIAG)
+Live transfer attempted; mixer coupling found as blocking issue. NEXT = S17 mixer integration + inc6 retrain.
 
 ---
 
-## 🚩 SHADOWPC-INC5-LIVE — LIVE TRANSFER BLOCKED (2026-06-11, handoff/shadowpc-inc5-live-2026-06-11/)
+## ✅ SHADOWPC-LIVE-DEPLOY-DIAG — MIXER ROOT CAUSE (2026-06-11, commits ef2605d..8dbd9bf; handoff/shadowpc-live-deploy-diag-2026-06-11/WRITEUP.md + Appendices A/B in handoff/shadowpc-inc5-live-2026-06-11/WRITEUP.md)
 
-**0/10 inc5, 0/10 inc4, IDENTICAL failure signature: collective=0.000 from step 0, yaw_rate pinned ±3.14 (tanh rails) → ballistic crash into gate-0 frame at steps 0–2.**
+**SUPERSEDES the §SHADOWPC-INC5-LIVE obs-corruption hypotheses (H1/H2/H3 ALL FALSE).**
 
-### Offline cross-check
-Offline rollout (`offline_rollout.py`) from the EXACT live handoff state:
-- inc5: **8.23 s, 6/6**
-- inc4: **8.72 s, 6/6**
-→ **Policies are fine. The live obs/action path is broken.**
+### Root cause
+**THE SIM'S MOTOR MIXER COUPLES THRUST AND RATE AUTHORITY AT SATURATION CORNERS — unmodeled in all three plants.**
 
-### Diagnoses
-- **Commander (leading hypothesis): all-outputs-saturated = GARBAGE OBSERVATIONS in `fly_rl.py`** — NaN or out-of-range values in at least one obs input causing the network to rail all outputs. Prime suspect: the sidecar-reading code path in `fly_rl.py` which had **never been exercised live** (inc5's entire deploy matrix used `offline_rollout.py` — a different code path; inc4 was never live-tested post-sidecar-fix).
-- **Worker alternative (demoted):** normed_thrust=0.000 read as motor-cutoff floor; proposed fix = 5% collective floor. DEMOTED — the all-rails saturation signature points upstream to obs corruption, not a collective-clamp edge case.
+**Evidence:** `rl/replay_obs.py` replay forensics prove the live obs/action pipeline BYTE-CORRECT (step-0 obs/action match offline element-for-element; no NaN/staleness). The "all-rail outputs" are the policy's NORMAL bang-bang style (collective pulses 0↔1.0, yaw dither ±3.14 every tick — it flies the twin this way). Characterization sweep only measured symmetric low-to-moderate inputs; it never probed the saturation corners.
 
-### Ruled out
-- **Gate-position miscalibration** — model-based CTBR stack threads the same map at 0.03–0.37 m; corner-pass probe steered to offsets accurately; offline-from-live-state rollout 6/6.
-- **Policy OOD** — both inc4 and inc5 pass 6/6 offline from the live handoff state.
+**Corner 1 — low-thrust × high-rate:** at (thr=0 × yaw=3.14) the mixer clips motor pairs at idle → motors `[0.08, 0.73, 0.73, 0.08]` → **9.4 m/s² of UNCOMMANDED hover lift** (caused powered climbs and top-board strikes; earlier "bobbing-parabola" and "hover-substitution" explanations both REFUTED; at thr=0 × rates=0 the sim free-falls honestly).
+
+**Corner 2 — full-thrust × any-rate:** at collective ≈1.0 there is no differential headroom → **rate authority vanishes during thrust pulses** (caused uniform gate-2 lateral misses dy −1.0…−1.8 m). Fit data recorded at `data/runs/20260611_194826_mixer_probe`.
+
+### Mitigation (deploy-side ceiling)
+`--yaw-scale 0` (twin-validated 6/6 at latency 0–2): inc5 went from 0 clean passes in 20 flights → **14 clean passes in 10 flights, 0 finishes**. Remaining failures = the two mixer rails (train-side) + 3 flights aborted at step-0 by bridge-seam contacts (strengthens `--no-bridge` default). Deploy-side patching has **hit its ceiling** — both rails require train-side fix.
+
+### ✅ Twin aero LIVE-CONFIRMED, inc4 RETIRED
+Inc4 probe ×3: all crash gate-0 in 11 steps via sustained full collective rocketing 3.1 m above the gate = the falsified-linear-map 2× thrust error, LIVE. The corrected-aero twin's inc5≫inc4 discrimination is confirmed; falsify→integrate→retrain chain validated end-to-end. **inc4 is RETIRED** (its "transfer-candidate" status was based on the falsified linear drag — void).
+
+### 🚩 Live latency MEASURED
+**2 ticks (67 ms)** by command-vs-realized cross-correlation. Supersedes the ~40 ms lore.
+
+### INC6 SPEC (NEXT — one fable session)
+1. **Mixer-aware plant:** motor-level clip model, fit data at `data/runs/20260611_194826_mixer_probe`; integrate twin→rl_plant→DiffAero adapter parity-gated (S14/S16 recipe).
+2. **Action-rate regularization:** bang-bang/dither is free in-twin, lethal live; penalize `‖Δa‖²` aggressively (build on S15's dact term — raise weight or add a yaw-dither-specific penalty).
+3. **Train transport delay ≥2 steps:** 67 ms live = 2 × 33 ms control steps; DR over {0,1,2,3} steps.
+4. **Standing-start deployment default:** Appendix B shows all four start modes 6/6 in-twin with inc5; the `fly_rl.py` "0/6 raw standing start" comment is STALE inc4-era (the OOB-box spawn fix + S15 redesign resolved it); bridge adds a non-deterministic contact-abort seam.
+
+Queue note: TOGT bound eventually re-solved with mixer coupling (current bound assumes independent thrust/rate limits → slightly optimistic).
+
+### Appendix facts
+- Gate map EXONERATED: model-based runs cross gates 4–9 cm LOW uniformly = CTBR cruise-drag artifact, no fix needed.
+- VISION-PKG2 +0.3 m vertical constant is NOT map-z (likely camera-optical-centre vs body-centre offset or anchor mismatch — needs dedicated calibration flights if ever relevant).
+- Run 200505 has a frozen-telemetry stretch at gate 5 (identical timestamps) — analysis footgun; exclude from timing studies.
 
 ### NEXT
-Fable live-deploy diagnosis session on ShadowPC:
-1. Add step-0 obs/action logging to `fly_rl.py` (log raw obs vector + actor output before rescaling).
-2. Compare live step-0 obs vs the offline handoff state obs — find the diverging element.
-3. Fix the broken obs/action path; re-test live.
+**S17 mixer integration + inc6 retrain (one fable session) → live re-test standing-start A/B.**
 
 ---
 
