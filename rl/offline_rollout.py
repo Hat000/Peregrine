@@ -49,6 +49,12 @@ from fly_rl import (
 )
 
 _GATE_POS_NED = _GATE_POS_ZUP * _FLIP   # opening centres, NED
+
+# The LIVE sim's measured command->rate signs (2026-06-12: roll AND yaw inverted).
+# fly_rl's wire map [-1,-1,-1] composed with this reproduces the training-plant
+# closed loop exactly; using the training rate_sign [+1,+1,-1] here would mirror
+# the roll axis against the corrected deployment pipeline.
+_RATE_SIGN_LIVE = np.array([-1.0, 1.0, -1.0])
 _HALF_OPEN = 0.75                       # 1.5 m inner opening, L-inf half-width
 _HALF_OUTER = 1.36                      # 2.72 m outer frame, L-inf half-width (S1.4 geometry)
 
@@ -69,16 +75,12 @@ def obs_from_truth(st: PlantState, target_gate: int, last_normed: float,
 
 
 def telemetry_from_truth(st: PlantState) -> SimpleNamespace:
-    """Synthesize ODOMETRY-style telemetry (reporting artifacts APPLIED) from truth."""
-    from scipy.spatial.transform import Rotation
-    from racer.frames import euler_from_quat_wxyz
-    roll, pitch, yaw = euler_from_quat_wxyz(st.quat)
-    q_rep = Rotation.from_euler("ZYX", [yaw, pitch, -roll]).as_quat()  # xyzw
-    q_rep = np.array([q_rep[3], q_rep[0], q_rep[1], q_rep[2]])         # wxyz
+    """Synthesize ODOMETRY-style telemetry (reporting artifacts APPLIED) from truth.
+    Measured convention (2026-06-12): quat reported AS-IS; pitch rate sign-inverted."""
     return SimpleNamespace(
         position_ned=st.pos.copy(),
         velocity_ned=st.vel.copy(),
-        orientation_ned_wxyz=q_rep,
+        orientation_ned_wxyz=st.quat.copy(),
         angular_rate_body=st.omega * _ODO_RATE_SIGN,   # involutory: true -> raw
     )
 
@@ -237,7 +239,8 @@ def main() -> int:
         if worst >= 1e-5:
             return 1
 
-    _aero = dict(super_rate_s=SUPER_RATE_S_MEASURED,
+    _aero = dict(rate_sign=_RATE_SIGN_LIVE.copy(),
+                 super_rate_s=SUPER_RATE_S_MEASURED,
                  alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED.copy(),
                  linear_drag=0.0,
                  quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
@@ -253,10 +256,12 @@ def main() -> int:
         params = PlantParams(transport_delay_steps=args.latency_steps, **_aero)
     elif args.plant == "map":
         params = PlantParams(transport_delay_steps=args.latency_steps,
+                             rate_sign=_RATE_SIGN_LIVE.copy(),
                              super_rate_s=SUPER_RATE_S_MEASURED,
                              alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)
     else:
-        params = PlantParams(transport_delay_steps=args.latency_steps)   # legacy flat-2.5
+        params = PlantParams(transport_delay_steps=args.latency_steps,   # legacy flat-2.5
+                             rate_sign=_RATE_SIGN_LIVE.copy())
     st, gate = make_start(args.start, args)
     print(f"[start] {args.start}: pos_ned={np.round(st.pos,2).tolist()} "
           f"vel={np.round(st.vel,2).tolist()} target_gate={gate} thrust0={float(st.thrust):.3f} "

@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 import torch
 
-from racer.frames import R_world_from_body, euler_from_quat_wxyz, world_vec_from_body_quat
+from racer.frames import euler_from_quat_wxyz, world_vec_from_body_quat
 from racer.mavlink_client import parse_race_status
 import fly_rl
 from fly_rl import (N_GATES, OBS_LABELS, _GATE_POS_ZUP, _ODO_RATE_SIGN, build_obs,
@@ -112,13 +112,17 @@ def find_handoff(odo: list[dict], dist: float, speed_min: float, skip_s: float) 
 # artifact-undone TRUE state (what build_obs believes the telemetry means)
 # ---------------------------------------------------------------------------
 def true_state_of(o: dict) -> dict:
-    """Undo the ODOMETRY reporting artifacts the same way build_obs does."""
+    """Undo the ODOMETRY reporting artifacts the same way build_obs does.
+    2026-06-12 convention: the raw quat IS the true attitude (no roll undo);
+    only the pitch rate is sign-inverted in the report."""
+    from scipy.spatial.transform import Rotation as _Rot
     roll, pitch, yaw = euler_from_quat_wxyz(o["q_raw"])
-    R_true = R_world_from_body(-roll, pitch, yaw)          # roll-inversion undo
+    q = o["q_raw"]
+    R_true = _Rot.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
     return {
         "pos": o["pos"].copy(),
         "R_frd2ned": R_true,
-        "vel_artifact": R_true @ o["v_body"],              # body twist via the UNDONE quat
+        "vel_artifact": R_true @ o["v_body"],              # == the client rotation now
         "w_frd": o["w_raw"] * _ODO_RATE_SIGN,              # raw -> true FRD
         "rpy_raw": (roll, pitch, yaw),
     }
@@ -226,12 +230,10 @@ def offline_reference(rows: list[dict], actor, args) -> list[dict]:
                                 COLL_MAP_THR_MEASURED, PlantParams, PlantState,
                                 QUAD_DRAG_C2_MEASURED, SUPER_RATE_S_MEASURED,
                                 step as plant_step)
-    from scipy.spatial.transform import Rotation
 
     r0 = rows[0]
-    roll, pitch, yaw = euler_from_quat_wxyz(np.array(r0["q_raw"]))
-    qx = Rotation.from_euler("ZYX", [yaw, pitch, -roll]).as_quat()
-    quat = np.array([qx[3], qx[0], qx[1], qx[2]])
+    q0 = np.array(r0["q_raw"], dtype=np.float64)
+    quat = q0 / np.linalg.norm(q0)          # raw quat IS the true attitude (2026-06-12)
     st = PlantState(
         pos=np.array(r0["pos_ned"]),
         vel=np.array(r0["v_artifact"]),
@@ -239,7 +241,9 @@ def offline_reference(rows: list[dict], actor, args) -> list[dict]:
         omega=np.array(r0["w_raw"]) * _ODO_RATE_SIGN,
         thrust=np.float64(fly_rl._HOVER_THRUST),
     )
+    from offline_rollout import _RATE_SIGN_LIVE
     params = PlantParams(transport_delay_steps=args.latency_steps,
+                         rate_sign=_RATE_SIGN_LIVE.copy(),
                          super_rate_s=SUPER_RATE_S_MEASURED,
                          alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED.copy(),
                          linear_drag=0.0,

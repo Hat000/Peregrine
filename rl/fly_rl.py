@@ -15,14 +15,14 @@ S1.2 session 2026-06-10 -- see the constants below for the per-item derivations)
     is NEVER sent directly).
   * obs[12] (collective) = the RESCALED normed_thrust of the previous action;
     0.0 at episode start (BaseEnv.last_action zeroed in reset_idx).
-  * policy rates are FLU body rates; the training dynamics adapter maps them to
-    the plant with the plain FLU->FRD flip [1,-1,-1] and the PLANT applies
-    rate_gain*rate_sign -- identically in the live sim (that is the system-ID).
-    So the wire command is rate_flu * [1,-1,-1]; no ff_gain, no rate_gain algebra.
-  * raw ODOMETRY angular_rate -> true FRD rate = *[-1,-1,1] (flight-proven VQ1
-    odo_rate_sign; re-verified offline 2026-06-10 by correlating raw rates vs
-    quat-finite-difference rates on a course recording: corr [+,-,+] vs the
-    REPORTED-attitude derivative, whose roll is itself inverted).
+  * policy rates are FLU body rates; the training adapter maps them with the
+    FLU->FRD flip [1,-1,-1] onto a plant with rate_sign [+1,+1,-1]. The LIVE sim
+    inverts the ROLL command as well as yaw (rate_sign [-1,+1,-1], measured
+    2026-06-12 SHADOWPC-INC6-DIAG) -> wire command = rate_flu * [-1,-1,-1].
+  * raw ODOMETRY angular_rate -> true FRD rate = *[+1,-1,+1]; the raw ODOMETRY
+    quat is the TRUE attitude (no roll undo). The pre-2026-06-12 convention
+    (roll-negated quat + rate sign [-1,-1,1]) was a mirrored bookkeeping that
+    aliased the truth at level attitude and broke in tilted flight (inc6 0/15).
 
 Usage:
   .venv\\Scripts\\python.exe rl\\fly_rl.py --label rl_s1_v2
@@ -50,8 +50,6 @@ import torch.nn.functional as F
 from racer.contracts import ControlCommand, ControlMode
 from racer.finish_hold import drain_until_finish, sim_finish_confirmed
 from racer.firstcontact import telemetry_summary
-from racer.frames import R_world_from_body as _R_world_from_body
-from racer.frames import euler_from_quat_wxyz as _euler_from_q
 from racer.mavlink_client import MavlinkClient
 from racer.recording import Recorder, session_stamp
 from racer.vision.jpeg_receiver import VIDEO_PORT, JpegUdpReceiver
@@ -63,18 +61,23 @@ from racer.vision.jpeg_receiver import VIDEO_PORT, JpegUdpReceiver
 _FLIP = np.array([1.0, -1.0, -1.0], dtype=np.float64)  # world & body frame flip
 
 # Raw ODOMETRY angular_rate -> TRUE FRD body rate (reporting artifact undo).
-# Flight-proven VQ1 value (fly_vq1 --odo-rate-sign=-1,-1,1); re-verified offline
-# 2026-06-10: corr(raw, quat-derived) = [+0.998, -0.998, +0.999] where the
-# quat-derived rate is the REPORTED-attitude derivative (roll inverted) =>
-# raw->true = [+, -, +] * [-1, 1, 1] = [-1, -1, +1].
-_ODO_RATE_SIGN = np.array([-1.0, -1.0, 1.0], dtype=np.float64)
+# MEASURED 2026-06-12 (SHADOWPC-INC6-DIAG): quat-finite-difference of the RAW
+# ODOMETRY quat matches the raw rates under [+1,-1,+1] with gain 1.00 / corr
+# 0.93-0.98 in BOTH level and tilted flight (3 flights). Only the PITCH rate is
+# sign-inverted in the report. The old [-1,-1,+1] paired with a roll-negated
+# attitude -- a mirrored bookkeeping that aliases the truth at level attitude
+# (the regime of every prior verification) and breaks rigid-body kinematics
+# when tilted (the inc6 0/15 root cause).
+_ODO_RATE_SIGN = np.array([1.0, -1.0, 1.0], dtype=np.float64)
 
 # RL action rates (FLU, diffaero Z-up world) -> FRD wire command. The training
-# adapter (diffaero_dynamics._action_diffaero_to_ctbr_np) does rate_frd =
-# U[1:4] * [1,-1,-1] and the plant then applies rate_gain*rate_sign — the SAME
-# amplification the live sim applies (system-ID'd plant). Identical realized
-# physics therefore needs only the same FLU->FRD flip on the wire command.
-_ACT_FLU_TO_FRD = _FLIP
+# adapter does rate_frd = U[1:4] * [1,-1,-1] and the TRAINING plant applies
+# rate_sign [+1,+1,-1] (yaw-only inversion). The LIVE sim's measured command
+# response is rate_sign [-1,+1,-1] -- it inverts the ROLL command too (probe
+# c100_r31 2026-06-12: wire roll +3.14 -> raw-quat roll -1.34 rad in 0.18 s).
+# Matching realized physics therefore needs wire = rate_flu * [-1,-1,-1]:
+# the training FLU->FRD flip composed with the extra live roll inversion.
+_ACT_FLU_TO_FRD = np.array([-1.0, -1.0, -1.0], dtype=np.float64)
 
 _HOVER_THRUST = 0.2656   # PlantParams.hover_thrust; collective at zero net vertical accel
 
@@ -181,17 +184,18 @@ def obs_from_zup(pos_zup: np.ndarray, vel_zup: np.ndarray, R_b2w_zup: np.ndarray
 
 def build_obs(state, target_gate: int, last_normed_thrust: float,
               virtual_flip: bool = False) -> np.ndarray:
-    """Telemetry -> 17-dim obs: undo the ODOMETRY reporting artifacts (roll-inverted
-    quat, [-1,-1,1] raw rate), convert NED/FRD -> Z-up/FLU, then obs_from_zup."""
+    """Telemetry -> 17-dim obs: the ODOMETRY quat IS the true FRD->NED attitude
+    (no roll undo -- measured 2026-06-12, see _ODO_RATE_SIGN comment), undo the
+    pitch-rate reporting inversion, convert NED/FRD -> Z-up/FLU, then obs_from_zup."""
+    from scipy.spatial.transform import Rotation as _Rot
+
     pos_ned = np.asarray(state.position_ned,         dtype=np.float64)
     vel_ned = np.asarray(state.velocity_ned,         dtype=np.float64)
     q_raw   = np.asarray(state.orientation_ned_wxyz, dtype=np.float64)
     w_raw   = np.asarray(state.angular_rate_body,    dtype=np.float64)
 
-    # Attitude: ODOMETRY quat reports roll INVERTED (odo_att_sign=[-1,1,1]).
-    # Extract ZYX euler, negate roll, rebuild R_FRD2NED, sandwich with the flip.
-    roll, pitch, yaw = _euler_from_q(q_raw)
-    R_frd2ned = _R_world_from_body(-roll, pitch, yaw)
+    # Attitude: raw quat taken at face value (wxyz scalar-first -> scipy xyzw).
+    R_frd2ned = _Rot.from_quat([q_raw[1], q_raw[2], q_raw[3], q_raw[0]]).as_matrix()
     R_b2w_zup = (_FLIP[:, None] * R_frd2ned) * _FLIP[None, :]   # FLU -> Z-up world
 
     w_frd = w_raw * _ODO_RATE_SIGN              # raw -> true FRD body rates
