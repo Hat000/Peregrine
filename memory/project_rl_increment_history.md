@@ -419,3 +419,21 @@ Robustness priority: (1) honest contact geometry, (2) structured + global force 
 ### Rejected (no-re-litigate ledger additions)
 
 Anti-crab/sideslip terms; aggression/action damping beyond c16; gate-proximity penalty; recovery curriculum as inc7 blocker; reset-distribution redesign for cold start; 60/100 Hz retrain now; course-sampler widening now; `--plant lapse`/`dr_lapse` (previously voided).
+
+---
+
+## ✅ INC7 LAUNCHED (2026-06-12, Adroit A100 partition)
+
+### GPU parity gate (job 3270602) — CLEARED
+Config-matrix parity gate run on Adroit as job **3270602** (A100 partition). **CLEARS the standing "V100 parity gate not run since S16" footgun.** Note: gate naming is historical ("V100 gate"); always run on whatever GPU is allocated (user directive 2026-06-12 = A100 preferred for all future trainings).
+
+### Three-seed training launch
+| Job | Seed | Outputs |
+|-----|------|---------|
+| 3270605 | 0 | `/scratch/network/fl3689/inc7_run_3270605.out` |
+| 3270606 | 1 | `/scratch/network/fl3689/inc7_run_3270606.out` |
+| 3270608 | 2 | `/scratch/network/fl3689/inc7_run_3270608.out` |
+
+**Selection protocol:** ≥3-seed generalization average (durable — single-seed gen volatile; inc6 seeds ranged 0.741–0.982). Sbatch: `rl/peregrine_racing_inc7.sbatch`. Env: contact-true geometry (body_radius_m ∈ [0.28,0.38] + frame_depth_m=0.30) + dr_force_bias (regime-binned ≤3 m/s²); reward = c16 byte-identical; plant = S17 mixer.
+
+**Prediction on record (from training-doctrine session):** standing clears gate-3 ≥0.3 m corridor margin; tails ≤0.25; posture unchanged (~55° tilt crab); lap cost vs inc6 ≤0.3 s.
