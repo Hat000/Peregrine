@@ -729,6 +729,50 @@ Design rule: all parallel threads feed the sacred 30 Hz control loop **only at t
 
 ---
 
+## §ADVISOR-TRIAGE-2026-06-11 (first advisor-session batch, items A–J)
+
+**Process note:** ADVISOR session (sonnet, read-only sparring partner) is live. Batches arrive as TO COMMANDER blocks; commander triages → bank/queue/reject. Results below.
+
+### QUEUED (fable-window candidates)
+
+**VQ2 photoreal detector data pipeline (items A+B):**
+- Blender/Cycles procedural renders: HDRI env, PBR gate materials, realistic lighting, motion blur, partial occlusion. Hue randomization **WIDER than ±15°** — do NOT assume the gate is red; appearance doctrine = overfit geometry, randomize appearance.
+- Include OFF-FRAME corners (partial-gate / close-range scenes); per-keypoint visibility loss — YOLO-pose supports natively via the keypoint-visibility flag.
+- Target 10–50k scenes. Can be built BEFORE VQ2 spec clarity (appearance gap is axis-independent of the VQ2 stream question).
+- **First action:** check whether v2's existing synthetic set already has partial-gate scenes — avoid redundant generation.
+
+**ShadowPC CPU in-loop perception latency + ONNX/TensorRT export sanity (do-now half of item):**
+- YOLO11s@640 on ShadowPC CPU is completely unmeasured; plausibly 30–80 ms; it is a first-order unknown for Stage-2 and vision-only VQ2. Measure it. Export to ONNX, verify TRT if applicable.
+- Jetson-class benchmark stays **gated on organizer Q⑤** (eval hardware GPU?).
+
+**Tilt-cost concentration analysis:**
+- Pull Round-1 unconstrained trajectory logs (6.89 s, roll p90 145°) and per-segment timing vs the constrained inc5 trajectory (9.52 s, roll p90 64.5°). Identify WHICH segments/gates eat the 2.3 s/lap cost.
+- Informs **per-segment envelope relaxation** (relax tilt weight on the expensive segments first) vs. global tilt weight reduction — a finer-grained speed ladder than the current 96→48→… proposal.
+
+**Stage-2 noise model / case-C coverage (gated on organizer Q①):**
+- If VQ2 is vision-only, the Stage-2 RL-twin perception injection must cover case-C noise magnitudes (1.8–3.4 m lateral per §GATE-MAPPER). The current VISION-PKG2 twin model uses σ≈[0.73,0.47,0.29] m — a 3–5× underestimate in the case-C scenario.
+- Noise model extension = a second training distribution or curriculum (pose-aided early laps → vision-only laps). Blocked until Q① confirmed.
+
+### REJECTED (add to no-re-litigate ledger)
+
+**HSV color pre-filter / color-keyed ROI:**
+- Bakes an appearance assumption (gate color) into the runtime detection path — exactly the brittleness the randomize-appearance doctrine guards against.
+- Detector false-positives are NOT a measured problem; `association.py` + geometry consistency already kills wrong-gate fixes (§VISION-PKG2).
+- Speed benefit duplicates the MAP-DRIVEN ROI-zoom already in the Parallel Systems Tier 1 ledger; the map-driven version is strictly more robust.
+- **DO NOT re-litigate without: (a) a measured FP rate problem in VQ2 photoreal conditions AND (b) evidence that the gate color is stable across VQ2 environments.**
+
+### S17 AMENDMENT (sent to dispatched S17 session)
+Inc6 regularizer: sweep **BOTH** blunt ‖Δa‖² AND a targeted joint corner penalty `~w·|thr−mid|·‖rate_cmd‖` (taxes exactly the two mixer saturation rails without suppressing mid-range thrust corrections). Ship the faster at equal live-compatibility. The joint-penalty form is a hypothesized improvement over blunt dact; the sweep settles it empirically.
+
+### ASSIGNED TO ADVISOR (results return as TO COMMANDER digests)
+1. **MonoRace deep-read** (arXiv 2601.15222, TU Delft/MAVLab): focus on <4-corner handling (partial gate in transits), calibration refinement pipeline, and how they maintain gate identity during blind transits. Findings feed Stage-2 vision design.
+2. **Analytic speed-ceiling computation:** 30 Hz policy + 67 ms latency → lateral authority vs 0.75 m aperture across 10–40 m/s range. Does the 30→60/100 Hz retrain jump the queue over inc6? Decide from the math, not heuristics.
+
+### Organizer email addition
+**Add Q⑥: does a physical round follow VQ2 (timeline)?** If yes, flag the second sim-to-real layer (motor mix, ESC, vibration, prop wash — scope only if confirmed). Add to the email along with Q①–⑤.
+
+---
+
 ## Open
 - ~~Substrate bake-off verdict~~ ✅ RESOLVED: **DiffAero** — proven on Adroit (plant injected, gate PASS, trains our plant).
 - Structural pilot-stack changes (user brainstorming — the Setpoint/ControlCommand seam keeps a
