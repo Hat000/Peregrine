@@ -161,9 +161,19 @@ random courses + 30% standing starts, sidecar 3.765/3.14) plus:
 2. `+dynamics.dr_latency_min_steps=1 +dynamics.dr_latency_max_steps=3` — {1,2,3} ticks,
    CENTERED on the measured live 2 (was {0,1,2}: trained for a latency the live system never
    has and not for the one it sometimes does).
-3. **RW_DACT sweep** (the existing R5 ||delta action||^2 span-normalised penalty; inc5 trained
-   at 1.0 and still railed — the twin made rails free; the mixer now makes them expensive, and
-   the dact weight accelerates style convergence): round 1 = {1, 4, 16} x seed 0 + {4} x seed 1.
+3. **STYLE-REGULARIZER A/B (Part 3 amendment — two candidates + the combination):**
+   * **(a) RW_DACT** — the blunt R5 ||delta action||^2 span-normalised penalty (inc5 trained at
+     1.0 and still railed; the twin made rails free, the mixer now makes them expensive, and
+     the weight accelerates style convergence). Taxes EVERY fast correction equally.
+   * **(b) RW_CORNER (NEW, R7)** — the TARGETED mixer-corner tax
+     `|a_thr - 0.5| * ||2(a_rate - 0.5)||` (span units: |thr-mid| is 0.5 at either thrust
+     rail, ~0.23 at hover; rate magnitude 1 per railed axis). Prices exactly the two mixer
+     rails — (thr~0 x high rate) parasitic lift, (thr~1 x rate) authority/sag — WITHOUT
+     suppressing mid-range thrust corrections. Default 0 = OFF (legacy reward float-identical;
+     pinned by test). On COMMANDED actions like R5, so it shapes style even where the mixer-ON
+     plant already prices the realized physics.
+   * Decision rule: **ship whichever arm is FASTEST at compliant style** (the ACTION-RATE gate
+     is the equal-live-compatibility bar; lap time decides among compliant candidates).
 
 **Acceptance gates (Section 8):** S15 gates mixer-ON (held-out VQ1 success ~1.0 + median lap,
 generalization, style envelope, deployment rollouts incl. latency 2-3) **+ the new
@@ -172,12 +182,21 @@ ACTION-RATE gate: thr_p95 <= 0.5 span/tick, yaw_p95 <= 0.5 span/tick, yaw flip r
 
 ## 7. Training rounds (LIVE — updated as rounds complete)
 
-| round | job | tag | RW_DACT | seed | result |
-|---|---|---|---|---|---|
-| R1 | 3268648 | inc6_d1_s0 | 1.0 | 0 | (running) |
-| R1 | 3268649 | inc6_d4_s0 | 4.0 | 0 | (running) |
-| R1 | 3268650 | inc6_d16_s0 | 16.0 | 0 | (running) |
-| R1 | 3268651 | inc6_d4_s1 | 4.0 | 1 | (running) |
+| round | job | tag | RW_DACT | RW_CORNER | seed | result |
+|---|---|---|---|---|---|---|
+| R1 (a) | 3268648 | inc6_d1_s0 | 1.0 | 0 | 0 | (running) |
+| R1 (a) | 3268649 | inc6_d4_s0 | 4.0 | 0 | 0 | (running) |
+| R1 (a) | 3268650 | inc6_d16_s0 | 16.0 | 0 | 0 | (running) |
+| R1 (a) | 3268651 | inc6_d4_s1 | 4.0 | 0 | 1 | (running) |
+| R1 (b) | 3268718 | inc6_c4_s0 | 1.0 | 4.0 | 0 | (queued) |
+| R1 (b) | 3268719 | inc6_c16_s0 | 1.0 | 16.0 | 0 | (queued) |
+| R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4.0 | 8.0 | 0 | (queued) |
+
+The (a) arm jobs started before the R7 code landed on Adroit — harmless: their cfgs carry no
+`rw_corner`, and R7 defaults to 0 (their chained evals import the new file with identical
+reward). Corner-weight sizing: at the inc5 bottom-rail style (thr 0 + one railed rate axis)
+R7 = 0.5/tick x w, so w=4 matches the rail pressure of dact~4 while leaving hover-band
+corrections ~free; w=16 = the strong arm.
 
 ## 8. Eval vs inc5 (PENDING — filled at ship time)
 

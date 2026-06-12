@@ -273,10 +273,50 @@ def test_rate_penalty():
     assert torch.allclose(r, torch.full((4,), -w.time - w.rate * 5.0))
 
 
+def test_corner_penalty_default_off_costs_nothing():
+    """R7 (S17) defaults to 0: the term is logged but contributes nothing -- the reward of every
+    pre-S17 config (incl. the in-flight inc6 dact arms) is unchanged."""
+    w = RewardWeights()
+    assert w.corner == 0.0
+    kw = _base_kwargs()
+    kw["action_norm"] = torch.tensor([[0.0, 0.5, 0.5, 1.0]] * 4)   # thr rail x yaw rail
+    kw["last_action_norm"] = kw["action_norm"].clone()             # isolate from R5
+    r, comp = compute_reward_terms(w, **kw)
+    assert comp["corner_pen"] > 0.0                                # computed (logged)...
+    assert torch.allclose(r, torch.full((4,), -w.time))            # ...but costs nothing
+
+
+def test_corner_penalty_targets_the_mixer_rails():
+    """R7 taxes exactly the two mixer corners (thr~rail x rate demand) and NOT mid-range
+    thrust corrections or rate-free rail thrust."""
+    w = RewardWeights(corner=4.0)
+    kw = _base_kwargs()
+
+    def pen(a):
+        kw["action_norm"] = torch.tensor([a] * 4)
+        kw["last_action_norm"] = kw["action_norm"].clone()
+        r, comp = compute_reward_terms(w, **kw)
+        return r, comp["corner_pen"]
+
+    r_rail, p_rail = pen([0.0, 0.5, 0.5, 1.0])     # bottom rail x yaw rail (the inc5 killer)
+    assert abs(p_rail - 0.5) < 1e-6                # |0-0.5| * ||[0,0,2*0.5]|| = 0.5
+    _, p_top = pen([1.0, 1.0, 0.5, 0.5])           # top rail x roll rail (the gate-2 killer)
+    assert abs(p_top - 0.5) < 1e-6
+    r_mid, p_mid = pen([0.5, 0.5, 0.5, 1.0])       # SAME rate demand at mid thrust: free
+    assert p_mid == 0.0
+    assert (r_mid > r_rail).all()
+    _, p_zr = pen([1.0, 0.5, 0.5, 0.5])            # rail thrust, zero rate: free
+    assert p_zr == 0.0
+    _, p_hov = pen([0.2656, 0.5, 0.5, 1.0])        # hover-collective turn: mild (~0.23)
+    assert 0.2 < p_hov < 0.27
+
+
 def test_weights_from_cfg_overrides():
     class Cfg:                                       # getattr-style cfg stub
         rw_collision = 40.0
         passage_bonus = 12.0                          # legacy S1.3 name still honored
+        rw_corner = 8.0                               # R7 (S17) flows through the fields loop
     w = RewardWeights.from_cfg(Cfg())
     assert w.collision == 40.0 and w.passage == 12.0
+    assert w.corner == 8.0
     assert w.progress == 10.0                         # untouched default

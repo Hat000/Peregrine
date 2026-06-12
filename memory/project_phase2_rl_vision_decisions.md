@@ -773,6 +773,52 @@ Inc6 regularizer: sweep **BOTH** blunt ‖Δa‖² AND a targeted joint corner p
 
 ---
 
+---
+
+## §MONORACE-DIGEST (2026-06-11, ADVISOR assignment E — arXiv 2601.15222, TU Delft/MAVLab)
+
+Source: MonoRace paper deep-read. Three findings triaged.
+
+### Partial gates / <4-corner PnP — GEOMETRICALLY INAPPLICABLE but produces one queued task
+MonoRace pools corners across 2 co-visible gates in a multi-gate PnP fusion; this occurs in ~27% of frames on their fastest run. **This technique is GEOMETRICALLY INAPPLICABLE to our course:** consecutive gate co-visibility is IMPOSSIBLE (23.7–38.5 m spacing vs 24–32 m effective range — proven in §GATE-MAPPER). There is nothing to adopt from their multi-gate fusion directly.
+
+**What IS applicable:** their off-screen / partial-corner handling. When a gate is partly outside the FOV, they use attitude (from IMU) + known gate orientation from map to solve translation from fewer corners.
+
+**NEW QUEUED TASK — 2-corner translation-only PnP fallback (~1-day):**
+- ODOMETRY gives attitude precisely; gate orientation from map is known.
+- With attitude and gate normal fixed, 2 adjacent corners (collinear along one gate side) uniquely pin 3D translation.
+- This is the minimum-corner analog to MonoRace's "de-rotated IMU-attitude" fallback.
+- Use case: close-range transit frames where 2 corners exit the 58.7° VFoV; currently these frames yield no fix.
+- Implementation: add a `solve_translation_2corner` branch in `localization.py` behind a `USE_2CORNER_FALLBACK` flag; parity-testable against full 4-corner on frames where all 4 are visible.
+- **Fit to the existing off-screen-corner training already queued in the photoreal pipeline (item ①)** — the detector needs to reliably report partial gates for this to fire.
+- Priority: post-inc6, bundle with SHADOWPC-VISION-CAL session.
+
+### Calibration — pitch+roll extrinsics NEVER estimated; camera-body translation offset unresolved
+Our refutation of the yaw extrinsic (§VISION-PKG2: both-signed per-gate slopes + flight-specific roll wander ⇒ covariance, not calibration) was correct and complete FOR YAW. However:
+- **Pitch and roll camera-body extrinsics were never estimated.** MonoRace uses Bayesian IoU maximization (~40 BO iterations): reproject map gate corners through the current state estimate, compute IoU against detector output, optimize the extrinsic offset. Their result shows stable mount geometry.
+- **Our 1.4° uniform `ATTITUDE_NOISE_STD_RAD` absorbs pitch+roll extrinsic error implicitly** — if those offsets are stable (plausible for a fixed camera mount), estimating them tightens the lever-arm covariance directly.
+- **The VISION-PKG2 +0.3 m vertical systematic** is almost certainly a camera-body TRANSLATION offset (optical center vs body CoM), NOT a map height error (we verified map is exonerated). Regression from a level-hover recording (vary altitude, regress fix-z vs geometry prediction) isolates this cleanly.
+
+**NEW QUEUED TASK — Bayesian-IoU pitch+roll extrinsic calibration:**
+- Adapt MonoRace's IoU-BO method to pitch+roll ONLY (yaw treated as noise per our refutation; do NOT re-open the yaw calibration question without two flights showing consistent sign on τ_pre — see §VISION-PKG2).
+- Run on the next fresh 6/6 recording with `--dump-extras`.
+- Expected payoff: replace 1.4° uniform lever arm with a tighter per-axis value; may reduce false rejections in close-range transit frames.
+- **BUNDLE into one SHADOWPC-VISION-CAL session post-inc6** alongside: roll-wander re-measure (`composition_fit.py` as-is), +0.3 m vertical regression from level hover, and in-loop CPU perception latency measurement.
+- This session is gated on inc6 being live-tested (need a fresh uncontaminated 6/6 recording on the corrected policy).
+
+### Gate identity / blind transits — NO CHANGE, verdict BANKED
+MonoRace maintains gate identity through blind transits using: (a) a gate-sequencing prior (progress through the course in order), (b) velocity dead-reckoning between fixes, and (c) appearance-keyed re-identification when the gate re-enters view.
+
+**Our stack is equivalent or stronger on every layer:**
+- `RACE_STATUS.active_gate_index` = an EXPLICIT gate-sequence signal from the sim (MonoRace infers it from their own tracking — we have the ground-truth stream).
+- `association.py` wrong-gate kill = the appearance-keyed re-identification analog (geometry consistency rather than appearance; more robust to lighting variation).
+- Given `LOCAL_POSITION_NED` + `ODOMETRY` at 97/75 Hz = pristine dead-reckoning during blind transits (MonoRace relies on a noisier IMU integration).
+- If VQ2 drops `active_gate_index`, our fallback IS their architecture (sequencing prior + dead-reckoning + association). **Risk CLOSED.**
+
+No action items from this sub-topic.
+
+---
+
 ## Open
 - ~~Substrate bake-off verdict~~ ✅ RESOLVED: **DiffAero** — proven on Adroit (plant injected, gate PASS, trains our plant).
 - Structural pilot-stack changes (user brainstorming — the Setpoint/ControlCommand seam keeps a

@@ -83,6 +83,7 @@ in ``RewardWeights``). Per-step reward r_t =
     R4  - rw_tilt       * relu(cos(rw_tilt_free) - R33)^2          [4.0; free cone 60 deg]
     R5  - rw_dact       * ||a_t - a_{t-1}||^2        [0.25; normalized action units^2]
     R6  - rw_rate       * ||omega||                  [0.05 / (rad/s)]
+    R7  - rw_corner     * |a_thr - 0.5| * ||2(a_rate - 0.5)||   [0.0 = OFF; S17 mixer-corner tax]
 
 R1 PROGRESS (dense): Euclidean distance-to-gate-CENTER delta, measured against the (possibly just
    advanced) target gate for BOTH prev and curr (parent convention -- no spike at passage).
@@ -132,6 +133,13 @@ R6 BODY-RATE (0.05*||omega||): residual style term at HALF the parent's old 0.1 
    plant legitimately uses ~11 rad/s transients and yaw is the worst-modeled axis, so we tax
    sustained tumbling-style rates lightly without fighting cornering. Removed => mostly fine;
    kept as a cheap regularizer against rate-riding solutions.
+R7 MIXER-CORNER (S17, default 0 = OFF): |a_thr - 0.5| (span units: 0.5 at EITHER thrust rail,
+   ~0.23 at hover) x the span-normalized commanded-rate magnitude. Taxes exactly the two motor-
+   mixer rails -- (thr~0 x high rate) = parasitic lift, (thr~1 x rate) = authority/thrust sag,
+   the corners that killed the inc4/inc5 live transfers -- WITHOUT suppressing mid-range thrust
+   corrections (the blunt R5 alternative taxes every fast correction equally). A/B'd against
+   raised R5 in the inc6 round-1 sweep; on COMMANDED actions (like R5), so it shapes style even
+   where the mixer-ON plant already prices the realized physics.
 
 TERMINATION SET (terminal, PPO sees done=1, no bootstrap): frame collision (T1) | clean miss (T2)
 | OOB (T3) | finished (T4). TRUNCATION SET (PPO bootstraps V(s')): timeout, GUI reset. This is
@@ -260,6 +268,7 @@ class RewardWeights:
     tilt_free_rad: float = 1.0471976   # R4 free cone half-angle: 60 deg
     dact: float = 0.25           # R5, on ||Delta action||^2 (span-normalized units)
     rate: float = 0.05           # R6, on ||omega|| (rad/s)
+    corner: float = 0.0          # R7 (S17), on |a_thr - 0.5| * ||2(a_rate - 0.5)||; 0 = OFF
 
     @classmethod
     def from_cfg(cls, cfg) -> "RewardWeights":
@@ -282,6 +291,10 @@ def compute_reward_terms(w: RewardWeights, *, prev_d2g, curr_d2g, gate_passed, g
     tilt_pen = torch.relu(math.cos(w.tilt_free_rad) - tilt_cos_from_quat_xyzw(quat_xyzw)) ** 2
     dact = ((action_norm - last_action_norm) ** 2).sum(dim=-1)
     rate_mag = torch.linalg.norm(omega, dim=-1)
+    # R7 (S17): mixer-corner tax on the COMMANDED action -- |thr - mid| (span units; 0.5 at
+    # either thrust rail) x commanded-rate magnitude (span units; 1 per railed axis).
+    corner = (action_norm[..., 0] - 0.5).abs() * torch.linalg.norm(
+        2.0 * (action_norm[..., 1:4] - 0.5), dim=-1)
     fin = newly_finished.float()
     reward = (
         w.progress * progress
@@ -294,11 +307,13 @@ def compute_reward_terms(w: RewardWeights, *, prev_d2g, curr_d2g, gate_passed, g
         - w.tilt * tilt_pen
         - w.dact * dact
         - w.rate * rate_mag
+        - w.corner * corner
     )
     components = {
         "progress_loss": -progress.mean().item(),
         "tilt_pen": tilt_pen.mean().item(),
         "dact_pen": dact.mean().item(),
+        "corner_pen": corner.mean().item(),
         "rate_pen": rate_mag.mean().item(),
         "collision_loss": gate_collision.float().mean().item(),
         "miss_loss": gate_miss.float().mean().item(),

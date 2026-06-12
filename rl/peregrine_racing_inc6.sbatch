@@ -15,12 +15,15 @@
 #     this models -- 0/20 live despite 10/10 in the (mixer-blind) twin.
 #   * transport-delay DR CENTERED on the measured live latency (2 ticks / 67 ms, diag Section 4):
 #     +dynamics.dr_latency_min_steps=1 +dynamics.dr_latency_max_steps=3 -> {1,2,3} (was {0,1,2}).
-#   * ACTION-RATE regularization sweep: RW_DACT (the existing R5 ||delta action||^2 weight,
-#     inc5 trained at 1.0 and still railed) -- swept like S15 swept rw_tilt. Style gate:
+#   * STYLE-REGULARIZER A/B (Part 3 amendment): TWO candidates, swept independently + combined --
+#     (a) RW_DACT: the blunt R5 ||delta action||^2 weight (inc5 trained at 1.0 and still railed);
+#     (b) RW_CORNER: the TARGETED R7 mixer-corner tax |a_thr - 0.5| * ||2(a_rate - 0.5)|| that
+#     prices exactly the two mixer rails (thr~0 x high rate; thr~1 x rate) without suppressing
+#     mid-range thrust corrections. Ship whichever is FASTEST at compliant style. Style gate:
 #     ACTRATE_SUMMARY thr_p95/yaw_p95 <= 0.5 span/tick, yaw_flip <= 5%.
 #   * chained evals run --plant mixer (the fully measured S17 plant).
 # Everything else (env, courses, PPO, lifelines) identical to inc5.
-# Parameterize: sbatch --export=ALL,SEED=1,RW_DACT=4.0,TAG=inc6_d4_s1 rl/peregrine_racing_inc6.sbatch
+# Parameterize: sbatch --export=ALL,SEED=1,RW_DACT=4.0,RW_CORNER=0.0,TAG=inc6_d4_s1 rl/peregrine_racing_inc6.sbatch
 set -x
 hostname
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
@@ -42,16 +45,17 @@ RW_MISS=${RW_MISS:-40.0}
 RW_OOB=${RW_OOB:-75.0}
 RW_FTIME=${RW_FTIME:-0.25}
 RW_DACT=${RW_DACT:-4.0}
+RW_CORNER=${RW_CORNER:-0.0}
 TAG=${TAG:-inc6_s${SEED}}
 RUNDIR=/scratch/network/fl3689/inc6_runs/${TAG}
 rm -rf "$RUNDIR"; mkdir -p "$RUNDIR"
 
-echo "=== STAGE1.6: inc5 recipe + MIXER DR + latency {1,2,3} (seed=$SEED nupd=$NUPD tilt=$RW_TILT coll=$RW_COLL miss=$RW_MISS oob=$RW_OOB ftime=$RW_FTIME dact=$RW_DACT) ==="
+echo "=== STAGE1.6: inc5 recipe + MIXER DR + latency {1,2,3} (seed=$SEED nupd=$NUPD tilt=$RW_TILT coll=$RW_COLL miss=$RW_MISS oob=$RW_OOB ftime=$RW_FTIME dact=$RW_DACT corner=$RW_CORNER) ==="
 python /scratch/network/fl3689/peregrine_repo/rl/peregrine_train_racing.py \
   env=racing env.name=peregrine_racing \
   +env.course_mode=random +env.standing_start_frac=0.3 +env.rw_tilt=${RW_TILT} \
   +env.rw_collision=${RW_COLL} +env.rw_miss=${RW_MISS} +env.rw_oob=${RW_OOB} \
-  +env.rw_finish_time=${RW_FTIME} +env.rw_dact=${RW_DACT} \
+  +env.rw_finish_time=${RW_FTIME} +env.rw_dact=${RW_DACT} +env.rw_corner=${RW_CORNER} \
   dynamics=quad dynamics.name=peregrine_plant dynamics.g=9.80665 \
   +dynamics.dr=true +dynamics.dr_aero=true +dynamics.dr_mixer=true \
   +dynamics.dr_latency_min_steps=1 +dynamics.dr_latency_max_steps=3 \
