@@ -187,13 +187,27 @@ All evals MIXER-ON. VQ1 = held-out acceptance; gen = random courses; style = ACT
 
 | round | job | tag | DACT | CORNER | seed | VQ1 sr / t_med | gen sr | thr_p95 / yaw_p95 / flips | style |
 |---|---|---|---|---|---|---|---|---|---|
-| R1 (a) | 3268648 | inc6_d1_s0 | 1 | 0 | 0 | (running) | | | |
-| R1 (a) | 3268649 | inc6_d4_s0 | 4 | 0 | 0 | (running) | | | |
-| R1 (a) | 3268650 | inc6_d16_s0 | 16 | 0 | 0 | **1.000 / 10.56 s** | 0.571 | 0.181 / 0.039 / 0% | **PASS** |
+| R1 (a) | 3268648 | inc6_d1_s0 | 1 | 0 | 0 | 0.997 / 10.92 s | 0.727 | 1.000 / 0.333 / 0.2% | FAIL (thr) |
+| R1 (a) | 3268649 | inc6_d4_s0 | 4 | 0 | 0 | 1.000 / 11.12 s | 0.649 | 0.998 / 0.093 / 0% | FAIL (thr) |
+| R1 (a) | 3268650 | inc6_d16_s0 | 16 | 0 | 0 | 1.000 / 10.56 s | 0.571 | 0.181 / 0.039 / 0% | PASS |
 | R1 (a) | 3268651 | inc6_d4_s1 | 4 | 0 | 1 | 0.999 / 12.09 s | 0.689 | 0.997 / 0.083 / 0% | FAIL (thr) |
-| R1 (b) | 3268718 | inc6_c4_s0 | 1 | 4 | 0 | (running) | | | |
-| R1 (b) | 3268719 | inc6_c16_s0 | 1 | 16 | 0 | (running) | | | |
-| R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4 | 8 | 0 | (queued) | | | |
+| R1 (b) | 3268718 | inc6_c4_s0 | 1 | 4 | 0 | 1.000 / 10.39 s | 0.940 | 0.993 / 0.049 / 0% | FAIL (thr) |
+| **R1 (b)** | **3268719** | **inc6_c16_s0** | **1** | **16** | **0** | **1.000 / 9.86 s** | **0.982** | **0.061 / 0.009 / 0%** | **PASS** |
+| R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4 | 8 | 0 | (running) | | | |
+
+**A/B VERDICT — the targeted corner penalty wins on every axis simultaneously.** The blunt
+||delta a||^2 arm trades smoothness against generalization monotonically (gen 0.727 -> 0.649 ->
+0.571 as dact 1 -> 4 -> 16) because it taxes every fast correction, including the ones hard
+random courses need. The corner arm decouples them: c16 is the FASTEST (9.86 s), the BEST
+generalizer (0.982 — above even inc5's 0.939 aero-plant number, on the harder mixer plant),
+AND the smoothest (thr_p95 0.061, yaw_p95 0.009) — pricing only the (thr-rail x rate) corners
+removed the incentive to live near the rails at all, without flattening responsiveness.
+At w=4 the corner tax is too weak to move collective off the rails (c4 thr_p95 0.993), though
+its gen 0.940 already beats every dact arm. Yaw dither died in ALL seven arms (mixer physics).
+
+**TRAIN_RC=1 note (benign):** every job trains the full 6000/6000 updates and saves
+checkpoints, then a post-training teardown step crashes (`ValueError: Unknown action frame:
+body`, a diffaero export/test path). The chained evals load the final saved checkpoint.
 
 **Early R1 findings:** ① the YAW DITHER — the #1 live killer — is DEAD in every mixer-ON arm
 (yaw_p95 <= 0.11, flips 0%, even at dact=1-class weights: the mixer PHYSICS killed it, not the
@@ -214,16 +228,32 @@ reward). Corner-weight sizing: at the inc5 bottom-rail style (thr 0 + one railed
 R7 = 0.5/tick x w, so w=4 matches the rail pressure of dact~4 while leaving hover-band
 corrections ~free; w=16 = the strong arm.
 
-## 8. Eval vs inc5 (PENDING — filled at ship time)
+## 8. Eval vs inc5 — everything MIXER-ON (the measured plant)
 
-| metric | inc5 (datum, aero-ON eval) | inc6 (mixer-ON eval) |
+The decisive datum (job 3268841): **inc5 evaluated on the mixer plant scores sr 0.000 on BOTH
+courses** (VQ1: 16,601 episodes, 16,549 misses; random: 15,137 episodes, 0 finishes) with its
+signature in the open — yaw_p95 = 1.000, yaw_flip = 0.817 (the per-tick rail dither). The live
+0/20 transfer failure, reproduced wholesale at eval scale. Same checkpoint, same courses, only
+the plant's two mixer corners priced in.
+
+| metric (mixer-ON eval) | inc5 (t96_s1 datum) | **inc6 (c16_s0, shipped)** |
 |---|---|---|
-| held-out VQ1 success | 1.000 (aero) / **see mixer-ON datum below** | |
-| median lap | 9.52 s | |
-| generalization (random courses) | 0.939 | |
-| roll p90 | 64.5 deg | |
-| ACTRATE thr_p95 / yaw_p95 / flips | ~1.0 / ~1.0 / per-tick (the rails) | |
-| deployment rollouts (lat 2/3) | 6/6 at lat<=2 only with ys0 | |
+| held-out VQ1 success | **0.000** (16,549/16,601 miss) | **1.000** (2,560 eps, 0 coll, 0 miss) |
+| median lap (VQ1) | — (no finishes) | **9.86 s** (p90 9.92, min 9.76) |
+| generalization (random) | **0.000** | **0.982** (2,261 eps) |
+| roll / tilt succ max (VQ1) | — | 57.4 / 62.9 deg |
+| pass offset p90 (VQ1) | — | (see .out; med-class ~0.4 m) |
+| ACTRATE thr_p95 / yaw_p95 / flips | 0.186 / **1.000** / **81.7%** | **0.061 / 0.009 / 0.0%** |
+| deployment rollouts (laptop, mixer plant) | 1/6 gates typical, needs --yaw-scale 0 | **16/16 FINISHED**, no mitigation flags |
+
+*(Context: inc5's banked 1.000/9.52 s was an AERO-plant eval — the plant that could not see
+the mixer corners its style exploited. The aero-plant numbers were real; the plant was not.)*
+
+**inc6 c16 deployment matrix (laptop, `--plant mixer`, ckpt md5 8fb8855e...): 16/16 FINISHED**
+— simstart lat {0,2,3} (9.5 s), racestart lat {2,3} (9.6 s), trainreset lat 2 (9.2 s), handoff
+lat {2,3} (8.6-8.7 s), + the perturbed-seam grid speed {4.0-10.0} x dist {2.5-3.5} at lat 2
+(8.3-8.7 s; the grid where inc5+ys0 died uniformly). Native latency tolerance (trained {1,2,3})
+shows: lap time varies < 0.15 s across lat 0 -> 3.
 
 ## 9. Deployment notes (for the next ShadowPC session)
 
