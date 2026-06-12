@@ -117,7 +117,22 @@ LEGACY rules (the twin has no contact, exactly like training), scored post-hoc c
 - Live crash offsets (0.37–0.49) imply the effective halo sits in the UPPER half of the r band —
   worst-case-bracketing U[0.28, 0.38] is the right pressure.
 
-## 4. Launch status (escape hatch applied) — ACTION FOR FENGYOU
+## 4. Launch status — ✅ LAUNCHED (2026-06-12, post-handoff update)
+
+Fengyou brought up the serve daemon; one stale-file fix was needed (scratch `rl_plant.py` was
+pre-S18 — its missing LAPSE_* constants killed the guarded import; added to the sync list,
+commit on this branch), then all three gates passed live and the seeds went in:
+
+- **GATE 1 precheck:** PASS (login node; env builds with all inc7 keys, `pass_margin_m` +
+  `slab_collision_rate` present, all DR axes sample, GuardedPPO wired).
+- **GATE 2 parity gate:** **GATE_PASS on V100** (job **3270602**): 11 configs × 6 seeds ×
+  8 steps, worst DIV_FLOAT64 7.105e-15; `dr_nominal` 3.997e-15; FORCE_BIAS check 8.674e-18.
+- **GATE 3 tests:** 616/620 green (laptop, §2).
+- **INC7_JOB_IDS: s0 = 3270605, s1 = 3270606, s2 = 3270608** (A100-pinned, 6000 updates,
+  2048 envs; outputs `/scratch/network/fl3689/inc7_run_<job>.out`; eval epilogue runs VQ1 +
+  random courses mixer-ON automatically). Poll: `launch_inc7.py status`.
+
+### Original handoff instructions (superseded by the launch above; kept for the record)
 
 The adroit-connector serve daemon is down; the key is passphrase-encrypted (blank in .env by
 design), no ssh-agent, and BatchMode SSH fails on Duo keyboard-interactive — there is no
@@ -181,8 +196,10 @@ MEMORY-DELTA:
   nominal inc6 (standing AND bridge) strikes g5 contact-true at r≥0.33; g3 true margin
   0.06–0.16 m vs legacy ~0.44. New falsifiable inc7 number: g5 tail ≤0.37−ε at worst-case r.
 - **inc7 sbatch now A100-pinned** (`--gres=gpu:nvidia_a100:1`).
-- **LAUNCH PENDING FENGYOU (Duo-blocked):** run serve + `launch_inc7.py all` (enforces 3 gates,
-  refuses submit on failure); record INC7_JOB_IDS in this WRITEUP.
+- **✅ INC7 LAUNCHED: jobs s0=3270605 s1=3270606 s2=3270608** (A100); V100 parity gate PASSED
+  live (job 3270602, worst 7.1e-15, dr_nominal 4.0e-15) — "gate not run since S16" flag CLEARED.
+  Scratch-repo footgun instance: src/racer/rl_plant.py was STALE pre-S18 → GATE 1 import death;
+  launch_inc7.py now syncs it.
 - **S20 SKIPPED deliberately** (not a blocker per Q4; avoids gate re-run + increment confound);
   queue as own session.
 - **⚠️ vision-frame-fix (8d7b0b3, COMMITTED) breaks 4 twin/twin_tune tests on main:** the
