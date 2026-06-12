@@ -79,12 +79,14 @@ touches the reward section).
   crash offsets (0.37/0.44/0.49) reclassified pass→strike at the doctrine radii, force-bias
   band/bin/edge semantics, and **negative controls** (verbatim legacy `crossing_events` copy
   pinned bit-equal with float bands; numpy `gate_event` defaults = legacy classes).
-  ⚠️ The full-suite run shows 4 additional failures in `test_twin/test_twin_tune` — these are
-  caused by the **parallel VISION-FRAME-FIX session's uncommitted WIP** sitting in this same
-  worktree (`src/racer/frames.py`, `src/racer/navigator.py`): verified both directions by
-  selective stashing (with WIP stashed + my changes active: all pass; with mine stashed + WIP
-  active: same 4 fail). Left untouched — not mine to commit or revert. **Heads-up to that
-  session: its frames.py WIP currently breaks 4 twin tests.**
+  ⚠️ The full-suite run shows 4 additional failures in `test_twin/test_twin_tune` — caused by
+  the parallel VISION-FRAME-FIX work, which COMMITTED mid-session as `8d7b0b3` (verified both
+  directions by selective stashing while it was still WIP). Root cause diagnosed: the
+  navigator now conjugates `ds.orientation_ned_wxyz` (correct on the live wire = RAW quat),
+  but the twin harness synthesizes TRUE quats into that field — the conjugation mis-rotates
+  the twin's vision fixes and `fly()` ends RUN instead of FINISHED. The twin harness violates
+  the wire contract, not the navigator fix. Not fixed here (frame-convention changes need
+  that session's context — doctrine §6); **flagged as a spin-off task chip** for Fengyou.
 - **Local parity-gate dry run** (`rl/local_gate_harness.py`, stubbed BaseDynamics):
   GATE_PASS; all 10 legacy configs unchanged (worst 7.1e-15, identical to the S17 V100 value);
   new `dr_nominal` config (FULL DR codepath — dr+dr_aero+dr_mixer+dr_force_bias — pinned at
@@ -183,5 +185,7 @@ MEMORY-DELTA:
   refuses submit on failure); record INC7_JOB_IDS in this WRITEUP.
 - **S20 SKIPPED deliberately** (not a blocker per Q4; avoids gate re-run + increment confound);
   queue as own session.
-- **⚠️ Parallel VISION-FRAME-FIX WIP (frames.py/navigator.py, uncommitted in this worktree)
-  currently breaks 4 twin/twin_tune tests** — verified by selective stash; left untouched.
+- **⚠️ vision-frame-fix (8d7b0b3, COMMITTED) breaks 4 twin/twin_tune tests on main:** the
+  navigator now conjugates orientation_ned_wxyz (correct for live RAW quat); the twin harness
+  feeds TRUE quats → twin fly() no longer FINISHES. Twin harness violates the wire contract;
+  navigator fix itself validated. Spin-off task flagged; fix the harness, not the navigator.
