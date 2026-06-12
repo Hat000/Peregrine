@@ -146,3 +146,76 @@ Inc5's uniform gate-2 lateral miss (dy −1.0…−1.8 m, mid-bank) is now co-at
 1. Laptop S18: joint translational refit (collective-vs-airspeed lapse + drag) from 17 runs — no new flights needed.
 2. Re-run inc6 deploy matrix on refit plant; if robust → fly as-is; else inc7 with lapse-DR.
 3. Next live session = standing start ×5 (gated on S18). Bridge no longer a useful discriminator until plant gap closed.
+
+---
+
+## ✅ S18 LAPSE FIT+INTEGRATION + PREMISE REVERSAL (2026-06-12, laptop opus; commits fb99636+0fd741b; writeup handoff/laptop-s18-thrust-lapse-2026-06-12/WRITEUP.md)
+
+### 1. Lapse fit — real and well-identified
+
+Fit method: smooth ticks (|ω|<1 rad/s) across 17 runs; pristine vel_ned FD for measured specific force; raw quat as-is (bcc93f9); collective shifted by d=2 transport delay. K_eff ratio vs |v| band:
+
+| |v| (m/s) | 3–6 | 6–9 | 9–12 | 12–15 | 15–18 |
+|---|---|---|---|---|---|---|
+| ratio | 0.74 | 0.82 | 0.88 | 1.00 | 0.99 |
+
+Locked model (np.interp end-clamped; L(0)=1 hover-anchored):
+```
+LAPSE_SPEED_MEASURED  = [0.0, 4.0, 8.0, 12.0, 15.0]
+LAPSE_FACTOR_MEASURED = [1.0, 0.78, 0.80, 0.92, 1.0]
+```
+Drag-independent where it matters (spread ≤0.09 across drag 0.5–1.5× at 3–9 m/s). Fast-descent thrust loss (L→−0.9 in vortex-ring regime) excluded — folded into inc7 DR band, not modeled. 3-fold CV reduces out-of-sample b3-accel bias in every low-speed band.
+
+### 2. Integration — all three plants, defaults OFF (`fb99636`)
+
+Multiplicative `a_up *= interp(|vel|, lapse_speed, lapse_factor)` in `rl_plant.py`, `twin.py`, `twin_fit.py` (faithful_config(lapse=True)), `rl/diffaero_dynamics.py` (+dynamics.dr_lapse scales lapse DEPTH 1−L per-env for inc7). Eval: `--plant lapse`. **562→589 tests green** (+20 twin↔rl_plant parity + 7 lapse unit/torch/DR tests). All defaults OFF = bit-identical legacy.
+
+**🚩 V100 config-matrix gate MUST run at next Adroit contact** — CPU DiffAero gate un-runnable on laptop (pre-existing; DiffAero base not importable); lapse/lapse_full configs now in the matrix.
+
+### 3. Verdict: lapse is NOT the live cause — PREMISE REVERSED
+
+**No lapse curve reproduces the +5 m East miss.** Repro sweep across depth/persistence/latency {0,2,3}: shallow lapses finish cleanly centred; deep persistent lapses cause vertical crash (still laterally centred). No thrust-axis curve bends the trajectory into a lateral excursion.
+
+**The live failure is a yaw spin the policy COMMANDS.** Live divergence develops at tick 42–66 at 16–18 m/s — where lapse ≈ 1. Policy commands a hard pitch-up flare + yaw turn; sideslip −72°; heading spins 135°→175°→−115°. Yaw rate prediction vs realized: +2.12 vs +2.08 (tick 60). Rate loop faithfully tracks commands; there is no missing torque.
+
+### 4. Root cause: THIRD convention mirror — thrust→world lateral projection
+
+Open-loop replay seeded at live pre-divergence state (tick 36), driven with exact recorded live wire commands for 27 ticks:
+
+| | live | twin |
+|---|---|---|
+| roll/pitch/yaw (tick 60) | 57°/7°/−115° | 56°/7°/−113° |
+| yaw rate | +2.08 | +2.14 |
+| speed | 14.8 | 14.9 m/s |
+| **East velocity** | **+11.1** | **−11.1 m/s** |
+
+Attitude, rates, speed reproduced exactly — East velocity OPPOSITE-SIGNED.
+
+Force frame selfcheck using live-recorded true attitude:
+
+| tick | roll | measured a_E | model a_E |
+|---|---|---|---|
+| 51 | 59° | +30.3 | −35.1 |
+
+Model East acceleration = NEGATIVE of measured; flipping thrust East sign makes model match measurement (−35→+31 ≈ measured +30). Discrepancy present at tick 39–42 in normal banked flight (roll 44–46°). Interpretation: twin thrust→world lateral projection is roll-handedness-mirrored relative to the sim given the same attitude quaternion. Most likely root: raw ODOMETRY quat is roll-mirrored vs true physical attitude (the diag's quat-FD validated level+pitched only; hard-roll gate-0 flare is the first maneuver that exercises lateral handedness).
+
+### 5. 🚩 EVIDENCE VOIDED — FALSE PASSES
+
+**The offline twin SELF-MIRRORS** (closed loop mirrors self-consistently → inc6 finishes 6/6 on every plant offline). Therefore:
+- **The laptop 16/16 deploy matrix is a FALSE PASS** — it cannot expose the live failure.
+- **The SHADOWPC-INC6-DIAG "counterfactual 6/6 @ 9.50 s" is a FALSE PASS** — same harness.
+- **"Inc6 checkpoint STANDS" verdict from INC6-DIAG is UNKNOWN** pending LAPTOP-FRAME-AUDIT.
+
+**DO NOT fly inc6 as-is. DO NOT train inc7 yet** (retraining against self-mirrored twin bakes the mirror deeper).
+
+### 6. mixer_probe2 consistency check — CONTRADICTED, flagged
+
+S17 model (`u_i = clip(c ± d, idle, 1)`) vs new settled-spin rows:
+- `c60_r31` (clean, no clip): model d=0.523, measured d=0.132 → **roll κ_hold over-predicted ~4×** (implied κ_hold ≈ 0.012, not the yaw-derived 0.046)
+- `c100_y31`: model d=0.122, measured d=0.349 → **yaw top-rail under-predicted ~3×** (zeta over-suppresses at c=1.0)
+
+NOT integrated (structural: per-axis κ_hold + top-rail yaw effectiveness). Policy avoids the regime (thr_p95 0.061, 0% saturation, 0% yaw flips) — impact likely small. Flagged for dedicated follow-up (S19 candidate).
+
+### 7. Next step
+
+**LAPTOP-FRAME-AUDIT (fable):** systemic per-layer handedness audit — the third convention mirror. Diagnostic tools shipped: `handoff/laptop-s18-thrust-lapse-2026-06-12/scripts/s18_force_frame_selfcheck.py` + `s18_openloop_replay.py`. Extend quat-FD method to hard-ROLL phases. Candidate roots: (a) raw ODOMETRY quat roll-mirrored vs true physical attitude; (b) sign in deploy thrust path. Probe: deliberate sustained-roll-bank at moderate speed → measured lateral accel vs attitude-derived prediction.
