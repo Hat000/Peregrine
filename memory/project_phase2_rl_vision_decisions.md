@@ -1111,3 +1111,26 @@ Training world was internally self-consistent throughout (rl_plant and DiffAero 
 ### Queued 4th seam: VISION-FRAME-FIX
 
 Vision chain (`navigator.py:295` → `_maybe_run_vision` → PnP world-fix path) uses the REPORTED attitude quaternion (raw, unconjugated) to rotate pixel observations into world geometry. Near-level and yaw≈π (VQ1): effectively harmless (conjugation at roll≈0 is near-identity). At VQ2 bank angles: wrong. **Fix:** use `frames.true_attitude_from_odo_quat_wxyz` for all world-geometry projections; requires VQ1-replay regression before merging. Also re-examine VISION-PKG2's 1.4° `ATTITUDE_NOISE_STD_RAD` fit — part of the "roll-correlated wander" it absorbed is plausibly this seam.
+
+---
+
+## §CRAB-DIAG (2026-06-12, ShadowPC opus; commit 301a2cf; writeup handoff/shadowpc-crab-diag-2026-06-12/WRITEUP.md)
+
+**Dissolves the live-confirm "70% slowdown", "rate-gain droop", and "trajectory alignment gap" readings. Confirms deploy chain faithful. Identifies one real deficit and specifies the S20 fix.**
+
+### Durable lesson: extract TWIN ATTITUDE, not just lap time, before interpreting live posture
+
+The key discriminator that falsified the obs-seam hypothesis: run `crab_twin_rollout.py` to extract the offline twin's TRUE attitude (via conjugated quat, same as fly_rl) at the live start state, then compare posture axis-by-axis. If twin and live share the same attitude envelope AND the twin finishes, the deploy chain is faithful and the posture is trained style. **Never interpret live attitude as a "bug" without first checking whether the twin reproduces it.**
+
+### Dissolution table
+
+| Live-confirm reading | Status | Explanation |
+|---|---|---|
+| "~70% slowdown" (16.24 s vs 9.5 s) | **DISSOLVED** — clock artifact | RACE_STATUS includes ~8 s CTBR launch; RL segment = 8.96 s ≈ twin 8.16 s (≤0.15 s/segment) |
+| "0.85 rate-gain droop" at bridge speed | **DISSOLVED** — wrong canary | quat-FD-vs-w_raw telemetry-consistency canary, not command tracking; realized gain = ~2.5 super-rate, identical live vs twin |
+| "trajectory alignment gap, ~0.4 m south" (gate-3 crash) | **REFRAMED** — climb-bin plant gap | +2.0–2.8 m/s² N+D force residual in 12–18 m/s × tilt-35–90 bin; E tracks to 0.04 m (frame-clean); accumulated divergence = ~1–2 m after 2 s climb |
+| Crab posture — was it a deploy bug? | **CONFIRMED = trained style** | Twin reproduces roll +41.5°/tilt +54.8° and finishes; training-native `trainreset` flies +55.5° tilt; rw_tilt=96 trained a ~55°-tilt racing cruise |
+
+### S20 spec pointer
+
+See [[rl-increment-history]] §CRAB-DIAG for full S20 spec (refit collective/drag in 12–18 m/s × tilt-35–90 bin + ±12% DR + ≥3-seed + V100 gate → inc7). Predicted outcome: standing start clears gate 3, posture unchanged.

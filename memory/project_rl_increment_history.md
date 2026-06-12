@@ -316,3 +316,54 @@ Gate-3 HARD COLLISION full-reset → next respawn hits residual collision geomet
 
 ### Next queue (per commander triage)
 ① LIVE-GAP-ANALYSIS (offline, new recordings) ② VISION-FRAME-FIX ③ gate-3 standing trajectory (likely resolves with ①) ④ S19 mixer contradiction ⑤ envelope ladder (gated on gap analysis).
+
+---
+
+## ✅ CRAB-DIAG (2026-06-12, ShadowPC opus; commit 301a2cf; writeup handoff/shadowpc-crab-diag-2026-06-12/WRITEUP.md)
+
+**Branch 2b outcome: twin reproduces the crab → no live-only deploy fix needed. No flights flown; no jobs submitted.**
+
+### Fact 1 — Crab = trained posture, not a bug (supersedes live-confirm §Fact 3 "trajectory alignment gap" framing AND commander's "obs-seam rotation error" hypothesis)
+
+The "crab" (live cruise: ~+40° roll, ~+130° heading, ~+54° sideslip) is inc6's genuine trained flight style. Discriminator: extract TRUE attitude from the offline twin, not just lap time. Twin racestart holds **roll +41.5°, yaw +130.9°, tilt +54.8°, sideslip +51°** and **FINISHES 9.62 s**. Training-native `trainreset --no-virtual-flip` flies **+55.5° tilt, FINISHES 9.12 s** — the same style in the native training frame. inc6's `rw_tilt=96` produced a ~55° tilt racing cruise, not a low-tilt one; speed/progress optimum sits there.
+
+Control experiment: `racestart --no-virtual-flip` (wrong frame) tilts to 69° and goes OOB at gate-0 — proving the virtual flip is correctly applied and re-expresses the same ~55° training style in NED at +130° heading. Step-0 obs: live vs twin <0.003; `check_build_obs = 0.00e+00`. Deploy chain verified byte-faithful. **DO NOT touch the virtual flip or conjugation. NO reward change.**
+
+| source | roll | yaw | tilt | outcome |
+|---|---|---|---|---|
+| Live std_f1 | +42.6° | +129° | ~53° | gate-3 clip |
+| Twin racestart | +41.5° | +130.9° | +54.8° | FINISH 9.62 s |
+| Live brg_f1 | +38.7° | +130.9° | ~52° | FINISH 8.96 s RL |
+| Twin handoff | +39.5° | +134.7° | ~54° | FINISH 8.16 s |
+
+### Fact 2 — "~70% slowdown" DISSOLVED (clock artifact; supersedes live-confirm §Fact 5)
+
+Live bridge RACE_STATUS clock 16.24 s includes ~8 s CTBR launch before RL recording starts. Actual RL segment (gate-0→finish) = **8.96 s at 17.2 m/s median**, matching twin handoff 8.16 s **per-segment within ≤0.15 s** (longest leg gate-2→3 = ~2.1–2.2 s in both). No transfer slowdown exists.
+
+### Fact 3 — "0.85 rate-gain droop" DISSOLVED (wrong canary; supersedes live-confirm §Fact 4)
+
+The 0.85 was the `quat-FD(true) ~ −w_raw` telemetry-consistency canary, not command tracking. Realized/commanded rate gain = **~2.5 (super-rate map), identical live vs twin** across all three bridge/standing sessions. Rate tracking is faithful.
+
+### Fact 4 — ONE genuine residual: collective/drag plant gap on the banked climb
+
+Tick-aligned twin `simstart` vs live std_f1 (identical start state, shared obs/action code → divergence = pure plant gap): E tracks to **0.04 m** throughout (frame-clean); divergence is N+D only, accumulating on the gate-2→3 climb (+11 m altitude). At gate-3 plane: live is **0.5 m high and ~0.5 m short** → clips upper frame; twin threads it (vert-off 0.00). `frame_residual_report` confirms: **+2.0–2.8 m/s² systematic N+D residual in the 12–18 m/s × tilt-35–90 bin**, mirror canary TRUE +0.97. Integrated over ~2 s climb → ~1–2 m N+D divergence. The bridge clears gate 3 because its flatter/faster approach has more vertical margin.
+
+### Fact 5 — Bridge finishes zero-contact; rules-valid fallback
+
+`n_coll = 0` across all 269 (brg_f1) and 267 (brg_f2) ticks → both finishes are **zero-contact**. Bridge-mode inc6 = a legitimate ~9 s RL-segment submission posture (vs VQ1's 35.3 s total).
+
+### Fact 6 — S20 spec (inc7 retrain)
+
+1. **Plant refit (banked-climb regime):** re-identify `COLL_MAP_ACCEL`/`QUAD_DRAG_C2` against pristine-vel_ned FD in the 12–18 m/s × tilt-35–90 × high-collective bin using 8 post-fix zero-contact recordings + 2 bridge finishes. Target: N/D median residual from +2–2.8 → <1 m/s².
+2. **DR for gate-3 margin:** ±12% DR on high-collective collective_map_accel (and drag) → policy carries ~0.5–0.7 m vertical margin through gate 3. Do NOT use `--plant lapse`/`dr_lapse` (VOIDED).
+3. **Selection:** ≥3-seed generalization averaging. Single-seed gen is volatile (0.741–0.982 for inc6 seeds).
+4. **V100 config-matrix gate** bundled at next Adroit contact.
+
+**Predicted outcome (on record):** standing start clears gate 3 with margin; posture unchanged (~55° tilt trained style); bridge parity.
+
+### Supersession notes
+- **Supersedes** live-confirm §Fact 3 "trajectory alignment gap (~0.4 m south of center)" framing → reframed as collective/drag plant residual in the banked-climb bin.
+- **Supersedes** live-confirm §Fact 4 "0.85 rate-gain droop" → dissolved (wrong canary, not command tracking).
+- **Supersedes** live-confirm §Fact 5 "~70% slowdown" → dissolved (clock artifact, RL segment = 8.96 s ≈ twin 8.16 s).
+- **Supersedes** live-confirm NEXT-queue "LIVE-GAP-ANALYSIS" as the critical-path item → replaced by S20 refit+inc7.
+- **Commander obs-seam hypothesis FALSIFIED** (step-0 obs <0.003, mirror canary +0.97, twin reproduces posture exactly).
