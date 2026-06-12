@@ -96,6 +96,39 @@ def body_rate_from_quats(q_prev_wxyz, q_cur_wxyz, dt: float) -> np.ndarray:
     return (R_prev.inv() * R_cur).as_rotvec() / dt
 
 
+# --- ODOMETRY attitude/rate telemetry frame (FRAME-AUDIT 2026-06-12) -------------------------
+# The sim's ODOMETRY quaternion is NOT the FRD->NED attitude as-is: it is the attitude expressed
+# in an R_y(pi)-conjugated frame pair (a PROPER rotation of both world and body axes -- which is
+# why every internal-consistency check passes on it: quat-FD vs the rate channel, twist round-
+# trip, level-flight everything). Equivalently its Euler ROLL and YAW are negated, PITCH intact.
+# Pinned against the external invariant (finite-differenced pristine vel_ned over 17 live runs,
+# 28k banked ticks): the conjugated attitude's force projection matches measured world accel on
+# all three axes (corr +0.97..+0.99); the as-is reading ANTI-correlates on East at bank (-0.84,
+# median error 24 m/s^2). The turn direction (course rate from velocity) likewise matches only
+# the conjugated yaw. handoff/laptop-frame-audit-2026-06-12.
+#   true quat  = q_raw * [1, -1, 1, -1]      (wxyz; negate x and z -- involutory)
+#   true rate  = -angular_rate_raw           (all three axes -- involutory)
+#   twist      = expressed in the REPORTED body frame: rotating it by the RAW quat recovers the
+#                true world velocity (world_vec_from_body_quat below stays raw -- verified:
+#                pos-FD vs vel_ned corr 0.997 / gain 0.999 through 60-deg bank).
+# The CTBR stack's state.roll/pitch/yaw (euler_from_quat_wxyz of the RAW quat) remain in the
+# REPORTED frame: its end-to-end-tuned sign config is a self-consistent alias there (VQ1-proven).
+# Do NOT "fix" the CTBR path; use these helpers for anything that needs TRUE physical attitude.
+ODO_QUAT_TRUE_CONJ_WXYZ = np.array([1.0, -1.0, 1.0, -1.0])
+
+
+def true_attitude_from_odo_quat_wxyz(q_wxyz) -> np.ndarray:
+    """ODOMETRY quaternion (w,x,y,z) -> TRUE physical FRD->NED attitude quaternion (w,x,y,z).
+    R_y(pi) conjugation; involutory (applying it twice returns the input)."""
+    return np.asarray(q_wxyz, dtype=np.float64) * ODO_QUAT_TRUE_CONJ_WXYZ
+
+
+def true_rate_from_odo_angular_rate(w_body) -> np.ndarray:
+    """ODOMETRY rollspeed/pitchspeed/yawspeed -> TRUE FRD body rate: all-axes negation
+    (quat-FD of the conjugated attitude == -w_raw, gain 0.999/0.999/0.996; FRAME-AUDIT)."""
+    return -np.asarray(w_body, dtype=np.float64)
+
+
 def world_vec_from_body_quat(v_body, q_wxyz) -> np.ndarray:
     """Rotate a body-frame (FRD) vector into world (NED) via a body->world attitude quaternion
     (w, x, y, z; scalar-FIRST MAVLink order): ``v_world = R(q) @ v_body``.

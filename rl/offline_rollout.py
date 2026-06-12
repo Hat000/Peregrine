@@ -17,8 +17,9 @@ Start states:
                  course at --handoff-speed m/s, level, yaw pi.
 
 Also runs a build_obs consistency check: synthesizes ODOMETRY-style telemetry
-(roll-inverted quat, [-1,-1,1] raw rates) from the true plant state and asserts
-fly_rl.build_obs reproduces the truth-path observation.
+(R_y(pi)-conjugated quat, all-axes-negated rates -- FRAME-AUDIT 2026-06-12) from
+the true plant state and asserts fly_rl.build_obs reproduces the truth-path
+observation.
 
 Usage:
   .venv\\Scripts\\python.exe rl\\offline_rollout.py --start trainreset
@@ -51,11 +52,15 @@ from fly_rl import (
 
 _GATE_POS_NED = _GATE_POS_ZUP * _FLIP   # opening centres, NED
 
-# The LIVE sim's measured command->rate signs (2026-06-12: roll AND yaw inverted).
-# fly_rl's wire map [-1,-1,-1] composed with this reproduces the training-plant
-# closed loop exactly; using the training rate_sign [+1,+1,-1] here would mirror
-# the roll axis against the corrected deployment pipeline.
-_RATE_SIGN_LIVE = np.array([-1.0, 1.0, -1.0])
+# The LIVE sim's TRUE command->rate signs (FRAME-AUDIT 2026-06-12): NO inversion
+# on any axis. Open-loop replay of recorded wire commands through rate_sign
+# [+1,+1,+1] reproduces the live TRUE attitude trajectory and the correctly
+# SIGNED East velocity (the bcc93f9 [-1,+1,-1] was the same physics read through
+# the conjugated telemetry frame -- a self-consistent mirror that flipped the
+# lateral thrust projection). fly_rl's wire map [+1,-1,+1] composed with this
+# reproduces the training-plant closed loop ([1,-1,-1] adapter on [+1,+1,-1])
+# exactly.
+_RATE_SIGN_LIVE = np.array([1.0, 1.0, 1.0])
 _HALF_OPEN = 0.75                       # 1.5 m inner opening, L-inf half-width
 _HALF_OUTER = 1.36                      # 2.72 m outer frame, L-inf half-width (S1.4 geometry)
 
@@ -77,12 +82,16 @@ def obs_from_truth(st: PlantState, target_gate: int, last_normed: float,
 
 def telemetry_from_truth(st: PlantState) -> SimpleNamespace:
     """Synthesize ODOMETRY-style telemetry (reporting artifacts APPLIED) from truth.
-    Measured convention (2026-06-12): quat reported AS-IS; pitch rate sign-inverted."""
+    FRAME-AUDIT convention (2026-06-12): the quat is reported in the R_y(pi)-
+    conjugated telemetry frame (negate x,z components) and the rate channel is the
+    all-axes-negated true body rate. Both transforms are involutory, so applying
+    fly_rl's undo constants here synthesizes them exactly."""
+    from fly_rl import _ODO_QUAT_TRUE_CONJ
     return SimpleNamespace(
         position_ned=st.pos.copy(),
         velocity_ned=st.vel.copy(),
-        orientation_ned_wxyz=st.quat.copy(),
-        angular_rate_body=st.omega * _ODO_RATE_SIGN,   # involutory: true -> raw
+        orientation_ned_wxyz=st.quat * _ODO_QUAT_TRUE_CONJ,   # involutory: true -> raw
+        angular_rate_body=st.omega * _ODO_RATE_SIGN,          # [-1,-1,-1]: true -> raw
     )
 
 
@@ -193,9 +202,11 @@ def main() -> int:
                          "(stage1_inc5). mixer: aero + the measured motor-mixer coupling "
                          "(live-deploy diag 2026-06-11) -- the fully measured plant as of S17, "
                          "for mixer-trained checkpoints (stage1_inc6+) and for reproducing the "
-                         "inc5 live failure modes offline. lapse: mixer + the S18 airspeed thrust "
-                         "lapse (refit 2026-06-12) -- the fully measured plant as of S18, for "
-                         "reproducing the inc6 rollfix standing-start +5 m gate-0 miss offline")
+                         "inc5 live failure modes offline; ALSO the fully measured plant as of "
+                         "the 2026-06-12 FRAME-AUDIT. lapse: mixer + the S18 airspeed thrust "
+                         "lapse -- 🚩 VOIDED by the frame audit (the lapse was an artifact of "
+                         "the mirrored attitude reading; see rl_plant.LAPSE_* comment): kept "
+                         "only to reproduce historical S18 analyses")
     ap.add_argument("--start", default="simstart",
                     choices=["trainreset", "racestart", "simstart", "handoff"])
     ap.add_argument("--gate", type=int, default=0, help="trainreset: which gate")

@@ -11,11 +11,12 @@ Self-consistency checks that localize telemetry corruption using only the record
   * v_fd        central-difference of ODOMETRY world position -- artifact-free ground
                 truth for velocity (position needs no frame/sign assumptions).
   * v_client    world_vec_from_body_quat(v_body, q_raw) -- what MavlinkClient stores in
-                velocity_ned and fly_rl consumes (rotates by the RAW roll-inverted quat).
-  * v_artifact  R(-roll,pitch,yaw) @ v_body -- the rotation build_obs would consider
-                correct (artifact-model-undone quat).
-  Per-tick |v_client - v_fd| vs |v_artifact - v_fd| says whether the velocity path is
-  corrupted by the reporting-artifact quat, and by how much, at every attitude flown.
+                velocity_ned and fly_rl consumes. CORRECT: the twist is expressed in the
+                same reported frame as the raw quat (FRAME-AUDIT 2026-06-12).
+  * v_artifact  R_true @ v_body (TRUE attitude applied to the reported-frame twist) --
+                wrong-by-model on purpose: a live canary for the twist-frame convention.
+  Per-tick |v_client - v_fd| must stay small at every attitude; |v_artifact - v_fd|
+  must GROW with |vE| at bank. If that flips, the sim's telemetry convention changed.
 
 Offline reference (--offline-compare): rolls the rl_plant aero twin from the SAME
 artifact-undone handoff state with the same actor and prints obs/action side by side --
@@ -113,17 +114,21 @@ def find_handoff(odo: list[dict], dist: float, speed_min: float, skip_s: float) 
 # ---------------------------------------------------------------------------
 def true_state_of(o: dict) -> dict:
     """Undo the ODOMETRY reporting artifacts the same way build_obs does.
-    2026-06-12 convention: the raw quat IS the true attitude (no roll undo);
-    only the pitch rate is sign-inverted in the report."""
+    FRAME-AUDIT convention (2026-06-12): true quat = raw * [1,-1,1,-1] (R_y(pi)
+    telemetry conjugation); true FRD rate = -w_raw. The TWIST stays in the
+    REPORTED body frame -- the RAW-quat rotation (v_client) recovers the true
+    world velocity; rotating it by the TRUE attitude (vel_artifact below) is
+    deliberately wrong-by-model and serves as a live canary: it must DISAGREE
+    with v_fd whenever the East velocity is significant at bank."""
     from scipy.spatial.transform import Rotation as _Rot
     roll, pitch, yaw = euler_from_quat_wxyz(o["q_raw"])
-    q = o["q_raw"]
+    q = o["q_raw"] * fly_rl._ODO_QUAT_TRUE_CONJ
     R_true = _Rot.from_quat([q[1], q[2], q[3], q[0]]).as_matrix()
     return {
         "pos": o["pos"].copy(),
         "R_frd2ned": R_true,
-        "vel_artifact": R_true @ o["v_body"],              # == the client rotation now
-        "w_frd": o["w_raw"] * _ODO_RATE_SIGN,              # raw -> true FRD
+        "vel_artifact": R_true @ o["v_body"],              # canary: wrong frame on purpose
+        "w_frd": o["w_raw"] * _ODO_RATE_SIGN,              # raw -> true FRD ([-1,-1,-1])
         "rpy_raw": (roll, pitch, yaw),
     }
 
@@ -232,11 +237,11 @@ def offline_reference(rows: list[dict], actor, args) -> list[dict]:
                                 step as plant_step)
 
     r0 = rows[0]
-    q0 = np.array(r0["q_raw"], dtype=np.float64)
-    quat = q0 / np.linalg.norm(q0)          # raw quat IS the true attitude (2026-06-12)
+    q0 = np.array(r0["q_raw"], dtype=np.float64) * fly_rl._ODO_QUAT_TRUE_CONJ
+    quat = q0 / np.linalg.norm(q0)          # telemetry conjugation -> true attitude
     st = PlantState(
         pos=np.array(r0["pos_ned"]),
-        vel=np.array(r0["v_artifact"]),
+        vel=np.array(r0["v_client"]),       # raw-quat twist rotation = true world velocity
         quat=quat,
         omega=np.array(r0["w_raw"]) * _ODO_RATE_SIGN,
         thrust=np.float64(fly_rl._HOVER_THRUST),

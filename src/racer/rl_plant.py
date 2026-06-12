@@ -59,8 +59,9 @@ ACTION -- ``(..., 4)`` CTBR command ``[wx, wy, wz, collective]``: body-rate setp
 
 PARAMS -- :class:`PlantParams`. Defaults ARE the validated sim-faithful PHYSICS
     (``twin.faithful_config`` with the telemetry report-signs dropped): hover 0.2656, rate_tau 0.019 s,
-    rate_gain [2.501, 2.504, 2.231], rate_sign [+1, +1, -1] (sim inverts ONLY the yaw command,
-    physically), linear_drag 0.2111 /s, g 9.80665. The MEASURED super-rate map/slew
+    rate_gain [2.501, 2.504, 2.231], rate_sign [+1, +1, -1] (TRAINED-WORLD convention -- the live
+    sim's TRUE command sign is [+1,+1,+1], FRAME-AUDIT 2026-06-12; see the field comment),
+    linear_drag 0.2111 /s, g 9.80665. The MEASURED super-rate map/slew
     (``super_rate_s=SUPER_RATE_S_MEASURED``, ``alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED``) default to
     None/OFF for exact backward compatibility -- turn them ON for sim-faithful saturated authority
     (the flat 2.5 gain under-predicts full-stick authority by up to 42%). The MEASURED aero
@@ -149,16 +150,16 @@ COLL_MAP_ACCEL_MEASURED = np.array([0.0, 0.0,
                                     38.748577917265877, 42.360958058019655,
                                     58.431876299624356, 78.282838504684648])
 
-# Measured THRUST LAPSE vs airspeed (S18 refit 2026-06-12, handoff/laptop-s18-thrust-lapse-
-# 2026-06-12/WRITEUP.md; 17 inc6 live recordings, 3-30 m/s, conventions per bcc93f9). The convex
-# collective map above was fit at near-ZERO airspeed; live thrust runs ~0.78x the map across the
-# 4-12 m/s standing-start ACCEL band (well-identified there: drag is negligible so the deficit is
-# drag-independent, spread <=0.09 across drag-scale 0.5-1.5x), recovering to ~1.0 by 12-15 m/s
-# (translational-lift regime; above 12 m/s lapse is NOT separately identifiable from drag but is
-# ~1 either way). MULTIPLICATIVE on a_up, keyed on world speed |vel| (frame-invariant; OLD vel,
-# like drag). L(0)=1 (the map's hover anchor is exact); L>=15 m/s = 1 (np.interp clamps the ends).
-# None -> OFF (exact legacy). Fast-DESCENT thrust loss (v_axial < -2: L drops below 0, vortex-
-# ring-like) is OUTSIDE the climbing standing-start manifold -- folded into inc7 DR, not modeled.
+# 🚩 VOIDED BY FRAME-AUDIT 2026-06-12 (handoff/laptop-frame-audit-2026-06-12): the S18 "thrust
+# lapse vs airspeed" was an ARTIFACT of the mirrored attitude reading. The S18 fit projected the
+# measured specific force onto b3 from the AS-IS ODOMETRY quat, whose East component is sign-
+# flipped (R_y(pi) telemetry conjugation); a ~20-deg lateral bank component during the early
+# standing-start climb yields exactly the apparent 0.74-0.88 deficit, "recovering" with speed
+# because the trajectory straightens. Re-fit with the TRUE attitude on the same 17 runs + smooth
+# ticks: ratio 1.00 at 3-6 m/s, 1.04-1.10 above (no lapse structure; the >1 tail is drag/map
+# attribution, <=10%). DO NOT enable these knots in any plant config or train with dr_lapse on
+# this curve. The mechanism below is kept (harmless, defaults OFF, parameter-generic tests);
+# the MEASURED constants are retained only so historical analyses reproduce.
 LAPSE_SPEED_MEASURED = np.array([0.0, 4.0, 8.0, 12.0, 15.0])
 LAPSE_FACTOR_MEASURED = np.array([1.0, 0.78, 0.80, 0.92, 1.0])
 
@@ -291,7 +292,13 @@ class PlantParams:
     # realised body rate is a first-order lag toward ``gain * rate_sign * cmd_rate`` where gain is
     # flat rate_gain (legacy) or the super-rate map when super_rate_s is set (see module docstring)
     rate_gain: np.ndarray = field(default_factory=lambda: np.array([2.501, 2.504, 2.231]))
-    rate_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, -1.0]))  # PHYSICS: yaw cmd inverted
+    # TRAINED-WORLD convention, NOT live physics: the live sim's TRUE command->rate sign is
+    # [+1,+1,+1] (FRAME-AUDIT 2026-06-12; the historical "yaw inverted" was the telemetry
+    # conjugation read back as physics). Every shipped checkpoint trained against [+1,+1,-1]
+    # through the [1,-1,-1] FLU->FRD adapter; fly_rl's wire map [+1,-1,+1] preserves that
+    # composition exactly. DO NOT change this default -- it anchors the trained semantics
+    # (and twin parity); deploy/eval emulation carries the live sign separately.
+    rate_sign: np.ndarray = field(default_factory=lambda: np.array([1.0, 1.0, -1.0]))
     # STATIC amplitude-dependent gain map strength s (scalar or (3,)); None -> flat legacy gain.
     # Measured SUPER_RATE_S_MEASURED=0.30 roll/pitch; yaw same form (the level-attitude ~7.4 rad/s
     # yaw plateau is a KNOWN UNMODELED caveat -- racing yaw cmds are small; own pass if it matters).
