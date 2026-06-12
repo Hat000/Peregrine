@@ -276,3 +276,43 @@ Training world (rl_plant/DiffAero, proper-rotation bridges both sides) was inter
 2. **S19** (mixer_probe2 vs S17 contradiction — sign-invariant, unchanged by audit).
 3. V100 config-matrix gate at next Adroit contact (lapse configs present but VOIDED — do not select).
 4. inc7 planning: lapse-DR branch dead; if inc6 confirms live, S2 architecture resumes per master plan.
+
+---
+
+## ✅ inc6 LIVE CONFIRMED (2026-06-12, ShadowPC sonnet; writeup handoff/shadowpc-live-confirm-2026-06-12/WRITEUP.md)
+
+**FIRST RL LIVE FINISHES EVER.** Supersedes "NEXT = ShadowPC live confirm" from LAPTOP-FRAME-AUDIT.
+
+### Results
+
+| Mode | Flights | Finish | Lap times |
+|------|---------|--------|-----------|
+| Bridge ×2 | 2 | **2/2** | **16.24 s, 17.74 s** |
+| Standing ×4 (valid) | 4 | 0/4 | — |
+| Spawn artefacts | 2 | — | 0-tick crash (not policy) |
+
+**Convention tests:** `pytest tests/test_frame_conventions.py` → 9/9 passed pre-flight.
+
+### Fact 1 — Frame fix verified live (9/9 tests; mirror canary TRUE +0.97 / AS-IS ≤−0.68)
+Mirror canary confirmed on all sessions: TRUE East corr +0.97, AS-IS ≤−0.68 at bank. Both prior failure modes (pre-fix spin; post-fix +5 m East miss) are gone. Gate 0 centered in every valid standing-start flight (std_f1 y=−0.5 m at gate-0 plane, well within ±1.5 m). Open-loop vel error ≤1.24 m/s per axis. The falsify→integrate→audit chain is validated end-to-end.
+
+### Fact 2 — Bridge 2/2 FINISHED
+brg_f1 gate trace: gate 0 @ x=−20.3 (bridge handoff) → gate 2 → gate 3 @ (−108.5, −4.6, +21.7) → gate 4 → **RACE_STATUS finished 16.24 s.** brg_f2: same course, 17.74 s. Bridge = CTBR launch → RL handoff → full course. If zero-contact confirmed (check WRITEUP), bridge laps are a legitimate submission fallback at ~2× VQ1 speed (35.3 s → 16–18 s).
+
+### Fact 3 — Standing start: new barrier = gate-3 (trajectory, NOT frames)
+All 4 valid standing-start flights crash at gate 3 at identical pos ≈ (−110.6, −5.0, +22.5) ± 0.1 m, thr≈0.46. Gate-3 center: (−111.5, +5.1, −23.2). Drone clips south side. Bridge clears gate 3 at (−108.5, −4.6, +21.7) — ~0.4 m north and ~0.8 m lower, clearing the aperture. Gap = trajectory alignment, not convention. Likely resolves via offline gap analysis (fact 5).
+
+### Fact 4 — Rate canary regime dependence
+Bridge/high-speed flights: roll/yaw gains ~0.85 vs expected ~1.0. Standing-start at similar tilt: ~0.94–1.00. Sign correct (positive); convention correct. Appears regime-dependent (high speed / high collective). Not a frame defect; flagged for monitoring. LIVE-GAP-ANALYSIS will quantify.
+
+### Fact 5 (commander addition) — ~70% lap slowdown; single-cause hypothesis
+Live bridge laps 16–17 s vs twin counterfactual 9.5 s = ~70% slowdown. Hypothesis: under-tracking of the rate loop at speed (fact 4 gain ~0.85) → slower/wider/lower trajectory. One cause may explain BOTH the slowdown AND the gate-3 standing crash (approach line displaced from training). **LIVE-GAP-ANALYSIS queued** (offline, new recordings: twin-vs-live divergence, lap-gap decomposition, rate-gain regime dependence). This is the critical-path next step before any further live work.
+
+### Fact 6 (commander addition) — Bridge as fallback submission posture
+Bridge start = our own stack end-to-end (CTBR launch → RL handoff at x≈−20 m) → legitimate competition run if zero-contact. Inc6 bridge laps ~2× faster than VQ1's 35.3 s. Verify contact status in WRITEUP. Standing start is still the deployment target; bridge is the fallback while gap is open.
+
+### Spawn artefact — confirmed pattern (sim-ops gotcha)
+Gate-3 HARD COLLISION full-reset → next respawn hits residual collision geometry → 0-tick crash (header only, 0 obs). Pattern: gate-3 crash → artefact → clean spawn → gate-3 crash → repeat. Accounts for ALL gates=0 observations in session. Not a policy failure. Added to sim-ops gotchas.
+
+### Next queue (per commander triage)
+① LIVE-GAP-ANALYSIS (offline, new recordings) ② VISION-FRAME-FIX ③ gate-3 standing trajectory (likely resolves with ①) ④ S19 mixer contradiction ⑤ envelope ladder (gated on gap analysis).

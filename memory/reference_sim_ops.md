@@ -32,3 +32,6 @@ Facts moved verbatim from the MEMORY.md index (2026-06-11 restructure). Operatio
 ## Measurement footguns
 - **🚩 quat-finite-diff rate ALIASES** vs LPN/ODO stagger — use raw ODOMETRY rate.
 - **🚩 run 200505 frozen-telemetry at gate 5** = footgun (from mixer-diag appendix).
+
+## Gotchas — respawn / collision artefacts
+- **🚩 SPAWN-ARTEFACT AFTER GATE-3 CRASH (2026-06-12):** a gate-3 HARD COLLISION full-reset leaves residual collision geometry that traps the next respawn → 0-tick crash (obs header only, 0 usable ticks). Pattern: gate-3 crash → artefact → clean spawn → gate-3 crash → repeat. Affects per-batch stats; NOT a policy failure. If running multi-flight batches through gate-3 standing failures, expect every other flight to be artefact-contaminated. Workaround: add a 2–3 s sleep after full-reset before issuing the arm command (untested; may allow geometry to clear).
