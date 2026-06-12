@@ -860,6 +860,34 @@ No action items from this sub-topic.
 
 ---
 
+---
+
+## ✅ S17 MIXER INTEGRATION + INC6 COMPLETE (2026-06-11, laptop fable; commits per ffe3cdb+ab634c8; writeup handoff/laptop-s17-mixer-inc6-2026-06-11/WRITEUP.md)
+
+**Critical-path step DONE. NEXT = ShadowPC live transfer (standing start, no mitigation flags) after mixer_probe2 errand + R2 seed-variance check (job 3268876).**
+
+### Mixer model
+Per-motor clip: `u_i = clip(c + S·d, idle, 1)`; differential demand `d = κ_err·(target−ω) + κ_hold·ω`; yaw effectiveness `ζ/(ζ+c)`; **κ_err = 0.073** (two independent probes agree to 0.2%); every measured probe row reproduces. S14 slew limits were measured WITH the mixer throttling, so authority scales by `Q=r/r_fit` keeping the fit point exact.
+
+**KEY VALIDATION:** inc5 through the mixer-ON twin reproduces the live failure QUANTITATIVELY (collective 0.000, yaw rail, powered climb 5.1→9.8 m/s by tick 12 = the diag's exact live figure). Top-rail corner (collective≈1.0 × rate) NOT discriminably reproduced — unmeasured; `mixer_probe2.json` committed (10-min probe profile, run before/with the live session, documented rather than guessed).
+
+### Integration
+All three plants; defaults OFF = bit-identical legacy; tests 528→562; local CPU gate 7.1e-15; V100 GATE_PASS 7.1e-15; negative controls caught both corruption modes; 25-agent adversarial review, 2 minors fixed.
+
+### Reward-design lesson (durable)
+**Joint corner tax `w·|thr−mid|·‖rate‖` DECOUPLES smoothness from generalization, where blunt ‖Δa‖² trades them monotonically** (gen 0.727→0.571 as dact 1→16; combo arm: gen collapses to 0.633 the moment dact=4 reappears). This is a structural result — taxes exactly the mixer saturation rails without suppressing mid-range corrections.
+
+### Inc6 deliverable
+Winner **c16** (joint-penalty, no dact): simultaneously fastest (9.86 s median), smoothest (thr_p95 0.061, 0% saturation all axes), best generalizer (0.982 — above inc5's 0.939 on the HARDER mixer-ON plant). Yaw dither dead in ALL seven arms. Checkpoint `stage1_inc6_actor.pth` + sidecar; `fly_rl.py` default still inc4 — explicit `--checkpoint` required. R2 seed-variance job 3268876 (~1 h) pending — if a seed strictly dominates, it ships instead.
+
+### Deploy matrix
+16/16 laptop: latency 0–3 × every start mode × seams perturbed to 10 m/s. NO mitigation flags needed (no `--yaw-scale`). VQ1 held-out: **sr 1.000 / 9.86 s median / max pass offset 0.277 m** (zero-contact margins everywhere — rules-compliant). Twin now discriminates BOTH ways: inc5 on mixer plant = 0.000/0.000 success, yaw_flip 81.7% (reproduces live 0/20 at eval scale); inc6 passes everything.
+
+### Inc5 retirement
+Inc5 formally retired. Supersession chain: inc5 (mixer-blind, live failure now twin-reproduced) → **inc6 (mixer+aero+map plant, corner-tax c16, SHIPPED — live transfer pending)**.
+
+---
+
 ## Open
 - ~~Substrate bake-off verdict~~ ✅ RESOLVED: **DiffAero** — proven on Adroit (plant injected, gate PASS, trains our plant).
 - Structural pilot-stack changes (user brainstorming — the Setpoint/ControlCommand seam keeps a

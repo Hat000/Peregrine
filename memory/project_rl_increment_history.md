@@ -7,7 +7,7 @@ metadata:
 
 # RL increment + stage history (lineage ledger)
 
-**Supersession chain:** inc1 (overfit, no plant DR) → inc3 (wrong flat-2.5 plant) → inc4 (aero-blind, KNOWN-BROKEN on corrected aero) → inc5 (mixer-blind, retired-from-live) → **inc6 PENDING (S17 mixer-aware plant)**. Per-stage verdict detail: [[project-phase2-rl-vision-decisions]] (§Staging, §S1.2, §CHARACTERIZE-SWEEP, §S14, §TWIN-FALSIFY, §S16, §S15, §INC5, §SHADOWPC-LIVE-DEPLOY-DIAG). Facts below moved verbatim from MEMORY.md index (2026-06-11 restructure).
+**Supersession chain:** inc1 (overfit, no plant DR) → inc3 (wrong flat-2.5 plant) → inc4 (aero-blind, RETIRED) → inc5 (mixer-blind, RETIRED — live failure twin-reproduced) → **inc6 = current best** (mixer+aero+map plant, corner-tax c16, SHIPPED — live transfer pending). Per-stage verdict detail: [[project-phase2-rl-vision-decisions]] (§Staging, §S1.2, §CHARACTERIZE-SWEEP, §S14, §TWIN-FALSIFY, §S16, §S15, §INC5, §SHADOWPC-LIVE-DEPLOY-DIAG, §S17). Facts below moved verbatim from MEMORY.md index (2026-06-11 restructure).
 
 ## Inc-1 / S1.1
 - **Inc-1 ✅ (0.97 success, `stage1_inc1_actor.pth`)** — 🚩 no plant DR (numpy backend silent), overfit-nominal.
@@ -46,6 +46,14 @@ metadata:
 - **LIVE: 0 finishes** — blocked by mixer coupling (below); inc5 retired-from-live pending inc6.
 
 ## Live-deploy diagnosis → S17 / inc6
-- **✅ LIVE-DEPLOY ROOT CAUSE (2026-06-11, commits ef2605d..8dbd9bf): SIM MOTOR MIXER COUPLES THRUST AND RATE AUTHORITY AT SATURATION CORNERS — unmodeled in all three plants.** `rl/replay_obs.py` proves pipeline BYTE-CORRECT (H1/H2/H3 hypotheses ALL FALSE; "all-rail outputs" = normal bang-bang). **Corner 1** (thr=0 × yaw=3.14): motors [0.08,0.73,0.73,0.08] → **9.4 m/s² uncommanded lift** (powered climbs/top-board strikes). **Corner 2** (coll≈1.0 × rate): **rate authority vanishes** (gate-2 dy −1.0…−1.8 m). Fit data: `data/runs/20260611_194826_mixer_probe`. **--yaw-scale 0:** 14 clean passes / 10 flights, 0 finishes — ceiling hit. Detail §SHADOWPC-LIVE-DEPLOY-DIAG.
-- **INC6 SPEC:** ① mixer-aware plant (motor-level clip), parity-gated S14/S16; ② sweep ‖Δa‖² AND joint corner penalty `~w·|thr−mid|·‖rate_cmd‖` (taxes both rails, no mid-range suppression); ③ transport delay ≥2 steps; ④ standing-start default.
-- **S17 in flight (per commits ab634c8/ffe3cdb):** R7 targeted mixer-corner penalty (Part 3 amendment) + inc6 A/B arms submitted; R1 early results — yaw dither dead in ALL mixer-ON arms; d16 13/13 deploy matrix.
+- **✅ LIVE-DEPLOY ROOT CAUSE (2026-06-11, commits ef2605d..8dbd9bf): SIM MOTOR MIXER COUPLES THRUST AND RATE AUTHORITY AT SATURATION CORNERS — unmodeled in all three plants.** `rl/replay_obs.py` proves pipeline BYTE-CORRECT (H1/H2/H3 hypotheses ALL FALSE; "all-rail outputs" = normal bang-bang). **Corner 1** (thr=0 × yaw=3.14): motors [0.08,0.73,0.73,0.08] → **9.4 m/s² uncommanded lift**. **Corner 2** (coll≈1.0 × rate): **rate authority vanishes** (gate-2 dy −1.0…−1.8 m). Fit data: `data/runs/20260611_194826_mixer_probe`. **--yaw-scale 0:** 14 clean passes / 10 flights, 0 finishes — ceiling hit. Detail §SHADOWPC-LIVE-DEPLOY-DIAG.
+
+## ✅ S17 COMPLETE (2026-06-11, laptop fable; writeup handoff/laptop-s17-mixer-inc6-2026-06-11/WRITEUP.md)
+- **Mixer model:** per-motor clip `u_i = clip(c+S·d, idle, 1)`; κ_err=0.073 (two probes agree 0.2%); S14 slew limits were measured WITH mixer throttling (authority scales by Q=r/r_fit). Top-rail corner unmeasured — `mixer_probe2.json` queued. Integration: all three plants, defaults OFF=bit-identical; 528→562 tests; CPU gate 7.1e-15; V100 GATE_PASS 7.1e-15.
+- **Reward-design lesson (durable):** joint corner tax `w·|thr−mid|·‖rate‖` DECOUPLES smoothness from generalization; blunt ‖Δa‖² trades them monotonically (gen 0.727→0.571 as dact 1→16; combo arm collapses to 0.633 when dact=4 reappears).
+
+## ✅ Inc6 SHIPPED (2026-06-11, laptop fable; live transfer PENDING)
+- **Winner c16** (joint-penalty only, no dact): VQ1 sr 1.000 / 9.86 s median / gen 0.982 / thr_p95 0.061 / 0% saturation / max pass offset 0.277 m (zero-contact). 16/16 laptop deploy matrix (latency 0–3×every start mode×seams perturbed). No mitigation flags.
+- **Checkpoint:** `stage1_inc6_actor.pth` + sidecar; `fly_rl.py` default still inc4 — explicit `--checkpoint` required. R2 seed-variance job 3268876 pending (~1 h) — if a seed strictly dominates, it ships instead.
+- **Twin discrimination:** inc5 on mixer-ON plant = 0.000/0.000, yaw_flip 81.7% (live 0/20 reproduced); inc6 passes everything. Inc5 formally RETIRED.
+- **Supersession:** inc5 (mixer-blind, retired) → **inc6 (mixer+aero+map plant, corner-tax c16, SHIPPED)** → live transfer = next step.
