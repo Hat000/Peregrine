@@ -56,4 +56,27 @@ metadata:
 - **Winner c16** (joint-penalty only, no dact): VQ1 sr 1.000 / 9.86 s median / gen 0.982 / thr_p95 0.061 / 0% saturation / max pass offset 0.277 m (zero-contact). 16/16 laptop deploy matrix (latency 0–3×every start mode×seams perturbed). No mitigation flags.
 - **Checkpoint:** `stage1_inc6_actor.pth` + sidecar; `fly_rl.py` default still inc4 — explicit `--checkpoint` required. **R2 RESOLVED (job 3268876, inc6_c16_s1):** seed 1 reproduces transfer-critical properties exactly (VQ1 sr 1.000, 9.72 s, thr_p95 0.062/yaw_p95 0.010/0% flips) — rail-free style is a property of the corner-tax family, NOT seed luck. Shipped s0 STANDS. Gen is SEED-VOLATILE: 0.741 (s1) vs 0.982 (s0) — the headline was the better draw; even s1 beats every dact arm (0.571–0.727). **SELECTION PROTOCOL (durable):** future candidates (inc7 envelope-ladder, S2 work) must average generalization over ≥3 seeds — never trust single-seed gen numbers.
 - **Twin discrimination:** inc5 on mixer-ON plant = 0.000/0.000, yaw_flip 81.7% (live 0/20 reproduced); inc6 passes everything. Inc5 formally RETIRED.
-- **Supersession:** inc5 (mixer-blind, retired) → **inc6 (mixer+aero+map plant, corner-tax c16, SHIPPED)** → live transfer = next step.
+- **Supersession:** inc5 (mixer-blind, retired) → **inc6 (mixer+aero+map plant, corner-tax c16, SHIPPED)** → live transfer FAILED 2026-06-12; diag in progress.
+
+## inc6 live attempt 1 (2026-06-12) — FAILED
+
+**Result: 0/15 finishes (0 gate passes on standing start; gate 0 only on bridge start).** Same checkpoint + code ran 16/16 on laptop deploy matrix.
+
+**Standing start ×10 (0/10):** deterministic first action every flight → large lateral sweep → SPIN_ABORT/CRASH/TIMEOUT at gates=0. Zero gate passes.
+
+**Bridge start ×5 (0/5):** 5/5 passed gate 0 (inertia carries), 0/5 finished — all stalled at gate-1 transition with consistent 50–100 m orbital arc. Visual: pitch-down + large left-right oscillations → spin. Operator subjective: "insufficient control authority / too low Hz."
+
+**Hypothesis:** gate-relative obs encoding differs on ShadowPC vs laptop twin-side. Step-0 failure signature matches deployment-layer class per S17 playbook (handoff/laptop-s17-mixer-inc6-2026-06-11/WRITEUP.md §9).
+
+**Do NOT flip deployment default** (bridge > standing: 1 gate vs 0 — bridge is strictly better starting point for diag).
+
+**Primary debug artifact:** `debug_obs.jsonl` in all 15 run dirs on ShadowPC (standing + bridge). Offline forensics session = SHADOWPC-INC6-DIAG (fable); no new flights until diag complete.
+
+**Mixer probe2 status:**
+- Keeper run: `20260612_034154_mixer_probe2` (`z00_y31_long` clean; ACTUATOR_OUTPUT_STATUS confirmed present).
+- `c100_r31` aborted ×3 by Euler-ZYX singularity in `rate_sysid.py` — tool bug, NOT physical.
+- `c100_y31` / `c60_r31` / `zhov_r31` NOT captured.
+
+**Minor bug (non-critical):** bridge mode (adapted from VQ1 flight) sometimes does a 180° turn then turns back before flying forward.
+
+**Writeup:** `handoff/shadowpc-inc6-live-2026-06-12/WRITEUP.md` (commit 20c5937, pending push from ShadowPC to origin).
