@@ -125,3 +125,24 @@ Inc5's uniform gate-2 lateral miss (dy −1.0…−1.8 m, mid-bank) is now co-at
 **Recordings:** `data/runs/20260612_044219_inc6_rollfix_f1`, `…_044438_inc6_rollfix_f2`. Forensic scripts: `handoff/shadowpc-inc6-diag-2026-06-12/scripts/`.
 
 **Inc6 checkpoint STANDS. No retrain implied by the convention fix itself.**
+
+## inc6 live attempt 2 (bridge retest, 2026-06-12) — prediction FALSIFIED
+
+**Session:** SHADOWPC-BRIDGE-RETEST. **Commit:** e84a18d (writeup). Dataset commit: c846054.
+
+**Result: 5/5 gate-0, 0/5 gate-1, 0/5 finish.** Same gate count as pre-fix bridge attempts.
+
+**Key facts:**
+- Roll convention fix (bcc93f9) confirmed live: post-fix bridge sweeps to +y; pre-fix swept to −y (sign inversion matches prediction). No spin guard trips at gate-0.
+- DIAG "strong prediction: bridge threads gates" FALSIFIED. Bridge hands off at ~5 m/s — still within the 3–12 m/s thrust-lapse regime (15–25% below model). Gate-1 approach vector is displaced OOD regardless of start mode.
+- 180° turn-back bug NOT observed in 5/5 post-fix flights — likely pre-fix artifact or course-geometry dependent.
+- **Implication: thrust-lapse refit is load-bearing for BOTH standing and bridge start; no start-mode shortcut.**
+
+**Mixer probe2 COMPLETE (2026-06-12):** all 4 remaining rows captured (c100_r31, c100_y31, c60_r31, zhov_r31) in `data/runs/20260612_133307_mixer_probe2`; `handoff/shadowpc-bridge-retest-2026-06-12/probe_summary.md`. Key findings: top-rail roll clips ~35% authority (motors 0,2 saturate at c=1.0); bottom-rail roll clips ~80% at hover thrust (dominant at standing-start low speeds); mid-band c=0.6 linear. Consistency vs S17 mixer model = optional S18 task.
+
+**Refit dataset:** `handoff/shadowpc-refit-dataset-2026-06-12/debug_obs_17runs.zip` (9 MB; 10 standing pre-fix + 5 bridge pre-fix + 2 rollfix post-fix = 17 runs).
+
+**Updated recommended path:**
+1. Laptop S18: joint translational refit (collective-vs-airspeed lapse + drag) from 17 runs — no new flights needed.
+2. Re-run inc6 deploy matrix on refit plant; if robust → fly as-is; else inc7 with lapse-DR.
+3. Next live session = standing start ×5 (gated on S18). Bridge no longer a useful discriminator until plant gap closed.
