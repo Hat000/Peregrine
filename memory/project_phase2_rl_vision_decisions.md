@@ -1134,3 +1134,48 @@ The key discriminator that falsified the obs-seam hypothesis: run `crab_twin_rol
 ### S20 spec pointer
 
 See [[rl-increment-history]] §CRAB-DIAG for full S20 spec (refit collective/drag in 12–18 m/s × tilt-35–90 bin + ±12% DR + ≥3-seed + V100 gate → inc7). Predicted outcome: standing start clears gate 3, posture unchanged.
+
+---
+
+## §ADVISOR-REPORT-2-TRIAGE (2026-06-12)
+
+Commander triage of Advisor Report 2 (2026-06-12). All rulings are final unless a re-open condition is explicitly met and documented.
+
+### Ruling 1 — RE-REJECTED: HSV red-mask pre-filter (advisor item C)
+
+Ledger entry from ADVISOR-TRIAGE-2026-06-11 stands verbatim. Advisor re-proposed item C in Report 2 WITHOUT meeting the banked re-open conditions (measured FP problem + evidence of stable gate color in VQ2). Re-proposed 2026-06-12 Report 2, re-rejected — conditions unmet; advisor reminded of ledger. Do not re-litigate without both conditions met.
+
+### Ruling 2 — STALE / no-action
+
+- **Item G** (joint throttle×rate penalty): already shipped as c16 in inc6 (§S17). No action.
+- **Item H** (tilt concentration): already complete (§TILT-CONCENTRATION). No action.
+- **Items E** (MonoRace analog) + **F** (speed ceiling): already banked (§MONORACE-DIGEST, §SPEED-CEILING-ANALYTIC). Verdicts unchanged.
+
+### Ruling 3 — ROUTED TO LAPTOP-TRAINING-DOCTRINE (inputs, NOT decisions)
+
+Two reward proposals are routed to the doctrine session for evaluation on merits — not accepted or rejected here:
+
+- **(O) Arc-length progress along TOGT reference line as dense RL reward** (MPCC-cast): targets the 8.3 s → 4.27 s structural gap; `rl/reference_line_vq1.json` + `rl/reference_line.py` with `progress()` already exist. Doctrine evaluates fit to current env/reward structure.
+- **(R) Gate-crossing lateral-velocity penalty**: tension flagged — CRAB-DIAG confirms sideslip crab IS the winning trained style (roll +41.5°, tilt +54.8°, finishes). A lateral-velocity penalty may conflict. Doctrine must resolve whether the penalty helps generalization or suppresses the trained posture.
+
+### Ruling 4 — ACCEPTED: Stage-2 estimator target package (K + L + N)
+
+Promoted from conditional to PLANNED Stage-2 targets. Bundle into Stage-2 estimator design session.
+
+- **(K) Reprojection-error EKF / constellation navigation** (arXiv 2603.02742): pixel-space innovation `h(x) = K·[R|t]·p_gate`; every visible corner contributes independently; partial gates handled naturally; long-range bearing preserved without a hard range cap. Replaces the current world-frame position update.
+- **(L) Temporal parallax multi-frame depth triangulation**: at 20 m/s, 5 frames = 3.3 m baseline → σ~0.15 m at 20 m; uses pristine ODOMETRY motion to anchor the baseline; removes the need for a hard range cap; pairs naturally with K (bearing tracks improve triangulation conditioning).
+- **(N) Fisher-information observability-weighted KF updates**: principled per-update weighting by the local Fisher information; replaces the 32 m hard range cap with a continuous, geometry-aware gain schedule.
+
+### Ruling 5 — ACCEPTED: bundle into SHADOWPC-VISION-CAL (M + Q + D)
+
+These items join the planned SHADOWPC-VISION-CAL session (which already carries ADVISOR-TRIAGE ②⑤⑥ + last-fix gating measurement):
+
+- **(M) Lucas-Kanade sub-pixel corner tracking**: detector acquires corners, LK tracks them at sub-pixel precision (0.1–0.3 px error), re-detect every N frames; handles close-approach dropout gracefully. Feeds weighted PnP continuously between full detections.
+- **(Q) KF innovation monitoring as early-warning**: rolling Mahalanobis window on KF innovations; rising trend → slow down; persistent elevation → abort attempt; single spike → discard fix. Complements (but does not replace) the critic-as-risk-monitor.
+- **(D) ONNX/TensorRT INT8 export of SHIP v2 + ShadowPC CPU in-loop latency benchmark**: export NOW on ShadowPC; benchmark latency in the live loop. Real eval-hardware benchmark IMPOSSIBLE until organizer Q⑤ answers. Do NOT claim "perception is fast enough" until measured on actual eval hardware.
+
+### Ruling 6 — ACCEPTED (with noted gating)
+
+- **(S) Heteroscedastic per-corner σ from detector** (NLL/RLE loss): feeds weighted PnP + KF covariance directly; replaces current heuristic confidence→σ mapping. Bundle with next detector retrain (photoreal v4 / Blender/Cycles build).
+- **(P) Between-attempt trajectory refinement**: REMAINS gated on organizer Q④ answer (can stack carry state between attempts?). No action until answered.
+- **(B) Off-screen corner training**: already part of the banked photoreal spec (§v2-inventory in [[project-detector-training-pipeline]]). Advisor confirmation noted; no new action required.
