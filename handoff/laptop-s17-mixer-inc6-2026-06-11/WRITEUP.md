@@ -4,9 +4,16 @@
 `handoff/shadowpc-live-deploy-diag-2026-06-11/WRITEUP.md` Section 8: the unmodeled MOTOR-MIXER
 coupling that broke the inc4/inc5 live transfers (0/20 flights) is now a measured, fitted,
 parity-gated feature of all three plants (twin -> rl_plant -> DiffAero adapter), and inc6
-retrains against it with action-rate regularization and transport-delay DR centered on the
+retrains against it with a style-regularizer A/B and transport-delay DR centered on the
 measured live latency. Commits: `dafdc69` (model + integration), `eed0444` (review fixes),
-`<inc6 ship commit>` (checkpoint). **STATUS: training rounds in progress — see Section 7.**
+`ab634c8` (R7 corner penalty), ship commit (checkpoint).
+
+**SHIPPED: `rl/checkpoints/stage1_inc6_actor.pth` = inc6_c16_s0 (md5
+`8fb8855e07d4fd01045e7b2ecbc5acd3`) + `.json` sidecar {3.765, 3.14}.** Mixer-ON: held-out VQ1
+sr 1.000 / median 9.86 s / roll max 57.4 deg; generalization 0.982; ACTRATE thr_p95 0.061 /
+yaw_p95 0.009 / flips 0%; 16/16 laptop deployment matrix (all start modes, latency 0-3,
+perturbed seams to 10 m/s) with NO mitigation flags. The inc5 datum on the same plant: sr
+0.000 / 0.000 (Section 8).
 
 ---
 
@@ -193,7 +200,8 @@ All evals MIXER-ON. VQ1 = held-out acceptance; gen = random courses; style = ACT
 | R1 (a) | 3268651 | inc6_d4_s1 | 4 | 0 | 1 | 0.999 / 12.09 s | 0.689 | 0.997 / 0.083 / 0% | FAIL (thr) |
 | R1 (b) | 3268718 | inc6_c4_s0 | 1 | 4 | 0 | 1.000 / 10.39 s | 0.940 | 0.993 / 0.049 / 0% | FAIL (thr) |
 | **R1 (b)** | **3268719** | **inc6_c16_s0** | **1** | **16** | **0** | **1.000 / 9.86 s** | **0.982** | **0.061 / 0.009 / 0%** | **PASS** |
-| R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4 | 8 | 0 | (running) | | | |
+| R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4 | 8 | 0 | 0.999 / 9.76 s | 0.633 | 0.121 / 0.014 / 0% | PASS |
+| R2 | 3268876 | inc6_c16_s1 | 1 | 16 | 1 | (follow-up: seed variance; not a ship blocker) | | | |
 
 **A/B VERDICT — the targeted corner penalty wins on every axis simultaneously.** The blunt
 ||delta a||^2 arm trades smoothness against generalization monotonically (gen 0.727 -> 0.649 ->
@@ -204,6 +212,13 @@ AND the smoothest (thr_p95 0.061, yaw_p95 0.009) — pricing only the (thr-rail 
 removed the incentive to live near the rails at all, without flattening responsiveness.
 At w=4 the corner tax is too weak to move collective off the rails (c4 thr_p95 0.993), though
 its gen 0.940 already beats every dact arm. Yaw dither died in ALL seven arms (mixer physics).
+The COMBO (d4+c8) confirms the attribution: style PASS and VQ1 9.76 s (0.10 s faster than c16
+on the known track), but gen collapses to 0.633 + 3 VQ1 collisions — the dact component costs
+generalization wherever it appears, and a 0.10 s single-course edge inside overfit territory
+does not buy back a 35-point gen gap (META gap #1) or the validity delta (0.999 vs clean
+1.000). **SHIP = c16_s0.** R2 (3268876) = one confirmatory seed of corner=16 for variance
+data before the live session; follow-up, not a blocker (deploy matrix, gen, and style all
+green on the shipped seed).
 
 **TRAIN_RC=1 note (benign):** every job trains the full 6000/6000 updates and saves
 checkpoints, then a post-training teardown step crashes (`ValueError: Unknown action frame:
@@ -242,7 +257,8 @@ the plant's two mixer corners priced in.
 | median lap (VQ1) | — (no finishes) | **9.86 s** (p90 9.92, min 9.76) |
 | generalization (random) | **0.000** | **0.982** (2,261 eps) |
 | roll / tilt succ max (VQ1) | — | 57.4 / 62.9 deg |
-| pass offset p90 (VQ1) | — | (see .out; med-class ~0.4 m) |
+| pass offset med / p90 / max (VQ1) | — | **0.145 / 0.271 / 0.277 m** (aperture 0.75; zero-contact margin everywhere) |
+| cmd saturation (any axis) | yaw-railed by design | **0.0%** (the policy never touches a rail) |
 | ACTRATE thr_p95 / yaw_p95 / flips | 0.186 / **1.000** / **81.7%** | **0.061 / 0.009 / 0.0%** |
 | deployment rollouts (laptop, mixer plant) | 1/6 gates typical, needs --yaw-scale 0 | **16/16 FINISHED**, no mitigation flags |
 
@@ -257,10 +273,24 @@ shows: lap time varies < 0.15 s across lat 0 -> 3.
 
 ## 9. Deployment notes (for the next ShadowPC session)
 
-* Fly inc6 with NO mitigation flags (no --yaw-scale, no --max-rate) — the style should be
-  live-compatible natively. Standing start first (`--no-bridge`), bridge as fallback.
-* `--debug-obs` stays ON; the live-reset/spin guards from the diag session remain mandatory.
-* The 10-min `mixer_probe2.json` errand (Section 2) can piggyback on the same session —
-  run it BEFORE the inc6 flights if time is tight (it derisks a model re-fit if inc6 shows a
-  residual top-rail gap).
-* `fly_rl.py --checkpoint` must point at the inc6 .pth explicitly (default unchanged).
+* **Fly inc6 with NO mitigation flags** (no --yaw-scale, no --max-rate) — the shipped style
+  never saturates a command axis (0.0% on all four) and holds 0.27 m worst-case pass margins.
+  `fly_rl.py --checkpoint rl/checkpoints/stage1_inc6_actor.pth` (default still points at inc4
+  — pass explicitly; the sidecar auto-loads).
+* **Standing start first** (`--no-bridge`, the deployment target per INC5-LIVE Appendix B —
+  deletes the non-deterministic bridge seam); bridge as comparison. In-twin both are 6/6 at
+  lat 0-3.
+* `--debug-obs` stays ON; the live-reset/spin guards from the diag session remain mandatory;
+  full ESC->Enter reset between flights.
+* **Run the 10-min `mixer_probe2.json` errand FIRST** (Section 2): it nails the top-rail x
+  large-demand corner and the r/p zeta — derisks a model re-fit if inc6 shows any residual
+  live gap, and is independent of flight outcomes.
+* Expected live behavior if the mixer model is right: clean gate-0 passes from standing start,
+  laps ~10-12 s (twin 9.9 + live overheads). If it fails, the failure MODE is the signal:
+  parasitic-climb-like = bottom-rail model wrong (unlikely — anchored); lateral-late at speed
+  = top-rail depth (the errand's corner); anything at step 0 = deployment layer (byte-correct
+  per the diag, but re-verify with replay_obs.py).
+* R2 seed-variance job (3268876, corner=16 seed 1) lands ~1 h after this writeup; check
+  `/scratch/network/fl3689/inc6_run_3268876.out` before the live session for the variance
+  picture. inc5 (`stage1_inc5_actor.pth`) stays in the repo as the pre-mixer datum; inc4
+  remains retired.
