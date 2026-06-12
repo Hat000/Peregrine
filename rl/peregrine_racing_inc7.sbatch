@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=peregrine_racing_inc7
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:nvidia_a100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=03:30:00
