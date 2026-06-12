@@ -1,0 +1,40 @@
+[load_actor] sidecar stage1_inc6_actor.json: action bounds -> thrust [0.000,3.765] rates +-3.14 rad/s
+====================================================================================================
+INC6 GEOMETRY-HONEST EVAL -- legacy-generated trajectories, contact-true scoring
+(body radius r in (0.28, 0.33, 0.38), frame depth 0.3 m; mixer plant; ckpt stage1_inc6_actor.pth)
+====================================================================================================
+
+[standing nominal]  legacy outcome: FINISHED
+  legacy crossing Linf: g0:0.20 g1:0.16 g2:0.17 g3:0.26 g4:0.17 g5:0.38
+  corridor Linf at x=-1 m (g3): 0.47   at x=-0.30 m (slab entry): 0.31
+  r=0.28: CLEAN under contact-true geometry (pass band 0.47; worst margin g5 +0.09 m)
+  r=0.33: CONTACT-TRUE COLLISION g5 at t=9.49s (gate-frame x -0.35->+0.26, step-end Linf 0.31, pass band 0.42)
+  r=0.38: CONTACT-TRUE COLLISION g5 at t=9.49s (gate-frame x -0.35->+0.26, step-end Linf 0.31, pass band 0.37)
+
+[standing res_full]  legacy outcome: FINISHED
+  legacy crossing Linf: g0:0.25 g1:0.23 g2:0.18 g3:0.14 g4:0.15 g5:0.35
+  corridor Linf at x=-1 m (g3): 0.41   at x=-0.30 m (slab entry): 0.18
+  r=0.28: CLEAN under contact-true geometry (pass band 0.47; worst margin g5 +0.12 m)
+  r=0.33: CONTACT-TRUE COLLISION g5 at t=11.62s (gate-frame x -0.48->+0.00, step-end Linf 0.35, pass band 0.42)
+  r=0.38: CONTACT-TRUE COLLISION g5 at t=11.62s (gate-frame x -0.48->+0.00, step-end Linf 0.35, pass band 0.37)
+
+[standing res_full lat2]  legacy outcome: FINISHED
+  legacy crossing Linf: g0:0.30 g1:0.27 g2:0.22 g3:0.08 g4:0.18 g5:0.25
+  corridor Linf at x=-1 m (g3): 0.35   at x=-0.30 m (slab entry): 0.10
+  r=0.28: CLEAN under contact-true geometry (pass band 0.47; worst margin g0 +0.17 m)
+  r=0.33: CLEAN under contact-true geometry (pass band 0.42; worst margin g0 +0.12 m)
+  r=0.38: CLEAN under contact-true geometry (pass band 0.37; worst margin g0 +0.07 m)
+
+[bridge nominal]  legacy outcome: FINISHED
+  legacy crossing Linf: g0:0.11 g1:0.21 g2:0.19 g3:0.25 g4:0.17 g5:0.37
+  corridor Linf at x=-1 m (g3): 0.45   at x=-0.30 m (slab entry): 0.31
+  r=0.28: CLEAN under contact-true geometry (pass band 0.47; worst margin g5 +0.10 m)
+  r=0.33: CONTACT-TRUE COLLISION g5 at t=8.16s (gate-frame x -0.45->+0.16, step-end Linf 0.33, pass band 0.42)
+  r=0.38: CONTACT-TRUE COLLISION g5 at t=8.16s (gate-frame x -0.45->+0.16, step-end Linf 0.33, pass band 0.37)
+
+[bridge res_full]  legacy outcome: FINISHED
+  legacy crossing Linf: g0:0.11 g1:0.18 g2:0.11 g3:0.15 g4:0.15 g5:0.34
+  corridor Linf at x=-1 m (g3): 0.40   at x=-0.30 m (slab entry): 0.17
+  r=0.28: CLEAN under contact-true geometry (pass band 0.47; worst margin g5 +0.13 m)
+  r=0.33: CLEAN under contact-true geometry (pass band 0.42; worst margin g5 +0.08 m)
+  r=0.38: CONTACT-TRUE COLLISION g5 at t=9.69s (gate-frame x -0.69->-0.20, step-end Linf 0.39, pass band 0.37)
