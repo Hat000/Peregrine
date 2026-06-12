@@ -37,6 +37,8 @@ ROOT = Path(__file__).resolve().parents[3]
 REMOTE = "/scratch/network/fl3689/peregrine_repo"
 SCRATCH = "/scratch/network/fl3689"
 FILES = [                       # everything inc7 changed (the repo on scratch is a FILE COPY)
+    "src/racer/rl_plant.py",    # scratch copy was pre-S18: missing LAPSE_* killed the guarded
+                                # import in diffaero_dynamics (GATE 1 failure 2026-06-12)
     "rl/peregrine_racing.py",
     "rl/diffaero_dynamics.py",
     "rl/check_diffaero_gate.py",
@@ -103,7 +105,8 @@ def step_sync() -> None:
             f"&& echo EXTRACTED "
             f"&& grep -c slab_frame_hits {REMOTE}/rl/peregrine_racing.py "
             f"&& grep -c dr_force_bias {REMOTE}/rl/diffaero_dynamics.py "
-            f"&& grep -c dr_nominal {REMOTE}/rl/check_diffaero_gate.py")
+            f"&& grep -c dr_nominal {REMOTE}/rl/check_diffaero_gate.py "
+            f"&& grep -c LAPSE_SPEED_MEASURED {REMOTE}/src/racer/rl_plant.py")
     if "EXTRACTED" not in out:
         sys.exit("[sync] FAILED -- extraction did not confirm")
     print("[sync] OK (new features confirmed present on scratch)")
