@@ -187,19 +187,25 @@ class _Phase:
       vel_damp            per-phase velocity-damp enable (None = global args; profile default off
                           -- vel-damp tilts would CONTAMINATE a drag coast)
       yaw_ramp/yaw_rate   slew the persistent yaw target to start_yaw+yaw_ramp (rad) at yaw_rate
-                          (rad/s); the new target PERSISTS into later phases (heading changes)"""
+                          (rad/s); the new target PERSISTS into later phases (heading changes)
+      no_tilt_abort       disable the tilt abort for THIS phase only (deliberate-spin probes:
+                          a roll/pitch rate-rail step sweeps the Euler angles through the ZYX
+                          discontinuity and past any meaningful limit -- the spin IS the
+                          measurement, same rationale as anomaly mode; collision/position/
+                          altitude/time aborts stay armed). Aborted c100_r31 x3 on 2026-06-12."""
 
     __slots__ = ("name", "kind", "axis", "value", "thrust", "dur", "roll_des", "pitch_des",
-                 "alt_target", "tilt_ff", "vel_damp", "yaw_ramp", "yaw_rate")
+                 "alt_target", "tilt_ff", "vel_damp", "yaw_ramp", "yaw_rate", "no_tilt_abort")
 
     def __init__(self, name, kind, dur, *, axis=None, value=None, thrust=None, roll_des=None,
                  pitch_des=None, alt_target=None, tilt_ff=False, vel_damp=None,
-                 yaw_ramp=None, yaw_rate=None):
+                 yaw_ramp=None, yaw_rate=None, no_tilt_abort=False):
         self.name, self.kind, self.dur = name, kind, dur
         self.axis, self.value, self.thrust = axis, value, thrust
         self.roll_des, self.pitch_des = roll_des, pitch_des
         self.alt_target, self.tilt_ff, self.vel_damp = alt_target, tilt_ff, vel_damp
         self.yaw_ramp, self.yaw_rate = yaw_ramp, yaw_rate
+        self.no_tilt_abort = no_tilt_abort
 
 
 def _build_rate_schedule(args) -> list[_Phase]:
@@ -263,6 +269,7 @@ def _build_profile_schedule(args) -> list[_Phase]:
             vel_damp=bool(p.get("vel_damp", False)),
             yaw_ramp=np.radians(p["yaw_ramp_deg"]) if "yaw_ramp_deg" in p else None,
             yaw_rate=np.radians(p["yaw_rate_dps"]) if "yaw_rate_dps" in p else None,
+            no_tilt_abort=bool(p.get("no_tilt_abort", False)),
         ))
     return phases
 
@@ -460,7 +467,7 @@ def main() -> int:
         n_coll0 = len(client.collisions)      # collisions BEFORE this run are residue (the
                                               # prior race's post-disarm fall arrives pre-GO)
 
-        def abort_check() -> str | None:
+        def abort_check(cur_phase=None) -> str | None:
             s = client.state
             if any(c["threat_level"] >= 2 for c in client.collisions[n_coll0:]):
                 return "hard collision"
@@ -475,7 +482,8 @@ def main() -> int:
                 return f"altitude {-rel[2]:+.0f}m rel"
             if s.velocity_ned is not None and abs(float(s.velocity_ned[2])) > args.max_vz:
                 return f"vz {s.velocity_ned[2]:+.0f} m/s"
-            if max(abs(s.roll), abs(s.pitch)) > np.radians(args.max_tilt_deg):
+            if not (cur_phase is not None and cur_phase.no_tilt_abort) \
+                    and max(abs(s.roll), abs(s.pitch)) > np.radians(args.max_tilt_deg):
                 return f"attitude runaway ({np.degrees(max(abs(s.roll), abs(s.pitch))):.0f} deg)"
             return None
 
@@ -581,7 +589,7 @@ def main() -> int:
                 }) + "\n")
                 n_rows += 1
 
-                reason = abort_check()
+                reason = abort_check(phase)
                 if reason is not None or time.monotonic() >= run_deadline:
                     aborted_reason = reason or "max-seconds cap"
                     break
