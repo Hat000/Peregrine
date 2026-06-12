@@ -277,6 +277,12 @@ Training world (rl_plant/DiffAero, proper-rotation bridges both sides) was inter
 3. V100 config-matrix gate at next Adroit contact (lapse configs present but VOIDED — do not select).
 4. inc7 planning: lapse-DR branch dead; if inc6 confirms live, S2 architecture resumes per master plan.
 
+## ✅ TWIN HARNESS SEAM FIX (2026-06-12; commit pending)
+
+`CtbrPlant.state()` now emits `orientation_ned_wxyz` in the RAW wire convention (`q_phys·[1,−1,1,−1]`), pinned as literal `_ODO_WIRE_QUAT_CONJ_WXYZ` in `twin.py` — deliberately NOT imported from `frames.py` (training-doctrine §6: harnesses must not share convention constants with deploy decode). The 4 post-8d7b0b3 test_twin* failures were this defect: twin fed true quats, navigator correctly un-conjugated them, KF IMU-predict mis-rotated between given-position updates. Suite: **620/620 green**. Attribution note: prior session wrongly attributed these 4 failures to "uncommitted inc7 rl/"; inc7-env's diagnosis (twin harness, not inc7 code) was CORRECT.
+
+**Test infra note:** `tests/test_twin_fit.py::_sim_run` deliberately records `q` in the legacy euler-alias frame (the legacy fitter's decomposition model), NOT the wire frame — this is correct; do not "fix" it.
+
 ---
 
 ## ✅ inc6 LIVE CONFIRMED (2026-06-12, ShadowPC sonnet; writeup handoff/shadowpc-live-confirm-2026-06-12/WRITEUP.md)

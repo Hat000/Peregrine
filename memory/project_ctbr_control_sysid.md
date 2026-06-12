@@ -95,6 +95,24 @@
 > accumulated over this project was a single telemetry conjugation reflected through every measurement
 > taken in the reported frame.
 
+> **[2026-06-12 UPDATE #3 — TWIN HARNESS WIRE-CONTRACT FIX + CANONICAL-GAINS SUPERSESSION]**
+>
+> **Twin harness seam fix (commit pending):** `CtbrPlant.state()` now emits `orientation_ned_wxyz` in
+> the RAW R_y(π)-conjugated WIRE convention (`q_phys·[1,−1,1,−1]`, pinned literal
+> `_ODO_WIRE_QUAT_CONJ_WXYZ` in twin.py — deliberately NOT imported from `frames.py` per
+> training-doctrine §6: emulation harnesses must not share convention constants with deploy decode).
+> NavState carries only euler+rates (CTBR seam byte-identical). The 4 post-8d7b0b3 twin-test failures
+> were exactly this: twin fed TRUE quats → navigator un-conjugated → KF IMU-predict mis-rotated between
+> given-position updates. Suite now 620/620 green.
+>
+> **Canonical-gains non-transfer SUPERSEDED (twin-only):** the historical "canonical gains do NOT
+> transfer to the faithful plant" conclusion (Task-C re-tune rationale) was an ESTIMATION ARTIFACT of
+> the pre-fix aliased R_wb. With true attitude pairing, canonical gains thread the faithful plant at
+> worst in-plane miss 0.071 m (vs 0.196 m for `FAITHFUL_TUNED_GAINS`). Test renamed:
+> `test_canonical_gains_transfer_to_the_faithful_plant_with_true_attitude` (test_twin_tune.py:82).
+> **FENCE:** this supersession is TWIN-ONLY — `FAITHFUL_TUNED_GAINS` remain the VQ1-proven LIVE
+> config; twin under-models latency; live gain changes are live decisions, not implied here.
+
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the
 "Fly on CTBR" bullet in [[reference-sim-interface]]; raw run data in `data/runs/*_gate0_*`,
