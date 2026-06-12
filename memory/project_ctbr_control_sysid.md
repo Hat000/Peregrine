@@ -75,6 +75,26 @@
 > at near-level attitude and confirmed the wrong model). Only tilted-phase kinematic consistency
 > (`diag_h4d.py` method) discriminates.
 
+> **[2026-06-12 UPDATE #2 — FRAME-AUDIT SUPERSEDES bcc93f9 CONVENTIONS (commit 93023cf)]**
+> The bcc93f9 "TRUE PHYSICAL CONVENTIONS" block above is itself a second mirror of the single underlying defect.
+> ODOMETRY quat is **NOT** true attitude AS-IS — it is R_y(π)-conjugated. Definitive conventions:
+> - `q_true = q_raw·[1,−1,1,−1]` (wxyz; roll+yaw Euler negated, pitch intact).
+> - `ω_true = −w_raw` (all axes; gain 0.999). Supersedes [+1,−1,+1] verdict above.
+> - Live cmd→rate sign: **[+1,+1,+1]** — vanilla CTBR, NO inversion on any axis. Supersedes [−1,+1,−1] above.
+> - ODO twist + accel_body PAIR with the raw quat (consistent pair; do NOT "fix").
+> - `state.velocity_ned` is PRISTINE (unchanged).
+>
+> **CTBR/VQ1 LEGACY stack is UNCHANGED** — it is a self-consistent closed alias of the conjugated frame
+> (per-axis closure derived in LAPTOP-FRAME-AUDIT writeup §3); VQ1-proven; DO NOT touch.
+>
+> **VALIDATION DOCTRINE (final):** internal consistency (quat-FD, twist, level flight) CANNOT catch a
+> proper-rotation conjugation. The ONLY discriminating test is force-model vs FD of pristine `vel_ned`
+> (external invariant). Run `scripts/frame_residual_report.py` after EVERY live session.
+>
+> The underlying plant is vanilla [+1,+1,+1] — a completely unremarkable CTBR sim. All sign "lore"
+> accumulated over this project was a single telemetry conjugation reflected through every measurement
+> taken in the reported frame.
+
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the
 "Fly on CTBR" bullet in [[reference-sim-interface]]; raw run data in `data/runs/*_gate0_*`,

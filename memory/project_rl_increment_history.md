@@ -219,3 +219,60 @@ NOT integrated (structural: per-axis κ_hold + top-rail yaw effectiveness). Poli
 ### 7. Next step
 
 **LAPTOP-FRAME-AUDIT (fable):** systemic per-layer handedness audit — the third convention mirror. Diagnostic tools shipped: `handoff/laptop-s18-thrust-lapse-2026-06-12/scripts/s18_force_frame_selfcheck.py` + `s18_openloop_replay.py`. Extend quat-FD method to hard-ROLL phases. Candidate roots: (a) raw ODOMETRY quat roll-mirrored vs true physical attitude; (b) sign in deploy thrust path. Probe: deliberate sustained-roll-bank at moderate speed → measured lateral accel vs attitude-derived prediction.
+
+---
+
+## ✅ LAPTOP-FRAME-AUDIT — one-defect root cause; lapse voided; inc6 salvaged (2026-06-12, laptop fable; commits 93023cf fix, 1bfb936 writeup)
+
+### Root cause: single R_y(π) conjugation in sim telemetry
+
+**ONE defect explains all three mirrors:** the sim's ODOMETRY quaternion is the true attitude expressed in an R_y(π)-conjugated frame pair. `q_true = q_raw·[1,−1,1,−1]` (wxyz; negate x,z). Euler: roll AND yaw negated, pitch intact. Because R_y(π) conjugation is a PROPER rotation, it passes every internal consistency check (quat-FD vs rate, twist round-trip, level flight) — only comparison against an external invariant discriminates.
+
+**Decisive measurement** (`audit_candidates.py`, 17 runs, 28,195 banked ticks): force model from conjugated attitude matches measured world accel on ALL axes (corr +0.97…+0.99, med residual ~1 m/s²); as-is reading anti-correlates East at bank (−0.84, med error 24 m/s²). True body rate = `−w_raw` (all axes; quat-FD gain 0.999). Live cmd→rate sign = **[+1,+1,+1]** — vanilla CTBR, no inversion on any axis. Every historical "roll/yaw inversion" was this single telemetry alias.
+
+### Evidence voided and restored
+
+All prior false-pass evidence (S18's "16/16 FALSE PASS" / "counterfactual 6/6 FALSE PASS") was caused by the same conjugation being applied symmetrically in the emulation harness and deploy code — they mirrored each other. The S18 open-loop replay METHOD was sound; it found the mirror. With fixed tools: **deploy matrix REBUILT 16/16** (mixer plant, latency 0–3×4 start modes, 8.2–9.6 s); counterfactual fixed 6/6 @ 9.50 s; bcc93f9 mapping against corrected emulation diverges before gate-0.
+
+Why bcc93f9's tilted-phase validation failed: it validated the quat against its own rate channel (conjugation-invariant). It never tested force direction against measured world acceleration.
+
+### S18 lapse voided
+
+Re-fit with the true attitude on the same 17 runs: K_eff/K ratio ≈ 1.00–1.10 all speed bands. The "15–25% deficit" was mirrored-b3 projection error (≈20° East bank at early climb gives exactly 0.74; "recovered" as trajectory straightened). No residual translational plant gap: regime-binned residuals ≤~2 m/s² everywhere on the mixer plant, lapse OFF. **Do NOT use `--plant lapse` or `dr_lapse` for any future training. inc7 lapse-DR branch is dead.**
+
+### Fix inventory (93023cf)
+
+- `src/racer/frames.py`: `ODO_QUAT_TRUE_CONJ_WXYZ` + `true_attitude_from_odo_quat_wxyz` + `true_rate_from_odo_angular_rate` + full convention note (single source of truth).
+- `rl/fly_rl.py`: conjugation in `build_obs`; `_ODO_RATE_SIGN=[−1,−1,−1]`; `_ACT_FLU_TO_FRD=[+1,−1,+1]`.
+- `rl/offline_rollout.py`: emits conjugated quat + negated rates; live plant modeled as `rate_sign=[+1,+1,+1]`.
+- `rl/replay_obs.py`: true-state extraction conjugated; `v_artifact` repurposed as deliberate wrong-frame canary.
+- `rl/rl_plant.py`: LAPSE constants annotated VOIDED.
+
+### Regression armor (598 tests; +9 vs S18's 589)
+
+`tests/test_frame_conventions.py` — 9 golden-file handedness tests pinning per-axis handedness against recorded live data, including open-loop East-sign replay + mirror canary (must keep FAILING for as-is reading). `scripts/frame_residual_report.py` — standing per-session canary: regime-binned residuals + mirror canary + rate canary + optional open-loop replay. **Re-run after EVERY live session.**
+
+### Inc6 verdict: SALVAGED
+
+Training world (rl_plant/DiffAero, proper-rotation bridges both sides) was internally self-consistent throughout — no mirror was ever inside training. DO-NOT-FLY lifted. NEXT = ShadowPC live confirm: standing ×2 + bridge ×2 (spec: writeup §6). Prediction: standing start clears gate 0 centred (offline E at plane ≈ −0.2 m).
+
+### Per-layer handedness map (final, all layers resolved)
+
+| Layer | Verdict | Evidence |
+|---|---|---|
+| LPN pos/vel (world NED) | ✅ TRUE anchor | pos-FD ≡ vel through 60° bank |
+| ODOMETRY quat | 🚩 R_y(π)-conjugated | force corr +0.99 conj vs −0.84 as-is at bank (28k ticks) |
+| ODOMETRY angular_rate | ω_true = −w_raw | quat-FD(conj) = −w_raw, gain 0.999 |
+| ODOMETRY twist + accel_body | pair with raw quat | consistent pair; KF safe |
+| Sim physics cmd→rate | [+1,+1,+1] vanilla | open-loop replay with conj obs |
+| CTBR stack | ✅ closed alias | VQ1-proven; per-axis closure derived §3 of writeup |
+| fly_rl (93023cf) | ✅ fixed | golden tests pinned |
+| rl_plant/DiffAero | ✅ self-consistent | parity suite |
+| Vision chain (navigator.py:295) | 🚩 LATENT 4th seam (bank regime) | queued VISION-FRAME-FIX |
+
+### Queued follow-ups
+
+1. **VISION-FRAME-FIX** (before VQ2 banked vision): `frames.true_attitude_from_odo_quat_wxyz` for all world-geometry projections in navigator; VQ1-replay regression required. May explain part of VISION-PKG2's 1.4° attitude-noise fit.
+2. **S19** (mixer_probe2 vs S17 contradiction — sign-invariant, unchanged by audit).
+3. V100 config-matrix gate at next Adroit contact (lapse configs present but VOIDED — do not select).
+4. inc7 planning: lapse-DR branch dead; if inc6 confirms live, S2 architecture resumes per master plan.

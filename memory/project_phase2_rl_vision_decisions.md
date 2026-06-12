@@ -890,6 +890,8 @@ Inc5 formally retired. Supersession chain: inc5 (mixer-blind, live failure now t
 
 ## ✅ SHADOWPC-INC6-DIAG — roll-mirror root cause (2026-06-12; commits bcc93f9, 325e191; writeup handoff/shadowpc-inc6-diag-2026-06-12/WRITEUP.md)
 
+**⚠️ SUPERSEDED by §FRAME-AUDIT (2026-06-12):** bcc93f9 conventions (quat AS-IS, rate [+1,−1,+1], wire [−1,−1,−1]) were themselves a second mirror — a proper-rotation alias of the one true defect (R_y(π) conjugation). The "counterfactual 6/6 @ 9.50 s" was a false pass. See §FRAME-AUDIT for the definitive per-layer map and corrected deploy recipe (93023cf).
+
 **Supersedes the §SHADOWPC-LIVE-DEPLOY-DIAG hypothesis that obs-encoding or timing was the gap.**
 
 ### Evidence chain summary
@@ -928,6 +930,8 @@ Two standing-start flights (the authorized budget): no spin, no oscillation, smo
 ---
 
 ## §S18-THRUST-LAPSE (2026-06-12, laptop opus; commits fb99636+0fd741b; writeup handoff/laptop-s18-thrust-lapse-2026-06-12/WRITEUP.md)
+
+**⚠️ VOIDED by §FRAME-AUDIT (2026-06-12):** the "15–25% thrust deficit" was an artifact of the mirrored-b3 projection (≈20° East bank at early climb gives exactly the 0.74 ratio; "recovered" as trajectory straightened). True-attitude refit ratio ≈1.00–1.10 all bands. There is NO residual translational plant gap ≥~2 m/s² in any regime (speed×tilt×collective, mixer plant, lapse OFF). Do NOT use `--plant lapse` or `dr_lapse` for training. The lapse code stays in repo (defaults OFF, harmless). Inc6 is SALVAGED (see §FRAME-AUDIT). The evidence-voiding finding ("twin self-mirrors → false passes") that this section discovered was correct; the root cause it pointed at (thrust→world mirror = a third independent mirror) was the R_y(π) conjugation, resolved in §FRAME-AUDIT.
 
 **Headline: the lapse is real and integrated, but it is NOT the live cause. A THIRD convention mirror found (thrust→world lateral projection). The laptop 16/16 deploy matrix and the INC6-DIAG counterfactual 6/6 are BOTH FALSE PASSES. Inc6 validity is UNKNOWN.**
 
@@ -1031,3 +1035,79 @@ Not integrated (structural: per-axis κ_hold + yaw top-rail effectiveness). Impa
 **Per-segment relaxation DEMOTED to contingency** — only if instability appears in low-cost segments at high global aggression. Global reduction is the right first move because the tilt weight shapes speed everywhere, not just at corners.
 
 Ladder remains **gated on inc6 live transfer, one live-verified step at a time.**
+
+---
+
+## §FRAME-AUDIT — R_y(π) conjugation root cause; all mirrors resolved (2026-06-12, laptop fable; commits 93023cf fix, 1bfb936 writeup)
+
+**Single defect explains every historical sign inversion:** the sim's ODOMETRY quaternion is the true attitude expressed in an R_y(π)-conjugated frame pair. This is a proper rotation → passes every internal-consistency test. Only comparison against an external invariant (FD of pristine `vel_ned`) catches it. Full data + scripts in `handoff/laptop-frame-audit-2026-06-12/`.
+
+### Conjugation math
+
+`q_true = q_raw * [1, −1, 1, −1]` (wxyz; negate x and z components). Euler effect: roll AND yaw negated, pitch intact. True angular rate: `ω_true = −w_raw` (all axes; quat-FD gain 0.999/0.999/0.996). Live cmd→rate sign: **[+1,+1,+1]** — vanilla CTBR, NO inversion on any axis. ODO twist (body vel) and accel_body PAIR with the RAW quat and are self-consistent — do not "fix" them.
+
+### External-invariant method (the discriminating test)
+
+Level-flight and internal-consistency tests (quat-FD vs rate, twist round-trip, tilted-phase kinematic coherence) ALL pass for a proper-rotation conjugation — they are conjugation-invariant. The ONLY discriminating test: force model from the candidate attitude vs FD of pristine `vel_ned` (which is NOT affected by the telemetry conjugation). Corpus: 17 runs, 28,195 banked smooth ticks.
+
+- Conjugated attitude: corr +0.97…+0.99 all three force axes, median residual ~1 m/s².
+- As-is attitude: corr −0.84 on East at bank, median error 24 m/s².
+- R_x(π)/R_z(π) alternatives: fail North (pitch flip) — ruled out.
+- Yaw confirmed independently by turn direction (course rate from velocity matches only conjugated yaw rate).
+
+**DURABLE VALIDATION DOCTRINE:** internal consistency CANNOT catch a proper-rotation conjugation. ALWAYS validate conventions with the external invariant (force vs vel_ned FD). Run `scripts/frame_residual_report.py` after every live session.
+
+### Why prior verifications failed
+
+| Verification | Why it failed |
+|---|---|
+| bcc93f9 quat-FD tilted validation | Validated quat against its own rate channel — conjugation-invariant |
+| "Counterfactual 6/6 @ 9.50 s" (bcc93f9 harness) | Emulation applied same mirror as deploy — false pass |
+| "16/16 matrix" (bcc93f9 harness) | Same self-consistent mirroring |
+| S18 lapse K_eff ratio 0.74–0.88 | Mirrored-b3 projection; true-attitude refit ratio = 1.00–1.10 |
+| S1.2 [−1,−1,1] verdict | Level-attitude measurement; roll-mirror invisible near-level |
+| bcc93f9 three "coupled corrections" | A second self-consistent mirror; fixed the seam, not the root |
+
+### Per-layer map (complete, 2026-06-12)
+
+| Layer | Status | Notes |
+|---|---|---|
+| LPN pos/vel (world NED) | ✅ TRUE | pos-FD ≡ vel through 60° bank all axes |
+| ODOMETRY quat | R_y(π)-conjugated | `q_true = q_raw·[1,−1,1,−1]` |
+| ODOMETRY angular_rate | `ω_true = −w_raw` | gain 0.999 all axes |
+| ODOMETRY twist + accel_body | pair with raw quat | consistent pair; KF predict safe as-is |
+| Sim cmd→rate physics | [+1,+1,+1] vanilla | open-loop replay; no inversion anywhere |
+| mavlink_client velocity_ned | ✅ CORRECT (keep) | raw-quat rotation of twist |
+| CTBR stack (all sign configs) | ✅ closed alias | per-axis closure derived; VQ1-proven; do not touch |
+| fly_rl (93023cf, fixed) | ✅ TRUE | `_ODO_QUAT_TRUE_CONJ=[1,−1,1,−1]`; `_ODO_RATE_SIGN=[−1,−1,−1]`; `_ACT_FLU_TO_FRD=[+1,−1,+1]` |
+| offline_rollout (93023cf, fixed) | ✅ matches wire | emits conjugated quat + negated rates; plant `rate_sign=[+1,+1,+1]` |
+| rl_plant / DiffAero | ✅ self-consistent | proper-rotation bridges; V100 parity 7.1e-15 |
+| Training world (inc6) | ✅ internally consistent | no mirror ever inside training; `rate_sign` = trained-world convention, keep |
+| Vision chain (navigator.py:295) | 🚩 LATENT seam | pairs REPORTED attitude with true-world pixels; queued VISION-FRAME-FIX |
+
+### S18 lapse voided (detail)
+
+True-attitude refit on the same 17 runs: K_eff/K ≈ 1.00 at 3–6 m/s, 1.04–1.10 above. The apparent 0.74–0.88 ratio at low speed was the mirrored East-component of thrust projection (≈20° East bank at early-climb → projection error gives exactly the observed ratio, then "recovers" as trajectory straightens). Regime-binned residuals (speed × tilt × collective) ≤~2 m/s² everywhere on the mixer plant, lapse OFF. **Lapse code stays in repo (defaults OFF), but do NOT enable it for training or evaluation.**
+
+### Fix inventory (93023cf)
+
+- `src/racer/frames.py`: `ODO_QUAT_TRUE_CONJ_WXYZ=[1,−1,1,−1]`; `true_attitude_from_odo_quat_wxyz()`; `true_rate_from_odo_angular_rate()`; full convention note (single source of truth for the whole stack).
+- `rl/fly_rl.py`: conjugation applied in `build_obs`; `_ODO_RATE_SIGN=[−1,−1,−1]`; `_ACT_FLU_TO_FRD=[+1,−1,+1]`.
+- `rl/offline_rollout.py`: `_RATE_SIGN_LIVE=[1,1,1]`; `telemetry_from_truth` emits conjugated quat + negated rates; `--plant lapse` marked voided-historical.
+- `rl/replay_obs.py`: true-state extraction conjugated; `v_artifact` = deliberate wrong-frame canary.
+- `rl/rl_plant.py`: LAPSE constants annotated VOIDED; `rate_sign` documented as trained-world convention.
+- **Armor:** `tests/test_frame_conventions.py` (+9 golden-file tests, incl. East-sign open-loop replay and mirror canary that must keep FAILING for as-is reading); `scripts/frame_residual_report.py` (standing per-session residuals + canaries + optional open-loop replay). **598 tests green.**
+
+### Inc6 verdict: SALVAGED
+
+Training world was internally self-consistent throughout (rl_plant and DiffAero use proper rotations, single frame). Only the deploy mapping was wrong. With fixed tools: deploy matrix REBUILT 16/16 (mixer plant, latency 0–3 × 4 start modes, 8.2–9.6 s median); counterfactual fixed mapping 6/6 @ 9.50 s; bcc93f9 mapping against corrected emulation → OOB pre-gate-0 at 2.2 s. No retrain needed.
+
+### ShadowPC live-confirm spec (next session)
+
+4 flights in order: ① standing ×2 (`--checkpoint rl/checkpoints/stage1_inc6_actor.pth --no-bridge --flights 2 --label rl_inc6_frameaudit_std`), ② bridge ×2 (`--bridge --flights 2 --label rl_inc6_frameaudit_brg`). Pull main first; verify `git log -1 ≥ 93023cf`; run `pytest tests/test_frame_conventions.py -q`. After each run: `scripts/frame_residual_report.py --replay 36 <session>`. Abort criteria: spin-guard trip on flight 1; mirror canary TRIPPED (re-audit, do not iterate flags); 0/2 standing AND 0/2 bridge with canaries green → not frames, capture and hand back to laptop.
+
+**Prediction:** standing start clears gate 0 centred (offline E at plane ≈ −0.2 m); prior failure modes (pre-fix spin; post-fix +5 m East miss) both explained and removed.
+
+### Queued 4th seam: VISION-FRAME-FIX
+
+Vision chain (`navigator.py:295` → `_maybe_run_vision` → PnP world-fix path) uses the REPORTED attitude quaternion (raw, unconjugated) to rotate pixel observations into world geometry. Near-level and yaw≈π (VQ1): effectively harmless (conjugation at roll≈0 is near-identity). At VQ2 bank angles: wrong. **Fix:** use `frames.true_attitude_from_odo_quat_wxyz` for all world-geometry projections; requires VQ1-replay regression before merging. Also re-examine VISION-PKG2's 1.4° `ATTITUDE_NOISE_STD_RAD` fit — part of the "roll-correlated wander" it absorbed is plausibly this seam.
