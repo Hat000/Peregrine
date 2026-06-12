@@ -124,6 +124,12 @@ Source of truth: `handoff/shadowpc-vision-pkg2-2026-06-10/WRITEUP.md`.
   the roll-wander on the NEXT fresh 6/6 flight recorded with `--dump-extras` (`composition_fit.py`
   runs as-is); if τ_pre reproduces with consistent sign across two flights, a composition correction
   becomes shippable.
+  **⚠️ SUPERSEDED (VISION-FRAME-FIX 2026-06-12, 8d7b0b3):** The +3.5°/range east bias was primarily
+  the navigator's aliased yaw — `navigator.py:295` used `R_world_from_body(ds.roll, ds.pitch, ds.yaw)`
+  where `ds.yaw` is the negated true yaw (R_y(π) alias). Fixing to
+  `R_world_from_odo_quat_wxyz(ds.orientation_ned_wxyz)` eliminates east bias to 0.0°/range and reduces
+  north bias −2.0°→−0.4°/range. The 1.4° `ATTITUDE_NOISE_STD_RAD`, 0.40 m cov floor, and 32 m range
+  cap remain correct. sigma_theta re-fit queued for ShadowPC (banked recording with corrected R_wb).
 - **🚩 REAL BUG FOUND+FIXED (37e7ab1): `corner_to_center`'s gate frame was rotated 180° in-plane vs
   the detector's corner convention** — invisible to position (square symmetry) but the PnP
   disambiguation prior fed to IPPE/P3P was ANTI-ALIGNED, making the frontal tie-break + P3P branch
@@ -1077,7 +1083,7 @@ Level-flight and internal-consistency tests (quat-FD vs rate, twist round-trip, 
 | offline_rollout (93023cf, fixed) | ✅ matches wire | emits conjugated quat + negated rates; plant `rate_sign=[+1,+1,+1]` |
 | rl_plant / DiffAero | ✅ self-consistent | proper-rotation bridges; V100 parity 7.1e-15 |
 | Training world (inc6) | ✅ internally consistent | no mirror ever inside training; `rate_sign` = trained-world convention, keep |
-| Vision chain (navigator.py:295) | 🚩 LATENT seam | pairs REPORTED attitude with true-world pixels; queued VISION-FRAME-FIX |
+| Vision chain (navigator.py:295) | ✅ FIXED (8d7b0b3) | `R_world_from_odo_quat_wxyz`; east bias 0.0°/range; fix p50 1.37→0.47 m; 616 green |
 
 ### S18 lapse voided (detail)
 
@@ -1102,9 +1108,27 @@ Training world was internally self-consistent throughout (rl_plant and DiffAero 
 
 **Prediction:** standing start clears gate 0 centred (offline E at plane ≈ −0.2 m); prior failure modes (pre-fix spin; post-fix +5 m East miss) both explained and removed.
 
-### Queued 4th seam: VISION-FRAME-FIX
+### ✅ VISION-FRAME-FIX COMPLETE (2026-06-12, sonnet-4.6; commit 8d7b0b3; 616 tests green)
 
-Vision chain (`navigator.py:295` → `_maybe_run_vision` → PnP world-fix path) uses the REPORTED attitude quaternion (raw, unconjugated) to rotate pixel observations into world geometry. Near-level and yaw≈π (VQ1): effectively harmless (conjugation at roll≈0 is near-identity). At VQ2 bank angles: wrong. **Fix:** use `frames.true_attitude_from_odo_quat_wxyz` for all world-geometry projections; requires VQ1-replay regression before merging. Also re-examine VISION-PKG2's 1.4° `ATTITUDE_NOISE_STD_RAD` fit — part of the "roll-correlated wander" it absorbed is plausibly this seam.
+`navigator.py:295` now uses `frames.R_world_from_odo_quat_wxyz(ds.orientation_ned_wxyz)` — true body→world rotation from the R_y(π)-conjugated ODO quat. Helper added to `frames.py`; `characterize_perception.py` updated to match. CTBR control path untouched.
+
+**VQ1-replay regression (task2_frames, 40 near-level frames):**
+
+| Metric | BEFORE | AFTER |
+|---|---|---|
+| Detection | 40/40 | 40/40 |
+| Association | 29/40 | 29/40 |
+| Fix p50 | 1.37 m | **0.47 m** |
+| Good-fix yield (<1 m) | 6/27 (22%) | 23/27 (85%) |
+| East bias slope | +3.5°/range | **0.0°/range** |
+| North bias slope | −2.0°/range | −0.4°/range |
+| Catastrophic leak | 1/29 (3.4%) | 0/29 (0%) |
+
+**Golden tests:** `test_R_world_from_odo_quat_wxyz_gives_true_rotation_at_bank`, `test_R_world_from_odo_quat_wxyz_level_is_identity`, `test_vision_fix_correct_at_banked_attitude` — all PASSED.
+
+**MLE sigma_theta re-fit:** QUEUED for ShadowPC — do NOT change `ATTITUDE_NOISE_STD_RAD=1.4°` until done.
+
+Detail: `handoff/laptop-vision-frame-fix-2026-06-12/WRITEUP.md`.
 
 ---
 
