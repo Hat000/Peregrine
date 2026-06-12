@@ -9,9 +9,9 @@ Here we run the SAME chain that flies -- `estimate_gate_pose` (full IPPE/P3P + w
 position fix error, how often does the detector drop the gate, how does it grow with range?
 
 Faithful to the in-loop chain:
-  * attitude R_wb = R_world_from_body(euler_from_quat_wxyz(odo_q)) -- the RAW ODOMETRY quat, no roll
-    correction (mavlink_client derives ds.roll/pitch/yaw this way; the odo sign-undo lives in the
-    CONTROLLER, not the nav R_wb). So this measures what the navigator's PnP actually sees.
+  * attitude R_wb = R_world_from_odo_quat_wxyz(odo_q) -- applies the R_y(pi) conjugation fix
+    (vision-frame-fix 2026-06-12) so this faithfully measures what the navigator's PnP now sees.
+    The CTBR control path (euler_from_quat_wxyz on the raw quat) is a separate alias — untouched.
   * gates from the saved map with corner_to_center=True (opening centre = the PnP gate origin), so a
     perfect fix returns the given drone position; the residual IS the chain error.
   * association + prior + post-PnP depth sanity come from racer.vision.association == the SAME code
@@ -143,7 +143,7 @@ def main() -> int:
         frame = Frame(frame_id=fr["frame_id"], sim_time_ns=fr["sim_time_ns"], image_bgr=img,
                       recv_monotonic_ns=0, jpeg_bytes=None)
         drone = np.asarray(fr["drone_position_ned"], float)
-        R_wb = F.R_world_from_body(*F.euler_from_quat_wxyz(np.asarray(fr["odo_q_wxyz"], float)))
+        R_wb = F.R_world_from_odo_quat_wxyz(np.asarray(fr["odo_q_wxyz"], float))
         predicted = predict_gates_in_camera(gates, drone, R_wb)
         obs_list = det.detect(frame)
         row = {"frame_id": fr["frame_id"], "range_m": fr["range_m"], "speed_mps": fr["speed_mps"],

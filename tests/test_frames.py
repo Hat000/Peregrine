@@ -3,8 +3,10 @@ from scipy.spatial.transform import Rotation
 
 from racer.frames import (
     CAMERA_PITCH_RAD,
+    ODO_QUAT_TRUE_CONJ_WXYZ,
     R_camera_from_body,
     R_world_from_body,
+    R_world_from_odo_quat_wxyz,
     body_rate_from_quats,
     euler_from_quat_wxyz,
     project_camera_point,
@@ -122,3 +124,52 @@ def test_yaw_rotates_world_to_body():
     p_world = np.array([5.0, 0.0, 0.0])
     p_body = R_wb.T @ p_world
     np.testing.assert_allclose(p_body, [0.0, -5.0, 0.0], atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Vision-chain attitude pairing — golden contract [vision-frame-fix 2026-06-12]
+# Mirrors the spirit of test_frame_conventions.py: pins the pairing between the
+# raw ODOMETRY quaternion and the rotation matrix the vision/PnP/KF chain must use.
+# The ODOMETRY quat is R_y(pi)-conjugated (FRAME-AUDIT 2026-06-12); the vision chain
+# must apply the conjugation before projecting world gate geometry into the camera.
+# The CTBR path intentionally uses euler_from_quat_wxyz on the raw quat (aliased,
+# VQ1-proven) — these tests do NOT constrain that path.
+# ---------------------------------------------------------------------------
+
+def test_R_world_from_odo_quat_wxyz_gives_true_rotation_at_bank():
+    """R_world_from_odo_quat_wxyz(q_raw) must equal R_world_from_body(true_euler).
+
+    At 45° roll + 30° yaw the raw ODOMETRY quat has NEGATED roll and yaw (R_y(pi)
+    conjugation). The helper must undo this to give the TRUE body->world rotation.
+    This is the property navigator.py:295 relies on after the vision-frame-fix."""
+    roll_true, pitch_true, yaw_true = np.deg2rad(45.0), np.deg2rad(-10.0), np.deg2rad(30.0)
+    R_true = R_world_from_body(roll_true, pitch_true, yaw_true)
+
+    # Build the TRUE attitude quat, then apply the R_y(pi) conjugation to get what
+    # the sim's ODOMETRY actually reports.
+    q_xyzw = Rotation.from_euler("ZYX", [yaw_true, pitch_true, roll_true]).as_quat()
+    q_true_wxyz = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
+    q_raw_wxyz = q_true_wxyz * ODO_QUAT_TRUE_CONJ_WXYZ   # what ODOMETRY reports
+
+    R_recovered = R_world_from_odo_quat_wxyz(q_raw_wxyz)
+    np.testing.assert_allclose(R_recovered, R_true, atol=1e-12,
+                               err_msg="vision R_wb must use TRUE attitude from odo quat")
+
+    # Confirm: euler_from_quat_wxyz on the raw quat gives ALIASED (wrong) euler.
+    roll_alias, _, yaw_alias = euler_from_quat_wxyz(q_raw_wxyz)
+    np.testing.assert_allclose(roll_alias, -roll_true, atol=1e-9)   # roll negated
+    np.testing.assert_allclose(yaw_alias, -yaw_true, atol=1e-9)     # yaw negated
+
+    # old path (R_world_from_body on aliased euler) gives a DIFFERENT (wrong) matrix
+    R_aliased = R_world_from_body(roll_alias, pitch_true, yaw_alias)
+    assert not np.allclose(R_recovered, R_aliased, atol=0.01), \
+        "aliased and true R_wb must differ at 45° roll"
+
+
+def test_R_world_from_odo_quat_wxyz_level_is_identity():
+    """At level hover (roll=yaw=0), aliased == true — no sensitivity to the conjugation fix."""
+    q_level = np.array([1.0, 0.0, 0.0, 0.0])
+    np.testing.assert_allclose(R_world_from_odo_quat_wxyz(q_level), np.eye(3), atol=1e-12)
+    np.testing.assert_allclose(R_world_from_odo_quat_wxyz(None), np.eye(3), atol=1e-12)
+    # zero-norm (uninitialised) quaternion returns identity, not a crash
+    np.testing.assert_allclose(R_world_from_odo_quat_wxyz(np.zeros(4)), np.eye(3), atol=1e-12)

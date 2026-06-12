@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from racer.contracts import (
     ControlMode,
@@ -10,7 +11,7 @@ from racer.contracts import (
     GateObservation,
 )
 from racer.controller import Controller
-from racer.frames import R_camera_from_body, R_world_from_body
+from racer.frames import ODO_QUAT_TRUE_CONJ_WXYZ, R_camera_from_body, R_world_from_body, euler_from_quat_wxyz
 from racer.mission import Mission, MissionConfig, MissionState
 from racer.navigator import (
     Navigator,
@@ -305,3 +306,68 @@ def test_navigator_drives_mission_to_finished():
 def test_saved_map_json_is_well_formed():
     data = json.loads(open("handoff/shadowpc-firstcontact-2026-06-02/track_map.json").read())
     assert data["num_gates"] == len(data["gates"]) == 6
+
+
+# ---------------------------------------------------------------------------
+# Vision-chain attitude pairing — golden contract [vision-frame-fix 2026-06-12]
+# The navigator's R_wb at line 295 must use the TRUE physical attitude, not the
+# R_y(pi)-aliased reading that euler_from_quat_wxyz(q_raw) returns.
+# At bank, the aliased R_wb has NEGATED roll/yaw; using it yields a world-fix error
+# on the order of range * sin(2 * bank) ≈ 7 m at 10 m range and 45° bank.
+# ---------------------------------------------------------------------------
+
+def _make_banked_ds(sim_time_ns: int, roll_true: float, position=None) -> DroneState:
+    """DroneState whose orientation_ned_wxyz is the raw ODOMETRY quat for roll_true (45°).
+    roll/pitch/yaw are the ALIASED euler (what mavlink_client provides from the raw quat).
+    position is optional (None = given-position disabled)."""
+    q_xyzw = Rotation.from_euler("ZYX", [0.0, 0.0, roll_true]).as_quat()
+    q_true_wxyz = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
+    q_raw_wxyz = q_true_wxyz * ODO_QUAT_TRUE_CONJ_WXYZ   # what the sim's ODOMETRY reports
+    roll_alias, pitch_alias, yaw_alias = euler_from_quat_wxyz(q_raw_wxyz)
+    return DroneState(
+        sim_time_ns=int(sim_time_ns),
+        orientation_ned_wxyz=q_raw_wxyz.copy(),
+        roll=roll_alias, pitch=pitch_alias, yaw=yaw_alias,
+        accel_body=_HOVER_ACCEL.copy(),
+        position_ned=None if position is None else np.asarray(position, float),
+        reset_counter=0,
+    )
+
+
+def test_vision_fix_correct_at_banked_attitude():
+    """Navigator uses TRUE R_wb from raw ODO quat — pins navigator.py:295.
+
+    Gate 9m north + 4m east, drone at [0,0,-2] with 45° right roll. The ODOMETRY
+    quat reports -45° roll (R_y(pi) conjugation). The aliased R_wb maps the camera
+    east lever arm to the wrong sign: world-fix = [0, 4, -2] instead of [0, 0, -2],
+    a 4m east error. With given_position anchoring the KF at true_pos (0.05m std),
+    Mahalanobis ≈ 80 >> chi2_0.999=16.27 → fix REJECTED by old code (n_vision_fixes=0).
+    True R_wb → fix = [0, 0, -2] → Mahalanobis ≈ 0 → ACCEPTED (n_vision_fixes > 0).
+
+    All 4 corners stay within 640×360 at this geometry (verified analytically).
+    Pins navigator.py:295 → R_world_from_odo_quat_wxyz(ds.orientation_ned_wxyz).
+    [vision-frame-fix 2026-06-12]"""
+    roll_true = np.deg2rad(45.0)
+    R_wb_true = R_world_from_body(roll_true, 0.0, 0.0)
+    true_pos = np.array([0.0, 0.0, -2.0])
+    gate = _gate_facing_north([9.0, 4.0, -2.0], gate_id=0)    # off-axis east: maximises R_wb error
+
+    class _BankedDetector:
+        """Produces corners from the TRUE camera pose (45° roll, drone at true_pos)."""
+        def detect(self, frame):
+            corners = _project_gate(gate, true_pos, R_wb_true)
+            return [GateObservation(
+                frame_id=frame.frame_id, sim_time_ns=frame.sim_time_ns,
+                corners_px=corners, corner_confidence=np.ones(4), score=0.9,
+            )]
+
+    nav = Navigator(gates=[gate], detector=_BankedDetector(),
+                    config=NavigatorConfig(use_given_position=True, given_pos_std=0.05))
+    nav.update(_make_banked_ds(0, roll_true, position=true_pos), _frame(0, 0))
+    ns = None
+    for k in range(1, 20):
+        ns = nav.update(_make_banked_ds(k * 10_000_000, roll_true, position=true_pos),
+                        _frame(k, k * 10_000_000))
+    assert nav.n_vision_fixes > 0, "correct R_wb: vision fix must be accepted at 45° roll"
+    np.testing.assert_allclose(ns.position_ned, true_pos, atol=0.5,
+                               err_msg="KF must stay near true_pos with accepted vision fix")

@@ -48,7 +48,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, NavState
-from racer.frames import ATTITUDE_NOISE_STD_RAD, R_world_from_body
+from racer.frames import ATTITUDE_NOISE_STD_RAD, R_world_from_body, R_world_from_odo_quat_wxyz
 from racer.localization import FIX_COV_FLOOR_STD, gate_pose_to_world_position
 from racer.state_estimator import LinearKF, make_nav_state
 from racer.vision.association import (
@@ -292,7 +292,10 @@ class Navigator:
             return self._nav_state(ds)
 
         assert self.kf is not None
-        R_wb = R_world_from_body(ds.roll, ds.pitch, ds.yaw)
+        # TRUE physical body->world rotation from the raw ODOMETRY quat (R_y(pi)-conjugated).
+        # The CTBR path uses euler_from_quat_wxyz on the raw quat (aliased, VQ1-proven —
+        # that path is untouched). Vision/PnP/KF must use the true attitude. [vision-frame-fix]
+        R_wb = R_world_from_odo_quat_wxyz(ds.orientation_ned_wxyz)
 
         # Estimation advances only on a NEW IMU sample (sim_time_ns is the master clock). When the
         # control loop ticks faster than the IMU, dt<=0 and we just re-package the current state

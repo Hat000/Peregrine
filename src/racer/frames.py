@@ -123,6 +123,22 @@ def true_attitude_from_odo_quat_wxyz(q_wxyz) -> np.ndarray:
     return np.asarray(q_wxyz, dtype=np.float64) * ODO_QUAT_TRUE_CONJ_WXYZ
 
 
+def R_world_from_odo_quat_wxyz(q_odo_wxyz) -> np.ndarray:
+    """ODOMETRY quaternion (raw, R_y(pi)-conjugated) -> TRUE FRD->NED rotation matrix.
+
+    Use this for the vision/PnP/KF path (navigator.py, localization.py). Do NOT use for
+    the CTBR control path — that path's euler_from_quat_wxyz on the raw quat is a
+    self-consistent alias (VQ1-proven, intentionally left as-is). None or near-zero-norm
+    input returns np.eye(3) (level hover — same fallback as ds.roll/pitch/yaw=0.0)."""
+    if q_odo_wxyz is None:
+        return np.eye(3)
+    q = np.asarray(q_odo_wxyz, dtype=np.float64)
+    if float(q @ q) < 1e-12:
+        return np.eye(3)
+    q_true = q * ODO_QUAT_TRUE_CONJ_WXYZ
+    return Rotation.from_quat([q_true[1], q_true[2], q_true[3], q_true[0]]).as_matrix()
+
+
 def true_rate_from_odo_angular_rate(w_body) -> np.ndarray:
     """ODOMETRY rollspeed/pitchspeed/yawspeed -> TRUE FRD body rate: all-axes negation
     (quat-FD of the conjugated attitude == -w_raw, gain 0.999/0.999/0.996; FRAME-AUDIT)."""
