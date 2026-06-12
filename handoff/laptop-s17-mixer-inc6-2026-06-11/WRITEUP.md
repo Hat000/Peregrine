@@ -201,7 +201,18 @@ All evals MIXER-ON. VQ1 = held-out acceptance; gen = random courses; style = ACT
 | R1 (b) | 3268718 | inc6_c4_s0 | 1 | 4 | 0 | 1.000 / 10.39 s | 0.940 | 0.993 / 0.049 / 0% | FAIL (thr) |
 | **R1 (b)** | **3268719** | **inc6_c16_s0** | **1** | **16** | **0** | **1.000 / 9.86 s** | **0.982** | **0.061 / 0.009 / 0%** | **PASS** |
 | R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4 | 8 | 0 | 0.999 / 9.76 s | 0.633 | 0.121 / 0.014 / 0% | PASS |
-| R2 | 3268876 | inc6_c16_s1 | 1 | 16 | 1 | (follow-up: seed variance; not a ship blocker) | | | |
+| R2 | 3268876 | inc6_c16_s1 | 1 | 16 | 1 | 1.000 / 9.72 s | 0.741 | 0.062 / 0.010 / 0% | PASS |
+
+**R2 VERDICT (seed variance): the style/validity result is ROBUST, the gen headline is not.**
+Seed 1 reproduces the shipped seed almost exactly on everything the live transfer depends on
+— VQ1 sr 1.000 (0 collisions), 9.7 s-class lap, thr_p95 0.062 / yaw_p95 0.010 / 0% flips
+(rail-free is a property of the corner penalty, not the seed) — but generalization lands at
+0.741 vs s0's 0.982: the 0.982 headline is the BETTER of two seeds, not the expectation
+(VQ1 pass margins also wider: p90 0.466 vs 0.271 m). Even so, s1's 0.741 still beats every
+dact-arm seed (0.571-0.727) at far better style, so the arm-level A/B conclusion stands.
+SHIP UNCHANGED (s0 was selected on its own held-out + deploy evidence). Consequence for S2 /
+VQ2 planning: corner=16's gen distribution is wide — select future candidates on gen across
+>= 3 seeds, and treat single-seed gen numbers as upper-bound-ish.
 
 **A/B VERDICT — the targeted corner penalty wins on every axis simultaneously.** The blunt
 ||delta a||^2 arm trades smoothness against generalization monotonically (gen 0.727 -> 0.649 ->
