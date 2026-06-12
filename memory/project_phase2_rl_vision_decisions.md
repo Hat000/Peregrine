@@ -893,3 +893,35 @@ Inc5 formally retired. Supersession chain: inc5 (mixer-blind, live failure now t
 - Structural pilot-stack changes (user brainstorming — the Setpoint/ControlCommand seam keeps a
   planner+controller→policy swap low-risk).
 - VQ2 data-stream answer (gates the map/SLAM + vision-load-bearing question).
+
+---
+
+## ✅ TILT-CONCENTRATION (2026-06-11) — per-segment cost, revised speed ladder
+
+**Supersedes** the "tilt 96→48→…, per-segment candidate ladder" phrasing in §INC5 and the §SPEED-CEILING-ANALYTIC coupling note. Source: `handoff/laptop-tilt-concentration-2026-06-11/WRITEUP.md`. Rollouts were deterministic from racestart (20 identical episodes ≡ single trajectory) — all figures are single-trajectory, not distributional.
+
+### Per-segment timing table (inc5_r1 unconstrained vs inc5 constrained vs inc6; Δt = constrained − unconstrained)
+
+| Segment | Δt (s) | Unc peak roll | Tilt cap binds? |
+|---|---|---|---|
+| start→G0 | **+0.73** | 63° | no — cost = global conservatism |
+| G2→G3 | **+0.67** | 67° | YES |
+| G1→G2 | **+0.47** | 71° | YES |
+| G0→G1 | **+0.40** | 44° | no |
+| G4→G5 | **+0.37** | 75° | YES |
+| G3→G4 | **+0.27** | 32° | no |
+| **Total** | **2.91 s** | | |
+
+### Key findings
+- Tilt cap physically binds on only **3 of 6 segments**: G1→G2 (pk 71°), G2→G3 (pk 68°), G4→G5 (pk 75°).
+- **Biggest-cost segment start→G0 (+0.73 s) has unconstrained peak roll 63° — within the current 65° envelope.** Cost = global reward conservatism from rw_tilt weight, not the angle cap binding. Global weight reduction is the right first lever.
+- 🚩 **Do NOT conflate**: training "roll p90 145°" is peak-per-episode across jittered starts (distributional); racestart peak roll = 75° (single trajectory). Two different metrics.
+
+### Revised 3-step speed ladder (supersedes per-segment-first phrasing)
+1. **Step 1 — global rw_tilt 96→48** (existing datum: inc5_t48 = 9.22 s; one reward-weight change).
+2. **Step 2 — raise free-cone 60°→75–80°, keep rw_tilt=48** — unlocks specifically G1→G2, G2→G3, G4→G5 (the 3 segments where the cap physically binds), without entering the 90°+ regime.
+3. **Step 3 — unconstrained** (rw_tilt=16, no cone; potential ~6.6 s). Live-verify stability before banking.
+
+**Per-segment relaxation DEMOTED to contingency** — only if instability appears in low-cost segments at high global aggression. Global reduction is the right first move because the tilt weight shapes speed everywhere, not just at corners.
+
+Ladder remains **gated on inc6 live transfer, one live-verified step at a time.**

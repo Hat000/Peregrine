@@ -75,6 +75,21 @@ aware, replaces the slow Monte-Carlo path. Constants `WEIGHTED_SIGMA_PX=1.5`, `T
 `CONF_FLOOR=0.1` — tunable at sim contact. **Pairs with the deferred adapter-relax** (lower the detector's
 `kpt_conf_thresh=0.5` so marginal corners reach the now-robust solver; cutoff needs the real conf distribution).
 
+## v2 dataset inventory (photoreal recon 2026-06-11)
+
+Source: `handoff/laptop-photoreal-recon-2026-06-11/WRITEUP.md`. **Closes the first-action of ADVISOR-TRIAGE item ①** (check v2 partial-gate coverage before building a Blender pipeline).
+
+1. **Generation:** `data/mix_v2/`, 6000 train + 800 val, re-generated at job start from `scripts/gen_synthetic_dataset.py --mix --n-train 6000 --n-val 800` (no `--hard`; default `max_gates=3`, `edge_prob=0`).
+2. **Partial-gate scenes: YES, built-in** (transit + corner-clipping + in-frame occlusion at all levels). ~15–30% estimated 3-corner frames. `edge_prob=0` → severely-cropped edges underrepresented (arise only from natural geometry, no targeted oversampling).
+3. **Visibility flags: fully populated** (V_VIS=2 / V_OCC=1 / V_OFF=0) in every label; YOLO-pose schema + `flip_idx` correct; `to_yolo_pose_label` and `render_scene` label logic reusable as-is.
+4. **Hue range:** full 360° hue wheel via vivid-channel selection, but only saturated gate colors — **no pastels, near-white, or near-black gates.**
+5. **No HDRI, no PBR, no physically-accurate lighting** at any level (affine gradient + random RGB rectangles only).
+6. **Blender pipeline = renderer-only replacement** — existing label infrastructure fully reusable; only the renderer needs replacing.
+
+**Gaps to target (Blender/Cycles pipeline):** lighting model (HDRI/PBR), background realism (arena floor/sky), speed-correlated motion blur, non-saturated gate colors (pastel/off-white/near-black), edge-biased crops (severely-cropped partial gates).
+
+---
+
 ## Status / VERDICT (2026-06-02, done with the user) — SHIP v2
 All three checkpoints were ALREADY pulled locally (v3 too, Jun 1 02:59 — distinct sha256, complete;
 the "v3 not pulled yet" recollection was stale). Fixed-set eval (`eval_detector` N=200/level, identical
