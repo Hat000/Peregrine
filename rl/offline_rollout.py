@@ -116,13 +116,54 @@ def check_build_obs(rng: np.random.Generator) -> float:
     return worst
 
 
-def gate_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int) -> str | None:
+def slab_frame_hit_np(prev_rel: np.ndarray, cur_rel: np.ndarray, half_in: float,
+                      half_out: float, depth: float) -> bool:
+    """Numpy scalar mirror of peregrine_racing.slab_frame_hits (INC7 contact-true geometry):
+    does the straight segment prev_rel -> cur_rel (gate frame) touch frame material
+    {|x| <= depth, half_in <= Linf(y,z) <= half_out}? Exact via the convexity of Linf(t)
+    (cross-validated against the torch helper in tests/test_contact_geometry.py)."""
+    px, py, pz = prev_rel
+    dx, dy, dz = cur_rel - prev_rel
+    if abs(dx) < 1e-12:
+        if abs(px) > depth:
+            return False
+        t0, t1 = 0.0, 1.0
+    else:
+        ta, tb = (-depth - px) / dx, (depth - px) / dx
+        t0, t1 = max(min(ta, tb), 0.0), min(max(ta, tb), 1.0)
+        if t1 < t0:
+            return False
+
+    def linf(t):
+        return max(abs(py + t * dy), abs(pz + t * dz))
+
+    cands = [t0, t1]
+    for num, den in ((-py, dy), (-pz, dz), (pz - py, dy - dz), (-(py + pz), dy + dz)):
+        if abs(den) > 1e-12:
+            cands.append(min(max(num / den, t0), t1))
+    lmin = min(linf(t) for t in cands)
+    lmax = max(linf(t0), linf(t1))
+    return lmin <= half_out and lmax >= half_in
+
+
+def gate_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int,
+               body_radius: float = 0.0, frame_depth: float = 0.0) -> str | None:
     """'pass' | 'collision' | 'miss' | None for the TARGET gate -- the S1.4 classification
     (mirrors peregrine_racing.crossing_events): the plane crossing is INTERPOLATED to the
     crossing point; L-inf < 0.75 m = pass, in (0.75, 1.36] = frame collision, beyond = clean
-    miss. Backward crossings through the frame band also collide."""
+    miss. Backward crossings through the frame band also collide.
+
+    INC7 contact-true scoring (defaults OFF = legacy): ``body_radius`` inflates the bands
+    (pass < 0.75 - r, frame band [0.75 - r, 1.36 + r]); ``frame_depth`` makes the frame band
+    MATERIAL over |x| <= depth (slab_frame_hit_np) -- catching strikes BEFORE the plane and
+    striking crossings whose interpolated point threads the pass band."""
+    half_in = _HALF_OPEN - body_radius
+    half_out = _HALF_OUTER + body_radius
     prev_rel = _R_W2G @ (prev_ned * _FLIP - _GATE_POS_ZUP[gate])
     cur_rel  = _R_W2G @ (cur_ned * _FLIP - _GATE_POS_ZUP[gate])
+    if frame_depth > 0.0 and slab_frame_hit_np(prev_rel, cur_rel, half_in, half_out,
+                                               frame_depth):
+        return "collision"
     fwd = prev_rel[0] < 0.0 and cur_rel[0] >= 0.0
     bwd = prev_rel[0] > 0.0 and cur_rel[0] <= 0.0
     if not (fwd or bwd):
@@ -131,20 +172,21 @@ def gate_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int) -> str | No
     y = prev_rel[1] + f * (cur_rel[1] - prev_rel[1])
     z = prev_rel[2] + f * (cur_rel[2] - prev_rel[2])
     linf = max(abs(y), abs(z))
-    if fwd and linf < _HALF_OPEN:
+    if fwd and linf < half_in:
         return "pass"
-    if _HALF_OPEN <= linf <= _HALF_OUTER:      # frame band only -- bwd through the OPEN
+    if half_in <= linf <= half_out:            # frame band only -- bwd through the OPEN
         return "collision"                     # aperture is a non-event (matches the env)
     return "miss" if fwd else None
 
 
-def frame_strike_other_gates(prev_ned: np.ndarray, cur_ned: np.ndarray, target: int) -> int | None:
+def frame_strike_other_gates(prev_ned: np.ndarray, cur_ned: np.ndarray, target: int,
+                             body_radius: float = 0.0, frame_depth: float = 0.0) -> int | None:
     """S1.4: gates are physical EVERYWHERE -- a frame-band crossing of any non-target gate
     (either direction) is a collision. Returns the struck gate id or None."""
     for g in range(N_GATES):
         if g == target:
             continue
-        ev = gate_event(prev_ned, cur_ned, g)
+        ev = gate_event(prev_ned, cur_ned, g, body_radius, frame_depth)
         if ev == "collision":
             return g
     return None
@@ -238,6 +280,12 @@ def main() -> int:
                     help="initial realized collective state; <0 = hover (adapter reset)")
     ap.add_argument("--live-thrust-clip", action="store_true",
                     help="clip collective to [0,1] like the live sim (training did NOT)")
+    ap.add_argument("--body-radius", type=float, default=0.0,
+                    help="INC7 contact-true scoring: inflate the gate bands by this body "
+                         "radius (pass < 0.75-r, frame [0.75-r, 1.36+r]); 0 = legacy point")
+    ap.add_argument("--frame-depth", type=float, default=0.0,
+                    help="INC7 contact-true scoring: frame band is material over gate-frame "
+                         "|x| <= depth (volumetric strike test); 0 = legacy plane band")
     ap.add_argument("--max-time",   type=float, default=40.0)
     ap.add_argument("--dt",         type=float, default=_TRAIN_DT)
     ap.add_argument("--trace",      default="", help="optional .npz trace dump path")
@@ -328,8 +376,9 @@ def main() -> int:
         log["t"].append(t); log["pos"].append(st.pos.copy())
         log["vel"].append(st.vel.copy()); log["act"].append(action)
 
-        ev = gate_event(prev_pos, st.pos, gate)
-        struck = frame_strike_other_gates(prev_pos, st.pos, gate)
+        ev = gate_event(prev_pos, st.pos, gate, args.body_radius, args.frame_depth)
+        struck = frame_strike_other_gates(prev_pos, st.pos, gate,
+                                          args.body_radius, args.frame_depth)
         if struck is not None:
             print(f"  t={t:6.2f}s  gate {struck} FRAME STRIKE (non-target)  "
                   f"speed={np.linalg.norm(st.vel):5.1f}")

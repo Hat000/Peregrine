@@ -256,6 +256,41 @@ def _t_clip_to_norm(v, max_norm):
 
 
 # ================================================================================================
+# INC7 structured force-bias DR (training doctrine 2026-06-12 Sec 3) -- pure helpers, torch-only,
+# unit-tested on the laptop (tests/test_contact_geometry.py). A per-env WORLD-frame (NED) bias
+# vector active in one per-env speed x tilt regime bin: the error class "sysid is wrong in ONE
+# regime" that global scale DR cannot represent (the climb-bin residual that displaced the live
+# standing gate-3 approach). The bins MIRROR scripts/frame_residual_report.py's certified-residual
+# report bins, so the DR class is exactly the measured-error class and the band ceiling tracks the
+# certified bound (currently <= ~3 m/s^2).
+# ================================================================================================
+FORCE_BIAS_SPEED_BINS = ((0.0, 4.0), (4.0, 8.0), (8.0, 12.0), (12.0, 18.0), (18.0, 40.0))
+FORCE_BIAS_TILT_BINS_DEG = ((0.0, 15.0), (15.0, 35.0), (35.0, 90.0))
+
+
+def sample_force_bias(m, bias_max, device, dtype=torch.float32 if torch is not None else None):
+    """Per-env structured-bias draw: bias = (uniform random direction) x (magnitude ~ U[0,
+    bias_max]) m/s^2 in the WORLD (NED) frame, plus a random speed x tilt regime bin. Returns
+    ``(bias (m, 3), s_lo, s_hi, c_lo, c_hi)`` where c_lo/c_hi are COS-tilt bounds: tilt in
+    [t_lo, t_hi) deg <=> cos_tilt in (cos(t_hi), cos(t_lo)] (cos is decreasing in tilt)."""
+    d = torch.randn(m, 3, device=device, dtype=dtype)
+    d = d / torch.clamp(torch.linalg.norm(d, dim=-1, keepdim=True), min=1e-9)
+    mag = bias_max * torch.rand(m, 1, device=device, dtype=dtype)
+    sb = torch.tensor(FORCE_BIAS_SPEED_BINS, device=device, dtype=dtype)
+    cb = torch.cos(torch.deg2rad(torch.tensor(FORCE_BIAS_TILT_BINS_DEG,
+                                              device=device, dtype=dtype)))
+    si = torch.randint(len(FORCE_BIAS_SPEED_BINS), (m,), device=device)
+    ti = torch.randint(len(FORCE_BIAS_TILT_BINS_DEG), (m,), device=device)
+    return d * mag, sb[si, 0], sb[si, 1], cb[ti, 1], cb[ti, 0]
+
+
+def force_bias_active(speed, cos_tilt, s_lo, s_hi, c_lo, c_hi):
+    """Regime-bin membership: speed in [s_lo, s_hi) AND tilt in [t_lo, t_hi) deg, the latter as
+    cos_tilt in (c_lo, c_hi] (cos decreasing in tilt). Broadcasts; returns bool."""
+    return (speed >= s_lo) & (speed < s_hi) & (cos_tilt <= c_hi) & (cos_tilt > c_lo)
+
+
+# ================================================================================================
 # The adapter.
 # ================================================================================================
 class PeregrinePlantDynamics(BaseDynamics):
@@ -495,6 +530,25 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._dr_lapse_vals = (torch.tensor(self._lapse_factor_nom, device=device,
                                                 dtype=torch.float32)
                                    .unsqueeze(0).expand(n, self._lapse_factor_nom.shape[0]).clone())
+        # INC7 STRUCTURED FORCE-BIAS DR (training doctrine 2026-06-12 Sec 3):
+        # `+dynamics.dr_force_bias=true` (opt-in on top of `dr`). Per-env random WORLD-frame
+        # (NED) bias ||b|| <= dr_force_bias_max m/s^2, additive on accel ONLY while the env's
+        # state sits in its per-env random speed x tilt regime bin (sample_force_bias above).
+        # Independent of dr_aero/dr_mixer (a world disturbance, not a plant form). Tensors
+        # initialise at ZERO bias + empty bin (nominal), resample at reset -- so a gate run
+        # that never resets sees an exactly-inert hook, and the parity gate's direct
+        # _step_torch/_step_numpy calls stay bit-for-bit when the flag is off (python guard).
+        self._dr_force_bias = self._dr_enabled and bool(getattr(cfg, "dr_force_bias", False))
+        self._fb_max = float(getattr(cfg, "dr_force_bias_max", 3.0))
+        if self._fb_max < 0.0:
+            raise ValueError(f"dr_force_bias_max must be >= 0; got {self._fb_max}")
+        if torch is not None and self._dr_force_bias:
+            n = self.n_envs
+            self._fb_bias = torch.zeros(n, 3, device=device)
+            self._fb_s_lo = torch.zeros(n, device=device)    # empty bin: speed in [0, 0)
+            self._fb_s_hi = torch.zeros(n, device=device)
+            self._fb_c_lo = torch.zeros(n, device=device)
+            self._fb_c_hi = torch.zeros(n, device=device)
         # Mixer DR nominals (the _alpha_nom pattern: the params' values if mixer params were
         # passed, else the canonical measured constants).
         self._mix_idle_nom = (MIXER_IDLE_MEASURED if self.params.mixer_idle is None
@@ -783,13 +837,22 @@ class PeregrinePlantDynamics(BaseDynamics):
             if lapse_vals is not None:                  # S18 airspeed thrust lapse
                 speed = torch.sqrt((v * v).sum(-1))     # OLD world speed |vel|; op-mirror of rl_plant
                 a_up = a_up * _t_interp1d(speed, lapse_knots, lapse_vals)
-            f_world = a_up.unsqueeze(-1) * _t_quat_rotate(q, self._BODY_UP)
+            body_up_w = _t_quat_rotate(q, self._BODY_UP)     # thrust direction, world NED
+            f_world = a_up.unsqueeze(-1) * body_up_w
             f_world = f_world - drag * v
             if quad_c2 is not None:
                 v_b = _t_quat_rotate(_t_quat_conjugate(q), v)        # OLD velocity, body frame
                 c = torch.where(v_b >= 0.0, quad_c2[..., 0], quad_c2[..., 1])
                 f_world = f_world + _t_quat_rotate(q, -(c * v_b.abs() * v_b))
             accel = f_world + self._g_vec_ned
+            if self._dr_force_bias:
+                # INC7 structured bias (doctrine Sec 3): regime gating on the OLD state
+                # (matching the drag/lapse OLD-velocity convention); cos-tilt is the world-up
+                # component of the thrust direction (NED: -z of body_up_w).
+                act_b = force_bias_active(torch.sqrt((v * v).sum(-1)), -body_up_w[..., 2],
+                                          self._fb_s_lo, self._fb_s_hi,
+                                          self._fb_c_lo, self._fb_c_hi)
+                accel = accel + act_b.unsqueeze(-1).to(accel.dtype) * self._fb_bias
             v = v + accel * sub_dt
             p = p + v * sub_dt
         acc_ned = (v - v_prev) / self.dt
@@ -919,6 +982,11 @@ class PeregrinePlantDynamics(BaseDynamics):
             lf_nom = torch.tensor(self._lapse_factor_nom, device=dev,
                                   dtype=self._dr_lapse_vals.dtype)
             self._dr_lapse_vals[env_idx] = 1.0 - g * (1.0 - lf_nom)
+        if self._dr_force_bias:
+            # INC7: fresh world bias + regime bin per episode (doctrine Sec 3)
+            (self._fb_bias[env_idx], self._fb_s_lo[env_idx], self._fb_s_hi[env_idx],
+             self._fb_c_lo[env_idx], self._fb_c_hi[env_idx]) = sample_force_bias(
+                m, self._fb_max, dev, self._fb_bias.dtype)
 
     def check_against_rl_plant(self, U: Tensor, atol: float = 1e-5) -> float:
         """Validate the torch backend against the parity-tested numpy plant from the CURRENT state.

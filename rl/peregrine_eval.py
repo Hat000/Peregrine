@@ -69,6 +69,11 @@ def main() -> int:
                          "lapse (refit 2026-06-12) -- the fully measured plant as of S18, for "
                          "inc7 (lapse-trained) evals")
     ap.add_argument("--standing-frac", type=float, default=1.0)
+    # INC7 contact-true geometry overrides (None = whatever the run's training cfg says --
+    # inc7 ckpts carry their own keys; pass these to score a LEGACY ckpt contact-true)
+    ap.add_argument("--body-radius-lo", type=float, default=None)
+    ap.add_argument("--body-radius-hi", type=float, default=None)
+    ap.add_argument("--frame-depth", type=float, default=None)
     ap.add_argument("--n-envs", type=int, default=256)
     ap.add_argument("--max-time", type=float, default=40.0)
     ap.add_argument("--horizons", type=float, default=2.5,
@@ -117,6 +122,12 @@ def main() -> int:
     OmegaConf.update(cfg, "env.standing_start_frac", float(args.standing_frac), force_add=True)
     OmegaConf.update(cfg, "dynamics.dr", False, force_add=True)
     OmegaConf.update(cfg, "env.max_time", float(args.max_time), force_add=True)
+    if args.body_radius_lo is not None:
+        OmegaConf.update(cfg, "env.body_radius_lo", float(args.body_radius_lo), force_add=True)
+    if args.body_radius_hi is not None:
+        OmegaConf.update(cfg, "env.body_radius_hi", float(args.body_radius_hi), force_add=True)
+    if args.frame_depth is not None:
+        OmegaConf.update(cfg, "env.frame_depth_m", float(args.frame_depth), force_add=True)
 
     env = build_env(cfg.env, device=device)
     agent = build_agent(cfg.algo, env, device)
@@ -128,7 +139,8 @@ def main() -> int:
     obs = env.reset()
     ep_success, ep_roll, ep_tilt = [], [], []
     counts = {"collision": 0.0, "miss": 0.0, "oob": 0.0, "timeout": 0.0, "finish": 0.0}
-    finish_times, pass_offsets, mean_speeds = [], [], []
+    finish_times, pass_offsets, mean_speeds, pass_margins = [], [], [], []
+    slab_hits = 0.0
     sat_steps = torch.zeros(4, device=device)
     n_steps_total = 0
     # S17 ACTION-RATE stats (the inc6 style gate): per-tick action delta in SPAN-NORMALISED
@@ -173,6 +185,8 @@ def main() -> int:
             finish_times += sr["finish_time_s"].tolist()
             pass_offsets += sr["pass_offset_m"].tolist()
             mean_speeds += sr["mean_speed"].tolist()
+            pass_margins += sr.get("pass_margin_m", torch.zeros(0)).tolist()
+            slab_hits += float(sr.get("slab_collision_rate", torch.zeros(0)).sum())
 
             reset = info["reset"]
             if reset.any():
@@ -201,6 +215,10 @@ def main() -> int:
         po = np.array(pass_offsets)
         print(f"[RESULT] PASS_OFFSET_M med {np.median(po):.3f}  p90 {np.percentile(po,90):.3f} "
               f" max {po.max():.3f}  (frame at 0.75)")
+    if pass_margins:
+        pm = np.array(pass_margins)
+        print(f"[RESULT] PASS_MARGIN_M (contact-true, (0.75-r)-Linf) med {np.median(pm):.3f}  "
+              f"p5 {np.percentile(pm,5):.3f}  min {pm.min():.3f}  slab_strikes={slab_hits:.0f}")
     if mean_speeds:
         ms = np.array(mean_speeds)
         print(f"[RESULT] MEAN_SPEED med {np.median(ms):5.2f} m/s  p90 {np.percentile(ms,90):5.2f}")

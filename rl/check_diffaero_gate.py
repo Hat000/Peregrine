@@ -26,6 +26,15 @@ The adapter caches rate_gain / g_vec / BODY_UP / super_s / alpha_max as float32;
 from the float64 ``params`` at the target dtype so the float64 gate measures MATH error, not
 float32 param rounding.
 
+INC7 additions (training doctrine 2026-06-12):
+  * dr_nominal  -- the FULL DR codepath (dr + dr_aero + dr_mixer + dr_force_bias) with every
+    per-env DR tensor pinned at its float64 nominal and the force-bias at zero/empty-bin: the
+    DR branch of _step_torch must be ALGEBRAICALLY the scalar plant (the inert-hook negative
+    control -- this is the branch training actually runs, and the path the new dr_force_bias
+    hook lives on). Gate vs the numpy rl_plant reference like every other config.
+  * FORCE_BIAS behavioral check (torch-only self-consistency): with a known bias + bin set
+    directly, one step in-bin shifts v by exactly bias*dt and out-of-bin by exactly 0.
+
 Prints per-config DIV_FLOAT64 / DIV_FLOAT32 and an explicit GATE_PASS / GATE_FAIL line.
 """
 import numpy as np
@@ -166,6 +175,95 @@ def gate_once(kwargs, dtype, device, seed):
     return float(dyn.check_against_rl_plant(u, atol=1e30))
 
 
+# ---------------------------------------------------------------------------- INC7 DR-path gate
+def build_cfg_dr(n_envs):
+    cfg = build_cfg(n_envs)
+    cfg.dr = True
+    cfg.dr_aero = True
+    cfg.dr_mixer = True
+    cfg.dr_force_bias = True
+    return cfg
+
+
+def rebuild_dr_nominal(dyn, device, dtype):
+    """Pin every per-env DR tensor at its float64 nominal (and the force-bias at zero / empty
+    bin) so the DR branch of _step_torch is ALGEBRAICALLY the scalar plant. _dr_mix_rfit is
+    taken from params._mixer_r_fit (the cached float64 the scalar path uses), NOT recomputed
+    via _t_mixer_r_fit, so the comparison measures the step math only."""
+    n, p = dyn.n_envs, dyn.params
+    full = lambda val: torch.full((n,), float(val), device=device, dtype=dtype)
+    rep = lambda arr: (torch.tensor(np.asarray(arr, dtype=np.float64), device=device,
+                                    dtype=dtype).unsqueeze(0).expand(n, *np.shape(arr)).clone())
+    dyn._dr_s = rep(np.broadcast_to(p.super_rate_s, (3,)).copy())
+    dyn._dr_alpha_max = rep(dyn._alpha_nom)
+    dyn._dr_rate_tau = full(p.rate_tau_s)
+    dyn._dr_hover = full(p.hover_thrust)
+    dyn._dr_drag = full(p.linear_drag if p.quad_drag_c2 is not None else 0.0)
+    dyn._dr_c2 = rep(dyn._c2_nom)
+    dyn._coll_knots_dr = torch.tensor(dyn._coll_thr_nom, device=device, dtype=dtype)
+    dyn._dr_coll_kvals = rep(dyn._coll_kvals_nom)
+    dyn._dr_mix_idle = full(dyn._mix_idle_nom)
+    dyn._dr_mix_kerr = full(dyn._mix_kerr_nom)
+    dyn._dr_mix_khold = full(dyn._mix_khold_nom)
+    dyn._dr_mix_zeta = full(dyn._mix_zeta_nom)
+    dyn._dr_mix_rfit = rep(p._mixer_r_fit)
+    for attr in ("_fb_bias", "_fb_s_lo", "_fb_s_hi", "_fb_c_lo", "_fb_c_hi"):
+        setattr(dyn, attr, getattr(dyn, attr).to(dtype))     # zeros: bias off, bin empty
+
+
+def gate_once_dr(kwargs, dtype, device, seed):
+    cfg = build_cfg_dr(N_ENVS)
+    dyn = PeregrinePlantDynamics(cfg, device, backend="torch", params=PlantParams(**kwargs))
+    rebuild_params(dyn, device, dtype)
+    rebuild_dr_nominal(dyn, device, dtype)
+    state, u = random_traj(N_ENVS, device, dtype, seed)
+    dyn._state = state.clone()
+    dyn._thrust = torch.full((N_ENVS,), float(dyn.params.hover_thrust), device=device, dtype=dtype)
+    return float(dyn.check_against_rl_plant(u, atol=1e30))
+
+
+def force_bias_behavior(device) -> float:
+    """Torch-only self-consistency of the INC7 force-bias hook: from an identical mid-flight
+    state, one step with a known (bias, bin) minus one step with zero bias must shift the NED
+    velocity by exactly bias*dt when the state is IN the bin, and by exactly 0 when OUT.
+    Returns the max abs error of both checks (float64)."""
+    dtype = torch.float64
+    kwargs = CONFIGS["mixer"]
+    bias_ned = np.array([0.5, -1.0, 2.0])
+
+    def one_step(bias_on, s_lo, s_hi):
+        cfg = build_cfg_dr(N_ENVS)
+        dyn = PeregrinePlantDynamics(cfg, device, backend="torch", params=PlantParams(**kwargs))
+        rebuild_params(dyn, device, dtype)
+        rebuild_dr_nominal(dyn, device, dtype)
+        state = torch.zeros(N_ENVS, 13, device=device, dtype=dtype)
+        state[:, 6] = 1.0                                  # identity attitude (tilt 0 deg)
+        state[:, 7] = 2.0                                  # |v| = 2 m/s (z-up x == NED x)
+        dyn._state = state
+        dyn._thrust = torch.full((N_ENVS,), float(dyn.params.hover_thrust),
+                                 device=device, dtype=dtype)
+        if bias_on:
+            dyn._fb_bias = torch.tensor(bias_ned, device=device,
+                                        dtype=dtype).unsqueeze(0).expand(N_ENVS, 3).clone()
+            dyn._fb_s_lo = torch.full((N_ENVS,), s_lo, device=device, dtype=dtype)
+            dyn._fb_s_hi = torch.full((N_ENVS,), s_hi, device=device, dtype=dtype)
+            dyn._fb_c_lo = torch.full((N_ENVS,), float(np.cos(np.radians(15.0))),
+                                      device=device, dtype=dtype)
+            dyn._fb_c_hi = torch.full((N_ENVS,), 1.0, device=device, dtype=dtype)
+        u = torch.zeros(N_ENVS, 4, device=device, dtype=dtype)
+        u[:, 0] = 1.0                                      # hover command
+        dyn._step_torch(u)
+        return dyn._state[:, 7:10].cpu().numpy()           # v in diffaero frame
+
+    v_ref = one_step(False, 0.0, 0.0)
+    flip = np.array([1.0, -1.0, -1.0])
+    dv_in = (one_step(True, 0.0, 4.0) - v_ref) * flip      # back to NED
+    dv_out = (one_step(True, 12.0, 18.0) - v_ref) * flip   # speed 2 not in [12, 18)
+    dt = build_cfg(N_ENVS).dt
+    err = max(float(np.abs(dv_in - bias_ned * dt).max()), float(np.abs(dv_out).max()))
+    return err
+
+
 def main():
     has_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if has_cuda else "cpu")
@@ -183,11 +281,26 @@ def main():
         print("CONFIG %-10s DIV_FLOAT64 %.3e (%s)   DIV_FLOAT32 %.3e (%s; advisory)"
               % (name, d64, "ok" if ok else "FAIL", d32, "ok" if d32 < F32_TOL else "HIGH"))
 
+    # INC7: the DR codepath itself, pinned at nominals (incl. the zeroed force-bias hook) --
+    # this is the branch training actually runs; it must be the scalar plant algebraically.
+    d64 = max(gate_once_dr(CONFIGS["mixer"], torch.float64, device, s) for s in SEEDS)
+    d32 = max(gate_once_dr(CONFIGS["mixer"], torch.float32, device, s) for s in SEEDS)
+    ok = d64 < GATE_TOL
+    all_pass &= ok
+    worst64 = max(worst64, d64)
+    print("CONFIG %-10s DIV_FLOAT64 %.3e (%s)   DIV_FLOAT32 %.3e (%s; advisory)"
+          % ("dr_nominal", d64, "ok" if ok else "FAIL", d32, "ok" if d32 < F32_TOL else "HIGH"))
+    fb_err = force_bias_behavior(device)
+    fb_ok = fb_err < 1e-12
+    all_pass &= fb_ok
+    print("FORCE_BIAS behavioral check: max|err| %.3e (%s; in-bin dv==bias*dt, out-of-bin dv==0)"
+          % (fb_err, "ok" if fb_ok else "FAIL"))
+
     if all_pass:
         print("GATE_PASS  float64 max-divergence %.3e < %.0e over %d configs x %d seeds x %d steps"
               "  (torch mirror is algebraically faithful to numpy rl_plant, incl. the super-rate"
               " map + slew + transport delay)"
-              % (worst64, GATE_TOL, len(CONFIGS), len(SEEDS), T_STEPS))
+              % (worst64, GATE_TOL, len(CONFIGS) + 1, len(SEEDS), T_STEPS))
     else:
         print("GATE_FAIL  float64 max-divergence %.3e >= %.0e" % (worst64, GATE_TOL))
 

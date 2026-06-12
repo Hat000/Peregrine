@@ -150,6 +150,30 @@ LOSS OUTPUT: this env is PPO-ONLY. ``loss`` is returned as ``-reward`` (detached
 diffaero runner's logging alive; do NOT train a BPTT algorithm (SHAC/APG) against it.
 
 ------------------------------------------------------------------------------------------------
+INC7 CONTACT-TRUE GEOMETRY (training doctrine 2026-06-12 Sec 2; defaults OFF = bit-identical
+legacy). The S1.4 contact model collides a POINT with a PLANE band; the live sim collides the
+drone's BODY (rotor halo ~0.3 m) with a VOLUMETRIC frame -- live standing crashes terminated at
+L-inf 0.37-0.49 m, positions the 0.75 point-mass model scores as comfortable passes, and strikes
+occur up to 0.5 m BEFORE the plane on slope-0.45 approaches. Two opt-in env features close the
+fiction (reward UNTOUCHED -- margin comes from the world model, never from reward shaping):
+
+  ``+env.body_radius_lo`` / ``+env.body_radius_hi`` -- per-env body radius r ~ U[lo, hi],
+     resampled at every reset (the halo is not precisely known and is unobservable, so the
+     policy trains to the sampled worst case). Pass band L-inf < 0.75 - r; frame band
+     [0.75 - r, 1.36 + r]. Doctrine band [0.28, 0.38] m brackets the measured live contact
+     offsets (corner-pass probe contact at 0.60; live crashes 0.37-0.49 on steep descents).
+  ``+env.frame_depth_m`` -- the frame band becomes MATERIAL over gate-frame |x| <= depth
+     (``slab_frame_hits``: exact segment-vs-volumetric-frame classification). Catches the
+     "hit the frame before the plane" class invisible to any plane-crossing test. A crossing
+     that threads the (inflated) pass band but touches material inside the slab is a
+     COLLISION, not a pass. Doctrine value 0.30 m.
+
+With both at 0 (default) the event set, reward stream and RNG draw sequence are bit-identical
+to the pre-inc7 env (slab test skipped entirely; bands stay python floats; no extra RNG).
+New diagnostics: ``slab_collision_rate`` (volumetric strikes) and ``pass_margin_m``
+(contact-true crossing margin (0.75 - r) - L-inf -- the gauntlet tail metric).
+
+------------------------------------------------------------------------------------------------
 PROCEDURAL COURSES (S1.4, stack-review meta-gap #1): ``+env.course_mode=random`` trains on
 per-env sampled 6-gate courses (``peregrine_course.sample_courses``, VQ1-derived ranges, resampled
 per env at every reset); ``course_mode=vq1`` (default) broadcasts the fixed VQ1 course (the
@@ -222,7 +246,9 @@ def crossing_events(prev_rel: Tensor, curr_rel: Tensor, half_inner: float, half_
       pass_ok  -- crossing point inside the 1.5 m inner opening (L-inf < half_inner)
       in_frame -- crossing point in the physical frame band (half_inner <= L-inf <= half_outer)
       linf     -- float tensor: L-inf off-axis distance at the crossing point (junk where no cross)
-    The interpolation matters at racing speed: ~0.5 m/step at 30 Hz is most of the aperture."""
+    The interpolation matters at racing speed: ~0.5 m/step at 30 Hz is most of the aperture.
+    ``half_inner``/``half_outer`` may be floats (legacy) or tensors broadcastable against the
+    crossing dims -- the INC7 per-env body-radius-inflated bands."""
     px, cx = prev_rel[..., 0], curr_rel[..., 0]
     fwd = (px < 0) & (cx >= 0)
     bwd = (px > 0) & (cx <= 0)
@@ -237,6 +263,54 @@ def crossing_events(prev_rel: Tensor, curr_rel: Tensor, half_inner: float, half_
     pass_ok = crossed & (linf < half_inner)
     in_frame = crossed & (linf >= half_inner) & (linf <= half_outer)
     return {"fwd": fwd, "bwd": bwd, "pass_ok": pass_ok, "in_frame": in_frame, "linf": linf}
+
+
+def slab_frame_hits(prev_rel: Tensor, curr_rel: Tensor, half_inner, half_outer,
+                    depth: float) -> Tensor:
+    """Segment-vs-volumetric-frame test (INC7 contact-true geometry, doctrine Sec 2).
+
+    The gate frame is MATERIAL over the slab |x| <= depth wherever the in-plane L-inf radius
+    lies in the frame band [half_inner, half_outer] (gate frame; the plane is x=0). Classifies
+    the straight motion segment ``prev_rel`` -> ``curr_rel`` ((..., 3)) EXACTLY:
+
+      * in-slab parameter interval [t0, t1] = {t in [0, 1] : |x(t)| <= depth};
+      * on it linf(t) = max(|y(t)|, |z(t)|) is CONVEX piecewise-linear, so its range over the
+        interval is [min over the <= 6 derivative breakpoints/endpoints, max of the endpoint
+        values] (breakpoints: y=0, z=0, y=+-z; all closed-form, clamped into the interval);
+      * the segment touches material iff that range intersects [half_inner, half_outer].
+
+    ``half_inner``/``half_outer`` may be floats or tensors broadcastable against the leading
+    dims (the per-env inflated bands). At depth=0 this degenerates to the plane-band test
+    (callers skip it then -- the legacy crossing classification already covers x=0). Returns
+    bool (...)."""
+    px, py, pz = prev_rel[..., 0], prev_rel[..., 1], prev_rel[..., 2]
+    dx = curr_rel[..., 0] - px
+    dy = curr_rel[..., 1] - py
+    dz = curr_rel[..., 2] - pz
+    zero, one = torch.zeros_like(px), torch.ones_like(px)
+
+    def _safe_div(num, den):
+        return num / torch.where(den.abs() < 1e-12, torch.full_like(den, 1e-12), den)
+
+    # in-slab interval [t0, t1] intersected with [0, 1]; empty <=> t1 < t0. The x-parallel
+    # branch (dx ~ 0) is inside-for-all-t or never (marker t1 = -1 < t0 = 0).
+    ta = _safe_div(-depth - px, dx)
+    tb = _safe_div(depth - px, dx)
+    parallel = dx.abs() < 1e-12
+    t0 = torch.where(parallel, zero, torch.maximum(torch.minimum(ta, tb), zero))
+    t1 = torch.where(parallel, torch.where(px.abs() <= depth, one, -one),
+                     torch.minimum(torch.maximum(ta, tb), one))
+    valid = t1 >= t0
+
+    def _linf(t):
+        return torch.maximum((py + t * dy).abs(), (pz + t * dz).abs())
+
+    lmin = torch.minimum(_linf(t0), _linf(t1))
+    for cand in (_safe_div(-py, dy), _safe_div(-pz, dz),
+                 _safe_div(pz - py, dy - dz), _safe_div(-(py + pz), dy + dz)):
+        lmin = torch.minimum(lmin, _linf(torch.clamp(cand, min=t0, max=t1)))
+    lmax = torch.maximum(_linf(t0), _linf(t1))
+    return valid & (lmin <= half_outer) & (lmax >= half_inner)
 
 
 def tilt_cos_from_quat_xyzw(q: Tensor) -> Tensor:
@@ -412,6 +486,21 @@ class PeregrineRacing(Racing):
         self.gate_rel_pos, self.gate_yaw_rel = rel_tables(self.gate_pos, self.gate_yaw)
         self._update_boxes(self._arange)
 
+        # --- INC7 contact-true geometry (training doctrine 2026-06-12 Sec 2; defaults OFF) ---
+        self.body_radius_lo = float(getattr(cfg, "body_radius_lo", 0.0))
+        self.body_radius_hi = float(getattr(cfg, "body_radius_hi", self.body_radius_lo))
+        if not 0.0 <= self.body_radius_lo <= self.body_radius_hi < self.gate_half_opening_m:
+            raise ValueError(f"need 0 <= body_radius_lo <= body_radius_hi < "
+                             f"{self.gate_half_opening_m}; got "
+                             f"[{self.body_radius_lo}, {self.body_radius_hi}]")
+        self.frame_depth_m = float(getattr(cfg, "frame_depth_m", 0.0))
+        if self.frame_depth_m < 0.0:
+            raise ValueError(f"frame_depth_m must be >= 0; got {self.frame_depth_m}")
+        self._body_radius_on = self.body_radius_hi > 0.0
+        self.body_radius = torch.zeros(n, device=device)     # per-env r (m); stays 0 when OFF
+        if self._body_radius_on:
+            self._sample_body_radius(self._arange)
+
         # --- episode bookkeeping ---
         self.finished = torch.zeros(n, dtype=torch.bool, device=device)
         self.rw = RewardWeights.from_cfg(cfg)
@@ -427,6 +516,25 @@ class PeregrineRacing(Racing):
 
         # obs = parent's 13 + body rates (3) + collective (1) -- FROZEN deployment contract
         self.obs_dim = 17
+
+    # ---- INC7 contact-true geometry plumbing ---------------------------------------------------
+    def _sample_body_radius(self, env_idx: Tensor) -> None:
+        """Resample the per-env body radius r ~ U[lo, hi] (doctrine Sec 2: the halo is
+        unobservable, so per-episode sampling makes the policy carry the worst case)."""
+        m = int(env_idx.numel())
+        if m == 0:
+            return
+        self.body_radius[env_idx] = (self.body_radius_lo
+                                     + (self.body_radius_hi - self.body_radius_lo)
+                                     * torch.rand(m, device=self.device))
+
+    def _contact_bands(self):
+        """(half_inner_eff, half_outer_eff): the body-radius-inflated frame band, per env
+        (N, 1) when the feature is ON; the legacy python floats when OFF (bit-identity)."""
+        if self._body_radius_on:
+            r = self.body_radius.unsqueeze(-1)
+            return self.gate_half_opening_m - r, self.gate_half_outer_m + r
+        return self.gate_half_opening_m, self.gate_half_outer_m
 
     # ---- course plumbing ---------------------------------------------------------------------
     def _assign_courses(self, env_idx: Tensor) -> None:
@@ -516,11 +624,18 @@ class PeregrineRacing(Racing):
         curr_pos = self._p
         ar, G = self._arange, self.n_gates
 
-        # crossing events against ALL gates (gates are physical everywhere)
+        # crossing events against ALL gates (gates are physical everywhere); INC7: the bands
+        # are the per-env body-radius-inflated ones (legacy floats when the feature is OFF)
         rel_prev = world_to_gateframe(prev_pos[:, None, :] - self.gate_pos, self.gate_yaw)
         rel_curr = world_to_gateframe(curr_pos[:, None, :] - self.gate_pos, self.gate_yaw)
-        ev = crossing_events(rel_prev, rel_curr,
-                             self.gate_half_opening_m, self.gate_half_outer_m)   # all (N, G)
+        half_in_eff, half_out_eff = self._contact_bands()
+        ev = crossing_events(rel_prev, rel_curr, half_in_eff, half_out_eff)     # all (N, G)
+        # INC7 volumetric frame: a segment touching frame material anywhere in the slab
+        # |x| <= depth collides -- including plane crossings whose interpolated point threads
+        # the pass band but clip material on the way (the live standing failure class).
+        slab_hit = (slab_frame_hits(rel_prev, rel_curr, half_in_eff, half_out_eff,
+                                    self.frame_depth_m)                         # (N, G)
+                    if self.frame_depth_m > 0.0 else None)
 
         tg = self.target_gates.long()
         fwd_t = ev["fwd"][ar, tg]
@@ -530,6 +645,11 @@ class PeregrineRacing(Racing):
         strike_any = (ev["fwd"] | ev["bwd"]) & ev["in_frame"]
         strike_any[ar, tg] = False
         gate_collision = frame_target | strike_any.any(dim=1)
+        if slab_hit is not None:
+            slab_t = slab_hit[ar, tg]
+            gate_passed = gate_passed & ~slab_t      # a striking crossing is NOT a pass
+            gate_miss = gate_miss & ~slab_t          # collision dominates on the target gate
+            gate_collision = gate_collision | slab_hit.any(dim=1)
         pass_linf = ev["linf"][ar, tg]                                          # diag: pass offset
 
         # target advance / finish (non-looping point-to-point course)
@@ -601,6 +721,12 @@ class PeregrineRacing(Racing):
                 "mean_speed": (self._speed_sum / self.progress.clamp(min=1).float())[reset],
                 "finish_time_s": ((self.progress.clone() - 1).float() * self.dt)[newly_finished],
                 "pass_offset_m": pass_linf[gate_passed],
+                # INC7 gauntlet diagnostics: volumetric strikes + contact-true crossing margin
+                "slab_collision_rate": (slab_hit.any(dim=1) if slab_hit is not None
+                                        else torch.zeros_like(gate_collision))[reset].float(),
+                "pass_margin_m": ((half_in_eff.squeeze(-1) if torch.is_tensor(half_in_eff)
+                                   else torch.full_like(pass_linf, half_in_eff))
+                                  - pass_linf)[gate_passed],
             },
         }
         if next_obs_before_reset:
@@ -618,8 +744,12 @@ class PeregrineRacing(Racing):
         gate_yaw = self.gate_yaw[ar, tg]
         rel_prev = world_to_gateframe(prev_pos - gate_pos, gate_yaw)
         rel_curr = world_to_gateframe(self.p - gate_pos, gate_yaw)
+        half_in_eff, half_out_eff = self._contact_bands()
         ev = crossing_events(rel_prev, rel_curr,
-                             self.gate_half_opening_m, self.gate_half_outer_m)
+                             (half_in_eff.squeeze(-1) if torch.is_tensor(half_in_eff)
+                              else half_in_eff),
+                             (half_out_eff.squeeze(-1) if torch.is_tensor(half_out_eff)
+                              else half_out_eff))
         return ev["fwd"] & ev["pass_ok"], ev["fwd"] & ~ev["pass_ok"]
 
     # ---- truncation: timeout only (OOB is a termination now; see step()) -----------------------
@@ -639,6 +769,8 @@ class PeregrineRacing(Racing):
             self.gate_rel_pos[env_idx], self.gate_yaw_rel[env_idx] = \
                 (t[env_idx] for t in rel_tables(self.gate_pos, self.gate_yaw))
             self._update_boxes(env_idx)
+        if self._body_radius_on:                      # INC7: fresh halo per episode
+            self._sample_body_radius(env_idx)
 
         # spawn selection: standing start (the pad) vs 1 m up-course of a random target gate
         standing = torch.rand(m, device=dev) < self.standing_start_frac
