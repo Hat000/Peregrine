@@ -47,14 +47,33 @@
 > authority ramp keyed off the SIM clock at takeoff→RUN (rate/tick-phase invariant), + `--rate 100`
 > pinned. This closed VQ1-stack issue ① (start transient); RL subsumption remains VQ2 polish.
 
-> **[2026-06-10 UPDATE — S1.2 RATE SIGN SETTLED DEFINITIVELY (moved from MEMORY.md index)]**
-> Raw ODOMETRY `angular_rate` → TRUE angular rate = **[−1,−1,1]** (correlation [+0.998,−0.998,+0.999]
-> vs quaternion-finite-difference). The two prior memory values (plant `[−1,−1,1]` vs controller.py
-> `[+1,−1,+1]`) were EACH self-consistent — measured against different references (true rate vs the
-> derivative of the reported, roll-inverted attitude). **`state.velocity_ned` is PRISTINE** — the
-> reported quat + reported body twist reproduce LOCAL_POSITION_NED world velocity to **0.00 m/s**
-> even at high roll (the sim's reporting frame is internally self-consistent; only the physical roll
-> RESPONSE is inverted). No client change needed.
+> **[2026-06-10 UPDATE — S1.2 RATE SIGN (SUPERSEDED 2026-06-12 — see below)]**
+> Raw ODOMETRY `angular_rate` → TRUE angular rate was concluded **[−1,−1,1]** at S1.2 (level-flight
+> correlation). **THIS IS WRONG for the RL deploy path.** The S1.2 measurement was taken at level
+> attitude and could not discriminate a roll-axis mirror. The correct value is [+1,−1,+1] (see 2026-06-12
+> update). **`state.velocity_ned` is PRISTINE** — quat+twist reproduce world velocity to 0.00 m/s.
+
+> **[2026-06-12 UPDATE — TRUE PHYSICAL CONVENTIONS (supersedes S1.2 sign verdict; commit bcc93f9)]**
+> Root cause of inc6 0/15 live failure identified: roll-axis convention mirror in the RL deploy layer.
+> Three coupled corrections:
+> 1. **ODOMETRY quat = TRUE attitude AS-IS** — no roll inversion exists on the quat. The "roll-inversion
+>    artifact" existed only on the ATTITUDE Euler message. **Guidance "ATTITUDE.pitch sign-inverted →
+>    use ODOMETRY quat" STILL STANDS.**
+> 2. **Raw ODOMETRY `angular_rate` → TRUE rate = [+1,−1,+1]** (only pitch is inverted).
+>    Supersedes S1.2 [−1,−1,1].
+> 3. **Live command→rate sign = [−1,+1,−1]** (roll AND yaw inverted). RL deploy wire: `rate_flu·[−1,−1,−1]`.
+>
+> **THREE-LAYER DISTINCTION (mandatory):**
+> - **(a) TRUE physical convention:** above.
+> - **(b) CTBR/VQ1 LEGACY stack:** keeps its OLD config (`body_rate_sign=[1,1,−1]`/`odo_att_sign=[−1,1,1]`/
+>   `odo_rate_sign=[−1,−1,1]`) — a self-consistent level-attitude alias, VQ1-proven, DO NOT "fix" it.
+> - **(c) RL deploy path:** uses true convention (bcc93f9). Fixed in `rl/fly_rl.py`, `offline_rollout.py`,
+>   `replay_obs.py`, `rate_sysid.py`.
+>
+> **VALIDATION DISCIPLINE (durable):** validate ANY convention with tilted-phase quat-FD consistency.
+> Level-flight correlation CANNOT see a roll mirror (both the S1.2 and 2026-06-10 re-verification lived
+> at near-level attitude and confirmed the wrong model). Only tilted-phase kinematic consistency
+> (`diag_h4d.py` method) discriminates.
 
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the

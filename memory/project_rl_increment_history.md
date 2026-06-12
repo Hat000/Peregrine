@@ -58,25 +58,70 @@ metadata:
 - **Twin discrimination:** inc5 on mixer-ON plant = 0.000/0.000, yaw_flip 81.7% (live 0/20 reproduced); inc6 passes everything. Inc5 formally RETIRED.
 - **Supersession:** inc5 (mixer-blind, retired) → **inc6 (mixer+aero+map plant, corner-tax c16, SHIPPED)** → live transfer FAILED 2026-06-12; diag in progress.
 
-## inc6 live attempt 1 (2026-06-12) — FAILED
+## inc6 live attempt 1 (2026-06-12) — FAILED (root cause found)
 
-**Result: 0/15 finishes (0 gate passes on standing start; gate 0 only on bridge start).** Same checkpoint + code ran 16/16 on laptop deploy matrix.
+**Result: 0/15 finishes.** Same checkpoint + code ran 16/16 on laptop deploy matrix.
 
-**Standing start ×10 (0/10):** deterministic first action every flight → large lateral sweep → SPIN_ABORT/CRASH/TIMEOUT at gates=0. Zero gate passes.
+**Standing start ×10 (0/10):** deterministic first action → large lateral sweep → SPIN_ABORT/CRASH/TIMEOUT at gates=0.
 
-**Bridge start ×5 (0/5):** 5/5 passed gate 0 (inertia carries), 0/5 finished — all stalled at gate-1 transition with consistent 50–100 m orbital arc. Visual: pitch-down + large left-right oscillations → spin. Operator subjective: "insufficient control authority / too low Hz."
+**Bridge start ×5 (0/5):** 5/5 passed gate 0 (inertia carries), 0/5 finished — all stalled at gate-1 (first banked move) with 50–100 m orbital arc + left-right oscillations → spin.
 
-**Hypothesis:** gate-relative obs encoding differs on ShadowPC vs laptop twin-side. Step-0 failure signature matches deployment-layer class per S17 playbook (handoff/laptop-s17-mixer-inc6-2026-06-11/WRITEUP.md §9).
+**Diag artifacts:** `debug_obs.jsonl` in all 15 run dirs on ShadowPC. Forensics: SHADOWPC-INC6-DIAG.
 
-**Do NOT flip deployment default** (bridge > standing: 1 gate vs 0 — bridge is strictly better starting point for diag).
+---
 
-**Primary debug artifact:** `debug_obs.jsonl` in all 15 run dirs on ShadowPC (standing + bridge). Offline forensics session = SHADOWPC-INC6-DIAG (fable); no new flights until diag complete.
+## ✅ SHADOWPC-INC6-DIAG — root cause found + fixed (2026-06-12; commits bcc93f9, 325e191; writeup handoff/shadowpc-inc6-diag-2026-06-12/WRITEUP.md)
 
-**Mixer probe2 status:**
-- Keeper run: `20260612_034154_mixer_probe2` (`z00_y31_long` clean; ACTUATOR_OUTPUT_STATUS confirmed present).
-- `c100_r31` aborted ×3 by Euler-ZYX singularity in `rate_sysid.py` — tool bug, NOT physical.
-- `c100_y31` / `c60_r31` / `zhov_r31` NOT captured.
+### Root cause: roll-axis convention mirror in RL deploy layer
+**H0–H3 ALL CLEAN:** correct ckpt/md5/sidecar; no machine-local map in RL path; 29.2 Hz loop; sim/wall 1.000; zero stale ticks; step-0 obs matches twin to 7e-4. Not obs encoding, not timing.
 
-**Minor bug (non-critical):** bridge mode (adapted from VQ1 flight) sometimes does a 180° turn then turns back before flying forward.
+**Discovery chain:**
+1. Open-loop twin under recorded live actions diverges in z/x within 16–17 ticks — rates roughly match. Physics, not policy.
+2. Attitude contradiction: "artifact-undone" roll ≈0 for 1+ s while raw rate channel claims +1.0–1.5 rad/s sustained body roll. Self-contradiction only visible at −55° pitch.
+3. **Quat-FD test (diag_h4d.py):** raw ODOMETRY quat finite-differenced body rates match `w_raw` under **[+1,−1,+1]** (corr 0.93–0.98, level AND tilted, 3 flights). The roll-undone model collapses in tilted flight (corr 0.0–0.45). The raw quat correctly rotates v_body onto position derivative — it IS the true attitude.
+4. Feedback-free command sign probe (c100_r31): wire roll +3.14 → raw-quat roll −1.34 rad in 0.18 s ≈ −10 rad/s. **S_live = [−1,+1,−1]** (roll AND yaw inverted).
+5. `mavlink_client.py` documents the sign-inversion lore belongs to ATTITUDE euler, not ODOMETRY quat.
+6. The 2026-06-10 re-verification measured corr(raw, reported-attitude-FD) = [+,−,+] — same data — but inherited "reported roll is inverted" as prior → concluded [−1,−1,+1]. Level-attitude data cannot discriminate.
 
-**Writeup:** `handoff/shadowpc-inc6-live-2026-06-12/WRITEUP.md` (commit 20c5937, pending push from ShadowPC to origin).
+**Three coupled errors (self-consistent at level attitude, physically impossible when tilted):**
+1. `build_obs` applied roll-inversion "artifact undo" (`R(-roll,pitch,yaw)`) — artifact does not exist on the ODOMETRY quat.
+2. `_ODO_RATE_SIGN = [−1,−1,+1]` — should be `[+1,−1,+1]`.
+3. `_ACT_FLU_TO_FRD = [1,−1,−1]` — did not account for live roll inversion; should be `[−1,−1,−1]`.
+
+**Closed-loop counterfactual (`diag_counterfactual.py`):** buggy mapping → 0 gates, lateral sweep, OOB 2.4–2.6 s (reproduces live signature). Fixed mapping → **6/6, 9.50 s** (lat 0 and 2).
+
+**The laptop matrix could not catch it:** `telemetry_from_truth` applied the same assumed artifact model that `build_obs` undoes — any misidentification round-trips to zero. Only live MAVLink exercises the real convention.
+
+### Fix (bcc93f9)
+- `rl/fly_rl.py`: `build_obs` attitude from raw quat; `_ODO_RATE_SIGN=[1,−1,1]`; `_ACT_FLU_TO_FRD=[−1,−1,−1]`.
+- `rl/offline_rollout.py`: `telemetry_from_truth` synthesizes TRUE artifacts; all plants get measured live `rate_sign=[−1,+1,−1]`.
+- `rl/replay_obs.py`, `rl/rate_sysid.py`: artifact undo corrected.
+- Simstart + handoff mixer rollouts still finish 6/6; `check_build_obs` 0.00e+00.
+
+### Post-fix live (2 flights — `inc6_rollfix_f1/f2`)
+**No spin. No oscillation. Smooth, coordinated, correct-signed flight.** But 0/2 standing start: ~5 m +y miss at gate-0 plane → OOD wander. Failure mode completely different from pre-fix.
+
+**Residual gap = translational (thrust-map overprediction):** counterfactual gains forward speed ~50% faster than live (vel_gx 8.8 vs 5.7 m/s by tick 12). Collective map fit at near-zero airspeed; live thrust at 3–12 m/s runs **15–25% below the model** (n≈1700 smooth-tick audit, ratio 0.74–0.88). Enough to displace the approach line by ~5 m in the first 2 s from a tilted standing start.
+
+**Rate channel verified end-to-end:** transport d=2 ticks, τ=0.019 s, per-axis gain live ≈0.94–0.97 × model. Convention fix confirmed live.
+
+### Inc5 gate-2 co-attribution
+Inc5's uniform gate-2 lateral miss (dy −1.0…−1.8 m, mid-bank) is now co-attributed to the roll mirror (first real banked y-move on the course + roll channel mirrored). The mixer rails and the roll mirror both contributed to inc5-era 0/20. Their relative weight is untestable now that inc6+fix supersedes the stack.
+
+### Pipeline byte-correct ≠ convention-correct (durable lesson)
+"The obs/action pipeline was proven byte-correct" (inc5 diag) must be read as *deterministically reproducible*, NOT *convention-correct*. `replay_obs` verifies the code against itself. Only tilted-phase quat-FD (`diag_h4d.py` method) validates conventions against the sim. **Adopt as the permanent convention gate.**
+
+### Mixer probe2 / rate_sysid status
+- `rate_sysid.py` Euler-singularity aborts fixed via per-phase `no_tilt_abort` (325e191).
+- Keeper run: `20260612_034154_mixer_probe2` (`z00_y31_long` clean).
+- **Probe rows `c100_y31` / `c60_r31` / `zhov_r31` remain uncaptured** (~10 min unattended probe in next session).
+
+### Recommended path
+1. **Bridge ×5 with fix** (next ShadowPC session): strong prediction: threads gates (bridge bypasses low-speed lapse regime; cheapest discriminator).
+2. **Laptop S18:** joint translational refit (collective-vs-airspeed lapse + drag) from 17 2026-06-12 recordings (3–30 m/s, no new flights) → re-run inc6 deploy matrix on refit plant.
+3. If inc6 robust to refit → fly as-is; else inc7 retrain with lapse-DR (+ optional sin/cos yaw-wrap encoding for obs[8]).
+4. Standing start = deployment target, gated on (2).
+
+**Recordings:** `data/runs/20260612_044219_inc6_rollfix_f1`, `…_044438_inc6_rollfix_f2`. Forensic scripts: `handoff/shadowpc-inc6-diag-2026-06-12/scripts/`.
+
+**Inc6 checkpoint STANDS. No retrain implied by the convention fix itself.**

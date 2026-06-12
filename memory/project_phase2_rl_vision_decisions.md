@@ -407,7 +407,7 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   **Stage 1 increment 1 ✅ COMPLETE (2026-06-09, job 3261393):** CTBR policy threads 6-gate course on our plant, given pose, zero vision. racing-PPO n_envs=2048, 5000 updates → success_rate 0→0.97, ~89K env-steps/s (A100, 30:48 wall). obs_dim=17 (vel+quat+gate_relpos+gate_normal+body_rates+collective), action=CTBR, DR configured (rate_gain±10%/hover±5%/drag±30%/τ±30% — 🚩 but see the S1.3 correction below: the numpy backend silently ignored it, inc-1 effectively had NO plant DR). Checkpoint `stage1_inc1_actor.pth`. Caveats: (1) over-aggressive (l_ep ~1.9s, no speed shaping — VQ2 target); (2) real test = live sim transfer.
 
   **✅ S1.2 — increment-1 LIVE DEPLOYMENT (2026-06-10, fable session): pipeline VERIFIED end-to-end, checkpoint NOT transfer-ready (flight 1: 0 gates, tumbled into gate-0 post). Detail: `handoff/shadowpc-s12-rl-live-2026-06-10/`.**
-  - **🚩 CORRECTED DEPLOYMENT RECIPE (fixes 3 sonnet S1.1 bugs — the verified-correct way to deploy a DiffAero-trained actor live, in `rl/fly_rl.py`):** ① actor output = **tanh(mean) → rescale** to thrust [0,5] / rates ±3.14 rad/s (NOT raw actor mean); ② FLU→FRD action sign = **[1,−1,−1]** (sonnet's [−1,+1,+1] wrong on all 3 axes; the plant applies rate_gain·rate_sign identically in train + live — no ff/rate_gain algebra); ③ collective obs init = **0.0** with **rescaled** feedback (NOT 1.0); ④ training control rate = **30 Hz** (racing.yaml dt 0.0333; NOT 100); ⑤ training **resets at rest** 1 m in front of a random gate (NOT "racing velocity"). Verified-correct from sonnet: obs layout (17), `R_W2G=diag(−1,−1,1)`, gate yaws all π, final-gate clamp, Euler-ZYX, actor arch (NormedLinear [256,128]).
+  - **🚩 CORRECTED DEPLOYMENT RECIPE (fixes 3 sonnet S1.1 bugs):** ① actor output = **tanh(mean) → rescale** to thrust [0,5] / rates ±3.14 rad/s; ② FLU→FRD action sign = **[1,−1,−1]** (S1.2 value — ❌ SUPERSEDED 2026-06-12 by bcc93f9; current correct wire = `rate_flu·[−1,−1,−1]` — see §SHADOWPC-INC6-DIAG); ③ collective obs init = **0.0** rescaled; ④ training rate = **30 Hz**; ⑤ resets **at rest** 1 m from random gate. Other verified-correct items: obs layout (17), `R_W2G=diag(−1,−1,1)`, gate yaws all π, final-gate clamp, Euler-ZYX, actor arch (NormedLinear [256,128]).
   - **🚩 "OOD-at-start = root cause" RETRACTED** — an artifact of sonnet's wrong action transfer function, not a real diagnosis; reset saturation is the policy's NORMAL launch behavior (it saturates in training too, then modulates).
   - **Tail-first spawn bug + fix:** policy trained identity-reset + all gates at yaw π ⇒ flies the course tail-first; sim spawns nose-first on a 17.8°-tilted pad ⇒ ~180° attitude-OOD. Fixed with a **virtual π body-z flip in fly_rl.py** (`--virtual-flip`, default ON; exact rigid-body symmetry). Offline: handoff-state rollouts 0/6 → 6/6 under training physics.
   - **🚩 THE REAL transfer failure (the key finding) = the policy is a "backflip-diver":** its NOMINAL twin maneuver rolls through **104–126° before every gate** (fine offline). Live the maneuver diverges — realized rates hit **9.7 rad/s vs the twin's first-order 7.85 ceiling** (=3.14·2.5; ❌ diagnosis SUPERSEDED 2026-06-10: unmodeled static super-rate DC gain, NOT transient overshoot — see the characterize-sweep section), it blows through ±180° tilt (the then-suspected "yaw-spin anomaly" — **DISSOLVED by the sweep**: super-rate gain + Euler yaw-flip artifact + a gate-post COLLISION), and tumbles into the gate post within 0.35 s. NOT reproducible in the twin (replay from the exact live handoff state passes gate 0 at any latency ≤100 ms and gain ×1.24) → **no deployment-side knob fixes it.** The BRIDGE worked perfectly: CTBR delivered the drone dead-centre (dy +0.04, dz +0.05 m) at 5.1 m/s, 3 m before gate 0; the policy's first action = exactly the offline-twin prediction.
@@ -885,6 +885,45 @@ Winner **c16** (joint-penalty, no dact): simultaneously fastest (9.86 s median),
 
 ### Inc5 retirement
 Inc5 formally retired. Supersession chain: inc5 (mixer-blind, live failure now twin-reproduced) → **inc6 (mixer+aero+map plant, corner-tax c16, SHIPPED — live transfer pending)**.
+
+---
+
+## ✅ SHADOWPC-INC6-DIAG — roll-mirror root cause (2026-06-12; commits bcc93f9, 325e191; writeup handoff/shadowpc-inc6-diag-2026-06-12/WRITEUP.md)
+
+**Supersedes the §SHADOWPC-LIVE-DEPLOY-DIAG hypothesis that obs-encoding or timing was the gap.**
+
+### Evidence chain summary
+
+**H0–H3 ALL CLEAN:** verified ckpt md5 + sidecar, no machine-local map in RL path, 29.2 Hz loop, sim/wall 1.000, zero stale ticks, step-0 obs matches twin to 7e-4. Root cause is NOT obs encoding, NOT timing, NOT artifact skew.
+
+**Physical contradiction at tilt (the discovery):** at −55° pitch (inc6's first banked maneuver), the "artifact-undone" roll state from `build_obs` reads ≈0 for a full second while the raw ODOMETRY rate channel (as `build_obs` reads it) claims +1.0–1.5 rad/s sustained body roll. This is a self-contradiction that is invisible at near-level attitude.
+
+**Quat-FD proof (`diag_h4d.py`):** raw ODOMETRY quat body-rate finite-difference matches `w_raw` under **[+1,−1,+1]** (gain 1.00, corr 0.93–0.98) in BOTH level AND tilted phases across 3 flights. The roll-inverted model collapses in tilted flight (corr 0.0–0.45). The raw quat also correctly rotates v_body onto the position derivative — it is the true attitude.
+
+**Feedback-free command probe (`c100_r31`):** wire roll +3.14 → raw-quat roll −1.34 rad in 0.18 s ≈ −10 rad/s (super-rate ×3.2, inverted sign). Confirms live `S_live = [−1,+1,−1]`.
+
+**Why the laptop matrix could not catch it:** `telemetry_from_truth` applies the same assumed artifact model that `build_obs` undoes — any misidentification round-trips to zero error. Only live MAVLink exercises the real convention.
+
+**Counterfactual (`diag_counterfactual.py`):** buggy mapping → 0 gates, lateral sweep, OOB 2.4–2.6 s. Fixed mapping → **6/6, 9.50 s**.
+
+### True conventions (durable — see MEMORY.md + [[project-ctbr-control-sysid]] for three-layer distinction)
+- ODOMETRY quat = TRUE attitude AS-IS (no roll inversion; roll inversion belongs to ATTITUDE euler only).
+- Raw `angular_rate` → true = **[+1,−1,+1]** (pitch only inverted). Supersedes S1.2 [−1,−1,1].
+- Live command→rate sign = **[−1,+1,−1]** (roll AND yaw inverted).
+- RL deploy wire: `rate_flu·[−1,−1,−1]`.
+
+### Post-fix live results
+Two standing-start flights (the authorized budget): no spin, no oscillation, smooth coordinated flight. But 0/2 — ~5 m +y miss at gate-0 plane → OOD wander. Rate channel verified (d=2 ticks, τ=0.019, gain 0.94–0.97). Residual = translational: thrust overprediction 15–25% at 3–12 m/s (airspeed lapse, unmodeled at near-zero-airspeed fit). Displaces approach line ~5 m in first 2 s from tilted standing start.
+
+### Durable validation discipline
+**ANY future attitude/rate convention change MUST be validated with tilted-phase quat-FD consistency.** Level-flight correlation cannot see a roll mirror. The `diag_h4d.py` method is the permanent convention gate.
+
+### Next path
+1. Bridge ×5 with fix (bypasses the thrust-lapse regime; cheapest gate-threading discriminator).
+2. S18 joint translational refit from 17 2026-06-12 recordings (3–30 m/s, no new flights).
+3. Re-run inc6 deploy matrix on refit plant; fly as-is if robust, else inc7 retrain with lapse-DR.
+
+**Inc6 checkpoint STANDS. No retrain implied by the convention fix.**
 
 ---
 
