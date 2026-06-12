@@ -59,6 +59,17 @@ def _wxyz_from_euler(roll: float, pitch: float, yaw: float) -> np.ndarray:
     return np.array([w, x, y, z], dtype=np.float64)
 
 
+# The live ODOMETRY wire carries an R_y(pi)-CONJUGATED quaternion: q_raw = q_true * [1,-1,1,-1]
+# (wxyz, involutory; FRAME-AUDIT 2026-06-12). ``state()`` emits this wire convention on
+# ``orientation_ned_wxyz`` so the SAME Navigator (which un-conjugates via
+# ``frames.R_world_from_odo_quat_wxyz``) is a drop-in against the twin. Deliberately a LITERAL,
+# not an import of ``frames.ODO_QUAT_TRUE_CONJ_WXYZ``: an emulation harness must not share
+# convention constants with the deploy decode path (training doctrine §6 -- a shared constant
+# round-trips a sign error into a false pass; the golden tests in tests/test_frames.py /
+# tests/test_frame_conventions.py pin the convention against recorded live data).
+_ODO_WIRE_QUAT_CONJ_WXYZ = np.array([1.0, -1.0, 1.0, -1.0])
+
+
 def _quad_c2_table(c2) -> np.ndarray:
     """Normalise a ``quad_drag_c2`` spec (scalar | (3,) | (3, 2)) to the (3, 2) per-axis, per-sign
     coefficient table: ``[:, 0]`` applies where ``v_body[axis] >= 0``, ``[:, 1]`` where ``< 0``."""
@@ -180,7 +191,9 @@ class CtbrPlantConfig:
     # Gate-0 saga + sysid extract), so a faithful twin emits these inversions and the controller's
     # ``odo_att_sign`` / ``odo_rate_sign`` undo them EXACTLY as live -- making the measured live signs
     # transfer. Both default [1,1,1] = canonical (emit the true frame). These touch only ``state()``,
-    # never the physics. (att report = euler signs applied to the emitted roll/pitch/yaw + quaternion.)
+    # never the physics. (att report = euler signs applied to the emitted roll/pitch/yaw ONLY; the
+    # emitted QUATERNION always carries the R_y(pi)-conjugated wire convention -- see
+    # ``_ODO_WIRE_QUAT_CONJ_WXYZ`` -- because the navigator decodes it like live telemetry.)
     odo_att_report_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
     odo_rate_report_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
 
@@ -334,18 +347,25 @@ class CtbrPlant:
         self.t_ns += int(round(dt * 1e9))
 
     def state(self) -> DroneState:
-        """Current plant state as a :class:`DroneState` (world pos/vel; ODOMETRY-style attitude)."""
+        """Current plant state as a :class:`DroneState` (world pos/vel; wire-convention attitude).
+
+        Two attitude seams, matching the live wire's two consumers:
+          * ``orientation_ned_wxyz`` = the RAW R_y(pi)-conjugated wire quat (the NAVIGATOR seam:
+            ``frames.R_world_from_odo_quat_wxyz`` un-conjugates it back to this plant's TRUE
+            physical attitude, so the vision/PnP/KF chain pairs exactly as live).
+          * ``roll/pitch/yaw`` + ``angular_rate_body`` = the legacy euler/rate report frame
+            (the CTBR seam: ``odo_*_report_sign`` aliases, undone by the controller's odo signs
+            EXACTLY as live -- VQ1-proven, untouched).
+        """
         roll, pitch, yaw = euler_from_quat_wxyz(self.q)               # TRUE physical attitude
-        q_out = self.q.copy()
         asign = np.asarray(self.cfg.odo_att_report_sign)
-        if not np.allclose(asign, 1.0):                              # emit the telemetry convention
+        if not np.allclose(asign, 1.0):                              # CTBR euler seam: telemetry alias
             roll, pitch, yaw = roll * asign[0], pitch * asign[1], yaw * asign[2]
-            q_out = _wxyz_from_euler(roll, pitch, yaw)
         return DroneState(
             sim_time_ns=self.t_ns,
             position_ned=self.pos.copy(),
             velocity_ned=self.vel.copy(),
-            orientation_ned_wxyz=q_out,
+            orientation_ned_wxyz=self.q * _ODO_WIRE_QUAT_CONJ_WXYZ,  # wire: raw conjugated quat
             roll=roll,
             pitch=pitch,
             yaw=yaw,

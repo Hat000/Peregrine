@@ -69,9 +69,10 @@ def test_tuned_gains_thread_all_six_gates():
 
 def test_faithful_tuned_gains_thread_the_faithful_plant():
     # Task C: the live-ready config (restored live sim-signs + faithful-re-tuned outer gains) threads
-    # all 6 gates on the SIM-FAITHFUL plant at the live 100 Hz. Worst ~0.61 m -- a valid pass (inside
-    # the 0.75 m half-opening) but not dead-centre (the drag-laden faithful plant is harder than
-    # canonical; the cross-track g1 is the VQ2 racing-line target).
+    # all 6 gates on the SIM-FAITHFUL plant at the live 100 Hz. Worst ~0.61 m when tuned (pre
+    # vision-frame-fix, aliased-R_wb estimation); ~0.20 m with the corrected true-attitude pairing
+    # (2026-06-12). Keep the 0.75 m validity bar -- this pins the LIVE config's plant transfer, not
+    # its centring.
     r = _fly_faithful(FAITHFUL_TUNED_GAINS, FAITHFUL_TUNED_PLANNER)
     miss = r["plane_miss"]
     assert r["final"].name == "FINISHED" and r["gate_index"] == 6
@@ -79,10 +80,22 @@ def test_faithful_tuned_gains_thread_the_faithful_plant():
     assert max(miss) < 0.75                                # threads the inner opening (valid passes)
 
 
-def test_canonical_gains_do_not_transfer_to_the_faithful_plant():
-    # The canonical-tuned gains (Task A) do NOT thread the faithful plant -- so the Task-C re-tune is
-    # essential, not cosmetic. (They miss gates / stall: the faithful dynamics need different gains.)
+def test_canonical_gains_transfer_to_the_faithful_plant_with_true_attitude():
+    # SUPERSEDES test_canonical_gains_do_not_transfer_to_the_faithful_plant (2026-06-12,
+    # vision-frame-fix 8d7b0b3 + wire-convention twin emit): the
+    # canonical gains' historical non-transfer (miss/stall on the faithful plant, the Task-C
+    # rationale) was largely an ESTIMATION artifact, not plant dynamics. The old navigator built
+    # R_wb from the faithful twin's report-sign euler (roll-mirror alias), mis-rotating the IMU
+    # predict and corrupting the KF between given-position updates -- canonical gains were the
+    # casualty. With the wire contract honored end-to-end (twin emits the raw R_y(pi)-conjugated
+    # quat; navigator un-conjugates to the TRUE attitude), the canonical gains thread the faithful
+    # plant dead-centre (worst in-plane miss ~0.07 m vs ~0.20 m for the faithful-tuned set).
+    # This test now pins the corrected twin<->navigator convention seam ON THE FAITHFUL PLANT: a
+    # reintroduced quat-convention mismatch degrades this flight well past the 0.5 m bar (it read
+    # ~0.86 m on the canonical course while the twin emitted TRUE quats). NOTE: FAITHFUL_TUNED_GAINS
+    # remain the LIVE config (VQ1-proven on the real sim; the twin under-models latency -- live gain
+    # changes are live decisions, not twin conclusions).
     r = _fly_faithful(TUNED_GAINS, TUNED_PLANNER)
-    threaded = (r["final"].name == "FINISHED" and r["gate_index"] == 6
-                and all(m is not None and m < 0.75 for m in r["plane_miss"]))
-    assert not threaded                                    # canonical gains fail on the faithful plant
+    assert r["final"].name == "FINISHED" and r["gate_index"] == 6
+    assert all(m is not None for m in r["plane_miss"])     # every plane crossed
+    assert max(r["plane_miss"]) < 0.5                      # dead-centre only with true attitude pairing

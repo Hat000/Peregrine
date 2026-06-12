@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from racer.contracts import ControlCommand, ControlMode
-from racer.twin import CtbrPlant, CtbrPlantConfig
+from racer.twin import CtbrPlant, CtbrPlantConfig, _wxyz_from_euler
 from racer.twin_fit import (Run, faithful_config, fit_plant, fit_rate, fit_thrust, load_run, validate)
 
 _EXTRACT = Path(__file__).resolve().parent.parent / "handoff/shadowpc-followups-2026-06-05/sysid"
@@ -26,7 +26,11 @@ def _sim_run(cfg: CtbrPlantConfig, schedule, *, dt: float = 0.02, label: str = "
     for rate, thrust, kind, axis, dur, phase in schedule:
         for _ in range(int(round(dur / dt))):
             st = plant.state()
-            cols["t"].append(plant.t_ns); cols["q"].append(st.orientation_ned_wxyz.tolist())
+            # Record q in the LEGACY euler-alias telemetry frame the fitter models (the report-sign
+            # euler rebuilt as a quat -- what state() emitted pre vision-frame-fix). The DroneState
+            # quat field itself now carries the R_y(pi)-conjugated WIRE convention for the navigator
+            # seam, which the legacy fit decomposition deliberately does not model.
+            cols["t"].append(plant.t_ns); cols["q"].append(_wxyz_from_euler(st.roll, st.pitch, st.yaw).tolist())
             cols["cr"].append(list(rate)); cols["ct"].append(thrust)
             cols["orr"].append(st.angular_rate_body.tolist()); cols["v"].append(st.velocity_ned.tolist())
             cols["p"].append(st.position_ned.tolist()); cols["ph"].append(phase)
