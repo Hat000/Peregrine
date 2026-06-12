@@ -137,6 +137,14 @@ class CtbrPlantConfig:
     # last knot saturates, faithful to the [0,1] stick). Setting exactly one raises. None -> OFF.
     coll_map_thr: np.ndarray | None = None     # (K,) increasing collective knots [0..1]
     coll_map_accel: np.ndarray | None = None   # (K,) body-up specific accel at the knots (m/s^2)
+    # MEASURED THRUST LAPSE vs airspeed (S18 refit 2026-06-12, ``handoff/laptop-s18-thrust-lapse-
+    # 2026-06-12/WRITEUP.md``): the convex collective map above was fit at ~0 airspeed and
+    # over-predicts thrust ~22% in the 4-12 m/s standing-start band, recovering to ~1.0 by 12-15.
+    # When BOTH set, a_up *= np.interp(|vel|, lapse_speed, lapse_factor) (clamped to the end knots:
+    # L(0)=1 hover-anchored, L>=last=1). MULTIPLICATIVE on a_up; uses the OLD velocity (like drag).
+    # Setting exactly one raises. None -> OFF (exact legacy). Nominals in :mod:`racer.rl_plant`.
+    lapse_speed: np.ndarray | None = None      # (K,) increasing world-speed knots (m/s)
+    lapse_factor: np.ndarray | None = None     # (K,) multiplicative thrust factor at the knots
     # MOTOR-MIXER coupling (live-deploy diag 2026-06-11, ``handoff/shadowpc-live-deploy-diag-
     # 2026-06-11/WRITEUP.md`` Sections 2 + 8; fit in ``handoff/laptop-s17-mixer-inc6-2026-06-11/
     # fit_mixer.py``). The sim's per-motor commands are collective +- rate-PID differentials,
@@ -301,6 +309,13 @@ class CtbrPlant:
                                    np.asarray(cfg.coll_map_accel, dtype=np.float64)))
         else:
             a_up = cfg.g * (coll / cfg.hover_thrust)               # thrust=hover -> g (balances)
+        if cfg.lapse_speed is not None or cfg.lapse_factor is not None:
+            if cfg.lapse_speed is None or cfg.lapse_factor is None:
+                raise ValueError("lapse_speed and lapse_factor must be set together")
+            # measured airspeed thrust lapse (S18 2026-06-12) on the OLD world speed |vel|
+            a_up = a_up * float(np.interp(float(np.linalg.norm(self.vel)),
+                                          np.asarray(cfg.lapse_speed, dtype=np.float64),
+                                          np.asarray(cfg.lapse_factor, dtype=np.float64)))
         R_m = R_new.as_matrix()
         f_world = R_m @ np.array([0.0, 0.0, -a_up])                # body -Z (up) in world NED
         f_world = f_world - cfg.linear_drag * self.vel             # specific force incl. drag

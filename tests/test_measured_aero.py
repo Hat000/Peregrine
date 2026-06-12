@@ -87,8 +87,12 @@ def test_defaults_are_off_everywhere():
         assert cfg.quad_drag_c2 is None
         assert cfg.coll_map_thr is None
         assert cfg.coll_map_accel is None
+        assert cfg.lapse_speed is None and cfg.lapse_factor is None    # S18 lapse OFF by default
+    # mixer-ON faithful config (pre-S18) also has the lapse OFF -- it is a separate opt-in
+    assert faithful_config(super_rate=True, measured_aero=True, mixer=True).lapse_speed is None
     p = rp.PlantParams()
     assert p.quad_drag_c2 is None and p.coll_map_thr is None and p.coll_map_accel is None
+    assert p.lapse_speed is None and p.lapse_factor is None            # S18 lapse OFF by default
     assert p.linear_drag == 0.2111                       # legacy drag untouched
 
 
@@ -111,6 +115,46 @@ def test_faithful_config_measured_aero_wiring():
     assert np.all(np.diff(rp.COLL_MAP_THR_MEASURED) > 0)
     # fit-grade region strictly increasing (0.15 .. 1.0)
     assert np.all(np.diff(rp.COLL_MAP_ACCEL_MEASURED[2:]) > 0)
+
+
+def test_faithful_config_lapse_wiring():
+    cfg = faithful_config(super_rate=True, measured_aero=True, mixer=True, lapse=True)
+    np.testing.assert_array_equal(cfg.lapse_speed, rp.LAPSE_SPEED_MEASURED)
+    np.testing.assert_array_equal(cfg.lapse_factor, rp.LAPSE_FACTOR_MEASURED)
+    # canonical lapse nominals: hover-anchored L(0)=1, recovers to 1 at the top, dips ~0.78 mid-band
+    assert rp.LAPSE_FACTOR_MEASURED[0] == 1.0 and rp.LAPSE_FACTOR_MEASURED[-1] == 1.0
+    assert float(np.min(rp.LAPSE_FACTOR_MEASURED)) < 0.85
+    assert np.all(np.diff(rp.LAPSE_SPEED_MEASURED) > 0)
+    # lapse requires measured_aero (it multiplies the measured collective map)
+    with pytest.raises(ValueError):
+        faithful_config(super_rate=True, lapse=True)
+
+
+def test_lapse_multiplies_a_up_by_speed():
+    # At identity attitude with PURELY HORIZONTAL velocity, thrust acts on world -Z and (quadratic)
+    # drag stays in-plane -- so accel_z isolates a_up = L(|v|) * K(collective), no drag entanglement.
+    cfg = faithful_config(super_rate=True, measured_aero=True, mixer=True, lapse=True)
+    T = 0.40
+    K = float(np.interp(T, cfg.coll_map_thr, cfg.coll_map_accel))
+    a_up = lambda V: _G - _one_step_accel(cfg, [V, 0.0, 0.0], thrust=T)[2]
+    assert abs(a_up(0.0) - K) < 1e-9                      # |v|=0 -> L=1 (hover-anchored map exact)
+    assert abs(a_up(8.0) - 0.80 * K) < 1e-6              # L(8)=0.80 (the standing-start deficit)
+    assert abs(a_up(12.0) - 0.92 * K) < 1e-6             # L(12)=0.92 (recovering)
+    assert abs(a_up(20.0) - K) < 1e-6                    # |v|>=15 -> L=1 (np.interp end clamp)
+    # negative control: with lapse OFF the same probe reads the full map value at every speed
+    off = faithful_config(super_rate=True, measured_aero=True, mixer=True)
+    a_up_off = lambda V: _G - _one_step_accel(off, [V, 0.0, 0.0], thrust=T)[2]
+    assert abs(a_up_off(8.0) - K) < 1e-9                  # no lapse -> a_up == K(T) regardless of speed
+
+
+def test_lapse_set_together_validation():
+    with pytest.raises(ValueError):
+        rp.PlantParams(lapse_speed=rp.LAPSE_SPEED_MEASURED.copy())      # factor missing
+    with pytest.raises(ValueError):
+        rp.PlantParams(lapse_factor=rp.LAPSE_FACTOR_MEASURED.copy())    # speed missing
+    with pytest.raises(ValueError):
+        rp.PlantParams(lapse_speed=np.array([4.0, 4.0]),               # not strictly increasing
+                       lapse_factor=np.array([0.8, 0.9]))
 
 
 def test_aero_off_step_is_bit_identical_to_legacy():
@@ -485,3 +529,55 @@ def test_dr_aero_step_uses_the_measured_tables():
     vz_leg = dyn_leg._state[:, 9].numpy()
     assert np.all(vz_aero > 1.3 * vz_leg)                 # ~(78-g) vs (49-g) net climb accel
     assert np.all(vz_leg > 0)
+
+
+@needs_torch
+def test_torch_lapse_reduces_climb_at_speed():
+    # the torch mirror applies the lapse: at horizontal cruise speed (|v| in the deficit band) the
+    # lapse-ON plant climbs LESS than the lapse-OFF plant under the SAME thrust (a_up * L(|v|)).
+    dd = _import_adapter()
+    n = 8
+    base = dict(super_rate_s=0.30, alpha_max_rps2=np.array([260.0, 260.0, 80.0]), linear_drag=0.0,
+                quad_drag_c2=rp.QUAD_DRAG_C2_MEASURED.copy(),
+                coll_map_thr=rp.COLL_MAP_THR_MEASURED.copy(),
+                coll_map_accel=rp.COLL_MAP_ACCEL_MEASURED.copy())
+    dyn_off = _make_dyn(dd, n_envs=n, params=rp.PlantParams(**base))
+    dyn_on = _make_dyn(dd, n_envs=n, params=rp.PlantParams(
+        **base, lapse_speed=rp.LAPSE_SPEED_MEASURED.copy(),
+        lapse_factor=rp.LAPSE_FACTOR_MEASURED.copy()))
+    for d in (dyn_off, dyn_on):
+        d._state[:, 7] = 8.0                              # 8 m/s along world x (|v|=8 -> L=0.80)
+        d._thrust = torch.full((n,), 0.4)
+    U = torch.zeros(n, 4)
+    U[:, 0] = 0.4 / 0.2656                                # hold collective ~0.4 (normed thrust)
+    dyn_off.step(U); dyn_on.step(U)
+    vz_off = dyn_off._state[:, 9].numpy()                # z-up world vz (climb +)
+    vz_on = dyn_on._state[:, 9].numpy()
+    assert np.all(vz_off > 0) and np.all(vz_on < vz_off)  # lapse cuts a_up -> strictly less climb
+
+
+@needs_torch
+def test_dr_lapse_scales_depth_bands():
+    dd = _import_adapter()
+    from types import SimpleNamespace
+    n = 256
+    cfg = SimpleNamespace(n_envs=n, n_agents=1, dt=0.02, alpha=1.0, g=9.80665, n_substeps=1,
+                          controller=None, dr=True, dr_aero=True, dr_mixer=False, dr_lapse=True,
+                          dr_latency_max_steps=0)
+    dyn = dd.PeregrinePlantDynamics(cfg, torch.device("cpu"), backend="torch",
+                                    params=rp.PlantParams())   # dr_lapse falls back to measured nominal
+    dyn.reset_idx(torch.arange(n))
+    lv = dyn._dr_lapse_vals.numpy()                       # (n, K)
+    depth = 1.0 - rp.LAPSE_FACTOR_MEASURED                # 1 - L_nom per knot
+    lo = 1.0 - 1.5 * depth - 1e-5                         # g in [0.5, 1.5] -> L_dr = 1 - g*depth
+    hi = 1.0 - 0.5 * depth + 1e-5
+    assert np.all(lv >= lo) and np.all(lv <= hi)
+    j = int(np.argmax(depth))                             # the deepest knot must actually spread
+    assert np.std(lv[:, j]) > 1e-3
+    assert np.allclose(lv[:, 0], 1.0) and np.allclose(lv[:, -1], 1.0)   # depth-0 endpoints pinned
+    # dr_lapse REQUIRES dr_aero (the lapse multiplies the per-env collective map)
+    bad = SimpleNamespace(n_envs=4, n_agents=1, dt=0.02, alpha=1.0, g=9.80665, n_substeps=1,
+                          controller=None, dr=True, dr_aero=False, dr_lapse=True,
+                          dr_latency_max_steps=0)
+    with pytest.raises(ValueError):
+        dd.PeregrinePlantDynamics(bad, torch.device("cpu"), backend="torch", params=rp.PlantParams())

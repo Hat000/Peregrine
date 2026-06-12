@@ -118,6 +118,7 @@ try:
                                 SUPER_RATE_S_MEASURED, ALPHA_MAX_RPS2_MEASURED,
                                 QUAD_DRAG_C2_MEASURED, QUAD_DRAG_C2_POOLED,
                                 COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                                LAPSE_SPEED_MEASURED, LAPSE_FACTOR_MEASURED,
                                 MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
                                 MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED,
                                 mixer_r_fit)
@@ -144,6 +145,8 @@ except Exception:                       # pragma: no cover
                                         21.708896781382972, 26.488309151664271,
                                         38.748577917265877, 42.360958058019655,
                                         58.431876299624356, 78.282838504684648])
+    LAPSE_SPEED_MEASURED = np.array([0.0, 4.0, 8.0, 12.0, 15.0])     # S18 refit 2026-06-12
+    LAPSE_FACTOR_MEASURED = np.array([1.0, 0.78, 0.80, 0.92, 1.0])
 
 
 # ================================================================================================
@@ -309,6 +312,14 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._coll_kvals = (None if self.params.coll_map_accel is None else
                                 torch.tensor(self.params.coll_map_accel, device=device,
                                              dtype=torch.float32))
+            # S18 airspeed thrust lapse (refit 2026-06-12; None -> legacy no lapse). Multiplicative
+            # factor on a_up keyed on |vel|; mirrors rl_plant op-for-op in the scalar branch.
+            self._lapse_knots = (None if self.params.lapse_speed is None else
+                                 torch.tensor(self.params.lapse_speed, device=device,
+                                              dtype=torch.float32))
+            self._lapse_vals = (None if self.params.lapse_factor is None else
+                                torch.tensor(self.params.lapse_factor, device=device,
+                                             dtype=torch.float32))
             # S17 motor-mixer coupling (live-deploy diag 2026-06-11; None -> legacy independent
             # thrust/rates). Scalars stay python floats (bit-identity with rl_plant); the
             # per-axis r_fit normalisation is the cached float64 from PlantParams.__post_init__.
@@ -374,6 +385,16 @@ class PeregrinePlantDynamics(BaseDynamics):
         if self._dr_enabled and not self._dr_mixer and self.params.mixer_idle is not None:
             raise ValueError("mixer params under DR require +dynamics.dr_mixer=true "
                              "(the r_fit normalisation depends on the per-env super-rate s)")
+        # S18 THRUST-LAPSE DR: `+dynamics.dr_lapse=true` (opt-in on top of `dr`, the dr_mixer
+        # precedent). Scales the measured airspeed-lapse DEPTH (1 - L) per-env by [lapse_lo,
+        # lapse_hi] -- brackets the fit's drag-identifiability uncertainty (lapse_lo can span toward
+        # "no lapse", lapse_hi a deeper deficit). REQUIRES dr_aero (the lapse multiplies the per-env
+        # collective map). A fixed (non-randomized) lapse under DR is fine WITHOUT this flag -- the
+        # scalar lapse tensors are used per-env uniformly (no r_fit-style cross-dependency).
+        self._dr_lapse = self._dr_enabled and bool(getattr(cfg, "dr_lapse", False))
+        if self._dr_lapse and not self._dr_aero:
+            raise ValueError("+dynamics.dr_lapse=true requires +dynamics.dr_aero=true "
+                             "(the airspeed lapse multiplies the measured collective map)")
         self._dr_bands = {
             "s_lo":        float(getattr(cfg, "dr_s_lo", 0.25)),           # super-rate s (absolute;
             "s_hi":        float(getattr(cfg, "dr_s_hi", 0.35)),           #  measured 0.30 +- ~0.02)
@@ -406,6 +427,10 @@ class PeregrinePlantDynamics(BaseDynamics):
             "mix_khold_hi": float(getattr(cfg, "dr_mix_khold_hi", 0.060)),
             "mix_zeta_lo":  float(getattr(cfg, "dr_mix_zeta_lo", 0.20)),
             "mix_zeta_hi":  float(getattr(cfg, "dr_mix_zeta_hi", 0.55)),
+            # S18 lapse-DEPTH scale (active only with dr_lapse): L_dr = 1 - g*(1 - L_nom),
+            # g in [lapse_lo, lapse_hi]. Default brackets half-deficit to 1.5x the measured deficit.
+            "lapse_lo":     float(getattr(cfg, "dr_lapse_lo", 0.5)),
+            "lapse_hi":     float(getattr(cfg, "dr_lapse_hi", 1.5)),
         }
         # DR nominal for alpha_max (the yaw column scales with it): the params' value if map-ON
         # params were passed, else the measured nominal [260, 260, 80].
@@ -425,6 +450,13 @@ class PeregrinePlantDynamics(BaseDynamics):
         # the K-table value at the hover collective -- the +-2% pinned point of the table DR
         self._coll_k_hover_nom = float(np.interp(self.params.hover_thrust,
                                                  self._coll_thr_nom, self._coll_kvals_nom))
+        # S18 lapse DR nominals (the _alpha_nom pattern: params' values if passed, else measured).
+        self._lapse_speed_nom = np.asarray(
+            LAPSE_SPEED_MEASURED if self.params.lapse_speed is None
+            else self.params.lapse_speed, dtype=np.float64)                     # (K,)
+        self._lapse_factor_nom = np.asarray(
+            LAPSE_FACTOR_MEASURED if self.params.lapse_factor is None
+            else self.params.lapse_factor, dtype=np.float64)                    # (K,)
         if torch is not None and self._dr_enabled:
             n = self.n_envs
             self._dr_s = torch.full((n, 3), float(SUPER_RATE_S_MEASURED), device=device)
@@ -455,6 +487,14 @@ class PeregrinePlantDynamics(BaseDynamics):
             # scale the whole thrust curve ~+-10% at the hover point, violating the Section 7
             # "hover pinned +-2%" requirement); the K-table h-jitter IS the hover randomization.
             self._dr_hover = torch.full((n,), float(self.params.hover_thrust), device=device)
+        if torch is not None and self._dr_lapse:
+            n = self.n_envs
+            # per-env lapse value table (resampled per env at reset); shared speed-knot grid.
+            self._lapse_knots_dr = torch.tensor(self._lapse_speed_nom, device=device,
+                                                dtype=torch.float32)             # shared grid
+            self._dr_lapse_vals = (torch.tensor(self._lapse_factor_nom, device=device,
+                                                dtype=torch.float32)
+                                   .unsqueeze(0).expand(n, self._lapse_factor_nom.shape[0]).clone())
         # Mixer DR nominals (the _alpha_nom pattern: the params' values if mixer params were
         # passed, else the canonical measured constants).
         self._mix_idle_nom = (MIXER_IDLE_MEASURED if self.params.mixer_idle is None
@@ -662,6 +702,14 @@ class PeregrinePlantDynamics(BaseDynamics):
                 mix_rfit = self._mix_rfit                                        # (3,)
             else:
                 mix_idle = mix_hi = mix_kerr = mix_khold = mix_zeta = mix_rfit = None
+        # S18 airspeed thrust lapse: per-env DR tables (dr_lapse) or the shared scalar tensors
+        # (the scalar branch mirrors rl_plant op-for-op, so check_against_rl_plant stays bit-exact).
+        if self._dr_enabled and self._dr_lapse:
+            lapse_knots = self._lapse_knots_dr                                   # (K,) shared grid
+            lapse_vals = self._dr_lapse_vals                                     # (n_envs, K)
+        else:
+            lapse_knots = self._lapse_knots                                      # (K,) or None
+            lapse_vals = self._lapse_vals                                        # (K,) or None
         collective = U[..., 0] * hover                                           # (n_envs,)
 
         # params-level transport delay (mismatch #8b): mirror rl_plant's ring buffer EXACTLY --
@@ -732,6 +780,9 @@ class PeregrinePlantDynamics(BaseDynamics):
                 a_up = _t_interp1d(coll, coll_knots, coll_kvals)
             else:
                 a_up = self.params.g * coll / hover
+            if lapse_vals is not None:                  # S18 airspeed thrust lapse
+                speed = torch.sqrt((v * v).sum(-1))     # OLD world speed |vel|; op-mirror of rl_plant
+                a_up = a_up * _t_interp1d(speed, lapse_knots, lapse_vals)
             f_world = a_up.unsqueeze(-1) * _t_quat_rotate(q, self._BODY_UP)
             f_world = f_world - drag * v
             if quad_c2 is not None:
@@ -861,6 +912,13 @@ class PeregrinePlantDynamics(BaseDynamics):
             self._dr_mix_rfit[env_idx] = self._t_mixer_r_fit(
                 self._dr_s[env_idx], self._dr_mix_idle[env_idx],
                 self._dr_mix_kerr[env_idx], self._dr_mix_zeta[env_idx])
+        if self._dr_lapse:
+            # S18: scale the lapse DEPTH (1 - L) per-env; L_dr = 1 - g*(1 - L_nom),
+            # g uniform in [lapse_lo, lapse_hi] (g<1 milder deficit, g>1 deeper).
+            g = u_abs((m, 1), b["lapse_lo"], b["lapse_hi"])
+            lf_nom = torch.tensor(self._lapse_factor_nom, device=dev,
+                                  dtype=self._dr_lapse_vals.dtype)
+            self._dr_lapse_vals[env_idx] = 1.0 - g * (1.0 - lf_nom)
 
     def check_against_rl_plant(self, U: Tensor, atol: float = 1e-5) -> float:
         """Validate the torch backend against the parity-tested numpy plant from the CURRENT state.

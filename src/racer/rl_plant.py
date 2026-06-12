@@ -106,6 +106,8 @@ __all__ = [
     "QUAD_DRAG_C2_POOLED",
     "COLL_MAP_THR_MEASURED",
     "COLL_MAP_ACCEL_MEASURED",
+    "LAPSE_SPEED_MEASURED",
+    "LAPSE_FACTOR_MEASURED",
     "MIXER_IDLE_MEASURED",
     "MIXER_KAPPA_ERR_MEASURED",
     "MIXER_KAPPA_HOLD_MEASURED",
@@ -146,6 +148,19 @@ COLL_MAP_ACCEL_MEASURED = np.array([0.0, 0.0,
                                     21.708896781382972, 26.488309151664271,
                                     38.748577917265877, 42.360958058019655,
                                     58.431876299624356, 78.282838504684648])
+
+# Measured THRUST LAPSE vs airspeed (S18 refit 2026-06-12, handoff/laptop-s18-thrust-lapse-
+# 2026-06-12/WRITEUP.md; 17 inc6 live recordings, 3-30 m/s, conventions per bcc93f9). The convex
+# collective map above was fit at near-ZERO airspeed; live thrust runs ~0.78x the map across the
+# 4-12 m/s standing-start ACCEL band (well-identified there: drag is negligible so the deficit is
+# drag-independent, spread <=0.09 across drag-scale 0.5-1.5x), recovering to ~1.0 by 12-15 m/s
+# (translational-lift regime; above 12 m/s lapse is NOT separately identifiable from drag but is
+# ~1 either way). MULTIPLICATIVE on a_up, keyed on world speed |vel| (frame-invariant; OLD vel,
+# like drag). L(0)=1 (the map's hover anchor is exact); L>=15 m/s = 1 (np.interp clamps the ends).
+# None -> OFF (exact legacy). Fast-DESCENT thrust loss (v_axial < -2: L drops below 0, vortex-
+# ring-like) is OUTSIDE the climbing standing-start manifold -- folded into inc7 DR, not modeled.
+LAPSE_SPEED_MEASURED = np.array([0.0, 4.0, 8.0, 12.0, 15.0])
+LAPSE_FACTOR_MEASURED = np.array([1.0, 0.78, 0.80, 0.92, 1.0])
 
 # Measured MOTOR-MIXER coupling nominals (live-deploy diag 2026-06-11, handoff/shadowpc-live-
 # deploy-diag-2026-06-11/WRITEUP.md Section 2; fit in handoff/laptop-s17-mixer-inc6-2026-06-11/
@@ -296,6 +311,13 @@ class PlantParams:
     # None -> OFF (exact legacy). Nominals = COLL_MAP_THR_MEASURED / COLL_MAP_ACCEL_MEASURED.
     coll_map_thr: np.ndarray | None = None
     coll_map_accel: np.ndarray | None = None
+    # Measured THRUST LAPSE vs airspeed (S18 2026-06-12): a_up *= interp(|vel|, lapse_speed,
+    # lapse_factor). The collective map is fit at ~0 airspeed and over-predicts thrust ~22% in the
+    # 4-12 m/s band; this multiplicative factor (a function of OLD world speed |vel|, like drag)
+    # corrects it. Set together (validated: matching 1-D, K >= 2, strictly-increasing speed knots).
+    # None -> OFF (exact legacy). Nominals = LAPSE_SPEED_MEASURED / LAPSE_FACTOR_MEASURED.
+    lapse_speed: np.ndarray | None = None
+    lapse_factor: np.ndarray | None = None
     # Measured MOTOR-MIXER coupling (live-deploy diag 2026-06-11): per-motor commands =
     # collective +- the rate-loop differential demand d_ax = kappa_err*(target - omega) +
     # kappa_hold*omega (yaw scaled by zeta/(zeta + collective)), clipped to [idle, 1] -- the
@@ -341,6 +363,17 @@ class PlantParams:
                 raise ValueError("coll_map_thr knots must be strictly increasing")
             self.coll_map_thr = thr
             self.coll_map_accel = acc
+        if (self.lapse_speed is None) != (self.lapse_factor is None):
+            raise ValueError("lapse_speed and lapse_factor must be set together")
+        if self.lapse_speed is not None:
+            ls = np.asarray(self.lapse_speed, dtype=np.float64)
+            lf = np.asarray(self.lapse_factor, dtype=np.float64)
+            if ls.ndim != 1 or ls.shape != lf.shape or ls.shape[0] < 2:
+                raise ValueError("lapse_speed/lapse_factor must be matching 1-D arrays, K >= 2")
+            if not np.all(np.diff(ls) > 0.0):
+                raise ValueError("lapse_speed knots must be strictly increasing")
+            self.lapse_speed = ls
+            self.lapse_factor = lf
         mix = (self.mixer_idle, self.mixer_kappa_err, self.mixer_kappa_hold, self.mixer_zeta_yaw)
         if any(m is not None for m in mix) and not all(m is not None for m in mix):
             raise ValueError("mixer_idle/mixer_kappa_err/mixer_kappa_hold/mixer_zeta_yaw "
@@ -489,6 +522,9 @@ def step(state: PlantState, action: np.ndarray, dt: float, params: PlantParams) 
         a_up = _interp1d(coll, params.coll_map_thr, params.coll_map_accel)     # (...,)
     else:
         a_up = params.g * coll / params.hover_thrust             # (...,)
+    if params.lapse_speed is not None:                           # S18 airspeed thrust lapse
+        speed = np.sqrt(np.sum(state.vel * state.vel, axis=-1))  # (...,) OLD world speed |vel|
+        a_up = a_up * _interp1d(speed, params.lapse_speed, params.lapse_factor)
     f_world = a_up[..., None] * quat_rotate(quat, _BODY_UP)      # (..., 3) body -Z (up) in world NED
     f_world = f_world - params.linear_drag * state.vel           # specific force incl. drag (OLD vel)
     if params.quad_drag_c2 is not None:

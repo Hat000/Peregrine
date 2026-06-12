@@ -36,6 +36,7 @@ from peregrine_racing import PeregrineRacing
 from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams,  # noqa: E402
                             SUPER_RATE_S_MEASURED, QUAD_DRAG_C2_MEASURED,
                             COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                            LAPSE_SPEED_MEASURED, LAPSE_FACTOR_MEASURED,
                             MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
                             MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED)
 
@@ -58,13 +59,15 @@ def main() -> int:
     ap.add_argument("--ckpt", required=True, help="dir containing actor.pth")
     ap.add_argument("--course", default="vq1", choices=["vq1", "random"],
                     help="vq1 = the held-out acceptance course; random = generalization")
-    ap.add_argument("--plant", default="map", choices=["map", "flat", "aero", "mixer"],
+    ap.add_argument("--plant", default="map", choices=["map", "flat", "aero", "mixer", "lapse"],
                     help="map = measured super-rate plant (S1.4+ default); flat = legacy, "
                          "ONLY for flat-trained checkpoints; aero = map + measured aero "
                          "(quad body drag + convex collective, linear_drag=0; twin-falsify "
                          "2026-06-11) -- S1.5 (inc5) evals; mixer = aero + the measured "
-                         "motor-mixer coupling (live-deploy diag 2026-06-11) -- ALL S17+ "
-                         "(inc6, mixer-trained) evals")
+                         "motor-mixer coupling (live-deploy diag 2026-06-11) -- ALL S17 "
+                         "(inc6, mixer-trained) evals; lapse = mixer + the S18 airspeed thrust "
+                         "lapse (refit 2026-06-12) -- the fully measured plant as of S18, for "
+                         "inc7 (lapse-trained) evals")
     ap.add_argument("--standing-frac", type=float, default=1.0)
     ap.add_argument("--n-envs", type=int, default=256)
     ap.add_argument("--max-time", type=float, default=40.0)
@@ -79,12 +82,15 @@ def main() -> int:
                  quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
                  coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
                  coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
-    if args.plant == "mixer":    # the fully measured plant as of S17 (aero + motor mixer)
+    if args.plant in ("mixer", "lapse"):    # fully measured plant as of S17 (mixer) / S18 (+lapse)
+        _lapse = (dict(lapse_speed=LAPSE_SPEED_MEASURED.copy(),
+                       lapse_factor=LAPSE_FACTOR_MEASURED.copy())
+                  if args.plant == "lapse" else {})
         params = PlantParams(**_aero,
                              mixer_idle=MIXER_IDLE_MEASURED,
                              mixer_kappa_err=MIXER_KAPPA_ERR_MEASURED,
                              mixer_kappa_hold=MIXER_KAPPA_HOLD_MEASURED,
-                             mixer_zeta_yaw=MIXER_ZETA_YAW_MEASURED)
+                             mixer_zeta_yaw=MIXER_ZETA_YAW_MEASURED, **_lapse)
     elif args.plant == "aero":   # the S16 fixed-params form (pre-mixer)
         params = PlantParams(**_aero)
     elif args.plant == "map":

@@ -34,6 +34,7 @@ from omegaconf import OmegaConf
 
 from racer.rl_plant import (PlantParams, QUAD_DRAG_C2_MEASURED,
                             COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                            LAPSE_SPEED_MEASURED, LAPSE_FACTOR_MEASURED,
                             MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
                             MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED)
 from diffaero_dynamics import PeregrinePlantDynamics
@@ -51,6 +52,7 @@ _MAP = dict(super_rate_s=0.30, alpha_max_rps2=np.array([260.0, 260.0, 80.0]))
 _MIXER = dict(mixer_idle=MIXER_IDLE_MEASURED, mixer_kappa_err=MIXER_KAPPA_ERR_MEASURED,
               mixer_kappa_hold=MIXER_KAPPA_HOLD_MEASURED,
               mixer_zeta_yaw=MIXER_ZETA_YAW_MEASURED)
+_LAPSE = dict(lapse_speed=LAPSE_SPEED_MEASURED.copy(), lapse_factor=LAPSE_FACTOR_MEASURED.copy())
 
 CONFIGS = {
     "legacy":     dict(),
@@ -68,6 +70,11 @@ CONFIGS = {
     # the collective end clamps (random_traj's last two steps) drive both rails hard.
     "mixer":      dict(_AERO, **_MAP, **_MIXER),
     "mixer_full": dict(_AERO, **_MAP, **_MIXER, transport_delay_steps=2),
+    # S18 airspeed thrust lapse (refit 2026-06-12): a_up *= interp(|vel|, lapse_speed, lapse_factor).
+    # random_traj's |v| ~ 3-8 m/s lands in the lapse-active band (L < 1); aero alone + the fully
+    # measured plant + lapse, with and without transport delay.
+    "lapse":      dict(_AERO, **_LAPSE),
+    "lapse_full": dict(_AERO, **_MAP, **_MIXER, **_LAPSE, transport_delay_steps=2),
 }
 
 
@@ -107,6 +114,10 @@ def rebuild_params(dyn, device, dtype):
                        torch.tensor(dyn.params.coll_map_thr, device=device, dtype=dtype))
     dyn._coll_kvals = (None if dyn.params.coll_map_accel is None else
                        torch.tensor(dyn.params.coll_map_accel, device=device, dtype=dtype))
+    dyn._lapse_knots = (None if dyn.params.lapse_speed is None else
+                        torch.tensor(dyn.params.lapse_speed, device=device, dtype=dtype))
+    dyn._lapse_vals = (None if dyn.params.lapse_factor is None else
+                       torch.tensor(dyn.params.lapse_factor, device=device, dtype=dtype))
     dyn._mix_rfit = (None if dyn.params.mixer_idle is None else
                      torch.tensor(dyn.params._mixer_r_fit, device=device, dtype=dtype))
     dyn._plant_act_buf = None        # cold delay buffer; both backends seed it identically
