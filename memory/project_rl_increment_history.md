@@ -367,3 +367,49 @@ Tick-aligned twin `simstart` vs live std_f1 (identical start state, shared obs/a
 - **Supersedes** live-confirm §Fact 5 "~70% slowdown" → dissolved (clock artifact, RL segment = 8.96 s ≈ twin 8.16 s).
 - **Supersedes** live-confirm NEXT-queue "LIVE-GAP-ANALYSIS" as the critical-path item → replaced by S20 refit+inc7.
 - **Commander obs-seam hypothesis FALSIFIED** (step-0 obs <0.003, mirror canary +0.97, twin reproduces posture exactly).
+
+---
+
+## ✅ TRAINING-DOCTRINE + INC7 SPEC (2026-06-12, laptop fable; writeup handoff/laptop-training-doctrine-2026-06-12/WRITEUP.md; doctrine doc/training_doctrine.md)
+
+### Root cause reframe (supersedes "climb-bin plant gap = whole story")
+
+Training env scores pass as point-mass L-inf < 0.75 m; sim enforces volumetric body-halo contact. All 4 standing gate-3 crashes terminate at L-inf **0.37–0.49 m** with mid-range commands (rate p95 ≈ 0.5 rad/s vs 3.14 cap, 84% authority unused, zero saturation) — positions the trainer calls comfortable passes. The S20 climb-bin residual (+2–2.8 m/s²) supplies ~0.2–0.5 m displacement; geometry fiction converts it to a crash. Bridge threads the identical funnel 0.2 m lower at 0.25 m.
+
+### Verdicts from doctrine probes
+
+- **Crab = near-optimal:** excess along-track drag 0.43 m/s² (3%) ≈ 0.15 s/lap vs drag-optimal thrust-axis rotation; flat basin; ~0.32 rad/s mean yaw cost. No reward change; 15× smaller than envelope lever.
+- **Authority = fine:** 12/12 re-threads from ±1.5 m displaced restarts 1.5 s before gate-3 (3× live error); 48/48 jitter×latency finishes. Recovery curricula not load-bearing.
+- **inc6 DR robustness measured:** absorbs ±12% global collective, ±25% drag, full climb-bin residual in closed loop, centered. Premise "DR omitted force scale" was FALSE — dr_aero already randomizes coll ±10%, c2 ±24%.
+- **META gap ① stale:** inc6 trains `course_mode=random` (±60°/seg, VQ1 held-out). Remaining exposure is sampler range vs unknown VQ2 course — widen only on VQ2 info.
+
+### Stale premises corrected
+
+- "Standing 0/4 = climb-bin plant gap is the whole cause" → geometry fiction is the primary cause; residual supplies displacement.
+- "Single-track training = open gap" → CLOSED at distribution level.
+- "DR omitted force-model scale" → FALSE (dr_aero was on; inc6 absorbs the residual in closed loop).
+
+### Doctrine summary (full text `docs/training_doctrine.md`)
+
+Robustness priority: (1) honest contact geometry, (2) structured + global force DR, (3) reset/course diversity — NEVER reward damping. Checkpoint gauntlet adds: per-gate crossing L-inf p95 vs contact-true aperture, corridor clearance at x=−1 m, robustness probes, twin-attitude extraction. Inadmissible evidence list updated (margins against 0.75 point aperture are inflated by body halo).
+
+### Advisor items O and R — REJECTED (doctrine session verdict)
+
+- **(O) Arc-length progress along TOGT reference line as dense RL reward:** REJECTED for inc7. Addresses the 8.3→4.27 s structural gap — a Stage-2 / S2-architecture concern, not a contact-geometry fix. Adding a new dense reward term alongside the geometry fix violates one-change-family-per-increment attribution discipline. Revisit at Stage-2 redesign.
+- **(R) Gate-crossing lateral-velocity penalty:** REJECTED. Crab (sideslip ~51°) IS the winning trained style (Q1: 3% drag cost, flat basin); a lateral-velocity penalty suppresses a near-optimal posture for a 0.15 s/lap prize. Confirmed at doctrine level: no style terms for measured-near-optimal styles.
+
+### Inc7 spec (c16 lineage; sbatch `rl/peregrine_racing_inc7.sbatch`, DO NOT SUBMIT until gates pass)
+
+- Reward: **byte-identical c16** (no changes).
+- Env additions (LAPTOP-INC7-ENV to implement):
+  1. `+env.body_radius_m` ∈ [0.28, 0.38] m per env: pass band 0.75−r, collision band (0.75−r, 1.36+r].
+  2. `+env.frame_depth_m=0.30`: volumetric frame collision over gate-frame |x| ≤ 0.30 m.
+  3. `+dynamics.dr_force_bias`: per-env random world-frame bias ‖b‖ ≤ 3 m/s² in a random speed×tilt bin.
+- Plant: S17 mixer (unchanged). S20 refit folds in if ready (dataset LOCAL `shadowpc-postfix-dataset-2026-06-12/`); NOT a launch blocker.
+- DR: all inc6 axes + dr_force_bias.
+- **Launch gates:** ① V100 config-matrix parity; ② 598+ tests green incl. new geometry unit tests; ③ deploy matrix rebuilt on contact-true scoring.
+- **Prediction on record:** standing clears gate-3 ≥0.3 m corridor margin; tails ≤0.25; posture unchanged (~55° tilt crab); lap cost vs inc6 ≤0.3 s.
+
+### Rejected (no-re-litigate ledger additions)
+
+Anti-crab/sideslip terms; aggression/action damping beyond c16; gate-proximity penalty; recovery curriculum as inc7 blocker; reset-distribution redesign for cold start; 60/100 Hz retrain now; course-sampler widening now; `--plant lapse`/`dr_lapse` (previously voided).

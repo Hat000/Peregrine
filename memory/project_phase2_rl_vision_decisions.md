@@ -488,13 +488,7 @@ measured anchors. **HEADLINE: architecture AFFIRMED — no component needs repla
 champion stack (**MonoRace**, TU Delft/MAVLab, arXiv 2601.15222) validates our exact class (monocular gate
 perception + known-geometry calibration refinement + learned controller). The rank-relevant exposure is not
 in any component but in **3 META gaps**:
-- **① Single-track training vs unseen VQ2 course — potentially BINARY; rank-impact #1.** We train on the
-  ONE VQ1 course; VQ2 is an unseen track run unattended in THEIR eval (a one-track policy may score zero).
-  Obs are already gate-relative (translation-invariant) — the architecture is ready, only the training
-  distribution isn't; literature is unambiguous that randomized tracks generalize (2411.04246, 2512.09571,
-  Environment-as-Policy 2410.22308). **FIX = procedural track randomization** (sample spec-plausible 6-gate
-  layouts) **+ VQ1-course-as-HELD-OUT-eval** — first experiment: 1k random courses, S1.3 recipe, report
-  held-out-VQ1 success vs the single-track baseline. **FOLDED INTO the env-coherence redesign scope.**
+- **① ✅ CLOSED AT DISTRIBUTION LEVEL (TRAINING-DOCTRINE 2026-06-12 — supersedes "single-track training open gap"):** inc6 already trains `course_mode=random` (turns ±60°/segment, yaw-jitter ±12°, VQ1 held out); gen 0.982/0.741 across seeds IS the random-course success rate. Remaining honest residual = sampler-range adequacy vs unknown VQ2 course (widen only on actual VQ2 info; widening costs gen variance now for unmeasurable benefit). See §TRAINING-DOCTRINE for verdict. Original framing: single-track training vs unseen VQ2 course — potentially BINARY; rank-impact #1. FIX was procedural track randomization + VQ1-held-out. **FOLDED INTO the env-coherence redesign scope** (completed inc6 training cycle).
 - **② No time-optimal bound for the VQ1 course** (35.3 s vs WHAT denominator?). **Upgrade #2 =
   TOGT-Planner** (FSC-Lab + Run-TOGT-Planner Python wrapper; plans through the gate OPENING — frees the
   crossing point, where corner-cut time lives) **+ CPC (Foehn 2021) as the true offline bound.** Serves
@@ -1135,6 +1129,8 @@ The key discriminator that falsified the obs-seam hypothesis: run `crab_twin_rol
 
 See [[rl-increment-history]] §CRAB-DIAG for full S20 spec (refit collective/drag in 12–18 m/s × tilt-35–90 bin + ±12% DR + ≥3-seed + V100 gate → inc7). Predicted outcome: standing start clears gate 3, posture unchanged.
 
+**⚠️ Supersession (TRAINING-DOCTRINE 2026-06-12):** "S20 refit → inc7" framing REVISED — the climb-bin residual is real but the PRIMARY barrier is the geometry fiction (see §TRAINING-DOCTRINE). S20 refit folds into inc7 if ready but is NOT the launch blocker. Inc7 spec replaces the "S20+inc7" pipeline here.
+
 ---
 
 ## §ADVISOR-REPORT-2-TRIAGE (2026-06-12)
@@ -1179,3 +1175,56 @@ These items join the planned SHADOWPC-VISION-CAL session (which already carries 
 - **(S) Heteroscedastic per-corner σ from detector** (NLL/RLE loss): feeds weighted PnP + KF covariance directly; replaces current heuristic confidence→σ mapping. Bundle with next detector retrain (photoreal v4 / Blender/Cycles build).
 - **(P) Between-attempt trajectory refinement**: REMAINS gated on organizer Q④ answer (can stack carry state between attempts?). No action until answered.
 - **(B) Off-screen corner training**: already part of the banked photoreal spec (§v2-inventory in [[project-detector-training-pipeline]]). Advisor confirmation noted; no new action required.
+
+---
+
+## §TRAINING-DOCTRINE (2026-06-12, laptop fable; writeup handoff/laptop-training-doctrine-2026-06-12/WRITEUP.md; doctrine `docs/training_doctrine.md`)
+
+**Headline:** We have been training against a fictional gate. Fix = honest contact geometry in the env (inc7). Reward and DR are validated; no other changes needed for the gate-3 barrier.
+
+### Root cause of standing gate-3 barrier (supersedes §CRAB-DIAG "S20+inc7" as whole story)
+
+Training env scores point-mass L-inf < 0.75 m as a clean pass. Sim enforces volumetric body-halo contact (rotor halo ~0.3 m, body strikes frame before the plane on steep approaches). Four standing gate-3 crashes: L-inf **0.37–0.49 m** (4/4), mid-range commands (rate p95 ≈ 0.5 rad/s, cap 3.14; 84% authority unused, zero saturation), deterministic to ±0.1 m. The policy flies its trained funnel with high confidence and crosses exactly where trained geometry says is safe — and trained geometry is wrong by the body radius. The climb-bin residual (S20, ~2–2.8 m/s² N+D) supplies ~0.2–0.5 m displacement; the geometry fiction converts it to a crash. Bridge threads the same funnel 0.2 m lower at L-inf 0.25 m — passes fine.
+
+### Operator questions resolved (Q1–Q14)
+
+- **Q1 Crab = near-optimal:** excess along-track drag 0.43 m/s² (3%) ≈ 0.15 s/lap vs drag-optimal thrust-axis rotation; flat basin. No reward change.
+- **Q2 Crash forensics:** not saturated-corrective, not passive-drift OOD — confident mid-range flight into fictional aperture. Deterministic 4/4.
+- **Q3 Margin doctrine:** margin is a geometry property, not a reward property. Gate-3/5 have near-zero to negative true margin vs contact-true aperture in the tail.
+- **Q4 DR premise stale:** dr_aero already randomizes coll ±10%, c2 ±24%; policy absorbs ±12% coll / ±25% drag / full climb-bin residual in closed loop. Add structured regime-binned force-bias DR to cover "sysid wrong in one regime."
+- **Q5 Recovery:** 12/12 from ±1.5 m displaced restarts at 18.6 m/s (3× live error). Recovery curricula not load-bearing.
+- **Q6 Cold start:** standing vs bridge = 1.9× residual-bin exposure + same funnel → fixes are S20 (shrink displacement) + contact geometry (make funnel hold margin). Reset-distribution redesign does not fix it.
+- **Q7 30 Hz:** nothing implicates decision quantization; queue intact.
+- **Q8 Single-track premise stale:** inc6 trains random courses; remaining = sampler range.
+- **Q9 Aperture fiction (central finding):** see root-cause above.
+- **Q10 Corridor blindness:** gates 3/5 approach from outside aperture cone at 3 m out; frame extrusion prices this.
+- **Q11 Obs noise:** not an inc7 blocker (VQ1 case A given-pose; VQ2 case C = Stage-2 queued).
+- **Q12 Selection metrics:** add per-gate crossing L-inf p95 vs contact-true aperture + corridor clearance at x=−1 m + robustness probes + twin-attitude extraction.
+- **Q13 Corner tax exposure:** small (mean factor 0.013 along lap); final-approach commands mid-band; no suppression of corrections.
+- **Q14 Robustness priority:** (1) honest contact geometry, (2) structured + global force DR, (3) reset/course diversity — NEVER reward damping.
+
+### Advisor items O and R — REJECTED at doctrine level
+
+- **(O) Arc-length progress along TOGT reference line as dense RL reward:** REJECTED for inc7. Addresses the 8.3→4.27 s structural gap (a Stage-2/S2-architecture concern). Adding a new dense reward alongside the geometry fix violates one-change-family-per-increment attribution discipline. Revisit at Stage-2.
+- **(R) Gate-crossing lateral-velocity penalty:** REJECTED. Crab IS the winning trained style (Q1: 3%, flat basin); a lateral-velocity penalty suppresses a near-optimal posture for 0.15 s/lap. No style terms for measured-near-optimal styles.
+
+### Inc7 spec (c16 lineage)
+
+Sbatch: `rl/peregrine_racing_inc7.sbatch` (DO NOT SUBMIT until gates pass). Three additions to inc6 env/DR:
+1. `+env.body_radius_m` ∈ [0.28, 0.38] per env: pass band 0.75−r, collision band (0.75−r, 1.36+r].
+2. `+env.frame_depth_m=0.30`: volumetric collision over gate-frame |x| ≤ 0.30 m.
+3. `+dynamics.dr_force_bias`: per-env world-frame bias ‖b‖ ≤ 3 m/s² in a random speed×tilt bin.
+S20 refit folds in if ready (dataset LOCAL `handoff/shadowpc-postfix-dataset-2026-06-12/`); NOT launch blocker. Launch gates: ① V100 config-matrix parity; ② 598+ tests green incl. new geometry unit tests; ③ deploy matrix on contact-true scoring. ≥3 seeds.
+
+**Prediction on record:** standing clears gate-3 ≥0.3 m corridor margin; crossing tails ≤0.25; posture unchanged (~55° tilt crab); lap cost vs inc6 ≤0.3 s.
+
+### Rejected ledger additions (no-re-litigate)
+
+Anti-crab/sideslip terms; aggression/action damping beyond c16; gate-proximity penalty; recovery curriculum as inc7 blocker; reset-distribution redesign for cold start; 60/100 Hz retrain now; course-sampler widening now; `--plant lapse`/`dr_lapse` (voided by frame-audit).
+
+### Ranked next queue
+
+1. **LAPTOP-INC7-ENV** (fable): implement Q9/Q10 geometry + dr_force_bias + tests; optional S20 refit same session; V100 gate; 3-seed Adroit launch.
+2. **VISION-FRAME-FIX** (parallel, navigator.py:295).
+3. Envelope ladder step 1 (rw_tilt 96→48) — gated on inc7 standing live confirm.
+4. S19 mixer contradiction; SHADOWPC-VISION-CAL; 60/100 Hz (evidence-gated).
