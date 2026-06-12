@@ -705,6 +705,47 @@ The 30 Hz control rate was inherited from DiffAero `racing.yaml` `dt=0.0333` —
 
 ---
 
+## §SPEED-CEILING-ANALYTIC (2026-06-11, ADVISOR assignment F — analytic; assumptions twin-verified if ever disputed)
+
+**Question:** does the 30 Hz policy rate bind at VQ2 speeds, or does the 60/100 Hz retrain stay queued?
+
+### Method
+3-phase slew-limited roll model:
+- Phase 1: slew to max rate — α_max = 260 rad/s², ω_max = 11.2 rad/s (super-rate map full-stick); T_slew = ω_max/α_max ≈ 43 ms
+- Phase 2: constant-rate rotation — θ(t) = ω_max · t
+- Phase 3: decelerate back — symmetric to phase 1
+- Maximum lateral acceleration during correction: a_lat = g · tan(θ), tilt cap θ_max = 65° (inc5 style envelope) → a_lat_max = g · tan(65°) ≈ 21.0 m/s²
+- Dead time = 1 decision tick + 2-tick transport delay: Δt_30 = 100 ms, Δt_60 = 50 ms, Δt_100 = 33 ms
+- Available correction time: T_avail = d/V − T_dead, where d = distance of last accepted fix, V = approach speed
+- Closed-form lateral error correctable (T_avail > T_slew+T_coast): **e_max = 0.024 + 0.763·Δt + 10.52·Δt²** (quadratic in dead time)
+- Conservative factor: 15–30% at high V (quadratic drag + roll-induced decel both add time; ignored in bound — adds conservatism)
+
+### Ceiling table (lateral error correctable vs apertures: 0.5 m raw-fix / 0.2 m KF-converged)
+
+| Last fix distance | 30 Hz ceiling | 60 Hz ceiling | 100 Hz ceiling |
+|---|---|---|---|
+| d = 10 m | ~24–30 m/s (scenario-dep.) | ~29–36 m/s (+5–6) | ~33–40 m/s (+4 more) |
+| d = 15 m | ~38 m/s (fine for envelope) | well above | well above |
+| d = 20 m | no ceiling anywhere | no ceiling | no ceiling |
+
+### VERDICT
+**30 Hz binds ONLY in the (≥30 m/s × last-fix ≤10 m) corner.** With fixes accepted to d=15 m (the 32 m range cap + pristine-velocity KF propagation makes this very achievable in practice), 30 Hz is NOT the bottleneck at inc5's style envelope.
+
+Given-pose VQ2 (case A) has no detection horizon at all — the concern is exclusively in vision-only (case C) operation.
+
+### Coupling note
+Envelope relaxation from 65°→80° gives a_lat 9.8·tan(65°)→9.8·tan(80°) ≈ 21→55.7 m/s² (2.6×) — shifts ALL ceilings up substantially. **The envelope ladder is the bigger speed lever and stays first in order of operations:** inc6 live transfer → envelope relaxation → 60/100 Hz retrain only if the gating measurement demands it.
+
+### 🚩 GATING MEASUREMENT (queued — decides the 60/100 Hz retrain priority)
+Script over existing recordings (e.g. `data/runs/20260607_194615_course_60s`): extract per-gate-approach distance of the LAST KF-ACCEPTED lateral fix for each gate crossing.
+
+- If consistently ≥15 m → 60/100 Hz retrain STAYS QUEUED (after envelope relaxation)
+- If ≤10 m at speed → jumps to CRITICAL PATH ahead of envelope relaxation
+
+**Bundle into the SHADOWPC-VISION-CAL session** (queued post-inc6 anyway; same recording needed for roll-wander re-measure + CPU latency benchmark + extrinsic calibration). One script pass, no new flights needed.
+
+---
+
 ## PARALLEL ONBOARD SYSTEMS LEDGER (2026-06-11 brainstorm)
 
 Design rule: all parallel threads feed the sacred 30 Hz control loop **only at tick boundaries**, preserving determinism. Keystone enabler = **KF rewind buffer** (makes any slow perception pipeline usable regardless of compute latency; a 50 ms stale fix mis-applied at 15 m/s = 0.75 m error; the rewind costs nothing for a linear KF). **Gated on organizer answers ① (VQ2 stream) and ⑤ (eval GPU).**
