@@ -127,14 +127,20 @@ def random_traj(n_envs, device, dtype, seed):
     # knot-table edge coverage (aero configs): one step above the last knot (collective > 1.0 ->
     # upper end clamp), one in the bottom region (floored 0.0/0.10 knots; lower edge). Harmless
     # for the linear-map configs (their thrust map has no knots).
-    u[T_STEPS - 2, :, 0] = 3.8 + 1.2 * torch.rand(n_envs, generator=g)  # collective ~ [1.01, 1.33]
-    u[T_STEPS - 1, :, 0] = 0.4 * torch.rand(n_envs, generator=g)        # collective ~ [0, 0.106]
+    # knot-table end-clamp + deep-rail coverage on the LAST FOUR steps: under the delayed
+    # configs (transport_delay_steps=2) the applied action at step t is a_{t-2}, so crafting
+    # only T-2/T-1 would push the rail actions into the ring buffer and never apply them
+    # (S17 review finding) -- T-4/T-3 drain through the buffer, T-2/T-1 cover the k=0 configs.
+    u[T_STEPS - 4, :, 0] = 3.8 + 1.2 * torch.rand(n_envs, generator=g)  # collective ~ [1.01, 1.33]
+    u[T_STEPS - 3, :, 0] = 0.4 * torch.rand(n_envs, generator=g)        # collective ~ [0, 0.106]
+    u[T_STEPS - 2, :, 0] = 3.8 + 1.2 * torch.rand(n_envs, generator=g)
+    u[T_STEPS - 1, :, 0] = 0.4 * torch.rand(n_envs, generator=g)
     # body-rate setpoints with tails beyond pi: exercises the map's min(|c|,pi) clamp + the slew
     u[..., 1:] = 1.5 * torch.randn(T_STEPS, n_envs, 3, generator=g)
     # deep mixer-rail coverage (S17): large rate demands AT the collective end clamps -- the
     # (top x rate) headroom collapse and the (bottom x rate) parasitic-lift clip both engage.
     # Changes the gate trajectories for ALL configs (the gate is self-comparative; re-verified).
-    u[T_STEPS - 2:, :, 1:] = u[T_STEPS - 2:, :, 1:] * 2.5
+    u[T_STEPS - 4:, :, 1:] = u[T_STEPS - 4:, :, 1:] * 2.5
     return state, u.to(device=device, dtype=dtype)
 
 

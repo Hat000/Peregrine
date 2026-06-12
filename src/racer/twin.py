@@ -255,6 +255,12 @@ class CtbrPlant:
             if cfg.alpha_max_rps2 is None:
                 raise ValueError("the mixer authority model scales the measured slew limits: "
                                  "set alpha_max_rps2 when the mixer is on")
+            if not (0.0 <= cfg.mixer_idle < 1.0 and cfg.mixer_kappa_err > 0.0
+                    and cfg.mixer_kappa_hold >= 0.0 and cfg.mixer_zeta_yaw > 0.0):
+                # mirror rl_plant's range check: kappa_err == 0 or zeta == 0 makes the r_fit
+                # normalisation 0/0 -> NaN, surfacing as an unrelated scipy quaternion error
+                raise ValueError("mixer params out of range: need 0 <= idle < 1, kappa_err > 0, "
+                                 "kappa_hold >= 0, zeta_yaw > 0")
             c = float(self._thrust)
             e = target - self.omega
             d = cfg.mixer_kappa_err * e + cfg.mixer_kappa_hold * self.omega
