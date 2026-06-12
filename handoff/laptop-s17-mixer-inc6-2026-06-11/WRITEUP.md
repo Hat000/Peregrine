@@ -182,15 +182,31 @@ ACTION-RATE gate: thr_p95 <= 0.5 span/tick, yaw_p95 <= 0.5 span/tick, yaw flip r
 
 ## 7. Training rounds (LIVE — updated as rounds complete)
 
-| round | job | tag | RW_DACT | RW_CORNER | seed | result |
-|---|---|---|---|---|---|---|
-| R1 (a) | 3268648 | inc6_d1_s0 | 1.0 | 0 | 0 | (running) |
-| R1 (a) | 3268649 | inc6_d4_s0 | 4.0 | 0 | 0 | (running) |
-| R1 (a) | 3268650 | inc6_d16_s0 | 16.0 | 0 | 0 | (running) |
-| R1 (a) | 3268651 | inc6_d4_s1 | 4.0 | 0 | 1 | (running) |
-| R1 (b) | 3268718 | inc6_c4_s0 | 1.0 | 4.0 | 0 | (queued) |
-| R1 (b) | 3268719 | inc6_c16_s0 | 1.0 | 16.0 | 0 | (queued) |
-| R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4.0 | 8.0 | 0 | (queued) |
+All evals MIXER-ON. VQ1 = held-out acceptance; gen = random courses; style = ACTRATE gate
+(thr_p95/yaw_p95 <= 0.5 span/tick, flips <= 5%).
+
+| round | job | tag | DACT | CORNER | seed | VQ1 sr / t_med | gen sr | thr_p95 / yaw_p95 / flips | style |
+|---|---|---|---|---|---|---|---|---|---|
+| R1 (a) | 3268648 | inc6_d1_s0 | 1 | 0 | 0 | (running) | | | |
+| R1 (a) | 3268649 | inc6_d4_s0 | 4 | 0 | 0 | (running) | | | |
+| R1 (a) | 3268650 | inc6_d16_s0 | 16 | 0 | 0 | **1.000 / 10.56 s** | 0.571 | 0.181 / 0.039 / 0% | **PASS** |
+| R1 (a) | 3268651 | inc6_d4_s1 | 4 | 0 | 1 | 0.999 / 12.09 s | 0.689 | 0.997 / 0.083 / 0% | FAIL (thr) |
+| R1 (b) | 3268718 | inc6_c4_s0 | 1 | 4 | 0 | (running) | | | |
+| R1 (b) | 3268719 | inc6_c16_s0 | 1 | 16 | 0 | (running) | | | |
+| R1 (a+b) | 3268720 | inc6_d4c8_s0 | 4 | 8 | 0 | (queued) | | | |
+
+**Early R1 findings:** ① the YAW DITHER — the #1 live killer — is DEAD in every mixer-ON arm
+(yaw_p95 <= 0.11, flips 0%, even at dact=1-class weights: the mixer PHYSICS killed it, not the
+regularizer); ② collective bang-bang SURVIVES dact=4 (thr_p95 0.997, 97% thrust saturation —
+straight-line pulsing is mixer-cheap) and dies at dact=16, but dact=16 costs generalization
+(0.571 vs 0.689); ③ note d16 is simultaneously FASTER on VQ1 (10.56 vs 12.09) — smoothness is
+not costing lap time on the known course, it costs adaptation to hard random courses.
+
+**d16_s0 early deployment matrix (laptop, `--plant mixer`, pulled ckpt md5 0badba6e...):
+13/13 FINISHED** — simstart lat {0,2,3} (10.3-10.7 s), racestart lat 2 (10.0 s), trainreset
+lat 2 (9.3 s), handoff lat {2,3} (8.8-9.2 s), PLUS the full perturbed-seam grid (speed
+4.0-6.5 x dist 2.5-3.5 at lat 2: 6/6 FINISHED, 8.8-9.3 s) — the exact grid where inc5+ys0
+died uniformly at gates 2-3. No mitigation flags anywhere.
 
 The (a) arm jobs started before the R7 code landed on Adroit — harmless: their cfgs carry no
 `rw_corner`, and R7 defaults to 0 (their chained evals import the new file with identical
