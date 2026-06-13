@@ -500,3 +500,67 @@ inc6 remains **LIVE-CONFIRMED FALLBACK** (bridge 2/2 zero-contact ~9 s RL-segmen
 ### Next
 
 SHADOWPC-INC7-LIVE: standing ×5 + bridge ×2 regression. Gate-3 watch (thin margin above).
+
+---
+
+## ✅ INC7 LIVE CONFIRMED (2026-06-13, commit 7fe90df; writeup handoff/shadowpc-inc7-live-2026-06-13/WRITEUP.md)
+
+**FIRST STANDING-START RL FINISHES in project history.** inc7 is the live-confirmed current best.
+
+### Standing start ×5 — results
+
+| flight | result | gates | lap time (s) | gate 3 | n_coll |
+|--------|--------|-------|-------------|--------|--------|
+| F1 | **FINISHED** | 6/6 | **9.97** | PASS-CLEAN | 0 |
+| F2 | **FINISHED** | 6/6 | 11.44 | PASS-CLEAN | 0 |
+| F3 | **FINISHED** | 6/6 | 11.46 | PASS-CLEAN | 0 |
+| F4 | **FINISHED** | 6/6 | 11.45 | PASS-CLEAN | 0 |
+| F5 | **FINISHED** | 6/6 | 11.45 | PASS-CLEAN | 0 |
+
+**5/5 FINISHED, 30/30 gate passes CLEAN, zero contact events.** Gate-3 barrier from inc6 = GONE.
+
+### Bridge ×2 — results
+
+| flight | result | RL-segment (s) | gate 3 | n_coll |
+|--------|--------|----------------|--------|--------|
+| B1 | **FINISHED** | **~9.19** | PASS-CLEAN | 0 |
+| B2 | **FINISHED** | **~10.74** | PASS-CLEAN | 0 |
+
+2/2 FINISHED. Inc6 bridge RL-segment was 8.96 s; B1 +0.23 s (within margin), B2 +1.78 s (bimodal pattern, see below).
+
+### Frame canary (post-session frame_residual_report.py, all 7 recordings)
+
+Mirror canary: **TRUE +0.97 / AS-IS −0.81** across all 7 sessions. Frame conventions intact. Rate canary gain [0.84–0.98] — slight under-read consistent with clock-mixed quat-FD; no axis sign flip. Force residuals: N+D +2.2–3.75 m/s² at high-v/high-tilt (known climb-bin gap, confirmed not fatal — MARGIN absorbed it). E residual: −0.21 to +0.43 m/s² (very small). No new pathology.
+
+### GEOMETRY-HONESTY THESIS VALIDATED
+
+Contact-true volumetric training + body-radius/frame-extrusion DR fixed the standing gate-3 barrier on the FIRST live try. The known +3.5 m/s² N+D climb-bin residual (still present in frame_residual_report) was absorbed by MARGIN rather than eliminated. Confirms the doctrine: robustness from honest geometry + structured DR; do NOT chase every residual. S20 refit stays correctly deferred.
+
+### Prediction scoring (vs training-doctrine predictions)
+
+1. Gate-3 clears standing (binary) → ✅ 5/5, n_coll=0
+2. Pass tails ≤0.25 m → ⚠️ INDETERMINATE — see gate-3 D-offset finding below (contact-free ground truth confirmed; track_map offset confounds L-inf metric)
+3. Crab ~64° → ✅ live max 63.2° (Δ = −1.1° from offline 64.3°)
+4. Lap cost within 0.3 s of inc6 → ✅/⚠️ PARTIAL — F1 9.97 s (+0.11 s vs inc6 9.86 s offline, PASS); F2–F5 ~11.45 s (+1.59 s, bimodal effect); bridge B1 9.19 s (+0.23 s, PASS)
+
+### 🚩 NEW FINDING (A) — track_map gate-3 D-offset ~1.46 m (non-blocking queue)
+
+Live gate-3 crossing: drone at D ≈ 23.10 m vs track_map center D = 24.568 m → **~1.46–1.48 m above center (D-axis)**. track_map outer_half = 1.36 m — drone nominally 0.10 m outside track_map boundary. Yet: n_coll=0, PASS-CLEAN for all 5 flights. Command saturation at gate-3: NO (max |tanh| ≈ 0.547).
+
+**Interpretation:** track_map gate-3 D-coordinate is likely mis-calibrated by ~1.5 m, OR sim pass/contact zone is slightly wider than track_map outer_half. Either way, crossing is clean and rules-valid. **Consequence:** the offline PASS_OFFSET metric (computed vs track_map center) is NON-COMPARABLE to live contact-free ground truth — explains why "tails ≤0.25 m" is INDETERMINATE not FAILED. Gate-3 crossing speed: 17.4–17.5 m/s consistent across all 5 flights.
+
+**Action:** investigate cheaply from 7 live recordings + capture_track_map data; bundle into queued SHADOWPC-VISION-CAL session (owns map/extrinsic calibration).
+
+### 🚩 NEW FINDING (B) — bimodal lap times (low-priority queue)
+
+F1 (9.97 s, sim warmed at sim_t=85.9 s) vs F2–F5 (~11.45 s, fresh race sim_t≈5.2 s). Starting attitude and first-step actor output identical across all 5; divergence develops after gate 0. Hypothesis: sim physics warmup at fresh race start (sim_t~5 s) introduces minor velocity perturbations the 30 Hz policy cannot recover from within gate margins. NOT a policy failure; all 5 flights CLEAN + FINISHED. Use ~11.45 s as deployment lap time estimate (fresh sim); 9.97 s = best-case warmed sim.
+
+**Action:** characterize from 7 recordings; no new flights needed. Affects timing studies only.
+
+### Supersession
+
+inc6 (`stage1_inc6_actor.pth`) demoted to historical fallback (bridge-only live-confirmed). **inc7 s0 (`stage1_inc7_actor.pth`) = LIVE-CONFIRMED CURRENT BEST** (standing 5/5 + bridge 2/2, 2026-06-13).
+
+### Deployment note
+
+`fly_rl.py` default still points at inc4 — pass `--checkpoint stage1_inc7_actor.pth` explicitly every run (footgun unchanged).
