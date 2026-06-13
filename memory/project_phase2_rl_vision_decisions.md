@@ -1419,3 +1419,53 @@ Sum = 30.58 s = 35.30 − 4.72 (verified). Honest endpoint = 4.72 s; contact-val
 1. Native corrected-aero min-snap + coupled-TOPP line generator (feeds hybrid reward NOW + fallback LATER; proto exists).
 2. Pull inc7 per-tick gate crossings from ShadowPC (gitignored debug_obs) to firm rung-2/3 attribution.
 3. scipy-SLSQP toy MPCC on `rl_plant.step` — the one number the decomposed ceiling depends on.
+
+---
+
+## §SUBSTRATE-AUDIT (2026-06-13, ultracode adversarial correctness audit; HEAD c2af65e; full report handoff/ultracode-substrate-audit-2026-06-13/REPORT.md)
+
+**68/68 claims dispatched; 0 UNVERIFIED; 61 CLEARED; 4 CONFIRMED_BUG; 2 NEEDS_LIVE; 1 INCONCLUSIVE.**
+
+### Summary verdict
+No live-code train/deploy-corrupting bug survived escalation on the deployed VQ1 course. The deployed convention chain — ODOMETRY quat R_y(π) conjugation, rate sign [-1,-1,-1], FLU→FRD wire [+1,-1,+1], velocity single-rotation, super-rate gain map, gate-frame lift, 17-dim obs seam, DiffAero↔rl_plant parity, camera mount, MAVLink layouts — was adversarially attacked with fresh external invariants anchored on pristine vel_ned/pos_ned and **held**. Clean bill is **SCOPED TO VQ1**.
+
+### Confirmed bugs (none blocking VQ1 deploy)
+
+**P4-C05 — obs_from_zup/build_obs hardcode gate yaw = pi (VQ2 hazard, DORMANT on VQ1):** `_R_W2G = diag(-1,-1,1)` and `_GATE_YAW_REL = 0` hardcoded in `rl/fly_rl.py` and `offline_rollout.py`. VQ1 all-pi course: train vs deploy max|diff| = 4.44e-15 (bit-exact — completely invisible). Non-pi course (VQ2): consumed-obs max|diff| up to **4.22 m** (pos_gx 1.11, vel_gx 1.61, nxt_rely 3.29 m). **ACTION: GO-BEFORE-VQ2 (gated on ULTRACODE-ESTIMATOR-RACESPEED — entangled with its gate-relative-obs exploration).** Fix: thread per-gate yaw into `obs_from_zup`/`build_obs`; add a loud deploy-time assert `all gate_yaws == pi` when hardcoded path runs. `rl/contact_true_eval.py` likely shares this hardcode — flag for the same fix when next worked (OUT-OF-SCOPE for this audit).
+
+**CR2-01/CR4-01/CR4-03 — refit dataset encodes bcc93f9-era wire map (provenance defects; shipped code CORRECT):** The `refit` recording set was captured under the SUPERSEDED `bcc93f9` code. Its `obs[8]`/`obs[11]`/`rate_frd[2]` yaw channels encode the OLD convention (HYBRID roll/yaw split). `refit` yaw corr vs CURRENT wire = -0.935 to -0.992; vs OLD bcc wire = +0.979. **DATA-HYGIENE RULE: use POSTFIX dataset (`handoff/shadowpc-postfix-dataset-2026-06-12`) for any current-code obs/rate_frd yaw clearance; use refit ONLY as AS-IS/superseded-yaw positive control.** Recommend a producer-commit field on recordings.
+
+### NEEDS_LIVE items (both pending a single yaw-active live capture)
+
+**P1-C06 — obs yaw seam (obs[8] rpy_g_y, obs[11] w_fluz):** only current-convention recording is inc6 postfix; inc7 seam not directly captured. Predicted to pass (obs construction is checkpoint-independent); needs one inc7 debug_obs run with yaw excursions.
+
+**CR1-01 — absolute yaw wire sign (_ACT_FLU_TO_FRD[2] = +1):** every offline closed-loop yaw lens self-correlates regardless of sign — cannot falsify offline. The yaw sign rests on live-confirmed inc6/inc7 flights (5/5 standing, 0/5 contact). **Live probe: pure-yaw-step segment in inc8 fresh-reset batch.** Bundle P1-C06 + CR1-01 into the WINNER-VALIDATION RIDER's pre-crown live batch.
+
+### INCONCLUSIVE
+
+**P5-C04 — Elodin adapter omits orientation_ned_wxyz:** would cause 57.9° attitude error → 17.9 m/s² specific-force error if ever wired. Currently UNREACHABLE (no Elodin→Navigator path exists). Becomes deploy-corrupting only when/if an Elodin solver-glue + Navigator eval runner is built. Action: add assert before `navigator.py:298` so it fails LOUD if ever connected.
+
+### COLL_MAP reconciliation (supersedes any "train-corrupting bug" framing)
+Audit's first-pass "COLL_MAP +2.83 m/s² body-up over-prediction at knots 6-9" RE-ADJUDICATED **NOT A BUG** — bare offline `force_model` over-predicts ~13% uniformly (reconstruction artifact, not a table error). COLL_MAP table CLEARED (P2-C04). **Do NOT refit QUAD_DRAG** (CR5-01 confirmed: the ~1.1 m/s² Down residual lives in the THRUST column, not drag; zeroing drag leaves a +5.88 m/s² along-thrust deficit). Consistent with inc7 margin doctrine.
+
+### Operational notes
+- `rl/checkpoints/inc7_staging/s0_actor.pth` ships **NO sidecar** (clamp-safe only via the 3.14 legacy default); ship its sidecar OR confirm `stage1_inc7_actor.pth` (which HAS the sidecar) is canonical and drop the staging copy.
+- Super-rate `|cmd|=pi` discontinuity is real but **UNREACHABLE**: grand max |act_rate| = 2.717 < pi by 0.42 rad/s.
+- Durable clarification: `obs[12]` = previous RESCALED normed_thrust `[0, act_max]` g-units, NOT the [0,1] collective fraction. Deploy matches training; in-code label being corrected in the hardening pass.
+
+### Regression suite (promote → tests/)
+8 external-invariant scripts in `handoff/ultracode-substrate-audit-2026-06-13/regression_suite/`. All exit 0 + pass pytest standalone. **DISPATCH QUEUED (GO-next): promote all to `tests/` after resolving the slug-collision note (test_confirmed_cr4_03.py previously held a COLL_MAP test — re-home that under `test_collmap_overpredict.py` before promoting).** Suite encodes the invariants internal-consistency checks are structurally blind to (R_y(π) bug class that bit 4x).
+
+| Test file | Catches |
+|---|---|
+| `test_frame_force_vs_fd_mirror_canary.py` | Re-introduced R_y(π) conjugation (deploy + vision) |
+| `test_train_deploy_obs_elementwise.py` | 17-dim obs seam drift (layout, gate-frame, rate sign, virtual-flip, obs[12] memory) |
+| `test_twin_diffaero_extreme_parity.py` | Twin/rl_plant↔DiffAero divergence at extreme states |
+| `test_mavlink_velocity_single_rotation.py` | Body-vs-world velocity-frame mix (c3b5a8e) |
+| `test_confirmed_p4_c05.py` | obs_from_zup hardcoded yaw=pi (VQ2 hazard) |
+| `test_confirmed_cr2_01.py` | Yaw-about-vertical rate sign alias |
+| `test_confirmed_cr4_01.py` | Yaw-channel R_y(π) + refit stale-yaw provenance |
+| `test_confirmed_cr4_03.py` | refit recorded wire validates OLD bcc93f9 map |
+
+### KF accel_body convention (CR1-01 rider — fold into SHADOWPC-VISION-CAL)
+`navigator.py:313` KF-predict rotates raw `accel_body` by the TRUE-conjugated attitude vs doctrine "accel_body pairs with RAW quat" (7.5 m/s² East error @ bank). Recordings lack accel_body. **Action: add HIGHRES_IMU accel_body logging to SHADOWPC-VISION-CAL, adjudicate from live data. Do NOT fix the convention blind.**

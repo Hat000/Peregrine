@@ -113,6 +113,9 @@
 > **FENCE:** this supersession is TWIN-ONLY — `FAITHFUL_TUNED_GAINS` remain the VQ1-proven LIVE
 > config; twin under-models latency; live gain changes are live decisions, not implied here.
 
+## §COLL_MAP-RECONCILIATION (2026-06-13 substrate audit verdict)
+**COLL_MAP over-prediction claim ("+2.83 m/s² at knots 6-9") RE-ADJUDICATED NOT A BUG.** The bare offline `force_model` over-predicts ~13% uniformly — a reconstruction artifact, not a table error. COLL_MAP table CLEARED. **Do NOT refit QUAD_DRAG** (the ~1.1 m/s² Down residual lives in the THRUST column, not drag; zeroing drag leaves +5.88 m/s² along-thrust deficit → the deficit IS the thrust column, not a drag mismatch). Consistent with the inc7 margin doctrine (absorb residuals via DR + margin, not refit). Full substrate audit: [[project-phase2-rl-vision-decisions]] §SUBSTRATE-AUDIT.
+
 The flyable control stack for VQ1: how the sim's inner loop actually behaves, the plant-matched
 decoupled CTBR controller built on top, and the HONEST gate-0 status. Supersedes the
 "Fly on CTBR" bullet in [[reference-sim-interface]]; raw run data in `data/runs/*_gate0_*`,
