@@ -564,3 +564,87 @@ inc6 (`stage1_inc6_actor.pth`) demoted to historical fallback (bridge-only live-
 ### Deployment note
 
 `fly_rl.py` default still points at inc4 — pass `--checkpoint stage1_inc7_actor.pth` explicitly every run (footgun unchanged).
+
+## §INC8-DESIGN (2026-06-13, ultracode 6-lens fan-out + critic; commander-synthesized STAGED program)
+
+### Critic adjudications (THREE overrides — supersede naive "fire 15 arms")
+
+**1. BIMODAL lap-time (finding B) = TOP COMMITMENT RISK.**
+Competition runs a FRESH sim = the 11.45 s regime, NOT the offline 9.76 s median. If this is a policy sensitivity (not sim warmup), every speed metric is optimizing against a baseline the competition never sees. **Characterize BEFORE spending Adroit.** Dispatched: SHADOWPC-BIMODAL-CHAR 2026-06-13 (cheap sonnet, 7 existing recordings, no new flights).
+
+**2. rw_progress bump is OVERRATED.**
+max|tanh|≈0.547 is IDENTICAL inc6 (loose point-mass geom) vs inc7 (tight contact-true). If reward gradient were the bottleneck the looser inc6 would use MORE authority. Same value ⇒ the binding constraint is the ENVELOPE/GEOMETRY, NOT the reward. **Relax the envelope; do NOT pump progress.**
+
+**3. rw_finish_time bump is FUTILE.**
+At γ=0.99 over ~1000 steps the terminal bonus is discounted to ~5e-5; 3× of ~0 is ~0. Use a γ 0.99→0.995 arm instead (if the discount check confirms). Per doctrine §4: SPLIT merged arms for attribution; do NOT bundle.
+
+---
+
+### Staged program
+
+#### Phase 0 — measure-first (cheap, sonnet, ~no Adroit; gates everything)
+
+**(a) Bimodal root-cause** from the 7 inc7 recordings — SHADOWPC-BIMODAL-CHAR dispatched 2026-06-13.
+
+**(b) METRIC INSTRUMENT** (replaces point-mass proxy metrics):
+- Sim-contact-truth: COLLISION id 1001 + active_gate_index as PRIMARY live scoring (kills the gate-3 D-offset dependency on track_map L-inf).
+- Per-gate margin DISTRIBUTIONS with gate-3 isolated as its own row.
+- Contact-true offline thresholds: pass band 0.75−r, collision band up to 1.36+r — retires the point-mass 0.75 m aperture.
+- Seed-stability score S_stable = frac(seeds reaching VQ1 sr≥0.90), gate ≥2/3.
+- Map-offset sensitivity probe: ±1.5 m gate-3 D shift (validates whether gate-3 metric is confounded).
+
+**(c) Inc7 BASELINE PROBES:**
+- gen_stress triplet: vq1 / nominal / stress course modes.
+- Per-gate |tanh| authority profile + 3-line debug_obs logging.
+- γ/discount check: read DiffAero ppo.yaml (confirm discount value for terminal-bonus math).
+- 30 Hz per-gate last-accepted-fix distance (speed-ceiling gating measurement).
+
+---
+
+#### Phase 1 — measured-physics arms (Adroit, ≥5 seeds, gated on Phase 0)
+
+**HIGHEST-LEVERAGE: the envelope split** (only change backed by a MEASURED 2.3 s/lap physics effect).
+
+- **Arm 3a:** rw_tilt 96→48 (WEIGHT only, cone unchanged) — isolated attribution for tilt-weight change.
+- **Arm 3b:** free-cone 60°→75° (CONE only, weight unchanged) — isolated attribution for cone relaxation.
+  - 3a and 3b MUST be SPLIT per doctrine §4; do NOT merge.
+- **Body-radius A/B:**
+  - A: FIXED r=0.38 m (inc7 config, baseline).
+  - B: RANDOMIZED U[0.28, 0.38] m (proxy for combined arrival uncertainty ~0.15–0.25 m + halo; NOT physical body variation).
+  - ≥4 seeds each. Prediction: randomized B wins ~0.1–0.2 s/lap by calibrating margins vs over-conserving on the 5 easy gates.
+- **Bake CRITIC-SAVE into every sbatch:** 3 lines in `_run_with_lifelines` — unblocks Tier-1 critic-as-risk-monitor (parallel systems).
+
+---
+
+#### Phase 2 — conditional (gated on Phase 1 results)
+
+- **γ 0.99→0.995:** if terminal-bonus γ-check (Phase 0c) confirms invisible bonus. Standalone arm.
+- **Network-arch ablation 128/64 and 256/256:** if 1/3 seed collapse persists after Phase 1 (narrow basin = candidate cause; never tested).
+- **obs yaw sin/cos:** slot 16 ±π discontinuity; free accuracy improvement but backward-incompatible with existing obs layout → standalone arm only, never bundled.
+- **Sampler-widening ±60°→±80°:** if inc7 gen_stress (Phase 0c) shows a cliff at ±60°.
+
+---
+
+### Rejected / deferred (no re-litigate)
+
+| Item | Disposition |
+|------|-------------|
+| Arc-length/MPCC (advisor O) | Stage-2 — doctrine stands |
+| Perturbation-recovery curriculum | Proven 12/12 in inc6; narrows basin |
+| Velocity-anneal curriculum | Narrows basin; deferred |
+| Deploy action-noise | Determinism directive + thin gate-3 margin |
+| logstd-as-uncertainty | Global PPO constant [1,4], zero per-obs info |
+| Force-bias band widening | S20 refit is the fix; deferred to pre-inc9 |
+| Monolithic 15-job batch | → staged batches with escape hatch after each phase |
+
+---
+
+### Seed budget
+
+**≥5 seeds/arm** (inc7 1/3-viable confirmed narrow convergent basin; 2/3 gate for escape hatch).
+
+---
+
+### Body-radius rationale (user critique validated)
+
+Randomization U[0.28,0.38] is a proxy for the combined arrival residual (~0.15–0.25 m) + halo uncertainty, NOT physical body variation. This is the honest framing: it calibrates training margins to reflect actual live uncertainty rather than physical body size. Fixed r=0.38 is the conservative incumbent; randomized is the challenger (hypothesis: reduces over-conservation on 5 easy gates at cost of slightly tighter gate-3 margin).

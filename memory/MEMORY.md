@@ -40,6 +40,7 @@
 ③ ✅ VISION-FRAME-FIX DONE (2026-06-12, 8d7b0b3)
 ④ Envelope ladder step 1 (rw_tilt 96→48, NOW UNBLOCKED — inc7 live confirmed) — user selects thrust
 ⑤ S19 mixer contradiction; inc6 = historical fallback (inc7 is now live-confirmed current best).
+⑥ 🆕 INC8 design banked (staged: Phase 0 measure-first → Phase 1 envelope-split + body-radius A/B + critic-save → Phase 2 conditional); bimodal char = top risk, dispatched. Detail [[rl-increment-history]] §INC8-DESIGN.
 
 **🚩 POLICY DECISION RATE 30 Hz WAS NEVER A CHOICE — inherited DiffAero racing.yaml default (dt=0.0333).** 30 Hz binds ONLY at (≥30 m/s × last-fix ≤10 m); fixes to 15 m → NOT bottleneck; envelope 65°→80° bigger lever. **🚩 GATING MEASUREMENT queued (SHADOWPC-VISION-CAL):** per-gate last-accepted-fix distance. Detail [[project-phase2-rl-vision-decisions]] §SPEED-CEILING-ANALYTIC.
 
