@@ -255,6 +255,11 @@ class MavlinkClient:
             self.state = replace(
                 self.state,
                 recv_monotonic_ns=recv,
+                # PER-FIELD ODOMETRY stamp: the shared recv_monotonic_ns above is also bumped by
+                # HIGHRES_IMU / LPN, so only THIS one tracks when attitude+rate last refreshed.
+                # A consumer flying open-loop on the attitude gates on this to catch a selective
+                # ODOMETRY drop (audit D1/D2). Set here and ONLY here.
+                odo_recv_ns=recv,
                 position_ned=np.array([msg.x, msg.y, msg.z], dtype=np.float64),
                 # ODOMETRY twist (vx/vy/vz) is in child_frame_id = MAV_FRAME_BODY_NED (8, body
                 # z-down), NOT the world frame_id -- rotate to NED to match LOCAL_POSITION_NED.
