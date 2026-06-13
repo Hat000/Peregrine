@@ -603,35 +603,65 @@ At γ=0.99 over ~1000 steps the terminal bonus is discounted to ~5e-5; 3× of ~0
 
 ---
 
-#### Phase 0(b) RESULTS + binding-gate triage (2026-06-13, commit 0bb60cc)
+#### Phase 0(b) RESULTS + binding-gate triage (2026-06-13, commit 0bb60cc; VERIFIED + CORRECTED commit 82c2d20)
 
 **INSTRUMENT SHIPPED:** `rl/contact_true_eval.py` = canonical inc8 selection API. Contact-true margin = `(0.75 − body_radius) − linf`; reuses `slab_frame_hit_np` / `offline_rollout` geometry verbatim; 27 new tests + 200×6 legacy parity gate; 647/647 green.
 
-**Inc7 baseline (scored at r=0.33, plant=mixer):**
+**🚩 MEASUREMENT BUG FIXED (82c2d20):** `per_gate_margin_stats` had hard-coded `pass_band = PASS_BAND_NOM` (r=0.33) regardless of `--body-radius` → margins were IDENTICAL at every radius → the prior multi-radius sweep in the original 0bb60cc bank was MEANINGLESS. Now `pass_band = 0.75 − args.body_radius` threads through correctly. Tests 647→**657** green (+10 new: generic-probe keys/gate-id/per-gate-nominal/D-offset-direction/gate3-wrapper-equivalence; pass_band-shift; start_filter).
+
+**Inc7 baseline (scored at r=0.33, plant=mixer, pooled — for reference; use SIMSTART rows for binding-gate decisions):**
 
 | gate | n_pass | linf_med | margin_min | note |
 |------|--------|----------|------------|------|
 | 0 | 2 | 0.109 | 0.311 | |
 | 1 | 3 | 0.079 | 0.328 | |
 | 2 | 4 | 0.144 | 0.216 | |
-| **3** | **5** | **0.036** | **0.287** | historically binding; gate-3 linf 0.051 at simstart |
-| **4** | **6** | **0.161** | **0.205** | **tightest — new binding gate** |
+| **3** | **5** | **0.036** | **0.287** | non-binding; simstart linf 0.051 |
+| **4** | **6** | **0.161** | **0.205** | **tightest pooled** |
 | 5 | 7 | 0.059 | 0.268 | |
 
-S_stable = **1.000 (7/7 eval seeds)** — this is EVAL-COVERAGE (fraction of start scenarios that finish on the deterministic twin), NOT training-seed viability. The inc8 ≥2/3 escape-hatch gate is TRAINING-seed convergence from the ≥5-seed Adroit fan-out — a DIFFERENT metric; keep the two distinct so an arm cannot "pass" the escape-hatch on eval-coverage.
+S_stable = **1.000 (7/7 eval seeds)** — EVAL-COVERAGE (fraction of start scenarios finishing on deterministic twin), NOT training-seed viability. Inc8 ≥2/3 escape-hatch gate is TRAINING-seed convergence from ≥5-seed Adroit fan-out — DIFFERENT metric; keep distinct.
 
-**🚩 CONVERGENT SYNTHESIS (high-value):** bimodal-char (1.48 s gap lives post-gate-3) + contact-true eval (tightest margin at gate-4, also post-gate-3) → the **POST-GATE-3 SEGMENT (gates 4–5) is the inc8 risk zone for BOTH speed and validity.** The gate-3 barrier is GONE; the binding constraint moved downstream. The envelope-ladder primary margin guard shifts from gate-3 to gates 4–5.
+**BINDING GATE = GATE-4 (VERIFIED, commit 82c2d20; SUPERSEDES "post-gate-3 / gates 4-5" framing from 0bb60cc).**
 
-**Gate-3 D-offset: FRAGILITY, not confirmed confound.** The ±1.5 m D-probe shows the gate-3 metric flips verdict IF the map is off ~1.5 m — it reveals FRAGILITY, not evidence the map IS off. Positive evidence (simstart g3_linf 0.051 m ≈ live RACE_STATUS pass offset 0.06 m) supports gate-3 track_map as ~accurate. Bank as: gate-3 NOMINAL metric is CONSISTENT with live and USABLE; finding-A's claimed ~1.46 m offset is UNRESOLVED, deferred to SHADOWPC-VISION-CAL. Do NOT harden "gate-3 confounded, hold everything."
+Multi-radius simstart table (inc7-training-consistent primary = r=0.38; `linf` radius-invariant; margin = `(0.75−r)−linf`):
 
-**FOUR REFINEMENTS dispatched as LAPTOP-INC8-BINDING-GATE-VERIFY (opus):**
-- **(a)** re-score across r∈{0.28, 0.33, 0.38} — inc7 trained at r=0.38, so r=0.33 margins are ~0.05 m optimistic; at r=0.38 gate-4 ≈ 0.155 m.
-- **(b)** generalize the gate-3-only map-probe to gates 4, 5.
-- **(c)** disaggregate simstart (full-course, competition-representative) vs trainreset (synthetic) gate-4/5 margins.
-- **(d)** reconcile gate-3 nominal-vs-live.
-These GATE the envelope-relaxation risk budget.
+| gate | simstart linf | margin r=0.28 | margin r=0.33 | **margin r=0.38 (primary)** |
+|:----:|:-------------:|:-------------:|:-------------:|:---------------------------:|
+| 0 | 0.109 | 0.361 | 0.311 | 0.261 |
+| 1 | 0.079 | 0.391 | 0.341 | 0.291 |
+| 2 | 0.151 | 0.319 | 0.269 | 0.219 |
+| 3 | 0.051 | 0.419 | 0.369 | 0.319 |
+| **4** | **0.215** | **0.255** | **0.205** | **0.155 ← BINDING** |
+| 5 | 0.056 | 0.414 | 0.364 | 0.314 |
 
-**RIDER — offline twin is structurally blind to fresh-respawn perturbation.** The offline twin is perturbation-free (not merely "cold"), which is why twin median 9.76 s ≈ warm-live F1 9.97 s, both ~1.5 s under fresh 11.45 s. Offline selection is therefore BLIND to fresh-respawn post-gate-3 sensitivity → crown the inc8 winner ONLY after a fresh-reset live batch (≥3–5 laps), never a single warm confirmation flight; `gen_stress` is the best offline proxy. Perturbation-recovery / velocity-anneal curricula STAY rejected (narrow basin); the doctrine answer is honest geometry + fresh-reset winner validation.
+**Gate-4 is binding at EVERY radius** — margins shift by constant `(0.75−r)`, so ranking is RADIUS-INVARIANT. Gate-5 is CLEAN (simstart linf 0.056 / margin 0.314 @ r=0.38). Risk localizes to gate-4 specifically; NOT the whole 4–5 segment.
+
+**Binding is START-TYPE-DEPENDENT:**
+
+| start type | binding gate | margin @ r=0.38 | runner-up | note |
+|---|---|---|---|---|
+| **SIMSTART** (full-course, competition-representative) | **gate-4** | **0.155** | gate-2 @ 0.219 | gap 0.064 m |
+| TRAINRESET (synthetic, at-rest 1 m-back) | gate-2 | 0.166 | gate-4 @ 0.171 | gate-4 linf drops 0.215→0.199 |
+
+POOLED or trainreset views MIS-RANK the binding gate. Always use SIMSTART for the post-gate-3 binding question. The linf drop (0.215→0.199) is direct evidence the **high-speed post-gate-3 approach is the stressor** that makes gate-4 bind.
+
+**D-offset probe now PARAMETRIC (gates 3/4/5; 82c2d20):** ±1.5 m probe on all three gates — ALL flip pass→collision. Fragility is UNIVERSAL, not gate-4-specific. The probe does NOT single out any gate as map-confounded; it is sensitivity analysis only.
+
+**🚩 GATE-3 TRACK_MAP D-REGISTRATION: CORRECTED (supersedes 0bb60cc claim "finding-A UNRESOLVED / gate-3 ~accurate on E-axis only; fragility, not confound"):**
+- The "g3_linf 0.051 ≈ live 0.06 m → track_map ~accurate" claim holds ONLY on the **E (lateral) axis** (~0.07 m live).
+- On the **D (vertical) axis**: live gate-3 crossing at D ≈ 23.10 m vs track_map center D = 24.568 m → drone is **~1.46–1.48 m above center**. track_map outer_half = 1.36 m. A crossing 1.46 m off-center is geometrically OUTSIDE the track_map gate → clean pass (n_coll=0, 5/5 flights) is only possible if the TRUE gate-3 center is ~1.46 m from track_map center in D.
+- **FINDING-A IS CONFIRMED REAL: track_map gate-3 D-center is mis-registered ~1.46 m.** The "consistent" agreement was E-axis only; the D-axis disagreement (1.46 m > outer_half 1.36 m) forces the registration conclusion.
+- Gate-3 nominal margin is **USABLE for ranking** (decisively non-binding; live-clean), but **NOT as absolute clearance** until SHADOWPC-VISION-CAL.
+- The ±1.5 m probe fragility is UNIVERSAL (gates 3/4/5 all flip) — NOT evidence any other gate IS off. Gate-3's mis-registration is established by the live D-coordinate geometry; gates 4/5 have NO live cross-check yet.
+
+**GATE-4 ABSOLUTE MARGIN IS PROVISIONAL:** gate-4 (binding) shares the registration uncertainty — no live per-gate offset cross-check exists for gates 4/5. The 0.155 m at r=0.38 is the track_map-frame figure. Binding-gate **ranking** is robust; **absolute margin** is provisional until SHADOWPC-VISION-CAL. **ACTION:** extract gate-4/5 live per-gate offsets on the next ShadowPC touch as part of the SHADOWPC-VISION-CAL bundle. Inc8 envelope relaxation must GUARD gate-4's (provisional 0.155 m) margin — relaxing for speed must not drive it negative.
+
+**🚩 TRACK_MAP REGISTRATION / VISION-CAL EXTRINSIC-CALIBRATION DESIGN folded into the vision case-C ultracode workstream (commander decision, 2026-06-13).**
+
+**🚩 CONVERGENT SYNTHESIS (high-value):** bimodal-char (1.48 s gap lives post-gate-3) + contact-true eval (gate-4 binding, also post-gate-3) → **POST-GATE-3 SEGMENT = inc8 risk zone for BOTH speed and validity.** Binding constraint = gate-4 specifically. Envelope-ladder primary margin guard: gate-4.
+
+**RIDER — offline twin is structurally blind to fresh-respawn perturbation.** Offline median 9.76 s ≈ warm-live F1 9.97 s, both ~1.5 s under fresh 11.45 s. Crown inc8 winner ONLY after fresh-reset live batch (≥3–5 laps); `gen_stress` is best offline proxy. Perturbation-recovery / velocity-anneal curricula STAY rejected.
 
 ---
 
