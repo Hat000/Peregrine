@@ -1300,7 +1300,7 @@ Gate-4 binding margin 0.155 m @ r=0.38 is registration-confirmed offline: course
 | P1-1 predict-forward (constant calibrated age) | P1 | S | P0-2 | removes first-order v·age bias; no TIMESYNC; ~80% of rewind win |
 | P1-2 KF rewind buffer / OOSM | P1 | S | P0-2, P0-3, P1-1 | exact variable/late-fix handling; horizon<L → ~21 m divergence risk |
 | P2-1 range-anisotropic R | P2 | S | P0-2 + >24 m recording | case-C long-range only; ~zero in-range value |
-| P3-1 vision-velocity channel | P3 | M | — | DEFER — over-build |
+| P3-1 vision-velocity channel | P3 | M | — | DEFER — over-build; **mildly re-opened as margin lever by §ESTIMATOR-RACESPEED** (velocity prior = swing variable in gate-relative CONDITIONAL-GO) |
 | P3-2 per-gate R coeffs | P3 | S | — | DEFER — 0.40 m floor already covers residual |
 
 ### SHADOWPC-VISION-CAL additions from this workstream
@@ -1404,9 +1404,9 @@ Sum = 30.58 s = 35.30 − 4.72 (verified). Honest endpoint = 4.72 s; contact-val
 | min-snap + coupled-TOPP | 4.5 | 6.5 | Free deterministic line generator, not a time frontier |
 | TOGT collocation | 4.0 | 4.5 | Best ceiling; worst realizability ratio; demands 17 rad/s body rates vs ~11.2 rad/s plant ceiling → role = offline BOUND + geometry SEED only |
 
-### 🚩 BINDING VQ2 RISK = ESTIMATOR (converges with §CASE-C-READINESS ②+③)
+### 🚩 BINDING VQ2 RISK = ESTIMATOR (converges with §CASE-C-READINESS ②+③; VERDICT BANKED in §ESTIMATOR-RACESPEED)
 
-**Vision world-fix East σ 0.47 m (UNFILTERED) = 3.0× the gate-4 0.155 m contact-true margin.** The KF must reach <0.05 m 1-sigma at the post-gate-3 ~37 m/s window or NO architecture is valid at race speed. Latency 67 ms is validity-BENIGN (0.77–1.93 mm cross-track, <1.3% of margin). **CONDITIONAL on case C (vision-only pose); gated on organizer Q① (if case A/B, pose pristine, risk moot).** COUPLING: going faster (cone relax = inc8 speed lever) worsens the margin/sigma ratio → estimator must be measured BEFORE deploying the relaxed cone at speed. Dedicated ultracode ULTRACODE-ESTIMATOR-RACESPEED dispatched to test <0.05 m 1-sigma achievability.
+**✅ ULTRACODE-ESTIMATOR-RACESPEED COMPLETE (2026-06-13).** Vision world-fix East σ 0.47 m (UNFILTERED) = 3.0× the gate-4 0.155 m contact-true margin. Deployable in-plane ~0.55 m (absolute NO-GO, speed-flat). **FIX = gate-relative observation** (CONDITIONAL-GO, velocity-prior-sensitive, straddles margin). **Q① = MASTER GATE.** Full quantified verdict: §ESTIMATOR-RACESPEED.
 
 ### Organizer Q① + Q⑤ = CRITICAL PATH (updated priority)
 
@@ -1469,3 +1469,77 @@ Audit's first-pass "COLL_MAP +2.83 m/s² body-up over-prediction at knots 6-9" R
 
 ### KF accel_body convention (CR1-01 rider — fold into SHADOWPC-VISION-CAL)
 `navigator.py:313` KF-predict rotates raw `accel_body` by the TRUE-conjugated attitude vs doctrine "accel_body pairs with RAW quat" (7.5 m/s² East error @ bank). Recordings lack accel_body. **Action: add HIGHRES_IMU accel_body logging to SHADOWPC-VISION-CAL, adjudicate from live data. Do NOT fix the convention blind.**
+
+---
+
+## §ESTIMATOR-RACESPEED (2026-06-13, ULTRACODE-ESTIMATOR-RACESPEED; 12 opus agents, 1.44M tok; report handoff/ultracode-estimator-racespeed-2026-06-13/REPORT.md)
+
+**Answers the binding VQ2 validity question converged on by §CASE-C-READINESS (②+③) + §PLANNING-TOGT-S2.** Offline analysis only (no src edits, no SLURM, no live sim). Every load-bearing number reproduced by adversarial verifier + commander re-run; verifier corrections flagged where they changed the headline.
+
+### Verdict
+
+**Case-C ABSOLUTE world-frame KF nav = NO-GO at race speed, by a wide and speed-flat margin.**
+
+Measured filtered in-plane error at gate-4 (~37 m/s, 0.66 s window, ~9 fixes):
+- **Deployable (b1-corrected): ~0.55 m RMS** — ≈3.5× the 0.155 m contact margin, ≈11× the 0.05 m bar.
+- De-biased idealized (variance-only floor): ~0.33 m (commander re-run: 0.28 m). Both decisively over both thresholds.
+- **SPEED-FLAT: invalid even at 8 m/s.** No inc8 cone rung is estimator-valid on the absolute path at any speed.
+- 18-cell sweep (L ∈ {6,16,112 ms} × acceptance {47,25,10%} × {raw,de-biased}): **NO cell clears 0.05 m.**
+
+### Binding terms — two independent sources, not one
+
+**(i) VARIANCE floor ~0.50 m/axis** — per-fix noise is large AND velocity is unobservable in case C (KF averages only ~3–9 fixes in the 0.66 s window; cannot reach steady-state). Floor probe: only per-fix σ ≤ ~0.03 m clears the 0.05 m bar — a ~16× per-fix accuracy improvement the absolute path cannot reach.
+
+**(ii) Un-filterable per-track BIAS** (range-collapsing). ⚠️ **SUPERSEDES the old a2 0.52 m constant figure**: b2 confirmed direction but corrected magnitude — **≤27 m: 0.52 m; ≤12 m: 0.34 m; ≤9 m: 0.19 m (CI [0.11,0.25]); last accepted fix ~8.25 m: 0.109 m.** Bias survives global de-bias (per-gate residual is not global); UN-REMOVABLE in pure case C (chain-circularity — a cal lap cannot close the loop without pose). Carry **0.19 m** as the defensible near-band per-track bias floor.
+
+### Dead ends confirmed (do not spend on these)
+
+| branch | attacks | best-achievable in-plane | verdict |
+|---|---|---|---|
+| Higher cadence (c2) | VARIANCE only | floors 0.106 m at impossible 240 Hz; 0.34 m at 30 Hz | DEAD END: bias-blind, saturates above both bars |
+| Lower cov floor (c4) | (intended VARIANCE) | NET-NEGATIVE: ≤15 mm gain, +51 mm bias regrowth, 14–36% over-rejection | TRAP: cov floor is correctly MLE-sized to 0.407 m |
+| Better detector accuracy (c3) | VARIANCE (pixel) | **0.000 m** — detector already sub-pixel (reproj 0.50 px) | DEAD END: in-plane noise is attitude-lever + floor limited, not pixel limited |
+
+### THE FIX — Gate-relative observation (rank-1 branch)
+
+**Observe the offset to the SEEN opening (−L from PnP).** Map bias `db` drops out of the arithmetic EXACTLY — converts absolute-NED variance to close-range corner-reprojection noise.
+
+Achievable in-plane miss: **0.11–0.21 m RMS — CONDITIONAL-GO on the 0.155 m contact margin** at 37 m/s. Does NOT clear the strict 0.05 m bar (that needs per-fix lateral ≤ ~0.08 m).
+
+**"subtract gate_map pos" = ANTI-PATTERN** — relocates the bias to the control target (estimator E-bias still +0.17 m), does NOT remove it.
+
+**Implementation notes:**
+- AUGMENT, do not replace, the absolute LinearKF (keep for planning/feedforward/g4→g5 hand-off).
+- Gate-relative term owns only the terminal in-plane miss.
+- Observe the offset to the SEEN opening (−L from PnP); the "subtract gate_map" form is proven anti-pattern.
+- Add one relative-innovation outlier gate (reproj alone does NOT separate depth-flips; flip p50 0.71 px < clean 1.02 px).
+- **Architecture implication (MONOLITH-consistent):** policy obs must be gate-relative, NOT absolute world-frame — an obs-formulation change on the inc8 MONOLITH, built on P4-C05 (per-gate-yaw) as its foundation.
+
+### Commander refinement: the margin-clear is velocity-prior-sensitive (CONDITIONAL, not comfortable)
+
+c1 reported 0.11–0.14 m (per-fix/~2.8 with warm velocity prior). Commander cold-prior re-run: **0.17–0.21 m (per-fix/~1.6), OVER the 0.155 m margin.** Fork is real: case-C velocity is observable only through position-fix differencing. Effective velocity prior entering the gate-4 window sits between cold and warm → **margin-clear STRADDLES the 0.155 m line.** Resolved by: (a) a full-lap case-C sim (pure offline); (b) at-speed recording. Mildly **reopens the deferred vision-velocity channel** (P3-1 from §CASE-C-READINESS) as a margin lever — the velocity prior is the swing variable.
+
+### Latency
+
+**In-plane BENIGN at edge HW** (5 mm leak; latency cost is along-track). CPU-class naive update is CATASTROPHIC (NEES 411, +4.3 m along-track, in-plane 0.83 m) → **RewindKF MANDATORY on CPU-class HW.** Ship it regardless — cheap on edge, decisive on CPU. No horizon<L divergence risk at these L (≥0.37 s margin even at CPU p90). See §CASE-C-READINESS piece B.
+
+### Speed-ladder coupling (c5)
+
+Per-fix lateral ≤ 0.10 m → 0.155 m margin held past 55 m/s (full inc8 ladder valid on the margin). Per-fix 0.05 m → 0.05 m bar holds only to ~26 m/s; 0.03 m → ~50 m/s. **To fly ~37 m/s inside the margin: gate-relative per-fix lateral must reach ≤ ~0.10–0.13 m** (vel-prior fork sets exact threshold). **Re-verify every inc8 cone-relaxation rung against the achieved gate-relative per-fix σ at that rung's speed.**
+
+### Dependencies
+
+- **Q① (case A/B vs C) = MASTER GATE.** If VQ2 streams `LOCAL_POSITION_NED`/`ODOMETRY`, pose is pristine and this entire risk is MOOT. Resolve Q① BEFORE building gate-relative.
+- **Q⑤ (eval-HW class)** flips latency posture: edge = free; CPU = ruling, RewindKF mandatory.
+- **ONE ShadowPC at-speed (~37 m/s) gate-4 recording** — the single decisive measurement. All current data ≤8.4 m/s; 37 m/s motion-blur multipliers MODELED (best-case lower bounds). Collapses: blur/exposure pivot (×1 vs ×2), per-fix accuracy at speed, gate-relative per-fix-lateral noise, acceptance, first-accept range, AND tests for the one-signed unmeasured gate-relative extrinsic systematic (n=3). **Add to SHADOWPC-VISION-CAL agenda.**
+- **Full-lap case-C sim** (offline, pure computation): pins the velocity-prior quality entering gate-4 — resolves the 0.11 vs 0.21 m fork.
+
+### Cross-references (supersessions)
+
+- §CASE-C-READINESS (this file): "binding risk = unmeasured in-loop L" — REFINED. L remains binding for the rewind buffer. The estimator's absolute path is now NO-GO; gate-relative path is the forward architecture. P3-1 (vision-velocity) mildly re-opened as margin lever.
+- §PLANNING-TOGT-S2 §BINDING VQ2 RISK = ESTIMATOR: dispatch confirmed with quantified verdict: 0.55 m deployable (absolute) vs 0.155 m margin → NO-GO. Gate-relative CONDITIONAL-GO.
+- a2's 0.52 m constant bias → SUPERSEDED by b2's range-collapsing 0.19 m near-band (favorable direction, carries same NO-GO direction).
+
+### Artifacts
+
+All under `handoff/ultracode-estimator-racespeed-2026-06-13/`: `a1_sim.py` / `a1_results.json` (closed-loop KF sim, reproduced bit-for-bit by b1); `a2_bias.py` / `b2_verify.py` (bias decomposition + verifier); `a3_realism.py` (37 m/s model); `a4_latency.py` (latency geometry split); `c1_*` (gate-relative THE FIX); `c2_*`–`c5_*` (dead ends/traps/speed-ladder); `synth_synthesis.md` + `REPORT.md`.
