@@ -4,7 +4,7 @@
 - **VQ1 PASSED. inc7 LIVE-CONFIRMED = current best** (standing 5/5, gate-3 barrier gone). Phase 2 = RL + VQ2 vision.
 - 🚩 **BINDING VQ2 RISK = ESTIMATOR** (not planner/policy). Case-C absolute world-frame nav = NO-GO at any speed; **FIX = gate-relative obs** (CONDITIONAL-GO, velocity-prior-sensitive). **Build gate-relative REGARDLESS** (organizer-pivot: Q① only decides load-bearing-vs-insurance). **RewindKF = DEFAULT.** → [[index-vision-estimator]]
 - **S2 DECIDED = `staged_monolithic_then_decomposed`.** Speed gap = TILT ENVELOPE, not architecture. → [[index-rl-training]]
-- **ACTIVE critical path:** hardening §4 PASSED 5/5 → merge `flyrl-autonomy-hardening` (pending Fengyou's go; NOT yet merged) → P4-C05 → gate-relative rebuild + inc8 envelope ladder. → [[index-control-sim]] · [[index-vision-estimator]]
+- **ACTIVE critical path:** hardening MERGED (6876f44, 687 green) → P4-C05 (dispatched, gate-yaw obs foundation) → gate-relative rebuild + inc8 envelope ladder. → [[index-control-sim]] · [[index-vision-estimator]]
 
 ## Operating directives — ALWAYS APPLY
 - 🚩 **CANARY (MANDATORY):** address **Fengyou** by name in EVERY message. Missing name = context degradation → Fengyou rotates session.

@@ -50,7 +50,7 @@ Mid-level index for sim wire facts, CTBR/legacy sign config, RL deployment recip
 - Gate-3 barrier root cause confirmed: point-mass L-inf training vs volumetric sim contact.
 - CRAB-DIAG: ODOMETRY quat R_y(π)-conjugated; crab ~55° = near-optimal posture (frame-audit 2026-06-12).
 
-## Autonomy-hardening (DONE; commit 7210c1d; branch `flyrl-autonomy-hardening`; §4 LIVE-VERIFY PASSED 5/5 → CLEARED TO MERGE, pending Fengyou's go)
+## Autonomy-hardening (DONE; MERGED to main 6876f44; clean merge, no conflicts; full suite 687 passed/0 skips; pushed. `rl/submit_rl.py` now ON MAIN as authoritative submission entry — pins inc7, no MAV_CMD 31000 on judged path; auto-reset opt-in via --dev-auto-reset. telemetry_health()/odo_recv_ns freshness+finite gate, finally-disarm, late-join GO all live. Worktree Anduril-wt-flyrl + local branch removed; origin/flyrl-autonomy-hardening retained.)
 - **F-A:** `rl/submit_rl.py` = new authoritative submission entry (pins inc7/--no-bridge/--no-auto-reset/--no-debug-obs/--flights 1). NO `MAV_CMD 31000` on judged wire path. `fly_rl` defaults flipped SAFE; auto-reset OPT-IN via `--dev-auto-reset`.
 - **F-B:** `_fly_armed()` extracted; `fly_once` try/finally force-disarm; `main()` except Exception backstop.
 - **F-C:** `DroneState.odo_recv_ns` + `telemetry_health()` gate above spin-guard/build_obs → SAFE HOVER on stale/non-finite; thresholds `--odo-stale-s 0.15` / `--odo-recovery-s 0.5`.
