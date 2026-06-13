@@ -543,13 +543,13 @@ Contact-true volumetric training + body-radius/frame-extrusion DR fixed the stan
 3. Crab ~64° → ✅ live max 63.2° (Δ = −1.1° from offline 64.3°)
 4. Lap cost within 0.3 s of inc6 → ✅/⚠️ PARTIAL — F1 9.97 s (+0.11 s vs inc6 9.86 s offline, PASS); F2–F5 ~11.45 s (+1.59 s, bimodal effect); bridge B1 9.19 s (+0.23 s, PASS)
 
-### 🚩 NEW FINDING (A) — track_map gate-3 D-offset ~1.46 m (non-blocking queue)
+### ~~FINDING (A) — track_map gate-3 D-offset ~1.46 m~~ — FALSIFIED (2026-06-13, Fengyou-verified)
 
-Live gate-3 crossing: drone at D ≈ 23.10 m vs track_map center D = 24.568 m → **~1.46–1.48 m above center (D-axis)**. track_map outer_half = 1.36 m — drone nominally 0.10 m outside track_map boundary. Yet: n_coll=0, PASS-CLEAN for all 5 flights. Command saturation at gate-3: NO (max |tanh| ≈ 0.547).
+**FALSIFICATION:** The "1.46 m D mis-registration" was a reference-frame artifact. track_map records gate BOTTOM-centre; drone flies through OPENING-centre, ~1.36 m (half outer-height) above it. drone_D − record_bottom_D ≈ −1.36 m at EVERY gate (gate-3's −1.377 is NOT anomalous). Referenced to the opening-centre, gate-3 crosses 0.056 m (3D) — PASS-CLEAN. All 6 gates registered ≤0.37 m in-plane / ≤0.44 m 3D. track_map is trustworthy. Finding-A is dead.
 
-**Interpretation:** track_map gate-3 D-coordinate is likely mis-calibrated by ~1.5 m, OR sim pass/contact zone is slightly wider than track_map outer_half. Either way, crossing is clean and rules-valid. **Consequence:** the offline PASS_OFFSET metric (computed vs track_map center) is NON-COMPARABLE to live contact-free ground truth — explains why "tails ≤0.25 m" is INDETERMINATE not FAILED. Gate-3 crossing speed: 17.4–17.5 m/s consistent across all 5 flights.
+**Lesson (validation-doctrine):** The artifact survived two rounds because both uses (finding-A and the binding-gate D-probe) referenced bottom-centre implicitly. Only independent raw re-derivation (frames.json + track_map.json with the reference convention made explicit) killed it — always cross-check registration claims against the raw bundle with the reference convention stated.
 
-**Action:** investigate cheaply from 7 live recordings + capture_track_map data; bundle into queued SHADOWPC-VISION-CAL session (owns map/extrinsic calibration).
+Live gate-3 crossing speed 17.4–17.5 m/s consistent across all 5 flights (unchanged fact).
 
 ### ✅ NEW FINDING (B) — bimodal lap times RESOLVED (2026-06-13, commit f4d723b)
 
@@ -635,7 +635,7 @@ Multi-radius simstart table (inc7-training-consistent primary = r=0.38; `linf` r
 | **4** | **0.215** | **0.255** | **0.205** | **0.155 ← BINDING** |
 | 5 | 0.056 | 0.414 | 0.364 | 0.314 |
 
-**Gate-4 is binding at EVERY radius** — margins shift by constant `(0.75−r)`, so ranking is RADIUS-INVARIANT. Gate-5 is CLEAN (simstart linf 0.056 / margin 0.314 @ r=0.38). Risk localizes to gate-4 specifically; NOT the whole 4–5 segment.
+**Gate-4 is binding at EVERY radius** — margins shift by constant `(0.75−r)`, so ranking is RADIUS-INVARIANT. Gate-5 is CLEAN (simstart linf 0.056 / margin 0.314 @ r=0.38). Risk localizes to gate-4 specifically; NOT the whole 4–5 segment. Gate-4 registration confirmed offline (live-crosses ~0.10 m in-plane; map offset not a concern).
 
 **Binding is START-TYPE-DEPENDENT:**
 
@@ -648,14 +648,13 @@ POOLED or trainreset views MIS-RANK the binding gate. Always use SIMSTART for th
 
 **D-offset probe now PARAMETRIC (gates 3/4/5; 82c2d20):** ±1.5 m probe on all three gates — ALL flip pass→collision. Fragility is UNIVERSAL, not gate-4-specific. The probe does NOT single out any gate as map-confounded; it is sensitivity analysis only.
 
-**🚩 GATE-3 TRACK_MAP D-REGISTRATION: CORRECTED (supersedes 0bb60cc claim "finding-A UNRESOLVED / gate-3 ~accurate on E-axis only; fragility, not confound"):**
-- The "g3_linf 0.051 ≈ live 0.06 m → track_map ~accurate" claim holds ONLY on the **E (lateral) axis** (~0.07 m live).
-- On the **D (vertical) axis**: live gate-3 crossing at D ≈ 23.10 m vs track_map center D = 24.568 m → drone is **~1.46–1.48 m above center**. track_map outer_half = 1.36 m. A crossing 1.46 m off-center is geometrically OUTSIDE the track_map gate → clean pass (n_coll=0, 5/5 flights) is only possible if the TRUE gate-3 center is ~1.46 m from track_map center in D.
-- **FINDING-A IS CONFIRMED REAL: track_map gate-3 D-center is mis-registered ~1.46 m.** The "consistent" agreement was E-axis only; the D-axis disagreement (1.46 m > outer_half 1.36 m) forces the registration conclusion.
-- Gate-3 nominal margin is **USABLE for ranking** (decisively non-binding; live-clean), but **NOT as absolute clearance** until SHADOWPC-VISION-CAL.
-- The ±1.5 m probe fragility is UNIVERSAL (gates 3/4/5 all flip) — NOT evidence any other gate IS off. Gate-3's mis-registration is established by the live D-coordinate geometry; gates 4/5 have NO live cross-check yet.
+**🚩 GATE-3 TRACK_MAP D-REGISTRATION: FINDING-A FALSIFIED (2026-06-13, Fengyou-verified; supersedes prior "CONFIRMED REAL" / commit 82c2d20 claim):**
+- track_map records gate BOTTOM-centre; drone flies through OPENING-centre (~1.36 m above). drone_D − record_bottom_D ≈ −1.36 m at EVERY gate — gate-3's −1.377 m is NOT anomalous. Referenced to opening-centre, gate-3 crosses 0.056 m (3D), PASS-CLEAN.
+- All 6 gates registered ≤0.37 m in-plane. track_map is trustworthy. Finding-A dead.
+- Gate-3 nominal margin USABLE for ranking (non-binding, live-clean).
+- **Lesson:** the artifact survived because both the inc7-live finding and the inc8 D-probe used the bottom-centre reference implicitly. Only independent raw re-derivation (frames.json + track_map.json with convention stated) falsified it.
 
-**GATE-4 ABSOLUTE MARGIN IS PROVISIONAL:** gate-4 (binding) shares the registration uncertainty — no live per-gate offset cross-check exists for gates 4/5. The 0.155 m at r=0.38 is the track_map-frame figure. Binding-gate **ranking** is robust; **absolute margin** is provisional until SHADOWPC-VISION-CAL. **ACTION:** extract gate-4/5 live per-gate offsets on the next ShadowPC touch as part of the SHADOWPC-VISION-CAL bundle. Inc8 envelope relaxation must GUARD gate-4's (provisional 0.155 m) margin — relaxing for speed must not drive it negative.
+**GATE-4 REGISTRATION CONFIRMED OFFLINE:** gate-4 live-crosses ~0.10 m in-plane (fid 1020, course_bundle), rules out ≥0.5 m offset. The 0.155 m @ r=0.38 margin is NOT threatened by a map mis-registration. Ranking robust; absolute sub-0.155 m clearance still wants the live winner-validation batch (orthogonal policy/physics-state question — keep the rider).
 
 **🚩 TRACK_MAP REGISTRATION / VISION-CAL EXTRINSIC-CALIBRATION DESIGN folded into the vision case-C ultracode workstream (commander decision, 2026-06-13).**
 

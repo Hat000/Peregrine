@@ -1252,3 +1252,65 @@ Anti-crab/sideslip terms; aggression/action damping beyond c16; gate-proximity p
 2. **VISION-FRAME-FIX** (parallel, navigator.py:295).
 3. Envelope ladder step 1 (rw_tilt 96→48) — gated on inc7 standing live confirm.
 4. S19 mixer contradiction; SHADOWPC-VISION-CAL; 60/100 Hz (evidence-gated).
+
+---
+
+## §CASE-C-READINESS (2026-06-13, ultracode-vision-case-c workstream; synthesis lead; report handoff/ultracode-vision-case-c-2026-06-13/REPORT.md)
+
+### Verdict: GO-WITH-CONDITIONS
+
+Case C (vision-only pose) is structurally sound. All four prototypes (B rewind buffer, C range-anisotropic R, D latency budget, F registration re-survey) survived adversarial verify with only non-fatal corrections. The track-map registration scare is resolved (see gate-3 falsification below). However, case C is NOT flight-ready — conditions are HARD GATES, not nice-to-haves.
+
+### Binding risk: UNMEASURED in-loop vision latency L
+
+L (frame-in → fix-applied compute time) is unmeasured. Three failure modes hang off it:
+1. The 67 ms datum is WRONG for vision — that is actuation latency (command cross-correlation). Edge HW estimate 5–15 ms → v·L 0.1–0.5 m (comparable to gate-4 margin, not catastrophic). Laptop CPU-only 112–139 ms → v·L 2.3–4.2 m at 20–30 m/s — breaks the 10 m last-fix rule. Verdict FLIPS if eval HW is CPU-class.
+2. KF rewind buffer (piece B): horizon < L → drops ALL fixes, diverges to ~21 m RMSE (worse than naive). Buffer is HARD-blocked on measuring L to size the horizon.
+3. Predict-forward needs a calibrated constant age = L. Both compensation paths blocked on the same measurement.
+One ShadowPC/eval-HW recording with capture-to-apply timestamps resolves all three. **This is the #1 SHADOWPC-VISION-CAL item.**
+
+### Three P0 blockers (case C unshippable without these)
+
+- **P0-1 — Fix `_initialize()` crutch** (`navigator.py:255-271`): reads `ds.position_ned` with NO `use_given_position` guard → if sim streams LPN, every "case C" test is secretly case A (hidden ground-truth seed on tick 1). True case C (position_ned=None) seeds origin at pos_std=5.0. Effort: S, 1 file.
+- **P0-2 — Measure in-loop vision L on eval HW**: one ShadowPC recording with capture→apply timestamps. Gates horizon-sizing, predict-forward age, and the speed thesis. Pair with P0-3 in one ShadowPC session.
+- **P0-3 — TIMESYNC epoch reconciliation**: `frame.sim_time_ns` = server UNIX epoch; `DroneState.sim_time_ns` = IMU boot epoch — unreconciled. Already corrupts `time_since_vision_update_s` (`navigator.py:426`), benign at VQ1 but load-bearing for case-C coast/abort. HARD prereq for the rewind buffer. Effort: M.
+
+### Per-piece findings (all survived adversarial verify)
+
+- **B — KF rewind buffer / OOSM** (`kf_rewind_buffer.py`): bit-exact OOSM confirmed (|dx|=|dP|=0 vs oracle); SPD-preserved; v·L bias removal verified confound-free (analytic to <0.3%). SHARPEST RISK: horizon < L → diverges to ~21 m. Cost ~0.19 ms/fix (not 0.03 ms as the docstring claims), still ~170× under budget. Blocked on P0-2 + P0-3.
+- **C — Range-anisotropic R** (`range_anisotropic_R.py`): r⁴ depth law math-correct (MC-confirmed slope 1.89); PSD on 5000 geometries. WEAKENED: shipped analytic-Fisher cov ALREADY carries the identical r⁴ law in-range → in-range benefit ~ZERO. Value only at >24 m range + off-nominal pixel noise. Lateral coefficient a1 extrapolates BADLY past VQ1 range. Do NOT integrate for VQ1/cases A-B. Deprioritized to P2.
+- **D — In-loop latency budget** (`latency_harness.py`): PnP→KF chain measured 0.77 ms p50 (negligible). Detector: laptop CPU 112–139 ms (upper bound, no GPU); edge 5–15 ms ESTIMATE (never measured on eval HW). The "30 Hz binds only at ≥30 m/s × last-fix ≤10 m" conclusion is conditional on edge-class eval HW.
+- **F — Registration re-survey** (`vision_cal.py`): robust re-survey tool validated. **Gate-3 1.46 m mis-registration FALSIFIED** (see §GATE-3-FALSIFICATION). All 6 gates registered ≤0.37 m in-plane. Residual registration sigma ~[0.21, 0.24, 0.03] m (N,E,D) — already covered by shipped FIX_COV_FLOOR_STD=0.40 m floor. Gate-4 in-plane ~0.10 m (fid 1020); 0.155 m inc8 margin not threatened by map error.
+
+### Gate-3 falsification (terminal, compact)
+
+gate-3 1.46 m D mis-registration FALSIFIED (2026-06-13, Fengyou-verified from raw course_bundle/frames.json + track_map.json). **Reference-frame artifact:** track_map records gate BOTTOM-centre; drone flies through OPENING-centre ~1.36 m (half outer-height) above it. drone_D − record_bottom_D ≈ −1.36 m at EVERY gate (gate-3 = −1.377 m, NOT anomalous). Referenced to opening-centre, gate-3 crosses 0.056 m (3D), PASS-CLEAN. All 6 gates registered ≤0.37 m in-plane. Finding-A dead. track_map is trustworthy.
+
+### Gate-4 de-provisionalization
+
+Gate-4 binding margin 0.155 m @ r=0.38 is registration-confirmed offline: course_bundle fid 1020 transit crosses ~0.10 m in-plane from the mapped opening-centre; a true ≥0.5 m gate-4 offset is ruled out. Drop "shares registration risk" / "provisional." Keep fresh-reset live winner-validation rider (guards the orthogonal policy/physics-state question).
+
+### P0-P3 build plan (prioritized)
+
+| item | priority | effort | depends_on | benefit |
+|---|---|---|---|---|
+| P0-1 fix `_initialize` crutch | P0 | S | — | unblocks ALL case-C validation |
+| P0-2 measure in-loop L on eval HW | P0 | S | — | gates horizon-sizing, predict-forward, speed thesis |
+| P0-3 TIMESYNC epoch reconciliation | P0 | M | — | unblocks rewind buffer; fixes navigator.py:426 tsv bug |
+| P1-1 predict-forward (constant calibrated age) | P1 | S | P0-2 | removes first-order v·age bias; no TIMESYNC; ~80% of rewind win |
+| P1-2 KF rewind buffer / OOSM | P1 | S | P0-2, P0-3, P1-1 | exact variable/late-fix handling; horizon<L → ~21 m divergence risk |
+| P2-1 range-anisotropic R | P2 | S | P0-2 + >24 m recording | case-C long-range only; ~zero in-range value |
+| P3-1 vision-velocity channel | P3 | M | — | DEFER — over-build |
+| P3-2 per-gate R coeffs | P3 | S | — | DEFER — 0.40 m floor already covers residual |
+
+### SHADOWPC-VISION-CAL additions from this workstream
+
+1. In-loop vision latency L on eval HW (capture→apply timestamps) — THE binding measurement; fold into organizer Q⑤ (eval-HW GPU).
+2. Eval-HW detector timing (CPU-class = verdict FLIPS).
+3. TIMESYNC epoch reconciliation build + verify vs live wire trace.
+4. True vision-only cold-start (P0-1 fix + end-to-end case C exercise).
+5. (Pre-existing) 2-corner PnP fallback, Bayesian-IoU extrinsic, per-gate last-fix distance, roll-wander re-measure.
+
+### Prototypes (NOT in src/)
+
+All under `handoff/ultracode-vision-case-c-2026-06-13/`: `kf_rewind_buffer.py`, `range_anisotropic_R.py`, `latency_harness.py`, `vision_cal.py` + verifiers + `REPORT.md`.
