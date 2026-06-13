@@ -47,6 +47,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -149,6 +150,142 @@ OBS_LABELS = (
 # nose-first spawn look exactly like the trained tail-first regime.
 _RZ_PI_BODY = np.diag([-1.0, -1.0, 1.0])
 
+# VQ1 design assumption: every gate yaw is π (the deployed course). _R_W2G / _GATE_REL_POS /
+# _GATE_YAW_REL above are the EXACT yaw=π specialization (diag(-1,-1,1), sin(π) dropped). This
+# constant lets the import-time guard catch a half-migrated edit (e.g. bumping _GATE_POS_ZUP to a
+# non-π course while leaving the hardcoded gate frame), and seeds the deploy-time all-π check.
+_GATE_YAW_ZUP = np.full(N_GATES, np.pi, dtype=np.float64)
+# Tolerance for "this course is the all-π VQ1 course": the real course JSON stores yaw=3.141592569
+# (π to ~8.4e-8), so the gate-relative obs the hardcoded path produces is correct to <1e-5 m; any
+# deviation beyond this is a genuinely different (VQ2 / random / bent) course that the hardcoded
+# yaw=π gate frame would silently corrupt by up to ~4.2 m (CONFIRMED bug P4-C05).
+_GATE_YAW_TOL = 1e-4
+
+
+# ---------------------------------------------------------------------------
+# Per-gate gate-frame plumbing (P4-C05 fix) — the gate frame must follow the
+# RUNTIME gate yaw, not a hardcoded yaw=π. The legacy _R_W2G/_GATE_REL_POS path
+# is correct ONLY on VQ1 (all gates yaw=π); on any non-π / VQ2 / course_mode=random
+# course it silently corrupts the consumed gate-relative obs (pos_g/vel_g/rpy_g_y/
+# next-gate lookahead) by up to ~4.2 m. These helpers reproduce the TRAIN-side
+# definition (peregrine_racing.get_observations / world_to_gateframe / rel_tables)
+# EXACTLY so a yaw-aware deploy obs == the obs the policy was trained on, on any course.
+# ---------------------------------------------------------------------------
+class GateMap(NamedTuple):
+    """A course's gate geometry for the obs builder (DiffAero Z-up frame), mirroring the
+    runtime per-env course tensors in peregrine_racing (gate_pos / gate_yaw) plus the
+    precomputed next-gate lookahead (rel_tables). Pass one to obs_from_zup / build_obs to
+    fly a non-π course; the default (None) uses the bit-exact hardcoded VQ1 constants."""
+    gate_pos: np.ndarray      # (N,3)  opening centres, Z-up
+    gate_yaw: np.ndarray      # (N,)   through-yaw, rad
+    gate_rel_pos: np.ndarray  # (N,3)  next-gate lookahead position (gate (i-1)'s frame)
+    gate_yaw_rel: np.ndarray  # (N,)   next-gate lookahead rel yaw, wrapped
+
+
+def _gate_rotmat_w2g(yaw: float) -> np.ndarray:
+    """numpy world->gate rotation, rows [c,s,0; -s,c,0; 0,0,1] — EXACTLY diffaero's
+    get_gate_rotmat_w2g and peregrine_racing.world_to_gateframe. For yaw=π this is
+    [[-1, sin(π)≈1.2e-16, 0], [-1.2e-16, -1, 0], [0,0,1]] — i.e. _R_W2G to the sin(π)
+    epsilon (the legacy path uses the EXACT diag, so the default obs is bit-identical)."""
+    c, s = np.cos(yaw), np.sin(yaw)
+    return np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+
+
+def _rel_tables_np(gate_pos: np.ndarray, gate_yaw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """numpy mirror of peregrine_racing.rel_tables: next-gate lookahead, per gate.
+    gate_rel_pos[i] = R_w2g(yaw[i-1]) @ (pos[i] - pos[i-1]); index 0 wraps to the last gate
+    (the parent's Python [i-1] convention; index 0 is never consumed — next_gate_idx is
+    clamped >= 1). gate_yaw_rel[i] = wrap(yaw[i] - yaw[i-1])."""
+    n = len(gate_pos)
+    rel = np.empty((n, 3), dtype=np.float64)
+    yaw_rel = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        rel[i] = _gate_rotmat_w2g(float(gate_yaw[i - 1])) @ (gate_pos[i] - gate_pos[i - 1])
+        dy = float(gate_yaw[i]) - float(gate_yaw[i - 1])
+        yaw_rel[i] = np.arctan2(np.sin(dy), np.cos(dy))
+    return rel, yaw_rel
+
+
+def make_gate_map(gate_pos_zup: np.ndarray, gate_yaw: np.ndarray) -> GateMap:
+    """Build a GateMap (positions + yaws + precomputed lookahead) for an arbitrary course,
+    matching peregrine_racing's per-env course tensors. Use this to fly a non-π / VQ2 /
+    procedural course through the existing obs builder."""
+    gate_pos_zup = np.asarray(gate_pos_zup, dtype=np.float64)
+    gate_yaw = np.asarray(gate_yaw, dtype=np.float64)
+    rel, yaw_rel = _rel_tables_np(gate_pos_zup, gate_yaw)
+    return GateMap(gate_pos_zup, gate_yaw, rel, yaw_rel)
+
+
+def assert_gate_map_allpi(gate_yaw: np.ndarray, *, where: str = "deploy",
+                          tol: float = _GATE_YAW_TOL) -> None:
+    """LOUD guard for the historically-hardcoded yaw=π obs path (CONFIRMED bug P4-C05).
+    The default obs_from_zup gate frame (_R_W2G = diag(-1,-1,1)) and lookahead tables are
+    correct ONLY when every gate yaw is π. On any non-π course they silently corrupt the
+    gate-relative obs (pos_g/vel_g/rpy_g_y/next-gate lookahead) by up to ~4.2 m. Call this
+    before trusting the default (gate_map=None) builder on a runtime course; to fly a non-π
+    course, pass an explicit gate_map=make_gate_map(...) (the yaw-aware path) instead."""
+    gy = np.asarray(gate_yaw, dtype=np.float64)
+    dev = np.abs(np.arctan2(np.sin(gy - np.pi), np.cos(gy - np.pi)))  # wrapped distance to π
+    if not np.all(dev <= tol):
+        bad = np.where(dev > tol)[0].tolist()
+        raise AssertionError(
+            f"[{where}] P4-C05 GUARD: the hardcoded yaw=π gate-frame obs path is being used on "
+            f"a NON-π course (gates {bad} deviate from π by up to {float(dev.max()):.4f} rad = "
+            f"{np.degrees(float(dev.max())):.2f}°). This silently corrupts the gate-relative obs "
+            f"by metres. Fly a non-π course via build_obs(..., gate_map=make_gate_map(pos, yaw)).")
+
+
+def _assert_vq1_constants_consistent() -> None:
+    """Import-time self-check: the hardcoded VQ1 obs constants (_R_W2G via _GATE_REL_POS/
+    _GATE_YAW_REL) must equal the general per-gate construction on the all-π VQ1 course.
+    Guards a HALF-MIGRATED edit — e.g. bumping _GATE_POS_ZUP to a non-π course while leaving
+    the hardcoded gate frame — which would silently corrupt the deployed obs (P4-C05)."""
+    assert_gate_map_allpi(_GATE_YAW_ZUP, where="fly_rl import")
+    rel, yaw_rel = _rel_tables_np(_GATE_POS_ZUP, _GATE_YAW_ZUP)
+    # _R_W2G is the EXACT yaw=π diag; the general rel tables match to the sin(π) epsilon (~1e-14).
+    if not np.allclose(rel, _GATE_REL_POS, atol=1e-9):
+        raise AssertionError(
+            f"_GATE_REL_POS diverges from the per-gate rel_tables on VQ1 "
+            f"(max|diff|={float(np.abs(rel - _GATE_REL_POS).max()):.2e}); the hardcoded gate-frame "
+            f"constants are no longer consistent with _GATE_POS_ZUP / _GATE_YAW_ZUP.")
+    if not np.allclose(yaw_rel, _GATE_YAW_REL, atol=1e-9):
+        raise AssertionError(
+            f"_GATE_YAW_REL diverges from the per-gate rel_tables on VQ1 "
+            f"(max|diff|={float(np.abs(yaw_rel - _GATE_YAW_REL).max()):.2e}).")
+
+
+def _assert_live_course_is_vq1(track_gates, *, where: str = "fly_rl deploy",
+                               pos_tol_m: float = 2.0) -> None:
+    """Deploy-time LOUD guard (P4-C05): the live RL loop builds obs through the hardcoded
+    yaw=π VQ1 gate frame (gate_map=None). Before trusting it, verify the sim is actually
+    broadcasting the VQ1 course — same gate count, and each gate within ``pos_tol_m`` of the
+    hardcoded _GATE_POS_ZUP (gates are ~24 m apart, so 2 m never false-fires on VQ1 but catches
+    a different/VQ2 course). On a genuinely different course the hardcoded yaw=π frame would
+    silently corrupt the obs by metres; the fix is to thread a live gate_map (make_gate_map).
+    No-op when no track map has arrived yet (warn only — the legacy behaviour)."""
+    if not track_gates:
+        print(f"  [P4-C05 guard] no TRACK_INFO yet -> cannot verify the live course is VQ1; "
+              f"proceeding on the hardcoded yaw=π gate frame (valid only if VQ1).",
+              file=sys.stderr)
+        return
+    if len(track_gates) != N_GATES:
+        raise AssertionError(
+            f"[{where}] P4-C05 GUARD: live course has {len(track_gates)} gates, hardcoded VQ1 "
+            f"obs expects {N_GATES}. The yaw=π gate frame is invalid here — thread a live "
+            f"gate_map (make_gate_map) into build_obs.")
+    by_id = sorted(track_gates, key=lambda g: int(g["gate_id"]))
+    live_zup = np.asarray([g["position_ned"] for g in by_id], dtype=np.float64) * _FLIP
+    dpos = float(np.abs(live_zup - _GATE_POS_ZUP).max())
+    if dpos > pos_tol_m:
+        raise AssertionError(
+            f"[{where}] P4-C05 GUARD: live gate positions deviate from the hardcoded VQ1 course "
+            f"by up to {dpos:.2f} m (> {pos_tol_m} m) — this is NOT the all-π VQ1 course the "
+            f"hardcoded yaw=π obs frame is valid for. Thread a live gate_map (make_gate_map) "
+            f"into build_obs; the hardcoded path would silently corrupt the gate-relative obs.")
+
+
+_assert_vq1_constants_consistent()
+
 
 # ---------------------------------------------------------------------------
 # Math helpers (no pytorch3d dependency on ShadowPC)
@@ -169,7 +306,8 @@ def _euler_zyx(R: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 def obs_from_zup(pos_zup: np.ndarray, vel_zup: np.ndarray, R_b2w_zup: np.ndarray,
                  w_flu: np.ndarray, target_gate: int,
-                 last_normed_thrust: float, virtual_flip: bool = False) -> np.ndarray:
+                 last_normed_thrust: float, virtual_flip: bool = False,
+                 gate_map: GateMap | None = None) -> np.ndarray:
     """17-dim obs (float32) from TRUE state already in the DiffAero Z-up/FLU frame.
 
     Layout (matching peregrine_racing.py):
@@ -180,30 +318,53 @@ def obs_from_zup(pos_zup: np.ndarray, vel_zup: np.ndarray, R_b2w_zup: np.ndarray
       [12]    prev_normed_thrust  previous RESCALED normed_thrust in [0, act_max] g-units
                                   (0.0 at episode start) -- NOT the [0,1] wire collective
       [13:16] next_relpos  pre-computed next-gate relative position
-      [16]    next_relyaw  0 (uniform gate yaw)
+      [16]    next_relyaw  inter-gate yaw delta (0 on VQ1; nonzero on a bent course)
+
+    The gate frame follows ``gate_map`` per-gate yaw (P4-C05 fix). ``gate_map=None`` uses the
+    hardcoded VQ1 constants (_R_W2G/_GATE_REL_POS/_GATE_YAW_REL) — bit-identical to the legacy
+    builder and correct ONLY because every VQ1 gate yaw is π. Pass an explicit gate_map (e.g.
+    make_gate_map(pos, yaw)) for any non-π / VQ2 / course_mode=random course; the yaw-aware path
+    reproduces peregrine_racing.get_observations EXACTLY (the obs the policy was trained on).
     """
     if virtual_flip:
         R_b2w_zup = R_b2w_zup @ _RZ_PI_BODY     # body axes rotated π about body z
         w_flu = _RZ_PI_BODY @ w_flu
-    gp    = _GATE_POS_ZUP[target_gate]
-    pos_g = _R_W2G @ (gp - pos_zup)
-    vel_g = _R_W2G @ vel_zup
-    rpy_g = _euler_zyx(_R_W2G @ R_b2w_zup)
-    nxt   = min(target_gate + 1, N_GATES - 1)
+    nxt = min(target_gate + 1, N_GATES - 1)
+    if gate_map is None:
+        # LEGACY VQ1 path — EXACT yaw=π specialization (no cos/sin epsilon). Bit-identical to the
+        # pre-P4-C05 builder; valid only on the all-π course (guarded at import + via the deploy
+        # all-π check). Same constant objects + arithmetic as before -> old==new is exactly 0.
+        R_w2g      = _R_W2G
+        gp         = _GATE_POS_ZUP[target_gate]
+        nxt_rel    = _GATE_REL_POS[nxt]
+        nxt_relyaw = _GATE_YAW_REL[nxt]
+    else:
+        # YAW-AWARE path — per-gate gate frame from the runtime course (matches
+        # peregrine_racing.get_observations: get_gate_rotmat_w2g(gate_yaw[tg]) + rel_tables).
+        R_w2g      = _gate_rotmat_w2g(float(gate_map.gate_yaw[target_gate]))
+        gp         = gate_map.gate_pos[target_gate]
+        nxt_rel    = gate_map.gate_rel_pos[nxt]
+        nxt_relyaw = gate_map.gate_yaw_rel[nxt]
+    pos_g = R_w2g @ (gp - pos_zup)
+    vel_g = R_w2g @ vel_zup
+    rpy_g = _euler_zyx(R_w2g @ R_b2w_zup)
     obs = np.concatenate([
         pos_g, vel_g, rpy_g, w_flu,
         [last_normed_thrust],
-        _GATE_REL_POS[nxt],
-        [_GATE_YAW_REL[nxt]],
+        nxt_rel,
+        [nxt_relyaw],
     ])
     return obs.astype(np.float32)
 
 
 def build_obs(state, target_gate: int, last_normed_thrust: float,
-              virtual_flip: bool = False) -> np.ndarray:
+              virtual_flip: bool = False, gate_map: GateMap | None = None) -> np.ndarray:
     """Telemetry -> 17-dim obs: conjugate the ODOMETRY quat to the TRUE attitude
     (R_y(pi) telemetry frame -- see _ODO_QUAT_TRUE_CONJ), negate the raw rates to
-    TRUE FRD, convert NED/FRD -> Z-up/FLU, then obs_from_zup."""
+    TRUE FRD, convert NED/FRD -> Z-up/FLU, then obs_from_zup.
+
+    ``gate_map`` threads the runtime per-gate yaw through to obs_from_zup (P4-C05). None =
+    the bit-exact hardcoded VQ1 path; pass make_gate_map(...) for a non-π course."""
     from scipy.spatial.transform import Rotation as _Rot
 
     pos_ned = np.asarray(state.position_ned,         dtype=np.float64)
@@ -219,7 +380,7 @@ def build_obs(state, target_gate: int, last_normed_thrust: float,
     w_frd = w_raw * _ODO_RATE_SIGN              # raw -> true FRD body rates
     return obs_from_zup(pos_ned * _FLIP, vel_ned * _FLIP, R_b2w_zup,
                         w_frd * _FLIP, target_gate, last_normed_thrust,
-                        virtual_flip=virtual_flip)
+                        virtual_flip=virtual_flip, gate_map=gate_map)
 
 
 def telemetry_health(state, now_ns: int, stale_s: float) -> tuple[str, float]:
@@ -755,6 +916,13 @@ def _fly_armed(client, actor, args, flight_idx: int,
         if bres != "HANDOFF":
             result["final_state"] = bres
             return result   # fly_once's finally disarms
+
+    # ------------------------------------------------------------------
+    # P4-C05 deploy guard: the RL loop below builds obs through the hardcoded yaw=π VQ1 gate
+    # frame (build_obs gate_map=None). Verify the sim is broadcasting the VQ1 course before
+    # trusting it — a non-π / different course would silently corrupt the obs by metres.
+    # ------------------------------------------------------------------
+    _assert_live_course_is_vq1(client.track_gates)
 
     # ------------------------------------------------------------------
     # RL control loop at --rate Hz (training cadence)

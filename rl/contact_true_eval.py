@@ -40,8 +40,8 @@ from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams, PlantState,
                             MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
                             MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED,
                             step as plant_step)
-from fly_rl import (N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST,
-                    _TRAIN_DT, load_actor, policy_step)
+from fly_rl import (GateMap, N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST,
+                    _TRAIN_DT, _gate_rotmat_w2g, load_actor, make_gate_map, policy_step)
 from offline_rollout import (slab_frame_hit_np, _HALF_OPEN, _HALF_OUTER,
                               _RATE_SIGN_LIVE, obs_from_truth, _quat_from_rpy)
 
@@ -103,6 +103,7 @@ def _score_gate(
     body_radius: float,
     frame_depth: float,
     gate_pos_zup: np.ndarray,
+    gate_yaw: np.ndarray | None = None,
 ) -> tuple[str | None, float]:
     """Returns (verdict, linf) using the contact-true geometry.
 
@@ -113,11 +114,15 @@ def _score_gate(
 
     With body_radius=0 and frame_depth=0 this reproduces the legacy gate_event()
     output exactly (verified by test_contact_true_eval.test_legacy_parity).
-    """
+
+    ``gate_yaw`` (P4-C05): None = the hardcoded yaw=π gate frame (_R_W2G, bit-exact VQ1,
+    correct only because every VQ1 gate yaw is π); pass per-gate yaws to score a non-π /
+    VQ2 course correctly (so the selection metric does not silently mis-score bent gates)."""
+    w2g = _R_W2G if gate_yaw is None else _gate_rotmat_w2g(float(gate_yaw[gate]))
     half_in = _HALF_OPEN - body_radius
     half_out = _HALF_OUTER + body_radius
-    prev_rel = _R_W2G @ (prev_ned * _FLIP - gate_pos_zup[gate])
-    cur_rel = _R_W2G @ (cur_ned * _FLIP - gate_pos_zup[gate])
+    prev_rel = w2g @ (prev_ned * _FLIP - gate_pos_zup[gate])
+    cur_rel = w2g @ (cur_ned * _FLIP - gate_pos_zup[gate])
 
     # Volumetric slab contact (pre-plane and steep-approach strikes, inc7 doctrine)
     if frame_depth > 0.0 and slab_frame_hit_np(prev_rel, cur_rel, half_in, half_out,
@@ -212,6 +217,7 @@ def run_episode(
     body_radius: float = BODY_RADIUS_NOM,
     frame_depth: float = FRAME_DEPTH_NOM,
     gate_pos_zup: np.ndarray | None = None,
+    gate_yaw: np.ndarray | None = None,
     max_time: float = 40.0,
     dt: float = _TRAIN_DT,
     start_label: str = '',
@@ -224,9 +230,17 @@ def run_episode(
 
     Physics and observation building replicate offline_rollout.main()'s loop.
     gate_pos_zup overrides gate positions for scoring; when None uses _GATE_POS_ZUP.
-    """
+
+    ``gate_yaw`` (P4-C05): None = the hardcoded all-π VQ1 course (obs gate_map=None +
+    yaw=π scoring, bit-exact). Pass per-gate yaws for a non-π / VQ2 course: the obs is then
+    built through a yaw-aware gate_map AND the geometry is scored per-gate, so the selection
+    metric and the policy both see the correct gate frame."""
     if gate_pos_zup is None:
         gate_pos_zup = _GATE_POS_ZUP
+
+    # Obs gate map: None on VQ1 (bit-exact); yaw-aware (positions + yaws) on a non-π course so
+    # the policy sees the same gate frame the metric scores against.
+    gate_map = None if gate_yaw is None else make_gate_map(gate_pos_zup, gate_yaw)
 
     # OOB box (exact training box from peregrine_racing._update_boxes)
     pts = np.vstack([gate_pos_zup, [0.0, 0.0, -0.02]])
@@ -243,7 +257,7 @@ def run_episode(
     pos_log = [start_state.pos.copy()] if record_pos else None
 
     for k in range(n_steps):
-        obs = obs_from_truth(st, gate, last_normed, virtual_flip)
+        obs = obs_from_truth(st, gate, last_normed, virtual_flip, gate_map=gate_map)
         rate_frd, _coll, last_normed = policy_step(actor, obs, 0.0, virtual_flip)
         collective = last_normed * _HOVER_THRUST   # un-clipped, exactly training
         action = np.concatenate([rate_frd, [collective]])
@@ -260,7 +274,8 @@ def run_episode(
         for g in range(N_GATES):
             if g == gate:
                 continue
-            v, linf = _score_gate(prev_pos, st.pos, g, body_radius, frame_depth, gate_pos_zup)
+            v, linf = _score_gate(prev_pos, st.pos, g, body_radius, frame_depth, gate_pos_zup,
+                                  gate_yaw)
             if v == "collision":
                 crossings.append(GateCrossing(gate=g, verdict="collision", linf=linf, t=t))
                 collision_gate = g
@@ -271,7 +286,8 @@ def run_episode(
             break
 
         # Target gate
-        v, linf = _score_gate(prev_pos, st.pos, gate, body_radius, frame_depth, gate_pos_zup)
+        v, linf = _score_gate(prev_pos, st.pos, gate, body_radius, frame_depth, gate_pos_zup,
+                              gate_yaw)
         if v == "pass":
             crossings.append(GateCrossing(gate=gate, verdict="pass", linf=linf, t=t))
             if gate == N_GATES - 1:
@@ -394,6 +410,7 @@ def gate_d_offset_probe(
     gate_id: int = 3,
     body_radius: float = BODY_RADIUS_NOM,
     frame_depth: float = FRAME_DEPTH_NOM,
+    gate_yaw: np.ndarray | None = None,
 ) -> dict:
     """Re-score a pre-computed trajectory with gate `gate_id` shifted by delta_d_m in NED Down.
 
@@ -427,7 +444,8 @@ def gate_d_offset_probe(
         for g in range(N_GATES):
             if g == gate:
                 continue
-            v, linf = _score_gate(prev_ned, cur_ned, g, body_radius, frame_depth, gate_pos)
+            v, linf = _score_gate(prev_ned, cur_ned, g, body_radius, frame_depth, gate_pos,
+                                  gate_yaw)
             if v == "collision":
                 crossings.append(GateCrossing(gate=g, verdict="collision", linf=linf, t=t))
                 collision_g = g
@@ -437,7 +455,8 @@ def gate_d_offset_probe(
             outcome = "COLLISION"
             break
 
-        v, linf = _score_gate(prev_ned, cur_ned, gate, body_radius, frame_depth, gate_pos)
+        v, linf = _score_gate(prev_ned, cur_ned, gate, body_radius, frame_depth, gate_pos,
+                              gate_yaw)
         if v == "pass":
             crossings.append(GateCrossing(gate=gate, verdict="pass", linf=linf, t=t))
             if gate == N_GATES - 1:

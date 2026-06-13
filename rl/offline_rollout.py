@@ -46,8 +46,9 @@ from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams, PlantState,
                             MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED,
                             quat_rotate, step as plant_step)
 from fly_rl import (
-    N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST, _ODO_RATE_SIGN,
-    _TRAIN_DT, build_obs, load_actor, obs_from_zup, policy_step,
+    GateMap, N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST, _ODO_RATE_SIGN,
+    _TRAIN_DT, _gate_rotmat_w2g, build_obs, load_actor, make_gate_map, obs_from_zup,
+    policy_step,
 )
 
 _GATE_POS_NED = _GATE_POS_ZUP * _FLIP   # opening centres, NED
@@ -71,13 +72,14 @@ def _R_from_quat(q: np.ndarray) -> np.ndarray:
 
 
 def obs_from_truth(st: PlantState, target_gate: int, last_normed: float,
-                   virtual_flip: bool = False) -> np.ndarray:
-    """TRUE NED/FRD plant state -> the 17-dim training obs (adapter-faithful path)."""
+                   virtual_flip: bool = False, gate_map: GateMap | None = None) -> np.ndarray:
+    """TRUE NED/FRD plant state -> the 17-dim training obs (adapter-faithful path).
+    ``gate_map`` threads the runtime per-gate yaw through (P4-C05); None = bit-exact VQ1."""
     R_ned = _R_from_quat(st.quat)
     R_zup = (_FLIP[:, None] * R_ned) * _FLIP[None, :]
     return obs_from_zup(st.pos * _FLIP, st.vel * _FLIP, R_zup,
                         st.omega * _FLIP, target_gate, last_normed,
-                        virtual_flip=virtual_flip)
+                        virtual_flip=virtual_flip, gate_map=gate_map)
 
 
 def telemetry_from_truth(st: PlantState) -> SimpleNamespace:
@@ -146,8 +148,16 @@ def slab_frame_hit_np(prev_rel: np.ndarray, cur_rel: np.ndarray, half_in: float,
     return lmin <= half_out and lmax >= half_in
 
 
+def _w2g_for(gate: int, gate_yaw: np.ndarray | None) -> np.ndarray:
+    """world->gate rotation for ``gate``: the EXACT yaw=π diag (_R_W2G, bit-exact VQ1) when
+    ``gate_yaw`` is None, else the per-gate yaw-aware rotation (P4-C05)."""
+    return _R_W2G if gate_yaw is None else _gate_rotmat_w2g(float(gate_yaw[gate]))
+
+
 def gate_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int,
-               body_radius: float = 0.0, frame_depth: float = 0.0) -> str | None:
+               body_radius: float = 0.0, frame_depth: float = 0.0,
+               gate_pos_zup: np.ndarray | None = None,
+               gate_yaw: np.ndarray | None = None) -> str | None:
     """'pass' | 'collision' | 'miss' | None for the TARGET gate -- the S1.4 classification
     (mirrors peregrine_racing.crossing_events): the plane crossing is INTERPOLATED to the
     crossing point; L-inf < 0.75 m = pass, in (0.75, 1.36] = frame collision, beyond = clean
@@ -156,11 +166,16 @@ def gate_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int,
     INC7 contact-true scoring (defaults OFF = legacy): ``body_radius`` inflates the bands
     (pass < 0.75 - r, frame band [0.75 - r, 1.36 + r]); ``frame_depth`` makes the frame band
     MATERIAL over |x| <= depth (slab_frame_hit_np) -- catching strikes BEFORE the plane and
-    striking crossings whose interpolated point threads the pass band."""
+    striking crossings whose interpolated point threads the pass band.
+
+    ``gate_pos_zup``/``gate_yaw`` (P4-C05): None = the hardcoded VQ1 course (_GATE_POS_ZUP +
+    yaw=π, bit-exact); pass per-gate arrays to score a non-π course correctly."""
+    gp = _GATE_POS_ZUP if gate_pos_zup is None else gate_pos_zup
+    w2g = _w2g_for(gate, gate_yaw)
     half_in = _HALF_OPEN - body_radius
     half_out = _HALF_OUTER + body_radius
-    prev_rel = _R_W2G @ (prev_ned * _FLIP - _GATE_POS_ZUP[gate])
-    cur_rel  = _R_W2G @ (cur_ned * _FLIP - _GATE_POS_ZUP[gate])
+    prev_rel = w2g @ (prev_ned * _FLIP - gp[gate])
+    cur_rel  = w2g @ (cur_ned * _FLIP - gp[gate])
     if frame_depth > 0.0 and slab_frame_hit_np(prev_rel, cur_rel, half_in, half_out,
                                                frame_depth):
         return "collision"
@@ -180,13 +195,17 @@ def gate_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int,
 
 
 def frame_strike_other_gates(prev_ned: np.ndarray, cur_ned: np.ndarray, target: int,
-                             body_radius: float = 0.0, frame_depth: float = 0.0) -> int | None:
+                             body_radius: float = 0.0, frame_depth: float = 0.0,
+                             gate_pos_zup: np.ndarray | None = None,
+                             gate_yaw: np.ndarray | None = None) -> int | None:
     """S1.4: gates are physical EVERYWHERE -- a frame-band crossing of any non-target gate
-    (either direction) is a collision. Returns the struck gate id or None."""
+    (either direction) is a collision. Returns the struck gate id or None.
+    ``gate_pos_zup``/``gate_yaw`` (P4-C05): None = bit-exact VQ1; per-gate arrays for non-π."""
     for g in range(N_GATES):
         if g == target:
             continue
-        ev = gate_event(prev_ned, cur_ned, g, body_radius, frame_depth)
+        ev = gate_event(prev_ned, cur_ned, g, body_radius, frame_depth,
+                        gate_pos_zup=gate_pos_zup, gate_yaw=gate_yaw)
         if ev == "collision":
             return g
     return None

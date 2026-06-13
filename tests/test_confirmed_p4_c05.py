@@ -56,15 +56,22 @@ on a non-pi course; the BUGGY hardcoded-pi builder violates it. This file:
          pinned to specific obs indices). This is the negative control: it shows the assertion
          would fire if the hardcoded-pi convention were (re)introduced.
 
-NEGATIVE CONTROL / FINDING
---------------------------
-The committed tree still ships the hardcoded-pi obs_from_zup, so the LENS2b invariant CANNOT
-pass against the currently-shipped builder -- that is the confirmed bug, reported explicitly
-as a FINDING (not a harness failure). The test's pass/fail contract is encoded against a
-yaw-aware CORRECTED builder (what a fixed tree would ship); a regression that re-hardcodes pi
-would make `corrected` collapse back onto `obs_from_zup` and the invariant assertion fires.
+FIX STATUS (LANDED 2026-06-13, laptop-p4-c05)
+---------------------------------------------
+The P4-C05 fix is now shipped as an OPT-IN yaw-aware path: obs_from_zup / build_obs take a
+`gate_map=make_gate_map(gate_pos, gate_yaw)` that follows the runtime per-gate yaw and matches
+peregrine_racing.get_observations EXACTLY on any course. `corrected_obs_builder` below now drives
+that REAL shipped path (not a reimplementation), so LENS2b's invariant verifies the actual fix.
 
-DO NOT import rl/contact_true_eval.py (out of scope; edited elsewhere). Not touched here.
+The DEFAULT path (gate_map=None) DELIBERATELY remains the hardcoded yaw=pi VQ1 specialization --
+it is bit-identical to the pre-fix builder (test_p4_c05_bitexact_vq1_default_unchanged: 0.0) and
+correct ONLY on the all-pi course. So the LENS2b NEGATIVE CONTROL (the default diverges by metres
+on a non-pi course) STILL HOLDS by design and is RETAINED: it documents that the default builder
+is VQ1-only and a non-pi course MUST pass an explicit gate_map. A loud guard
+(fly_rl.assert_gate_map_allpi / the deploy-time _assert_live_course_is_vq1) makes the hardcoded
+path fail loudly on a non-pi course instead of silently corrupting obs.
+
+DO NOT import rl/contact_true_eval.py (out of scope here; fixed the same way in its own session).
 """
 from __future__ import annotations
 
@@ -107,7 +114,10 @@ from fly_rl import (           # noqa: E402
     _GATE_YAW_REL,
     _R_W2G,
     _euler_zyx,
+    _gate_rotmat_w2g,
+    assert_gate_map_allpi,
     build_obs,
+    make_gate_map,
     obs_from_zup,
 )
 import peregrine_racing as PR  # noqa: E402  the TRAIN-side ground-truth helpers (pure torch)
@@ -158,13 +168,15 @@ def train_obs(gate_pos, gate_yaw, pos, vel, R_b2w, w_flu, target_gate, last_thru
 
 def corrected_obs_builder(gate_pos, gate_yaw, pos, vel, R_b2w, w_flu, target_gate,
                           last_thrust) -> np.ndarray:
-    """What a FIXED deploy seam would compute: the SAME shape/order as fly_rl.obs_from_zup but
-    YAW-AWARE -- the gate frame follows the runtime gate_yaw instead of the hardcoded _R_W2G.
-    On the all-pi course this is identical to obs_from_zup; on a non-pi course it tracks the
-    train ground truth. The regression's PASS contract is encoded against THIS (not the buggy
-    shipped builder), so a re-hardcode-to-pi regression collapses it back onto obs_from_zup and
-    the invariant assertion fires."""
-    return train_obs(gate_pos, gate_yaw, pos, vel, R_b2w, w_flu, target_gate, last_thrust)
+    """The SHIPPED P4-C05 fix: fly_rl.obs_from_zup driven through the yaw-aware path by passing
+    an explicit gate_map (make_gate_map) built from the runtime per-gate yaw, instead of the
+    hardcoded _R_W2G default. On the all-pi course this equals the default builder; on a non-pi
+    course it tracks the train ground truth. The regression's PASS contract is encoded against
+    THIS real shipped path -- a re-hardcode-to-pi regression (or threading the gate map wrong)
+    makes it diverge from the train ground truth and the invariant assertion fires."""
+    gm = make_gate_map(gate_pos, gate_yaw)
+    return obs_from_zup(pos, vel, R_b2w, w_flu, target_gate, last_thrust,
+                        virtual_flip=False, gate_map=gm)
 
 
 # representative TILTED Z-up/FLU state (~40 deg roll, near tail-first) so the attitude block
@@ -406,6 +418,112 @@ def test_p4_c05_lens2b_external_invariant_nonpi():
 
 
 # =======================================================================================
+# FIX-LANDED tests (P4-C05 remediation): the shipped yaw-aware gate_map path is correct on
+# a non-pi course AND the default path stays bit-exact on VQ1.
+# =======================================================================================
+def _old_reference_obs(pos, vel, R_b2w, w_flu, target_gate, last_thrust,
+                       virtual_flip=False) -> np.ndarray:
+    """The LITERAL pre-P4-C05 obs_from_zup arithmetic (exact _R_W2G diag + hardcoded lookahead).
+    The shipped default (gate_map=None) path must reproduce this BIT-EXACTLY on any input."""
+    if virtual_flip:
+        R_b2w = R_b2w @ fly_rl._RZ_PI_BODY
+        w_flu = fly_rl._RZ_PI_BODY @ w_flu
+    gp = _GATE_POS_ZUP[target_gate]
+    nxt = min(target_gate + 1, N_GATES - 1)
+    obs = np.concatenate([
+        _R_W2G @ (gp - pos), _R_W2G @ vel, _euler_zyx(_R_W2G @ R_b2w), w_flu,
+        [last_thrust], _GATE_REL_POS[nxt], [_GATE_YAW_REL[nxt]],
+    ])
+    return obs.astype(np.float32)
+
+
+def test_p4_c05_bitexact_vq1_default_unchanged():
+    """BIT-EXACT VQ1 INVARIANT: the shipped default (gate_map=None) obs_from_zup reproduces the
+    literal pre-fix arithmetic EXACTLY (0.0) over random tilted states, both virtual_flip modes.
+    The fix changes NOTHING on the pi-course; it only adds the opt-in yaw-aware path."""
+    rng = np.random.default_rng(0)
+    from scipy.spatial.transform import Rotation
+    worst = 0.0
+    for _ in range(2000):
+        pos = rng.uniform(-160, 10, 3)
+        vel = rng.uniform(-25, 25, 3)
+        R_b2w = Rotation.random(random_state=rng).as_matrix()
+        w_flu = rng.uniform(-11, 11, 3)
+        tg = int(rng.integers(0, N_GATES))
+        lt = float(rng.uniform(0, 5))
+        vf = bool(rng.integers(0, 2))
+        new = obs_from_zup(pos, vel, R_b2w, w_flu, tg, lt, virtual_flip=vf)
+        old = _old_reference_obs(pos, vel, R_b2w, w_flu, tg, lt, virtual_flip=vf)
+        worst = max(worst, float(np.abs(new - old).max()))
+    assert worst == 0.0, f"default obs_from_zup must be bit-identical to the pre-fix builder; got {worst:.2e}"
+
+
+def test_p4_c05_shipped_yawaware_matches_train_nonpi():
+    """THE FIX, on real code: the SHIPPED obs_from_zup driven through gate_map=make_gate_map(...)
+    reproduces the TRAIN ground truth on a non-pi course to float32 (every obs field), while the
+    default hardcoded-pi path diverges by metres on the consumed fields. OLD corrupts / NEW correct."""
+    _, _, nonpi_pos, nonpi_yaw, tg = _build_courses()
+    pos, vel, R_b2w, w_flu = _rep_state()[:4]
+    lt = _rep_state()[4]
+    o_train = train_obs(nonpi_pos, nonpi_yaw, pos, vel, R_b2w, w_flu, tg, lt)
+    gm = make_gate_map(nonpi_pos, nonpi_yaw)
+    o_new = obs_from_zup(pos, vel, R_b2w, w_flu, tg, lt, virtual_flip=False, gate_map=gm)
+    o_old = obs_from_zup(pos, vel, R_b2w, w_flu, tg, lt, virtual_flip=False)
+    worst_new = float(np.abs(o_new - o_train).max())
+    max_consumed_old = max(float(abs(o_old[i] - o_train[i])) for i in _CONSUMED_YAW_DEP.values())
+    assert worst_new < _TOL, (
+        f"SHIPPED yaw-aware path must match train ground truth on non-pi; max|diff|={worst_new:.3e}")
+    assert max_consumed_old > _DIVERGE_M, (
+        f"shipped default (hardcoded-pi) must still diverge on non-pi (it is VQ1-only); "
+        f"got {max_consumed_old:.3f}")
+
+
+def test_p4_c05_build_obs_threads_gate_map():
+    """build_obs threads gate_map through to obs_from_zup: on a non-pi course the gate_map path
+    differs from the default on the consumed gate-relative fields; on the all-pi VQ1 course the
+    threaded (cos/sin) path agrees with the bit-exact default to float32."""
+    _, vq1_yaw, nonpi_pos, nonpi_yaw, tg = _build_courses()
+    rng = np.random.default_rng(3)
+    q = rng.standard_normal(4)
+    state = SimpleNamespace(
+        position_ned=rng.uniform(-60, 10, 3), velocity_ned=rng.uniform(-20, 20, 3),
+        orientation_ned_wxyz=q / np.linalg.norm(q), angular_rate_body=rng.uniform(-6, 6, 3))
+    gm_nonpi = make_gate_map(nonpi_pos, nonpi_yaw)
+    o_def = build_obs(state, tg, 1.0, virtual_flip=True)
+    o_gm = build_obs(state, tg, 1.0, virtual_flip=True, gate_map=gm_nonpi)
+    max_consumed = max(float(abs(o_gm[i] - o_def[i])) for i in _CONSUMED_YAW_DEP.values())
+    assert max_consumed > _DIVERGE_M, (
+        f"build_obs must pass gate_map to obs_from_zup (non-pi should differ); got {max_consumed:.3f}")
+    gm_vq1 = make_gate_map(_GATE_POS_ZUP, vq1_yaw)
+    o_gm_vq1 = build_obs(state, tg, 1.0, virtual_flip=True, gate_map=gm_vq1)
+    worst_vq1 = float(np.abs(o_gm_vq1 - o_def).max())
+    assert worst_vq1 < _TOL, (
+        f"on all-pi the threaded path must agree with the default to float32; got {worst_vq1:.3e}")
+
+
+def test_p4_c05_make_gate_map_matches_train_rel_tables():
+    """make_gate_map's lookahead tables == the TRAIN-side peregrine_racing.rel_tables on a non-pi
+    course (the next-gate obs fields the policy was trained on)."""
+    _, _, nonpi_pos, nonpi_yaw, _ = _build_courses()
+    gm = make_gate_map(nonpi_pos, nonpi_yaw)
+    rel, yaw_rel = rel_tables(torch.tensor(nonpi_pos[None], dtype=torch.float64),
+                              torch.tensor(nonpi_yaw[None], dtype=torch.float64))
+    assert float(np.abs(gm.gate_rel_pos - rel[0].numpy()).max()) < 1e-9
+    assert float(np.abs(gm.gate_yaw_rel - yaw_rel[0].numpy()).max()) < 1e-9
+
+
+def test_p4_c05_allpi_guard_fires():
+    """The LOUD deploy guard accepts the all-pi VQ1 course (incl. the real 3.141592569 datum) and
+    raises on a non-pi course -> the historically-hardcoded path fails loudly instead of silently
+    corrupting obs."""
+    assert_gate_map_allpi(np.full(N_GATES, math.pi))                         # exact pi -> OK
+    assert_gate_map_allpi(np.full(N_GATES, 3.141592569296099))               # real VQ1 datum -> OK
+    _, _, _, nonpi_yaw, _ = _build_courses()
+    with pytest.raises(AssertionError):
+        assert_gate_map_allpi(nonpi_yaw)
+
+
+# =======================================================================================
 # Standalone runner: prints PASS/FAIL + key numbers, and reports the CONFIRMED-BUG finding.
 # =======================================================================================
 def _fmt_pass(ok: bool) -> str:
@@ -478,7 +596,7 @@ def main() -> int:
           f"max|diff|={worst_corr:.2e}   [{_fmt_pass(ok2b_corr)}]")
 
     d_bug = np.abs(o_bug2 - o_tr2)
-    print("   NEGATIVE CONTROL  SHIPPED hardcoded-pi obs_from_zup vs train ground truth:")
+    print("   NEGATIVE CONTROL  DEFAULT (gate_map=None) hardcoded-pi obs_from_zup vs train:")
     print("     idx  label            train       shipped     |diff|   consumed?")
     for i in range(len(o_tr2)):
         consumed = i in _CONSUMED_YAW_DEP.values()
@@ -488,28 +606,26 @@ def main() -> int:
     max_consumed = max(float(d_bug[i]) for i in _CONSUMED_YAW_DEP.values())
     bug_present = max_consumed > _DIVERGE_M
     print(f"   max |diff| over CONSUMED yaw-dependent fields = {max_consumed:.4f} "
-          f"({'BUG PRESENT in shipped tree' if bug_present else 'no divergence -> bug fixed'})")
+          f"({'DEFAULT path is VQ1-only by design' if bug_present else 'no divergence'})")
 
-    # --- verdict + explicit FINDING about the committed tree ---
+    # --- verdict + fix-status note ---
     print("\n" + "=" * 78)
     print(f"REGRESSION VERDICT (invariant + controls): "
           f"{_fmt_pass(overall_ok and bug_present)}")
     print("=" * 78)
     if bug_present:
         print(
-            "FINDING (confirmed bug, NOT a test failure): the COMMITTED tree still ships the\n"
-            "hardcoded-yaw=pi obs_from_zup. The external invariant PASSES against the yaw-aware\n"
-            "CORRECTED builder (what a fix would ship) and the negative control confirms the\n"
-            "SHIPPED builder violates it by "
-            f"{max_consumed:.2f} m/rad on consumed gate-relative fields\n"
-            "on a non-pi (VQ2/random) course. VQ1 (all-pi) is unaffected; this is a latent VQ2\n"
-            "hazard. Fix: thread the runtime gate map's per-gate yaw through obs_from_zup /\n"
-            "build_obs and offline_rollout.py (lines 162/163/390/391/403/409 hardcode _R_W2G too).")
-    # The runner returns 0 when the invariant + controls all behave as designed (PASS), which
-    # INCLUDES the negative control firing on the buggy shipped tree. This is intentional: the
-    # regression's job is to ENCODE the invariant and prove it has teeth, then report the bug as
-    # a finding. If a fix lands, `bug_present` flips False -> retire the negative control and the
-    # LENS2b shipped-builder check becomes a straight equality assertion.
+            "FIX LANDED (2026-06-13): the yaw-aware path is shipped as obs_from_zup/build_obs\n"
+            "`gate_map=make_gate_map(pos, yaw)`. The external invariant PASSES against that REAL\n"
+            "shipped path (corrected_obs_builder drives it), reproducing the train ground truth to\n"
+            "float32 on a non-pi course. The DEFAULT path (gate_map=None) deliberately stays the\n"
+            f"hardcoded yaw=pi VQ1 specialization and still diverges by {max_consumed:.2f} m/rad on a\n"
+            "non-pi course -- which is why the negative control is RETAINED (it proves the default is\n"
+            "VQ1-only). VQ1 (all-pi) is bit-identical to the pre-fix builder (0.0). A loud guard\n"
+            "(assert_gate_map_allpi / deploy-time _assert_live_course_is_vq1) fails the hardcoded\n"
+            "path loudly on a non-pi course. Same fix applied in offline_rollout.py + contact_true_eval.py.")
+    # The runner returns 0 when the invariant (shipped yaw-aware path == train) AND the retained
+    # negative control (default path is VQ1-only) both behave as designed.
     return 0 if (overall_ok and bug_present) else 1
 
 
