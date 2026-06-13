@@ -441,8 +441,8 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   termination designed TOGETHER + the **static-map DR** (s/τ/alpha_max — ✅ shipped in S14, just enable it)
   + **COLLISION-based crash-termination** (DiffAero's racing env already has it; NOT a tilt threshold —
   ~~crash-termination at the measured anomaly boundary~~ superseded, no anomaly exists). Hand to a dedicated
-  **fable + adroit-connector** session (one session, scope already banked). Non-trivial,
-  objectively-checkable → good fable fit. Remember the S14 caveat: training configs + evals must run
+  **opus-4.8 + adroit-connector** session (one session, scope already banked). Non-trivial,
+  objectively-checkable → good opus fit. Remember the S14 caveat: training configs + evals must run
   map-ON (DR forces it; eval scripts still default flat).
   **🆕 Scope now ALSO includes procedural track randomization + VQ1-course-as-held-out-eval** (STACK-REVIEW-VQ2
   meta-gap ①, see that section — potentially binary for the unseen VQ2 course).
@@ -631,7 +631,7 @@ Inc4 probe ×3: all crash gate-0 in 11 steps via sustained full collective rocke
 ### 🚩 Live latency MEASURED
 **2 ticks (67 ms)** by command-vs-realized cross-correlation. Supersedes the ~40 ms lore.
 
-### INC6 SPEC (NEXT — one fable session)
+### INC6 SPEC (NEXT — one opus-4.8 session)
 1. **Mixer-aware plant:** motor-level clip model, fit data at `data/runs/20260611_194826_mixer_probe`; integrate twin→rl_plant→DiffAero adapter parity-gated (S14/S16 recipe).
 2. **Action-rate regularization:** bang-bang/dither is free in-twin, lethal live; penalize `‖Δa‖²` aggressively (build on S15's dact term — raise weight or add a yaw-dither-specific penalty).
 3. **Train transport delay ≥2 steps:** 67 ms live = 2 × 33 ms control steps; DR over {0,1,2,3} steps.
@@ -645,7 +645,7 @@ Queue note: TOGT bound eventually re-solved with mixer coupling (current bound a
 - Run 200505 has a frozen-telemetry stretch at gate 5 (identical timestamps) — analysis footgun; exclude from timing studies.
 
 ### NEXT
-**S17 mixer integration + inc6 retrain (one fable session) → live re-test standing-start A/B.**
+**S17 mixer integration + inc6 retrain (one opus-4.8 session) → live re-test standing-start A/B.**
 
 ---
 
@@ -774,7 +774,7 @@ Design rule: all parallel threads feed the sacred 30 Hz control loop **only at t
 
 **Process note:** ADVISOR session (sonnet, read-only sparring partner) is live. Batches arrive as TO COMMANDER blocks; commander triages → bank/queue/reject. Results below.
 
-### QUEUED (fable-window candidates)
+### QUEUED (opus-4.8 candidates)
 
 **VQ2 photoreal detector data pipeline (items A+B):**
 - Blender/Cycles procedural renders: HDRI env, PBR gate materials, realistic lighting, motion blur, partial occlusion. Hue randomization **WIDER than ±15°** — do NOT assume the gate is red; appearance doctrine = overfit geometry, randomize appearance.
@@ -1248,7 +1248,7 @@ Anti-crab/sideslip terms; aggression/action damping beyond c16; gate-proximity p
 
 ### Ranked next queue
 
-1. **LAPTOP-INC7-ENV** (fable): implement Q9/Q10 geometry + dr_force_bias + tests; optional S20 refit same session; V100 gate; 3-seed Adroit launch.
+1. **LAPTOP-INC7-ENV** (opus-4.8): implement Q9/Q10 geometry + dr_force_bias + tests; optional S20 refit same session; V100 gate; 3-seed Adroit launch.
 2. **VISION-FRAME-FIX** (parallel, navigator.py:295).
 3. Envelope ladder step 1 (rw_tilt 96→48) — gated on inc7 standing live confirm.
 4. S19 mixer contradiction; SHADOWPC-VISION-CAL; 60/100 Hz (evidence-gated).
