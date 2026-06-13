@@ -551,13 +551,21 @@ Contact-true volumetric training + body-radius/frame-extrusion DR fixed the stan
 
 Live gate-3 crossing speed 17.4–17.5 m/s consistent across all 5 flights (unchanged fact).
 
-### ✅ NEW FINDING (B) — bimodal lap times RESOLVED (2026-06-13, commit f4d723b)
+### ✅ NEW FINDING (B) — bimodal lap times RESOLVED (2026-06-13, commit f4d723b) — RE-LOCATED by P2-OFFLINE-ANALYSIS
 
-F1 (9.97 s, sim warmed at sim_t=85.9 s) vs F2–F5 (~11.45 s, fresh race sim_t≈5.2 s). **ROOT CAUSE CLASSIFIED: PHYSICS-STATE driven (sub-tick spawn state after HOME reset), NOT sim_t0 warmup and NOT policy sensitivity.** sim_t0 causality ELIMINATED by inc6 proxy: identical gate transitions (k=59/103/147) and speed delta <0.18 m/s across warmup range 3.7 s → 90.4 s. Policy sensitivity ELIMINATED: k=0 obs and first-step actor output identical across all 5 flights. Gap location: **POST-gate-3** (gates 4–5 to finish); gate-3 crossing speed 17.4–17.5 m/s consistent across all 5. Cause: HOME reset respawn leaves sub-tick physics body state not visible via MAVLink but affecting trajectory in the post-gate-3 segment.
+**INITIAL CHARACTERIZATION (commit f4d723b, now SUPERSEDED in part):** F1 (9.97 s, sim warmed at sim_t=85.9 s) vs F2–F5 (~11.45 s, fresh race sim_t≈5.2 s). Physics-state/HOME-reset classified; policy sensitivity ELIMINATED (k=0 obs/action identical). Gap initially inferred as POST-gate-3 from gate-3 crossing speed being constant (~17.4–17.5 m/s).
 
-BENIGN: both modes FINISH clean, 0 contact. **Deployment baseline CONFIRMED: 11.45 s (fresh-reset = competition-representative).** Offline 9.76 s median and F1 9.97 s = warm-sim artifacts; add ~1.5 s to all standing-start offline medians for fresh-sim estimates.
+**🚩 SUPERSEDED — PER-TICK RE-LOCATION (P2-OFFLINE-ANALYSIS, 2026-06-13, DEFINITIVE):** Per-tick analysis of all 5 flights reveals the ENTIRE 1.48 s bimodal gap is in the **start→g0 segment (104% of total)**. Every inter-gate interval g0→g1 through g4→fin is identical across all 5 flights to ±0.04 s. The bimodal is a **PRE-GATE-0 COLD-START ARTIFACT** (~1.5 s sim physics stabilization before the first tick), NOT a post-gate-3 trajectory/speed risk. The earlier "gap lives post-gate-3" inference was an error: constant gate-3 SPEED ≠ constant gate-3 TIME.
 
-**Residual (LOW priority):** full per-tick confirmation needs inc7 debug_obs from ShadowPC (compare gate-0/1/2/3 transition ticks F1 vs F2); fold into next ShadowPC touch. Detail: `handoff/shadowpc-bimodal-char-2026-06-13/WRITEUP.md`.
+**PRESERVED FACTS:**
+- BENIGN: both modes FINISH clean, 0 contact.
+- **Deployment baseline CONFIRMED: 11.45 s** (F2–F5 fresh regime, competition-representative).
+- The ~1.5 s cold-start penalty is competition-representative (every fresh judged run pays it; physics-limited; mitigation unclear — note for inc8/deploy picture).
+- HOME-reset-before-each-standing-batch eval discipline STANDS (the startup offset is real).
+
+**SOFTENED:** the winner-validation RIDER's rationale of "fresh-respawn → post-gate-3 trajectory-basin sensitivity" is void (inter-gate trajectories are deterministic, ±0.04 s) — live-verifying the inc8 winner fresh remains GOOD PRACTICE (confirm clean finish + startup offset), but it is no longer guarding a trajectory-sensitivity risk.
+
+Detail: `handoff/shadowpc-bimodal-char-2026-06-13/WRITEUP.md` (initial); P2-OFFLINE-ANALYSIS 2026-06-13 (per-tick definitive).
 
 ### Supersession
 
@@ -571,8 +579,9 @@ inc6 (`stage1_inc6_actor.pth`) demoted to historical fallback (bridge-only live-
 
 ### Critic adjudications (THREE overrides — supersede naive "fire 15 arms")
 
-**1. BIMODAL lap-time (finding B) = TOP COMMITMENT RISK — ✅ DEFUSED (2026-06-13).**
+**1. BIMODAL lap-time (finding B) = TOP COMMITMENT RISK — ✅ DEFUSED (2026-06-13); ROOT CAUSE RE-LOCATED (P2-OFFLINE-ANALYSIS, 2026-06-13, DEFINITIVE).**
 Competition runs a FRESH sim = the 11.45 s regime, NOT the offline 9.76 s median. Root cause CLASSIFIED: PHYSICS-STATE/HOME-RESET (NOT policy sensitivity, NOT sim_t0 warmup). Policy sensitivity ELIMINATED (k=0 obs/action identical across F1–F5); warmup-age causality ELIMINATED by inc6 proxy. Risk DEFUSED: the bimodal is a sim initialization artifact — the policy is not broken, both modes finish clean. **Inc8 evals must reset to HOME before every standing-start eval batch; never report warm continuous-session laps as competition estimates; add ~1.5 s to offline standing medians for fresh-sim estimates.**
+🚩 **PER-TICK RE-LOCATION (P2-OFFLINE-ANALYSIS, DEFINITIVE):** The ENTIRE 1.48 s gap is in the start→g0 segment (104% of total). Every inter-gate interval g0→g1 through g4→fin is identical across all 5 flights to ±0.04 s. The bimodal is a PRE-GATE-0 cold-start artifact (~1.5 s sim physics stabilization before the first tick), NOT a post-gate-3 trajectory or speed risk. The "gap lives post-gate-3" inference in the initial characterization (f4d723b) was an error: constant gate-3 SPEED does not imply constant gate-3 TIME. Inter-gate trajectories are fully deterministic.
 
 **2. rw_progress bump is OVERRATED.**
 max|tanh|≈0.547 is IDENTICAL inc6 (loose point-mass geom) vs inc7 (tight contact-true). If reward gradient were the bottleneck the looser inc6 would use MORE authority. Same value ⇒ the binding constraint is the ENVELOPE/GEOMETRY, NOT the reward. **Relax the envelope; do NOT pump progress.**
@@ -586,7 +595,7 @@ At γ=0.99 over ~1000 steps the terminal bonus is discounted to ~5e-5; 3× of ~0
 
 #### Phase 0 — measure-first (cheap, sonnet, ~no Adroit; gates everything)
 
-**(a) Bimodal root-cause** ✅ REPORTED (2026-06-13, commit f4d723b): physics-state/HOME-reset (NOT warmup, NOT policy); gap post-gate-3; baseline 11.45 s confirmed; inc8 Phase-1 top-risk gate CLEARED. See §INC7-LIVE-CONFIRMED NEW FINDING (B) above.
+**(a) Bimodal root-cause** ✅ REPORTED (2026-06-13, commit f4d723b): physics-state/HOME-reset (NOT warmup, NOT policy); baseline 11.45 s confirmed; inc8 Phase-1 top-risk gate CLEARED. 🚩 **SUPERSEDED IN PART (P2-OFFLINE-ANALYSIS, 2026-06-13):** gap is PRE-gate-0 cold-start (NOT post-gate-3 as originally reported — constant gate-3 speed ≠ constant gate-3 time; per-tick definitive re-location). See §INC7-LIVE-CONFIRMED NEW FINDING (B) above.
 
 **(b) METRIC INSTRUMENT** (replaces point-mass proxy metrics):
 - Sim-contact-truth: COLLISION id 1001 + active_gate_index as PRIMARY live scoring (kills the gate-3 D-offset dependency on track_map L-inf).
@@ -658,9 +667,11 @@ POOLED or trainreset views MIS-RANK the binding gate. Always use SIMSTART for th
 
 **🚩 TRACK_MAP REGISTRATION / VISION-CAL EXTRINSIC-CALIBRATION DESIGN folded into the vision case-C ultracode workstream (commander decision, 2026-06-13).**
 
-**🚩 CONVERGENT SYNTHESIS (high-value):** bimodal-char (1.48 s gap lives post-gate-3) + contact-true eval (gate-4 binding, also post-gate-3) → **POST-GATE-3 SEGMENT = inc8 risk zone for BOTH speed and validity.** Binding constraint = gate-4 specifically. Envelope-ladder primary margin guard: gate-4.
+~~**🚩 CONVERGENT SYNTHESIS (high-value):** bimodal-char (1.48 s gap lives post-gate-3) + contact-true eval (gate-4 binding, also post-gate-3) → **POST-GATE-3 SEGMENT = inc8 risk zone for BOTH speed and validity.**~~
+**🚩 VOIDED (P2-OFFLINE-ANALYSIS, 2026-06-13):** The bimodal is a PRE-GATE-0 cold-start artifact (per-tick definitive). The "gap lives post-gate-3" premise is FALSE — it was an inference error. The synthesis's "post-gate-3 = BOTH speed and validity risk zone" framing is VOID. Do NOT design inc8 around a false post-gate-3 speed-risk zone.
+**PRESERVED INDEPENDENTLY:** Gate-4 remains the BINDING inc8 gate (0.155 m @ r=0.38, SIMSTART, registration-confirmed) — valid on its own from the contact-true eval, with no bimodal corroboration required. Envelope-ladder primary margin guard: gate-4.
 
-**RIDER — offline twin is structurally blind to fresh-respawn perturbation.** Offline median 9.76 s ≈ warm-live F1 9.97 s, both ~1.5 s under fresh 11.45 s. Crown inc8 winner ONLY after fresh-reset live batch (≥3–5 laps); `gen_stress` is best offline proxy. Perturbation-recovery / velocity-anneal curricula STAY rejected.
+**RIDER (SOFTENED RATIONALE) — offline twin is structurally blind to fresh-respawn cold-start offset.** Offline median 9.76 s ≈ warm-live F1 9.97 s, both ~1.5 s under fresh 11.45 s (pre-gate-0 cold-start). Crown inc8 winner ONLY after fresh-reset live batch (≥3–5 laps); `gen_stress` is best offline proxy. Perturbation-recovery / velocity-anneal curricula STAY rejected. NOTE: the former "fresh-respawn → post-gate-3 trajectory-basin sensitivity" rationale for this rider is void (inter-gate trajectories are deterministic, ±0.04 s) — the rider now guards the ~1.5 s startup offset and confirms a clean finish, not trajectory-sensitivity.
 
 ---
 

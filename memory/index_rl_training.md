@@ -6,7 +6,7 @@ Mid-level index for RL increments, training doctrine, S2 architecture, plant/sys
 - Standing 5/5 FINISHED; bridge 2/2; gate-3 NEVER crashed. sr=1.000 / t_med=9.76 s (warm) / gen=0.924 / deployment baseline **~11.45 s** (fresh-reset = deployment estimate).
 - GEOMETRY-HONESTY THESIS LIVE-VALIDATED: contact-true volumetric training fixed gate-3 barrier on first try.
 - Finding-A (gate-3 D-offset) FALSIFIED (Fengyou-verified): bottom-vs-opening-centre artifact; all 6 gates ≤0.37 m in-plane; track_map trustworthy.
-- Bimodal lap times CLASSIFIED = physics-state/HOME-reset (sub-tick spawn, benign).
+- Bimodal lap times RE-LOCATED (P2-OFFLINE-ANALYSIS, definitive): ENTIRE 1.48 s gap = PRE-gate-0 cold-start artifact (~1.5 s physics stabilization); inter-gate intervals deterministic ±0.04 s. NOT post-gate-3. See §INC8-DESIGN CONVERGENT SYNTHESIS (VOIDED) in [[project-rl-increment-history]].
 - 🚩 **Budget MORE seeds for inc8-class retrains** — 2/3 viable; narrow basin.
 
 ## Checkpoint lineage

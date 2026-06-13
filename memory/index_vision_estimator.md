@@ -15,7 +15,7 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - Improvements: 1.4° attitude lever + 0.40 m cov floor + 32 m cap; over-rejection 15.7%→1.2%.
 - ✅ **VISION-FRAME-FIX (8d7b0b3):** east bias eliminated.
 - 🚩 **`corner_to_center` 180° flip FIXED (37e7ab1).**
-- sigma_theta=1.4° re-fit **queued (SHADOWPC-VISION-CAL)**.
+- sigma_theta=1.4° re-fit **INCONCLUSIVE (P2-OFFLINE-ANALYSIS, 2026-06-13):** at-speed MLE = 0.46° on N=28 fixes (681 frames → 36 depth-sane → 28 MLE-eligible) — UNDERPOWERED (prior used N=165); floor collapsed to 0.00 m (inconsistent); +0.67 m systematic N-bias (unmodeled intercept) deflates estimate. **1.4° + 0.40 m floor PRODUCTION CONSTANTS STAND** (escape hatch invoked). Directional: σ_theta likely smaller at speed (PnP-dominated at ~15–18 m/s); refit DEFERRED pending N≥100 at-speed fixes (awaits inc8-class faster flights). 🆕 **+0.67 m N-bias corroborates gate-relative plan** (per-track world-frame bias drops out in gate-relative obs; cross-ref gate-relative rebuild).
 
 ## Gate mapper
 - ✅ **GATE MAPPER COMPLETE:** `src/racer/gate_mapper.py` cases A/B/C.

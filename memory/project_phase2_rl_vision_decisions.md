@@ -129,7 +129,7 @@ Source of truth: `handoff/shadowpc-vision-pkg2-2026-06-10/WRITEUP.md`.
   where `ds.yaw` is the negated true yaw (R_y(π) alias). Fixing to
   `R_world_from_odo_quat_wxyz(ds.orientation_ned_wxyz)` eliminates east bias to 0.0°/range and reduces
   north bias −2.0°→−0.4°/range. The 1.4° `ATTITUDE_NOISE_STD_RAD`, 0.40 m cov floor, and 32 m range
-  cap remain correct. sigma_theta re-fit queued for ShadowPC (banked recording with corrected R_wb).
+  cap remain correct. sigma_theta re-fit **INCONCLUSIVE (P2-OFFLINE-ANALYSIS, 2026-06-13):** at-speed MLE = 0.46° on N=28 fixes (681 frames → 36 depth-sane → 28 MLE-eligible) — underpowered (prior used N=165); floor collapsed to 0.00 m; +0.67 m systematic N-bias deflates estimate. **1.4° + 0.40 m floor STAND** (escape hatch invoked). Directional: σ_theta likely smaller at speed; refit DEFERRED pending N≥100 at-speed fixes (inc8-class faster flights). 🆕 +0.67 m N-bias corroborates gate-relative plan (per-track world-frame bias drops out in gate-relative obs).
 - **🚩 REAL BUG FOUND+FIXED (37e7ab1): `corner_to_center`'s gate frame was rotated 180° in-plane vs
   the detector's corner convention** — invisible to position (square symmetry) but the PnP
   disambiguation prior fed to IPPE/P3P was ANTI-ALIGNED, making the frontal tie-break + P3P branch
@@ -1341,7 +1341,7 @@ Retrain the live MONOLITHIC policy on the corrected-aero plant for inc8, cast as
 - **M-1** SOFT inversion guarantee via R4 hinge — could drift to corner-cutting at 75–80° → fallback trigger.
 - **M-2** progress-to-gate-CENTER → speed-pushed corner-cut incentive → REMOVED by arc-length graft.
 - **M-3** narrow convergent basin (2/3 seeds viable) → budget ≥4 seeds.
-- **M-4** bimodal respawn sensitivity → WINNER-VALIDATION RIDER (≥3–5 fresh-reset live laps before crowning).
+- **M-4** bimodal cold-start offset (~1.5 s in start→g0, pre-gate-0 only; inter-gate trajectories deterministic ±0.04 s) → WINNER-VALIDATION RIDER (≥3–5 fresh-reset live laps to confirm clean finish + measure startup offset; NOT guarding trajectory-basin sensitivity).
 - **M-5** gate-4 margin erosion at speed → re-verify every speed win against `rl/contact_true_eval.py`.
 
 ### Ordered integration plan (inc8)
