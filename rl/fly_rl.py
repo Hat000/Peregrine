@@ -13,8 +13,10 @@ S1.2 session 2026-06-10 -- see the constants below for the per-item derivations)
   * action = tanh(actor_mean(obs)); env action = min + (max-min)*(action+1)/2
     (StochasticActor.forward test branch + BaseEnv.rescale_action; the raw mean
     is NEVER sent directly).
-  * obs[12] (collective) = the RESCALED normed_thrust of the previous action;
-    0.0 at episode start (BaseEnv.last_action zeroed in reset_idx).
+  * obs[12] = the previous action's RESCALED normed_thrust, in [0, act_max] g-units
+    (act_max = the sidecar's act_max_thrust, e.g. 3.765 for inc7; the LEGACY 5.0 otherwise)
+    -- NOT the [0,1] wire collective. 0.0 at episode start (BaseEnv.last_action zeroed in
+    reset_idx). The [0,1] collective sent to the wire is normed_thrust * hover_thrust (clipped).
   * policy rates are FLU body rates; the training adapter maps them with the
     FLU->FRD flip [1,-1,-1] onto a plant with rate_sign [+1,+1,-1], so the
     TRAINED semantics is realized_frd = g * [+1,-1,+1] * rate_flu. The live
@@ -43,6 +45,7 @@ import json
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -133,7 +136,7 @@ _GATE_YAW_REL = np.zeros(N_GATES, dtype=np.float64)   # 0 everywhere (uniform ya
 OBS_LABELS = (
     [f"pos_g{i}" for i in "xyz"] + [f"vel_g{i}" for i in "xyz"]
     + ["rpy_g_r", "rpy_g_p", "rpy_g_y"] + [f"w_flu{i}" for i in "xyz"]
-    + ["collective_prev"] + [f"nxt_rel{i}" for i in "xyz"] + ["nxt_relyaw"]
+    + ["prev_normed_thrust"] + [f"nxt_rel{i}" for i in "xyz"] + ["nxt_relyaw"]
 )
 
 # VIRTUAL BODY FLIP (π about body z). Training resets at identity Z-up attitude
@@ -174,7 +177,8 @@ def obs_from_zup(pos_zup: np.ndarray, vel_zup: np.ndarray, R_b2w_zup: np.ndarray
       [3:6]   vel_g        R_w2g @ vel                        velocity, gate frame
       [6:9]   rpy_g        ZYX euler of (R_w2g @ R_b2w)       attitude vs gate
       [9:12]  body_rates   FLU body rates
-      [12]    collective   previous RESCALED normed_thrust (0.0 at episode start)
+      [12]    prev_normed_thrust  previous RESCALED normed_thrust in [0, act_max] g-units
+                                  (0.0 at episode start) -- NOT the [0,1] wire collective
       [13:16] next_relpos  pre-computed next-gate relative position
       [16]    next_relyaw  0 (uniform gate yaw)
     """
@@ -216,6 +220,39 @@ def build_obs(state, target_gate: int, last_normed_thrust: float,
     return obs_from_zup(pos_ned * _FLIP, vel_ned * _FLIP, R_b2w_zup,
                         w_frd * _FLIP, target_gate, last_normed_thrust,
                         virtual_flip=virtual_flip)
+
+
+def telemetry_health(state, now_ns: int, stale_s: float) -> tuple[str, float]:
+    """Classify a DroneState snapshot for the deploy loop's F-C gate (audit D1/D2/R4/R5).
+
+    Returns ``(status, odo_age_s)`` where status is one of:
+      "no_fix"     -- a flight field is still None (pre-first-ODOMETRY warmup; skip the tick)
+      "stale"      -- ODOMETRY's per-field arrival age exceeds ``stale_s`` (selective drop;
+                      attitude/rate are frozen -> flying on them is open-loop divergence)
+      "non_finite" -- a NaN/inf component, or a zero-norm quat (would raise in build_obs or
+                      push NaN to the wire)
+      "ok"         -- fresh + finite; safe to build_obs + command.
+
+    Pure function of the snapshot so the gate is unit-testable WITHOUT a live socket. The
+    None check is FIRST (pre-fix warmup is normal, must not arm the recovery timer); the
+    freshness check uses ``odo_recv_ns`` (NOT the shared ``recv_monotonic_ns``, which LPN/IMU
+    also bump); finiteness covers pos/vel/quat/rate and rejects a zero-norm quat (q.q>1e-12)."""
+    if (state.position_ned is None or state.velocity_ned is None
+            or state.orientation_ned_wxyz is None or state.angular_rate_body is None):
+        return "no_fix", float("inf")
+    odo_recv = int(state.odo_recv_ns)
+    age_s = (now_ns - odo_recv) / 1e9 if odo_recv > 0 else float("inf")
+    if age_s > stale_s:
+        return "stale", age_s
+    q = np.asarray(state.orientation_ned_wxyz, dtype=np.float64)
+    finite = bool(
+        np.all(np.isfinite(np.asarray(state.position_ned, dtype=np.float64)))
+        and np.all(np.isfinite(np.asarray(state.velocity_ned, dtype=np.float64)))
+        and np.all(np.isfinite(q)) and float(q @ q) > 1e-12
+        and np.all(np.isfinite(np.asarray(state.angular_rate_body, dtype=np.float64))))
+    if not finite:
+        return "non_finite", age_s
+    return "ok", age_s
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +342,9 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
 
     Returns:
       body_rate_frd  (3,)  rad/s, FRD  — ready for ControlCommand.body_rate
-      collective     float [0,1]       — ready for ControlCommand.thrust
-      normed_thrust  float [0,5]       — RESCALED action[0]; next obs[12]
+      collective     float [0,1]       — ready for ControlCommand.thrust (the wire collective)
+      normed_thrust  float [0,act_max] — RESCALED action[0] in g-units; becomes the next
+                                         obs[12] (NOT the [0,1] collective above)
 
     ``debug``: pass a dict to receive the pipeline internals (raw mean, tanh,
     rescaled action) for the --debug-obs per-step dump.
@@ -539,7 +577,12 @@ def kick_sim_from_home(n_enter: int = 2, settle_s: float = 1.5) -> bool:
 def wait_fresh_go(client, args, auto_reset: bool) -> bool:
     """Pump until a FRESH race GO (race_start within the last 2 s and past the
     start margin, drone near origin).  If auto_reset, fire send_sim_reset()
-    (MAV_CMD 31000) whenever no fresh GO shows up for --reset-after seconds."""
+    (MAV_CMD 31000) whenever no fresh GO shows up for --reset-after seconds.
+
+    F-D/N1: when NOT auto_reset (the submission-safe passive posture) there is no reset
+    to fall back on, so a LATE-JOINED race (countdown elapsed > 2 s ago) would otherwise
+    spin to the deadline as a silent NO_GO. In that config we also accept the first-seen
+    STARTED race that is still at the start (gate 0, not finished, drone at origin)."""
     deadline   = time.monotonic() + args.wait_seconds
     margin_ms  = args.start_margin_s * 1000.0
     next_reset = time.monotonic() + (args.reset_after if auto_reset else 1e18)
@@ -569,6 +612,24 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
                 if now - last_p >= 0.25:
                     print(f"  countdown {to_go/1000:+.2f}s   ", end="\r", flush=True)
                     last_p = now
+            elif (not auto_reset and rs["race_start_boot_time_ms"] >= 0
+                    and to_go <= -2000.0):
+                # F-D/N1: passive late-join. The countdown elapsed > 2 s ago (we attached into
+                # a running race, or GO fired before our first RACE_STATUS). With no reset to
+                # fall back on, accept it iff the race is still at the start line.
+                gi = rs.get("active_gate_index")
+                at_gate0 = gi is None or int(gi) == 0
+                not_finished = not rs.get("finished")
+                pos_off = float(np.linalg.norm(s.position_ned))
+                if at_gate0 and not_finished and pos_off <= 5.0:
+                    print(f"\n  LATE-JOIN GO!  to_go={to_go/1000:+.2f}s  pos_off={pos_off:.2f} m"
+                          f"  gi={gi}.  {telemetry_summary(client)}")
+                    return True
+                elif now - last_p >= 1.0:
+                    print(f"\n  late race not joinable (to_go={to_go/1000:+.1f}s gi={gi} "
+                          f"finished={rs.get('finished')} pos_off={pos_off:.0f} m) — waiting.",
+                          file=sys.stderr)
+                    last_p = now
         if now >= next_reset:
             stale_strikes += 1
             if stale_strikes >= 3:
@@ -590,6 +651,17 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
                   end="\r", flush=True)
             last_p = now
         time.sleep(0.005)
+    # F-D: log WHY we gave up (to_go + started visibility for the live operator).
+    rs = client.race_status
+    if rs:
+        to_go = rs["race_start_boot_time_ms"] - rs["sim_boot_time_ms"]
+        print(f"\n  wait_fresh_go: {args.wait_seconds:g}s deadline, no acceptable GO "
+              f"(started={rs.get('started')} finished={rs.get('finished')} "
+              f"to_go={to_go/1000:+.2f}s gi={rs.get('active_gate_index')} "
+              f"auto_reset={auto_reset}).", file=sys.stderr)
+    else:
+        print(f"\n  wait_fresh_go: {args.wait_seconds:g}s deadline, no RACE_STATUS seen.",
+              file=sys.stderr)
     return False
 
 
@@ -603,29 +675,78 @@ def fly_once(client, actor, args, flight_idx: int,
               "collisions_at_start": len(client.collisions)}
 
     # ------------------------------------------------------------------
-    # Fresh race GO (auto-reset between flights; manual fallback hint)
+    # Fresh race GO. F-A/R1: the submitted path emits NO sim-control command --
+    # auto_reset is opt-in via --dev-auto-reset (dev rig only) and a hard
+    # --no-auto-reset always wins. Default = passive wait for the organizer's GO.
     # ------------------------------------------------------------------
+    auto_reset = bool(args.dev_auto_reset) and not args.no_auto_reset
     if flight_idx == 1:
-        print(">>> Need a FRESH race (auto-reset will be tried; manual: home -> "
-              "waiting room -> Race, ~3 s countdown).")
-    if not wait_fresh_go(client, args, auto_reset=not args.no_auto_reset):
+        if auto_reset:
+            print(">>> [DEV] auto-reset ON: will request a fresh race via MAV_CMD 31000.")
+        else:
+            print(">>> Waiting PASSIVELY for the race GO (no sim-control command will be "
+                  "sent; this is the submission-safe posture).")
+    if not wait_fresh_go(client, args, auto_reset=auto_reset):
         print("no GO -> abort flight.", file=sys.stderr)
         return result
 
     # ------------------------------------------------------------------
-    # Arm
+    # Arm (F-D / AR1: bounded re-send + force-arm last resort). The original single
+    # arm() declared ARM_REFUSED on any transient MAV_RESULT_TEMPORARILY_REJECTED or
+    # a slow SAFETY_ARMED bit -- a recoverable rejection ended the one-shot run. We
+    # re-send up to --arm-attempts times (branching on the ACK), escalating the final
+    # attempt to arm(force=True) (the 21196 pre-arm bypass), all well inside the cap.
     # ------------------------------------------------------------------
     print("\n[arm] ...")
-    client.last_command_ack = None
-    client.arm()
-    ack   = client.wait_command_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, timeout_s=3.0)
-    armed = client.wait_armed(True, timeout_s=5.0)
-    print(f"  ACK={ack['result_name'] if ack else 'none'}  armed={armed}")
+    armed = False
+    for attempt in range(1, args.arm_attempts + 1):
+        force = attempt == args.arm_attempts and args.arm_attempts > 1   # last try escalates
+        client.last_command_ack = None
+        client.arm(force=force)
+        ack   = client.wait_command_ack(mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, timeout_s=3.0)
+        armed = client.wait_armed(True, timeout_s=5.0)
+        rn = ack["result_name"] if ack else "none"
+        print(f"  attempt {attempt}/{args.arm_attempts}"
+              f"{' (force)' if force else ''}: ACK={rn}  armed={armed}")
+        if armed:
+            break
+        if attempt < args.arm_attempts:
+            print(f"  arm not confirmed (ack={rn}) -> retrying in {args.arm_backoff_s:g}s ...",
+                  file=sys.stderr)
+            t_back = time.monotonic() + args.arm_backoff_s
+            while time.monotonic() < t_back:
+                client.pump()          # keep heartbeats/acks flowing during backoff
+                time.sleep(0.01)
     if not armed:
-        print("  arming refused -> abort flight.", file=sys.stderr)
+        print(f"  arming refused after {args.arm_attempts} attempts -> abort flight.",
+              file=sys.stderr)
         result["final_state"] = "ARM_REFUSED"
         return result
 
+    # ------------------------------------------------------------------
+    # ARMED: every exit from here MUST disarm (F-B). A finally wrapping the whole
+    # bridge + RL loop + finish-hold converts EVERY crash path (missing map,
+    # degenerate-quat ValueError, recorder OSError, ...) into a DISARMED exit
+    # instead of leaving the vehicle armed with the last command latched. Mirrors
+    # fly_vq1.py's finally-disarm. (autonomy-readiness audit F-B / R2,R3,R4,n3.)
+    # ------------------------------------------------------------------
+    try:
+        return _fly_armed(client, actor, args, flight_idx, session_dir, result)
+    finally:
+        print("\n[safety] disarming ...")
+        try:
+            client.disarm(force=True)
+            client.wait_armed(False, timeout_s=3.0)
+        except Exception as exc:
+            print(f"  disarm error: {exc}", file=sys.stderr)
+
+
+def _fly_armed(client, actor, args, flight_idx: int,
+               session_dir: Path | None, result: dict) -> dict:
+    """The armed-flight body of ``fly_once`` (PATH B bridge -> RL control loop ->
+    finish hold), factored out so ``fly_once`` can wrap it in a try/finally that
+    force-disarms on EVERY exit path (F-B). Mutates + returns ``result``; the caller
+    owns arming and the guaranteed disarm, so this function NEVER disarms itself."""
     # ------------------------------------------------------------------
     # PATH B bridge: CTBR launcher to the handoff seam
     # ------------------------------------------------------------------
@@ -633,11 +754,7 @@ def fly_once(client, actor, args, flight_idx: int,
         bres = run_bridge(client, args, gate0_x_ned=float(_GATE_POS_ZUP[0, 0]))
         if bres != "HANDOFF":
             result["final_state"] = bres
-            try:
-                client.disarm(force=True)
-            except Exception:
-                pass
-            return result
+            return result   # fly_once's finally disarms
 
     # ------------------------------------------------------------------
     # RL control loop at --rate Hz (training cadence)
@@ -668,6 +785,7 @@ def fly_once(client, actor, args, flight_idx: int,
                       if client.state.position_ned is not None else None)
     spin_t0: float | None = None   # S17 spin guard: onset of sustained high |rate|
     spin_gate      = gate_index
+    bad_t0: float | None = None    # F-C: onset of a stale/non-finite ODOMETRY recovery window
 
     # --- --debug-obs per-step dump (S17): everything the policy saw and emitted.
     dbg_f = None
@@ -743,7 +861,44 @@ def fly_once(client, actor, args, flight_idx: int,
                     print(f"\n  gate {gate_index} PASSED -> targeting {gi_now}", flush=True)
                 gate_index = min(gi_now, N_GATES - 1)
 
+            # --- F-C: ODOMETRY freshness + finite gate (audit D1/D2/R4/R5) ---------------
+            # MUST sit ABOVE the spin guard + build_obs. ODOMETRY is the SOLE source of the
+            # attitude quat + body rate; the shared recv_monotonic_ns is also bumped by LPN/IMU,
+            # so the old None-guard alone is blind to a selective ODOMETRY drop (the quat/rate
+            # freeze verbatim, non-None). Flying on a frozen attitude is open-loop divergence
+            # [D1]; a frozen high |w| would false-fire the spin guard [D2]; a NaN/inf/zero-norm
+            # field would raise inside build_obs or push NaN to the wire [R4/R5]. We gate command
+            # emission on the per-field odo_recv_ns age + finiteness (telemetry_health), holding a
+            # SAFE HOVER for a bounded recovery window then aborting cleanly (mirrors fly_vq1.py).
+            health, odo_age_s = telemetry_health(s, time.monotonic_ns(), args.odo_stale_s)
+            if health == "no_fix":
+                continue   # ODOMETRY not arrived yet (pre-first-fix warmup; do not arm timer)
+            if health != "ok":
+                why = ("non-finite telemetry" if health == "non_finite"
+                       else f"ODOMETRY stale {odo_age_s * 1e3:.0f} ms")
+                if bad_t0 is None:
+                    bad_t0 = now
+                    print(f"\n  [odo-guard] {why} -> SAFE HOVER "
+                          f"(recovery <= {args.odo_recovery_s:g}s) ...")
+                # Neutral hold: stop rotating + hover collective. NEVER re-latch the stale RL
+                # command, and never feed a NaN/zero-norm quat into build_obs.
+                client.send_command(ControlCommand(
+                    mode=ControlMode.BODY_RATE,
+                    sim_time_ns=int(s.sim_time_ns),
+                    body_rate=np.zeros(3),
+                    thrust=_HOVER_THRUST,
+                ))
+                if now - bad_t0 > args.odo_recovery_s:
+                    print(f"\n  ODOMETRY did not recover within {args.odo_recovery_s:g}s "
+                          f"({why}) -> abort.")
+                    final_state = "ODO_STALE" if health == "stale" else "NON_FINITE"
+                    break
+                continue
+            bad_t0 = None   # fresh + finite ODOMETRY -> clear the recovery timer
+
             # --- S17 spin guard: sustained high body rate with zero gate progress ---
+            # (Reached only on a FRESH, finite ODOMETRY tick -> the rate is never frozen here,
+            #  closing the D2 false-SPIN_ABORT on a stale |w|.)
             w_mag = float(np.linalg.norm(np.asarray(s.angular_rate_body, dtype=np.float64)))
             if w_mag < args.spin_rate_abort or gate_index != spin_gate:
                 spin_t0, spin_gate = None, gate_index
@@ -756,12 +911,7 @@ def fly_once(client, actor, args, flight_idx: int,
                 final_state = "SPIN_ABORT"
                 break
 
-            # --- build obs & run policy ---
-            if (s.position_ned is None or s.velocity_ned is None
-                    or s.orientation_ned_wxyz is None
-                    or s.angular_rate_body is None):
-                continue   # ODOMETRY not arrived yet
-
+            # --- build obs & run policy (telemetry already None/finite/freshness-gated) ---
             obs = build_obs(s, gate_index, last_normed, virtual_flip=args.virtual_flip)
             dbg: dict | None = {} if dbg_f is not None else None
             rate_frd, collective, last_normed = policy_step(
@@ -779,7 +929,8 @@ def fly_once(client, actor, args, flight_idx: int,
                 dbg.update({
                     "k": dbg_k, "t_mono": now, "sim_time_ns": st,
                     "gate_index": gate_index,
-                    "odo_age_ms": round((time.monotonic_ns() - s.recv_monotonic_ns) / 1e6, 1),
+                    "odo_age_ms": round((time.monotonic_ns() - int(s.odo_recv_ns)) / 1e6, 1)
+                    if int(s.odo_recv_ns) > 0 else None,
                     "pos_ned": np.asarray(s.position_ned).round(4).tolist(),
                     "vel_ned": np.asarray(s.velocity_ned).round(4).tolist(),
                     "q_raw_wxyz": np.asarray(s.orientation_ned_wxyz).round(6).tolist(),
@@ -855,13 +1006,7 @@ def fly_once(client, actor, args, flight_idx: int,
         except Exception as exc:
             print(f"  finish-hold error: {exc}", file=sys.stderr)
 
-    print("\n[safety] disarming ...")
-    try:
-        client.disarm(force=True)
-        client.wait_armed(False, timeout_s=3.0)
-    except Exception as exc:
-        print(f"  disarm error: {exc}", file=sys.stderr)
-
+    # NB: disarm is owned by fly_once's finally (F-B) -- do NOT disarm here.
     result["final_state"] = final_state
     result["gate_index"]  = gate_index
     result["collisions"]  = len(client.collisions) - n_coll0
@@ -871,14 +1016,18 @@ def fly_once(client, actor, args, flight_idx: int,
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the CLI parser. Factored out of main() so the (autonomy-critical) defaults are
+    unit-testable without connecting a socket (F-A verify)."""
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--checkpoint",
                     default=str(Path(__file__).resolve().parent / "checkpoints"
-                                / "stage1_inc4_actor.pth"),
+                                / "stage1_inc7_actor.pth"),
                     help="path to actor .pth (its .json sidecar, if present, sets the "
-                         "trained action bounds)")
+                         "trained action bounds). DEFAULT = inc7 (LIVE-CONFIRMED current best; "
+                         "F-A. The retired inc4 default was a footgun -- it ships an aero-blind "
+                         "actor unless inc7 is passed explicitly).")
     ap.add_argument("--endpoint",     default="udp:127.0.0.1:14550")
     ap.add_argument("--video-port",   type=int, default=VIDEO_PORT)
     ap.add_argument("--label",        default="rl_s1")
@@ -899,13 +1048,14 @@ def main() -> int:
                          "(training flies the course tail-first; the sim spawns "
                          "nose-first — this maps the spawn into distribution). "
                          "DEFAULT ON (offline: required for gate passes).")
-    ap.add_argument("--bridge", action=argparse.BooleanOptionalAction, default=True,
+    ap.add_argument("--bridge", action=argparse.BooleanOptionalAction, default=False,
                     help="PATH B: fly the proven CTBR stack to ~3 m before gate 0 "
-                         "then hand off to the policy. inc5+ pass 6/6 in-twin from ALL "
-                         "start modes incl. the raw standing start (the old '0/6 raw "
-                         "standing start' was inc4-era); standing start (--no-bridge) "
-                         "is the deployment target -- it deletes the non-deterministic "
-                         "bridge seam (INC5-LIVE Appendix B).")
+                         "then hand off to the policy. DEFAULT OFF (F-A): the standing start "
+                         "(--no-bridge) is the deployment target, deletes the non-deterministic "
+                         "bridge seam, AND is map-free -- the bridge loads a gitignored "
+                         "data/runs map absent from a clean checkout (uncaught FileNotFoundError "
+                         "after arm). inc5+ pass 6/6 in-twin from the raw standing start "
+                         "(INC5-LIVE Appendix B; the old '0/6 standing start' was inc4-era).")
     ap.add_argument("--map", default="data/runs/track_map_20260602_114630.json",
                     help="saved deterministic gate map for the bridge navigator")
     ap.add_argument("--handoff-dist", type=float, default=3.0,
@@ -915,20 +1065,31 @@ def main() -> int:
     ap.add_argument("--bridge-max-s", type=float, default=25.0,
                     help="abort if the bridge has not reached the seam by then")
     ap.add_argument("--flights",      type=int, default=1,
-                    help="number of back-to-back attempts (auto sim-reset between)")
+                    help="number of back-to-back attempts (dev: --dev-auto-reset to sim-reset "
+                         "between). DEFAULT 1 = the submission shape.")
+    ap.add_argument("--dev-auto-reset", action="store_true",
+                    help="DEV-RIG ONLY: permit emitting sim-control commands (MAV_CMD 31000 "
+                         "SIM_RESET + Win32 home-kick) to auto-request a fresh race when no GO "
+                         "shows up. OFF BY DEFAULT (F-A / R1): on the JUDGED link a client "
+                         "sim-control command during a timed run is a §7 DQ, so the submitted "
+                         "path NEVER emits one -- it waits passively for the organizer's GO.")
     ap.add_argument("--no-auto-reset", action="store_true",
-                    help="never send MAV_CMD 31000; wait for a manual race start")
+                    help="hard override: never send MAV_CMD 31000 even with --dev-auto-reset "
+                         "(redundant in the default safe config; kept for explicit wrappers).")
     ap.add_argument("--reset-after",  type=float, default=8.0,
-                    help="seconds without a fresh GO before firing a sim reset")
+                    help="dev only: seconds without a fresh GO before firing a sim reset "
+                         "(used only under --dev-auto-reset).")
     ap.add_argument("--max-seconds",  type=float, default=120.0)
     ap.add_argument("--wait-seconds", type=float, default=180.0)
     ap.add_argument("--start-margin-s", type=float, default=0.3)
     ap.add_argument("--finish-hold-s",  type=float, default=1.0)
     ap.add_argument("--connect-timeout",type=float, default=15.0)
-    ap.add_argument("--debug-obs", action=argparse.BooleanOptionalAction, default=True,
+    ap.add_argument("--debug-obs", action=argparse.BooleanOptionalAction, default=False,
                     help="write <session>/debug_obs.jsonl: per-step telemetry, the "
                          "labeled 17-dim obs, actor mean/tanh/rescale, and the wire "
-                         "command (S17 forensics; ~1 KB/step). DEFAULT ON.")
+                         "command (S17 forensics; ~1 KB/step). DEFAULT OFF (F-A): it is the "
+                         "only per-tick blocking file I/O in the control loop -- enable with "
+                         "--debug-obs for a forensic dev run.")
     ap.add_argument("--full-reset", action=argparse.BooleanOptionalAction, default=True,
                     help="between flights, exit the race to HOME (ESC+Down*3+Enter) "
                          "and re-enter (Enter*2) so every flight starts from a fresh "
@@ -938,7 +1099,27 @@ def main() -> int:
                     help="S17 spin guard: abort when |body rate| exceeds this (rad/s) "
                          "with no gate progress for --spin-time-abort seconds")
     ap.add_argument("--spin-time-abort", type=float, default=2.0)
-    args = ap.parse_args()
+    ap.add_argument("--arm-attempts", type=int, default=3,
+                    help="F-D/AR1: bounded arm re-send attempts before ARM_REFUSED. The final "
+                         "attempt escalates to arm(force=True) (21196 pre-arm bypass). 1 = the "
+                         "old single-shot behaviour. Total budget stays well inside the 8-min cap.")
+    ap.add_argument("--arm-backoff-s", type=float, default=0.5,
+                    help="F-D/AR1: pump-while-waiting backoff between arm attempts (s).")
+    ap.add_argument("--odo-stale-s", type=float, default=0.15,
+                    help="F-C ODOMETRY freshness gate: treat the attitude/rate as STALE when "
+                         "its per-field arrival age exceeds this (s). 0.15 s = ~11 missed 75 Hz "
+                         "ODOMETRY frames -> ~10x the benign inter-arrival jitter, so it never "
+                         "trips a healthy run but catches a selective ODOMETRY drop (audit D1/D2).")
+    ap.add_argument("--odo-recovery-s", type=float, default=0.5,
+                    help="F-C: SAFE-HOVER for up to this long waiting for a stale/non-finite "
+                         "ODOMETRY stream to recover, then abort+disarm (ODO_STALE/NON_FINITE). "
+                         "0.5 s < the 1.5 s sim-stall and 2.0 s spin windows, so the odo gate "
+                         "acts first on a selective drop while bounding open-loop time.")
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     # -- load checkpoint --
     print(f"loading actor: {args.checkpoint}")
@@ -990,6 +1171,7 @@ def main() -> int:
     client.on_message = _on_msg
 
     results = []
+    rc = 0
     try:
         for flight in range(1, args.flights + 1):
             print(f"\n{'='*22} FLIGHT {flight}/{args.flights} {'='*22}")
@@ -1019,6 +1201,19 @@ def main() -> int:
                 res["final_state"] = "INTERRUPTED"
                 results.append({**res, "session": str(session)})
                 raise
+            except Exception as exc:
+                # F-B: any crash in fly_once is already disarmed by its finally; this is a
+                # backstop + LOUD log + re-raise so the failure is never silently swallowed.
+                print(f"\n[safety] flight {flight} crashed "
+                      f"({type(exc).__name__}: {exc}) -> backstop disarm; re-raising.",
+                      file=sys.stderr)
+                try:
+                    client.disarm(force=True)
+                except Exception:
+                    pass
+                res["final_state"] = "EXCEPTION"
+                results.append({**res, "session": str(session)})
+                raise
             finally:
                 holder["rec"] = None
                 recorder.add_meta(
@@ -1044,6 +1239,17 @@ def main() -> int:
                 full_sim_reset()
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        # F-B: do NOT silently swallow. The vehicle is already disarmed (fly_once finally +
+        # per-flight backstop); log loudly, disarm once more defensively, exit non-zero.
+        traceback.print_exc()
+        print(f"\n[safety] run crashed ({type(exc).__name__}: {exc}); vehicle disarmed "
+              f"(fly_once finally + handler backstop). Stopping.", file=sys.stderr)
+        try:
+            client.disarm(force=True)
+        except Exception:
+            pass
+        rc = 1
     finally:
         stop.set()
         vthread.join(timeout=6.0)
@@ -1057,7 +1263,7 @@ def main() -> int:
         ids = sorted({c["id"] for c in client.collisions})
         print(f"  collisions (all flights): {len(client.collisions)} "
               f"(ids {ids}; 1001=gate 1002=env)")
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

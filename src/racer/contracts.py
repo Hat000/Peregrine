@@ -97,6 +97,15 @@ class DroneState:
     # estimator should reinitialise rather than integrate across the discontinuity.
     reset_counter: int = 0
 
+    # PER-FIELD ODOMETRY arrival stamp (``time.monotonic_ns``), set ONLY by the ODOMETRY
+    # branch. ``recv_monotonic_ns`` above is shared across HIGHRES_IMU / LOCAL_POSITION_NED /
+    # ODOMETRY, so it cannot tell you when the *attitude* + *body rate* (ODOMETRY-only fields)
+    # last refreshed: a selective ODOMETRY drop while LPN/IMU keep arriving leaves the quat +
+    # angular rate frozen yet ``recv_monotonic_ns`` reads fresh. Consumers that fly open-loop
+    # on the attitude (the RL deploy loop) must gate on THIS age, not the shared one. 0 until
+    # the first ODOMETRY (autonomy-readiness audit D1/D2, 2026-06-13).
+    odo_recv_ns: int = 0
+
 
 # ---------------------------------------------------------------------------
 # PERCEPTION
