@@ -386,8 +386,15 @@ def main() -> int:
             break
         if ev == "pass":
             passed.append(gate)
+            # interpolate the crossing point (matches gate_event) for the true in-plane Linf
+            _prev_rel = _R_W2G @ (prev_pos * _FLIP - _GATE_POS_ZUP[gate])
+            _cur_rel  = _R_W2G @ (st.pos * _FLIP - _GATE_POS_ZUP[gate])
+            _f = -_prev_rel[0] / ((_cur_rel[0] - _prev_rel[0]) or 1e-9)
+            _iy = _prev_rel[1] + _f * (_cur_rel[1] - _prev_rel[1])
+            _iz = _prev_rel[2] + _f * (_cur_rel[2] - _prev_rel[2])
+            _linf = max(abs(_iy), abs(_iz))
             print(f"  t={t:6.2f}s  gate {gate} PASS   speed={np.linalg.norm(st.vel):5.1f} m/s "
-                  f"pos={np.round(st.pos,1).tolist()}")
+                  f"off=[{_iy:+.2f},{_iz:+.2f}] Linf={_linf:.3f}m")
             if gate == N_GATES - 1:
                 outcome = "FINISHED"
                 break
