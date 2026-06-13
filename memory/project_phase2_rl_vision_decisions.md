@@ -663,7 +663,7 @@ Probe goal: does the sim's `race_outcome` accept a gate pass that clips the corn
 ### Implications (REVISED 2026-06-11 — rules context)
 - **🚩 CONTACT = INVALID RUN (rules-confirmed):** "0.60 m WITH contact" is a RULES-INVALID pass. The usable planning aperture = ≤~0.5 m offset from center (0.6 m logged a contact event; 0.64+ is moot — contact invalidates regardless of gate-advance).
 - **TOGT corner-clipping optimum (~1.06 m Euclidean clips) is definitively ILLEGAL.** The shipped margined reference line (crossings ≤0.14 m from centre = 0.6 m tracking budget) is the correct planning artifact.
-- **TOGT 4.13-vs-4.27 s bracket:** 4.27 s (inscribed-circle, contact-free) is the planning-valid bound. 4.13 s assumed contact-tolerant corner cuts — INVALID.
+- **🚩 SUPERSEDED NUMBERS (2026-06-13, §PLANNING-TOGT-S2):** The 4.27 s inscribed-circle bound AND the 4.55 s shipped reference line are LINEAR-PLANT FICTIONS. Real v_max ~39 m/s (v² drag wall). Honest corrected-aero bound ~4.6–4.7 s; contact-valid bound ~4.43 s (bound_free, clears gate-4 by only +0.046 m). The 4.13 s corner-clip bound is DOUBLY invalid: ILLEGAL + drag-infeasible. `rl/reference_line_vq1.json` is also drag-infeasible + ~170° inverted as geometry → must be REBUILT before any hybrid-cast use.
 - The 0.74 m inconclusive result is a nav-precision artefact; moot given contact rule.
 
 ---
@@ -1314,3 +1314,108 @@ Gate-4 binding margin 0.155 m @ r=0.38 is registration-confirmed offline: course
 ### Prototypes (NOT in src/)
 
 All under `handoff/ultracode-vision-case-c-2026-06-13/`: `kf_rewind_buffer.py`, `range_anisotropic_R.py`, `latency_harness.py`, `vision_cal.py` + verifiers + `REPORT.md`.
+
+---
+
+## §S2-DECISION (2026-06-13) — S2 architecture DECIDED: staged_monolithic_then_decomposed
+
+**Decision: HIGH confidence. Two adversarial lenses (skeptic-mono + skeptic-decomp) independently converged. Source of truth: `handoff/ultracode-planning-togt-s2-2026-06-13/REPORT.md` + `artifacts/D_s2_final.md`.**
+
+### Decision: staged_monolithic_then_decomposed
+
+Retrain the live MONOLITHIC policy on the corrected-aero plant for inc8, cast as a **hybrid-monolithic** (arc-length progress reward over a REBUILT contact-safe min-snap reference line), with the style cone opened one ladder rung. Keep the fully DECOMPOSED stack (offline line generator + a real MPCC/RL tracker) as an explicitly-specced but **unbuilt-until-triggered** warm fallback.
+
+### Why monolithic-first (summary)
+
+1. **Recoverable time = envelope, NOT architecture.** Honest total-force tilt model: 60° cone bound ~9.8–10.6 s ≈ inc7 live 9.76 s → inc7/inc5 are near point-mass-OPTIMAL for their envelope. Architecture-agnostic cone relaxation is the speed lever.
+2. **Monolith = only MEASURED realized lap.** inc7 live-confirmed (5/5 standing, gate-3 gone, 0/5 contact). Decomposed ceiling ~5.4–5.8 s is a paper number — 3/3 native trackers failed; only measured datum k=1.85 (bad).
+3. **Decomposition assets are fiction.** `rl/reference_line_vq1.json` is drag-infeasible (plans 51 m/s vs 39 m/s drag wall) + ~170° inverted (25.8% inverted samples). Must be REBUILT on corrected aero before decomposition is a valid target.
+4. **Decomposition's wins graft free.** No-corner-cut incentive (arc-length progress over reference line) + offline flywheel = adopted into the hybrid-monolithic. Its unique win (HARD inversion ban) guards inc1 backflip whose root cause is FIXED and inc7 never exhibits.
+5. **Binding VQ2 risk = ESTIMATOR, not planner** (architecture-independent → demotes the whole S2 question). East σ 0.47 m = 3.0× the 0.155 m gate-4 margin. Decomposition buys NOTHING on perception.
+
+### Decomposed fallback trigger (build ONLY on BOTH)
+- (a) scipy-SLSQP toy MPCC probe on `rl_plant.step` shows constraint-aware tracker k <~1.25 (decomposed ~5.5 s ceiling is real); AND
+- (b) relaxed-cone hybrid monolith starts cutting corners at gate-4 (M-1 regression, the one regime the HARD inversion ban would save).
+
+### Monolith failure modes to manage
+- **M-1** SOFT inversion guarantee via R4 hinge — could drift to corner-cutting at 75–80° → fallback trigger.
+- **M-2** progress-to-gate-CENTER → speed-pushed corner-cut incentive → REMOVED by arc-length graft.
+- **M-3** narrow convergent basin (2/3 seeds viable) → budget ≥4 seeds.
+- **M-4** bimodal respawn sensitivity → WINNER-VALIDATION RIDER (≥3–5 fresh-reset live laps before crowning).
+- **M-5** gate-4 margin erosion at speed → re-verify every speed win against `rl/contact_true_eval.py`.
+
+### Ordered integration plan (inc8)
+1. **[reward]** Graft hybrid arc-length progress: replace R1 (progress-to-gate-CENTER) with progress-along-Γ via `reference_line.progress()` over a REBUILT contact-safe line.
+2. **[native]** Build corrected-aero min-snap + coupled-TOPP line generator (pure numpy, <1 s; ~40 lines exist in `handoff/ultracode-planning-togt-s2-2026-06-13/proto_envelope_topp.py`). Emit contact-free, non-saturated, dead-centre line. Architecture-neutral: feeds hybrid reward NOW + fallback LATER.
+3. **[doctrine lever — THE speed knob]** Open style cone one rung: rw_tilt 96→48 FIRST, then free-cone 60°→~70° if gate-4 metric holds. Gated on LAPTOP-INC8-BINDING-GATE-VERIFY.
+4. **[retrain]** inc8 on corrected aero (lapse OFF, steps 1+3, ≥4 seeds). Validate map-ON. Crown ONLY after ≥3–5-lap fresh-reset live batch.
+5. **[probe]** scipy-SLSQP toy MPCC on `rl_plant.step` → measure real k. Adjudicates decomposed fallback before paying acados/WSL/Adroit cost.
+6. **[cross-cutting — PRIORITIZE OVER ANY PLANNER CHOICE]** Estimator: drive KF to <0.05 m 1-sigma at post-gate-3 ~37 m/s window. THE binding VQ2 validity risk; measure first.
+
+---
+
+## §PLANNING-TOGT-S2 (2026-06-13, ULTRACODE-PLANNING-TOGT-S2 workstream) — corrected-aero bounds + gap waterfall
+
+**Source of truth: `handoff/ultracode-planning-togt-s2-2026-06-13/REPORT.md`. Workflow 21 agents, 2.48M tok. All numbers reproduced natively in `.venv` (PYTHONPATH=src). Prototypes: `handoff/ultracode-planning-togt-s2-2026-06-13/{proto_envelope_topp.py, proto_togt_corrected.py, verify_honest_tilt_topp.py}`.**
+
+### 🚩 FALSIFICATIONS (supersede §TOGT-BOUND + §CORNER-PASS shipped numbers)
+
+| Claim | Status | Corrected value |
+|---|---|---|
+| 4.27 s TOGT planning-valid bound | **FALSIFIED — linear-plant fiction** | ~4.6–4.7 s honest band |
+| 4.55 s shipped reference line | **FALSIFIED — linear-plant fiction** | drag-infeasible at planned 51 m/s; real wall ~39 m/s |
+| 4.13 s contact-tolerant bound | **DOUBLY INVALID** | ILLEGAL (contact) + drag-infeasible |
+| 0.24 s style-cone envelope cost (cornering-only model) | **REFUTED by adversarial verify** | ~5.2 s honest at 60° cone (total-force model) |
+| "Inc7/inc5 under-driving" | **REFUTED** | Near point-mass-optimal for their envelope; gap = cone, not policy |
+
+**Why falsified:** the old TOGT planned v_max 51–52 m/s; real quad-drag wall v² caps ~39 m/s. At 55 m/s corrected drag = 158 m/s² vs old linear 11.6 m/s² (13.7× under-model). The ceiling is ROBUST to the plant revision (~4.3–4.7 s) because doubled T/W~8 is eaten almost exactly by the v² drag wall.
+
+**Two independent cross-checks on the corrected bound:** `proto_envelope_topp.py` 90° unconstrained TOPP = 4.574 s vs independent C++ TOGT corrected-aero refined = 4.714 s (delta 0.14 s / 3%, v_max 39.17 vs 39.26 agree <0.3%).
+
+### Corrected-aero tilt-vs-laptime (honest total-force TOPP — `verify_honest_tilt_topp.py`)
+
+| Tilt cap | Honest total-force TOPP | Open-loop feasible? |
+|---|---|---|
+| 60° | ~9.8–10.6 s | NO (2.2% of lap demands >78.3 m/s²; max req 111.6) |
+| 65° | ~8.8 s | NO (1.4% over ceiling) |
+| 75° | ~6.7 s | YES (max req 77.8 ≤ 78.3) |
+| 80° | ~5.4 s | YES (max req 70.5) |
+| 90° | 4.60 s | YES; 80°/90° agree (R_min ~30 m, drag wall = sole ceiling above ~79°) |
+
+**Critical framing:** cornering-only model (proto_envelope_topp.py) gives ~5.35 s at 60° — OPTIMISTIC WRONG MODEL. The physically correct definition = tilt of total specific force (braking dominates). Honest model puts inc7 9.76 s right at the 60° bound → tilt-cone = the binding kinematic constraint, not planning.
+
+### Gap waterfall (corrected, 2026-06-13)
+
+| Rung | From→To (s) | Delta | What it is | Status |
+|---|---|---|---|---|
+| 1 | 35.30→9.76 | 25.54 | Model-based→RL collapse (k=1.85 dilation + alt-relay + start-transient + descent-caution) | **CLOSED — inc7 live-confirmed** |
+| 2 | 9.76→6.89 | 2.87 | R4 tilt-cap style tax (2.63 s clean A/B + 0.24 s lineage offset; the 0.24 s NOT envelope-recoverable) | **OPEN — biggest lever: rw_tilt 96→48 (~1.4 s) + free-cone 60°→75–80° (~1.5 s on 3 high-kappa corners)** |
+| 3 | 6.89→4.72 | 2.17 | Policy vs corrected-aero point-mass bound (straight-line under-driving + corners); proxy-reconstructed | **OPEN — lower confidence; ~1.5–1.9 s pure policy slack + small straight residual** |
+
+Sum = 30.58 s = 35.30 − 4.72 (verified). Honest endpoint = 4.72 s; contact-valid = 4.43 s (bound_free, gate-4 planning margin only +0.046 m — razor-thin).
+
+### Trajectory-opt panel (2-lens judge)
+
+| Approach | TIME | ROBUSTNESS+VALIDITY | Read |
+|---|---|---|---|
+| Monolithic RL (inc7-class) | winner (measured) | 7.5 | ONLY live-confirmed contact-free validity |
+| MPCC tracker | 6.0 | ~hybrid | Fastest paper ceiling (~5.4–5.8 s); unbuilt (acados/WSL); k=1.85 is the only measured datum |
+| Hybrid (decomposed line + RL/MPCC) | 5.5 | 6.0 | Best-calibrated est. (8.0 s offline) — calibration says SLOWER than live monolith |
+| min-snap + coupled-TOPP | 4.5 | 6.5 | Free deterministic line generator, not a time frontier |
+| TOGT collocation | 4.0 | 4.5 | Best ceiling; worst realizability ratio; demands 17 rad/s body rates vs ~11.2 rad/s plant ceiling → role = offline BOUND + geometry SEED only |
+
+### 🚩 BINDING VQ2 RISK = ESTIMATOR (converges with §CASE-C-READINESS ②+③)
+
+**Vision world-fix East σ 0.47 m (UNFILTERED) = 3.0× the gate-4 0.155 m contact-true margin.** The KF must reach <0.05 m 1-sigma at the post-gate-3 ~37 m/s window or NO architecture is valid at race speed. Latency 67 ms is validity-BENIGN (0.77–1.93 mm cross-track, <1.3% of margin). **CONDITIONAL on case C (vision-only pose); gated on organizer Q① (if case A/B, pose pristine, risk moot).** COUPLING: going faster (cone relax = inc8 speed lever) worsens the margin/sigma ratio → estimator must be measured BEFORE deploying the relaxed cone at speed. Dedicated ultracode ULTRACODE-ESTIMATOR-RACESPEED dispatched to test <0.05 m 1-sigma achievability.
+
+### Organizer Q① + Q⑤ = CRITICAL PATH (updated priority)
+
+- **Q① (does VQ2 stream pose?)** determines whether the estimator risk is binding or moot.
+- **Q⑤ (eval-HW GPU?)** determines whether in-loop vision latency L flips from edge-class (~5–15 ms, benign) to CPU-class (~112–139 ms, breaks case C).
+- These two answers gate the entire ESTIMATOR vs PLANNER priority ordering. Send email immediately.
+
+### Cheap follow-ups (architecture-neutral)
+
+1. Native corrected-aero min-snap + coupled-TOPP line generator (feeds hybrid reward NOW + fallback LATER; proto exists).
+2. Pull inc7 per-tick gate crossings from ShadowPC (gitignored debug_obs) to firm rung-2/3 attribution.
+3. scipy-SLSQP toy MPCC on `rl_plant.step` — the one number the decomposed ceiling depends on.
