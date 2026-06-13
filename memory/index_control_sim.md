@@ -26,7 +26,8 @@ Mid-level index for sim wire facts, CTBR/legacy sign config, RL deployment recip
 
 ## TRUE PHYSICAL CONVENTIONS (93023cf)
 - ODOMETRY quat **R_y(π)-CONJUGATED**. True attitude: `q_true=q_raw·[1,−1,1,−1]`; true rate: `ω_true=−w_raw` (gain 0.999); cmd→rate sign [+1,+1,+1].
-- ODO twist + accel_body PAIR with raw quat.
+- ODO twist PAIRS with raw quat (unchanged; verified via c3b5a8e velocity-frame fix).
+- 🚩 **CR1-01 SETTLED:** HIGHRES_IMU accel_body PAIRS with TRUE-CONJUGATED quat (NOT raw). Live direct test 281 banked ticks: residual TRUE 0.11 m/s² corr +1.00 vs raw 4.10E/7.54D m/s² corr −0.83. `navigator.py:313` (rotates raw accel_body by true-conjugated attitude) IS CORRECT AS-IS — NOT a case-C error source. SCOPE STRICTLY to HIGHRES_IMU-accel_body↔TRUE-conjugated; ODO-TWIST↔raw-quat UNCHANGED.
 - 🚩 **VALIDATION: run `scripts/frame_residual_report.py` after EVERY live session** — internal consistency CANNOT catch conjugation.
 - ODOMETRY crab ~55° = near-optimal posture (frame-audit confirmed 2026-06-12).
 
@@ -49,16 +50,27 @@ Mid-level index for sim wire facts, CTBR/legacy sign config, RL deployment recip
 - Gate-3 barrier root cause confirmed: point-mass L-inf training vs volumetric sim contact.
 - CRAB-DIAG: ODOMETRY quat R_y(π)-conjugated; crab ~55° = near-optimal posture (frame-audit 2026-06-12).
 
-## Autonomy-hardening (DONE; commit 7210c1d; branch `flyrl-autonomy-hardening`; NOT merged — held for ShadowPC §4 live-verify)
+## Autonomy-hardening (DONE; commit 7210c1d; branch `flyrl-autonomy-hardening`; §4 LIVE-VERIFY PASSED 5/5 → CLEARED TO MERGE, pending Fengyou's go)
 - **F-A:** `rl/submit_rl.py` = new authoritative submission entry (pins inc7/--no-bridge/--no-auto-reset/--no-debug-obs/--flights 1). NO `MAV_CMD 31000` on judged wire path. `fly_rl` defaults flipped SAFE; auto-reset OPT-IN via `--dev-auto-reset`.
 - **F-B:** `_fly_armed()` extracted; `fly_once` try/finally force-disarm; `main()` except Exception backstop.
 - **F-C:** `DroneState.odo_recv_ns` + `telemetry_health()` gate above spin-guard/build_obs → SAFE HOVER on stale/non-finite; thresholds `--odo-stale-s 0.15` / `--odo-recovery-s 0.5`.
 - **F-D:** passive late-join GO accept + bounded arm-retry (3 tries, force-arm last).
 - 🚩 **DEV-RIG CHANGE:** ShadowPC dev batch now needs `--dev-auto-reset`.
-- **MERGE GATE:** ShadowPC §4 checklist (clean finish + no 31000 on wire + late-join catches GO + odo/finite gates silent on healthy run + crash→disarm) must pass before merge.
+- **§4 LIVE-VERIFY PASS 5/5 (2026-06-13):** (a) clean standing finish 9.91 s 6/6 exit 0; (b) ZERO MAV_CMD 31000 on wire (independent relay decode, 118 s); (c) late-join GO to_go=−34s→FINISHED; (d) odo/finite gates silent on healthy run; (e) crash→finally-disarm→exit 1, armed=False. CLEARED TO MERGE.
 
-## ShadowPC-VISION-CAL agenda (queued ⑩)
-In-loop latency L + accel_body logging (CR1-01 rider) + hardening live-verify + sigma_theta refit + per-gate last-fix distance + 2-corner PnP + Bayesian-IoU extrinsic + yaw-active debug_obs capture + full-lap case-C sim (~37 m/s gate-4 recording).
+## ShadowPC-VISION-CAL results (2026-06-13; session COMPLETE)
+- **In-loop vision latency L:** ~115 ms median CPU-only (detect 109 + transport 4 + PnP 1.6 ms). GPU eval host ≈ 15–25 ms. At 37 m/s: 115 ms = ~4.3 m ⇒ CONFIRMS RewindKF-as-default (covers CPU case).
+- **CR1-01:** SETTLED (see TRUE PHYSICAL CONVENTIONS above).
+- **Tooling built** (handoff/shadowpc-vision-cal-2026-06-13/): `simops.py`, `wire/mav_relay.py`, `cr1_direct.py`, `latency_harness.py`. `simops.py` promotion to `scripts/` DISPATCHED (LAPTOP-PROMOTE-SIMOPS).
+- **Remaining queued items** (sigma_theta refit, per-gate last-fix distance, 2-corner PnP, Bayesian-IoU extrinsic, yaw-active debug_obs, full-lap ~37 m/s gate-4 recording): DEFERRED to post-merge phase.
+
+## Sim-ops state machine (Fengyou-confirmed 2026-06-13)
+- HOME→Enter→waiting-room (started=False, drone at origin) → Enter AGAIN → GO (extra Enter out of waiting-room is the gotcha).
+- Fresh-race chain = full ESC+Down×3+Enter+Enter×2 (verified by fresh to_go + new race_start_boot_ms).
+- ESC+Down×3+Enter alone is context-dependent (restart from FINISHED; no-op from stale race).
+- 🚩 Stale started=True race STOPS streaming video — never trust started=True alone.
+- 🚩 computer-use does NOT work for sim (request_access can't resolve DCGame-Win64-Shipping / "AI-GP") — telemetry-only Win32 is the standing method.
+- Cross-cutting gotchas: epoch-vs-sim-boot clock; Windows SIO_UDP_CONNRESET; run_in_background+& double-launch.
 
 ## Topic file pointers
 - [[project-ctbr-control-sysid]] — flyable stack: gains/signs, offline twin, Gate-0 saga, alt-relay.

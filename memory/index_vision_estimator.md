@@ -38,11 +38,19 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - **APPROVED:** async detector→KF; ROI zoom; MPC-shadow; critic-as-risk.
 - **REJECTED:** map mutation; ensemble voting; wind estimator; in-race adaptation.
 
+## CR1-01 settled (2026-06-13)
+- Navigator KF IMU-predict frame NOT the case-C error source: `navigator.py:313` correct (HIGHRES_IMU accel_body↔TRUE-conjugated, live-verified). Removes one estimator-path concern. Gate-relative rebuild remains the path.
+
+## In-loop latency L (measured 2026-06-13)
+- L ≈ 115 ms median CPU-only ShadowPC (detect 109 + transport 4 + PnP 1.6 ms). GPU host ≈ 15–25 ms. CONFIRMS RewindKF default.
+- inc7 live top speed ≈ 21.3 m/s gate-4 approach (median 20.1); 681 vision frames recorded at speed → extends vision data from ≤8.4 m/s toward race speed. Full 37 m/s CONDITIONAL-GO validation AWAITS inc8 envelope-relaxed policy.
+- P2 DEFERRED (data banked: instr_cr1b = video + tlog + debug_obs at speed): sigma_theta 1.4° refit + per-tick gate-crossing/bimodal residual → dispatched as sonnet offload (P2-OFFLINE-ANALYSIS).
+
 ## Advisor-triage open queue
 - 🚩 **ESTIMATOR = CRITICAL PATH** (RewindKF + gate-relative rebuild, gated on estimator report).
 - ① Photoreal detector (Blender/Cycles next).
 - ② ONNX/TRT latency.
-- ⑤⑥ SHADOWPC-VISION-CAL: in-loop latency L + at-speed gate-4 recording + 2-corner PnP + Bayesian-IoU extrinsic + per-gate last-fix distance + accel_body logging + yaw-active debug_obs capture.
+- ⑤⑥ Post-merge: at-speed gate-4 recording + 2-corner PnP + Bayesian-IoU extrinsic + per-gate last-fix distance + sigma_theta refit + yaw-active debug_obs capture.
 - K+L+N PLANNED. REJECTED: HSV pre-filter.
 
 ## Topic file pointers
