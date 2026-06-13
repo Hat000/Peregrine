@@ -551,11 +551,13 @@ Live gate-3 crossing: drone at D ≈ 23.10 m vs track_map center D = 24.568 m �
 
 **Action:** investigate cheaply from 7 live recordings + capture_track_map data; bundle into queued SHADOWPC-VISION-CAL session (owns map/extrinsic calibration).
 
-### 🚩 NEW FINDING (B) — bimodal lap times (low-priority queue)
+### ✅ NEW FINDING (B) — bimodal lap times RESOLVED (2026-06-13, commit f4d723b)
 
-F1 (9.97 s, sim warmed at sim_t=85.9 s) vs F2–F5 (~11.45 s, fresh race sim_t≈5.2 s). Starting attitude and first-step actor output identical across all 5; divergence develops after gate 0. Hypothesis: sim physics warmup at fresh race start (sim_t~5 s) introduces minor velocity perturbations the 30 Hz policy cannot recover from within gate margins. NOT a policy failure; all 5 flights CLEAN + FINISHED. Use ~11.45 s as deployment lap time estimate (fresh sim); 9.97 s = best-case warmed sim.
+F1 (9.97 s, sim warmed at sim_t=85.9 s) vs F2–F5 (~11.45 s, fresh race sim_t≈5.2 s). **ROOT CAUSE CLASSIFIED: PHYSICS-STATE driven (sub-tick spawn state after HOME reset), NOT sim_t0 warmup and NOT policy sensitivity.** sim_t0 causality ELIMINATED by inc6 proxy: identical gate transitions (k=59/103/147) and speed delta <0.18 m/s across warmup range 3.7 s → 90.4 s. Policy sensitivity ELIMINATED: k=0 obs and first-step actor output identical across all 5 flights. Gap location: **POST-gate-3** (gates 4–5 to finish); gate-3 crossing speed 17.4–17.5 m/s consistent across all 5. Cause: HOME reset respawn leaves sub-tick physics body state not visible via MAVLink but affecting trajectory in the post-gate-3 segment.
 
-**Action:** characterize from 7 recordings; no new flights needed. Affects timing studies only.
+BENIGN: both modes FINISH clean, 0 contact. **Deployment baseline CONFIRMED: 11.45 s (fresh-reset = competition-representative).** Offline 9.76 s median and F1 9.97 s = warm-sim artifacts; add ~1.5 s to all standing-start offline medians for fresh-sim estimates.
+
+**Residual (LOW priority):** full per-tick confirmation needs inc7 debug_obs from ShadowPC (compare gate-0/1/2/3 transition ticks F1 vs F2); fold into next ShadowPC touch. Detail: `handoff/shadowpc-bimodal-char-2026-06-13/WRITEUP.md`.
 
 ### Supersession
 
@@ -569,8 +571,8 @@ inc6 (`stage1_inc6_actor.pth`) demoted to historical fallback (bridge-only live-
 
 ### Critic adjudications (THREE overrides — supersede naive "fire 15 arms")
 
-**1. BIMODAL lap-time (finding B) = TOP COMMITMENT RISK.**
-Competition runs a FRESH sim = the 11.45 s regime, NOT the offline 9.76 s median. If this is a policy sensitivity (not sim warmup), every speed metric is optimizing against a baseline the competition never sees. **Characterize BEFORE spending Adroit.** Dispatched: SHADOWPC-BIMODAL-CHAR 2026-06-13 (cheap sonnet, 7 existing recordings, no new flights).
+**1. BIMODAL lap-time (finding B) = TOP COMMITMENT RISK — ✅ DEFUSED (2026-06-13).**
+Competition runs a FRESH sim = the 11.45 s regime, NOT the offline 9.76 s median. Root cause CLASSIFIED: PHYSICS-STATE/HOME-RESET (NOT policy sensitivity, NOT sim_t0 warmup). Policy sensitivity ELIMINATED (k=0 obs/action identical across F1–F5); warmup-age causality ELIMINATED by inc6 proxy. Risk DEFUSED: the bimodal is a sim initialization artifact — the policy is not broken, both modes finish clean. **Inc8 evals must reset to HOME before every standing-start eval batch; never report warm continuous-session laps as competition estimates; add ~1.5 s to offline standing medians for fresh-sim estimates.**
 
 **2. rw_progress bump is OVERRATED.**
 max|tanh|≈0.547 is IDENTICAL inc6 (loose point-mass geom) vs inc7 (tight contact-true). If reward gradient were the bottleneck the looser inc6 would use MORE authority. Same value ⇒ the binding constraint is the ENVELOPE/GEOMETRY, NOT the reward. **Relax the envelope; do NOT pump progress.**
@@ -584,7 +586,7 @@ At γ=0.99 over ~1000 steps the terminal bonus is discounted to ~5e-5; 3× of ~0
 
 #### Phase 0 — measure-first (cheap, sonnet, ~no Adroit; gates everything)
 
-**(a) Bimodal root-cause** from the 7 inc7 recordings — SHADOWPC-BIMODAL-CHAR dispatched 2026-06-13.
+**(a) Bimodal root-cause** ✅ REPORTED (2026-06-13, commit f4d723b): physics-state/HOME-reset (NOT warmup, NOT policy); gap post-gate-3; baseline 11.45 s confirmed; inc8 Phase-1 top-risk gate CLEARED. See §INC7-LIVE-CONFIRMED NEW FINDING (B) above.
 
 **(b) METRIC INSTRUMENT** (replaces point-mass proxy metrics):
 - Sim-contact-truth: COLLISION id 1001 + active_gate_index as PRIMARY live scoring (kills the gate-3 D-offset dependency on track_map L-inf).
