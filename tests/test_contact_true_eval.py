@@ -27,7 +27,7 @@ sys.path.insert(0, str(_SRC))
 from contact_true_eval import (
     GateCrossing, EpisodeResult,
     _score_gate, per_gate_margin_stats, compute_s_stable,
-    gate3_d_offset_probe,
+    gate3_d_offset_probe, gate_d_offset_probe,
     BODY_RADIUS_NOM, FRAME_DEPTH_NOM, PASS_BAND_NOM,
 )
 from fly_rl import N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G
@@ -223,6 +223,27 @@ class TestPerGateMarginStats:
         assert stats[0]["n_pass"] == 1 and abs(stats[0]["linf_median"] - 0.60) < 1e-9
         assert stats[3]["n_pass"] == 1 and abs(stats[3]["linf_median"] - 0.05) < 1e-9
 
+    def test_pass_band_param_shifts_margins(self):
+        """Margins must track the supplied pass_band (radius), not the nominal 0.42."""
+        ep = self._make_episode({4: 0.215})
+        # r=0.38 -> band 0.37 -> margin 0.155 ; r=0.28 -> band 0.47 -> margin 0.255
+        s38 = per_gate_margin_stats([ep], pass_band=0.37)
+        s28 = per_gate_margin_stats([ep], pass_band=0.47)
+        assert abs(s38[4]["margin_median"] - (0.37 - 0.215)) < 1e-9
+        assert abs(s28[4]["margin_median"] - (0.47 - 0.215)) < 1e-9
+        # linf is radius-independent
+        assert abs(s38[4]["linf_median"] - s28[4]["linf_median"]) < 1e-12
+
+    def test_start_filter_selects_subset(self):
+        ep_sim = EpisodeResult(outcome="FINISHED", start_label="simstart",
+                               crossings=[GateCrossing(gate=4, verdict="pass", linf=0.21, t=1.0)])
+        ep_tr = EpisodeResult(outcome="FINISHED", start_label="trainreset_g4",
+                              crossings=[GateCrossing(gate=4, verdict="pass", linf=0.15, t=1.0)])
+        s_sim = per_gate_margin_stats([ep_sim, ep_tr], start_filter="simstart")
+        s_tr = per_gate_margin_stats([ep_sim, ep_tr], start_filter="trainreset")
+        assert s_sim[4]["n_pass"] == 1 and abs(s_sim[4]["linf_median"] - 0.21) < 1e-12
+        assert s_tr[4]["n_pass"] == 1 and abs(s_tr[4]["linf_median"] - 0.15) < 1e-12
+
     def test_no_pass_returns_nan_stats(self):
         ep = EpisodeResult(outcome="COLLISION", crossings=[
             GateCrossing(gate=0, verdict="collision", linf=0.8, t=1.0)
@@ -365,3 +386,75 @@ class TestGate3DOffsetProbe:
         res = gate3_d_offset_probe(self.pos_traj, 0.0)
         assert {"delta_d_m", "outcome", "n_g3_pass", "n_g3_collision",
                 "g3_linf", "g3_margin", "gates_passed"} == set(res.keys())
+
+
+# ---------------------------------------------------------------------------
+# 6. Generic parametric gate_d_offset_probe (gates 3, 4, 5)
+# ---------------------------------------------------------------------------
+
+class TestGenericGateDOffsetProbe:
+    """gate_d_offset_probe generalizes the gate-3 probe to any gate id, so the
+    post-gate-3 binding hypothesis (gates 4, 5) can be tested for map-confound
+    fragility the same way gate-3 was."""
+
+    @pytest.fixture(autouse=True)
+    def _build_straight_traj(self):
+        """Identical centre-passing trajectory builder as TestGate3DOffsetProbe."""
+        positions = []
+        for g in range(N_GATES):
+            gpos = _GATE_POS_ZUP[g]
+            for dx in [1.0, 0.3, 0.0, -0.3, -1.0]:
+                pos_zup = np.array([gpos[0] + dx, gpos[1], gpos[2]])
+                positions.append(pos_zup * _FLIP)
+            if g < N_GATES - 1:
+                g_next = _GATE_POS_ZUP[g + 1]
+                bridge_zup = np.array([
+                    0.5 * ((gpos[0] - 1.0) + (g_next[0] + 1.0)),
+                    g_next[1], g_next[2],
+                ])
+                positions.append(bridge_zup * _FLIP)
+        self.pos_traj = np.array(positions)
+
+    def test_generic_returns_expected_keys(self):
+        res = gate_d_offset_probe(self.pos_traj, 0.0, gate_id=4)
+        assert {"delta_d_m", "gate_id", "outcome", "n_gate_pass",
+                "n_gate_collision", "gate_linf", "gate_margin",
+                "gates_passed"} == set(res.keys())
+
+    def test_gate_id_recorded(self):
+        for gid in (3, 4, 5):
+            res = gate_d_offset_probe(self.pos_traj, 0.0, gate_id=gid)
+            assert res["gate_id"] == gid
+
+    @pytest.mark.parametrize("gid", [3, 4, 5])
+    def test_nominal_each_gate_passes_clean(self, gid):
+        res = gate_d_offset_probe(self.pos_traj, 0.0, gate_id=gid,
+                                  body_radius=0.0, frame_depth=0.0)
+        assert res["n_gate_pass"] >= 1, f"gate {gid} should pass on a centre trajectory"
+        assert res["n_gate_collision"] == 0
+
+    @pytest.mark.parametrize("gid", [4, 5])
+    def test_d_offset_increases_linf_each_gate(self, gid):
+        """A D-shift of the probed gate moves the drone off-centre → larger linf."""
+        res_nom = gate_d_offset_probe(self.pos_traj, 0.0, gate_id=gid,
+                                      body_radius=0.0, frame_depth=0.0)
+        res_shift = gate_d_offset_probe(self.pos_traj, +1.5, gate_id=gid,
+                                        body_radius=0.0, frame_depth=0.0)
+        if res_nom["n_gate_pass"] >= 1 and res_shift["n_gate_pass"] >= 1:
+            assert res_shift["gate_linf"] > res_nom["gate_linf"] - 1e-6
+
+    def test_gate3_wrapper_matches_generic(self):
+        """The backward-compat gate3 wrapper must equal the generic probe at gate_id=3."""
+        for delta in (0.0, -1.5, +1.5):
+            generic = gate_d_offset_probe(self.pos_traj, delta, gate_id=3,
+                                          body_radius=BODY_RADIUS_NOM,
+                                          frame_depth=FRAME_DEPTH_NOM)
+            wrap = gate3_d_offset_probe(self.pos_traj, delta,
+                                        body_radius=BODY_RADIUS_NOM,
+                                        frame_depth=FRAME_DEPTH_NOM)
+            assert wrap["n_g3_pass"] == generic["n_gate_pass"]
+            assert wrap["n_g3_collision"] == generic["n_gate_collision"]
+            assert wrap["outcome"] == generic["outcome"]
+            assert wrap["gates_passed"] == generic["gates_passed"]
+            if not np.isnan(generic["gate_linf"]):
+                assert abs(wrap["g3_linf"] - generic["gate_linf"]) < 1e-12

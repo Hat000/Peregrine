@@ -305,14 +305,27 @@ def run_episode(
 # Statistics helpers
 # ---------------------------------------------------------------------------
 
-def per_gate_margin_stats(results: list[EpisodeResult]) -> dict:
+def per_gate_margin_stats(results: list[EpisodeResult],
+                          start_filter: str | None = None,
+                          pass_band: float = PASS_BAND_NOM) -> dict:
     """Compute per-gate contact-true margin distributions across a list of episodes.
 
     Returns a dict gate_id -> {'linfs': list, 'margins': list, 'n_pass': int,
     'n_collision': int, 'p10': float, 'median': float, 'min': float} for each gate.
     Gates with no passes report NaN statistics.
+
+    start_filter: if set, only episodes whose start_label STARTS WITH this prefix are
+    included (e.g. 'simstart' for the competition-representative full-course rollout,
+    'trainreset' for the synthetic at-rest 1 m-back resets). None pools everything.
+
+    pass_band: contact-true pass band = _HALF_OPEN - body_radius. MUST be passed to
+    match the radius the trajectories were scored at, otherwise margins are computed
+    against the nominal r=0.33 band regardless of --body-radius (the recorded linf is
+    radius-independent geometry; only the pass band shifts with radius).
     """
     from collections import defaultdict
+    if start_filter is not None:
+        results = [r for r in results if r.start_label.startswith(start_filter)]
     linfs_by_gate: dict[int, list[float]] = defaultdict(list)
     coll_by_gate: dict[int, int] = defaultdict(int)
     for r in results:
@@ -323,7 +336,6 @@ def per_gate_margin_stats(results: list[EpisodeResult]) -> dict:
                 coll_by_gate[c.gate] += 1
 
     stats: dict[int, dict] = {}
-    pass_band = PASS_BAND_NOM
     for g in range(N_GATES):
         linfs = linfs_by_gate[g]
         if linfs:
@@ -376,24 +388,31 @@ def compute_s_stable(
 # Map-offset sensitivity probe
 # ---------------------------------------------------------------------------
 
-def gate3_d_offset_probe(
+def gate_d_offset_probe(
     pos_traj: np.ndarray,
     delta_d_m: float,
+    gate_id: int = 3,
     body_radius: float = BODY_RADIUS_NOM,
     frame_depth: float = FRAME_DEPTH_NOM,
 ) -> dict:
-    """Re-score a pre-computed trajectory with gate-3 shifted by delta_d_m in NED Down.
+    """Re-score a pre-computed trajectory with gate `gate_id` shifted by delta_d_m in NED Down.
 
-    In NED: D (down) = +z_ned. In Z-up: z_zup = -z_ned. So shifting gate-3 down by
-    delta_d_m in NED = shifting _GATE_POS_ZUP[3][2] by -delta_d_m.
+    Parametric generalization of the original gate-3-only probe: tells us whether ANY
+    gate's contact-true margin is verdict-FRAGILE (flips under a plausible map mis-cal),
+    not just gate-3. Use it on gates 4 and 5 to test the post-gate-3 binding hypothesis.
+
+    In NED: D (down) = +z_ned. In Z-up: z_zup = -z_ned. So shifting gate `gate_id` down by
+    delta_d_m in NED = shifting _GATE_POS_ZUP[gate_id][2] by -delta_d_m.
 
     pos_traj: (T+1, 3) NED positions from a completed rollout.
     delta_d_m: positive = gate physically lower (drone passes above), negative = higher.
 
-    Returns dict with gate-3 pass/collision counts and margin stats under the offset.
+    Returns dict with the probed gate's pass/collision counts and margin stats under the
+    offset (keys: delta_d_m, gate_id, outcome, n_gate_pass, n_gate_collision, gate_linf,
+    gate_margin, gates_passed).
     """
     gate_pos = _GATE_POS_ZUP.copy()
-    gate_pos[3, 2] -= delta_d_m   # D down = Z-up z decreases
+    gate_pos[gate_id, 2] -= delta_d_m   # D down = Z-up z decreases
 
     crossings: list[GateCrossing] = []
     gate = 0
@@ -434,19 +453,44 @@ def gate3_d_offset_probe(
             outcome = "MISS"
             break
 
-    g3_passes = [c for c in crossings if c.gate == 3 and c.verdict == "pass"]
-    g3_colls = [c for c in crossings if c.gate == 3 and c.verdict == "collision"]
-    g3_linf = g3_passes[0].linf if g3_passes else float('nan')
-    g3_margin = g3_passes[0].margin if g3_passes else float('nan')
+    passes = [c for c in crossings if c.gate == gate_id and c.verdict == "pass"]
+    colls = [c for c in crossings if c.gate == gate_id and c.verdict == "collision"]
+    g_linf = passes[0].linf if passes else float('nan')
+    g_margin = passes[0].margin if passes else float('nan')
 
     return {
         "delta_d_m": delta_d_m,
+        "gate_id": gate_id,
         "outcome": outcome,
-        "n_g3_pass": len(g3_passes),
-        "n_g3_collision": len(g3_colls),
-        "g3_linf": g3_linf,
-        "g3_margin": g3_margin,
+        "n_gate_pass": len(passes),
+        "n_gate_collision": len(colls),
+        "gate_linf": g_linf,
+        "gate_margin": g_margin,
         "gates_passed": sum(1 for c in crossings if c.verdict == "pass"),
+    }
+
+
+def gate3_d_offset_probe(
+    pos_traj: np.ndarray,
+    delta_d_m: float,
+    body_radius: float = BODY_RADIUS_NOM,
+    frame_depth: float = FRAME_DEPTH_NOM,
+) -> dict:
+    """Gate-3-specific backward-compatible wrapper over gate_d_offset_probe.
+
+    Preserves the original g3-prefixed key schema relied upon by existing callers
+    and tests. New code should call gate_d_offset_probe(..., gate_id=...) directly.
+    """
+    r = gate_d_offset_probe(pos_traj, delta_d_m, gate_id=3,
+                            body_radius=body_radius, frame_depth=frame_depth)
+    return {
+        "delta_d_m": r["delta_d_m"],
+        "outcome": r["outcome"],
+        "n_g3_pass": r["n_gate_pass"],
+        "n_g3_collision": r["n_gate_collision"],
+        "g3_linf": r["gate_linf"],
+        "g3_margin": r["gate_margin"],
+        "gates_passed": r["gates_passed"],
     }
 
 
@@ -518,47 +562,62 @@ def main() -> int:
         print(f"  !! NARROW BASIN: S_stable < 2/3  (inc7 training was 1/3-viable; "
               f"see memory inc7 convergence)")
 
-    # --- Per-gate margin distributions ---
-    stats = per_gate_margin_stats(all_results)
-    print(f"\n[PER-GATE MARGINS]  pass_band={_HALF_OPEN - args.body_radius:.3f} m  "
-          f"(L-inf < this = contact-true PASS)")
-    print(f"  {'gate':>4}  {'n_pass':>6}  {'n_coll':>6}  "
-          f"{'linf_p10':>8}  {'linf_med':>8}  {'linf_max':>8}  "
-          f"{'marg_p10':>8}  {'marg_med':>8}  {'marg_min':>8}")
-    for g in range(N_GATES):
-        s = stats[g]
-        flag = "GATE-3 (historically binding)" if g == 3 else ""
-        if s["n_pass"] > 0:
-            print(f"  {g:>4}  {s['n_pass']:>6}  {s['n_collision']:>6}  "
-                  f"{s['linf_p10']:>8.3f}  {s['linf_median']:>8.3f}  {s['linf_max']:>8.3f}  "
-                  f"{s['margin_p10']:>8.3f}  {s['margin_median']:>8.3f}  "
-                  f"{s['margin_min']:>8.3f}  {flag.strip()}")
-        else:
-            print(f"  {g:>4}  {s['n_pass']:>6}  {s['n_collision']:>6}  "
-                  f"{'N/A':>8}  {'N/A':>8}  {'N/A':>8}  "
-                  f"{'N/A':>8}  {'N/A':>8}  {'N/A':>8}{flag}")
+    # --- Per-gate margin distributions (pooled + disaggregated by start type) ---
+    def _print_margin_table(stats: dict, header: str) -> None:
+        print(f"\n[PER-GATE MARGINS — {header}]  pass_band={_HALF_OPEN - args.body_radius:.3f} m  "
+              f"(L-inf < this = contact-true PASS)")
+        print(f"  {'gate':>4}  {'n_pass':>6}  {'n_coll':>6}  "
+              f"{'linf_p10':>8}  {'linf_med':>8}  {'linf_max':>8}  "
+              f"{'marg_p10':>8}  {'marg_med':>8}  {'marg_min':>8}")
+        for g in range(N_GATES):
+            s = stats[g]
+            flag = "GATE-3 (historically binding)" if g == 3 else ""
+            if s["n_pass"] > 0:
+                print(f"  {g:>4}  {s['n_pass']:>6}  {s['n_collision']:>6}  "
+                      f"{s['linf_p10']:>8.3f}  {s['linf_median']:>8.3f}  {s['linf_max']:>8.3f}  "
+                      f"{s['margin_p10']:>8.3f}  {s['margin_median']:>8.3f}  "
+                      f"{s['margin_min']:>8.3f}  {flag.strip()}")
+            else:
+                print(f"  {g:>4}  {s['n_pass']:>6}  {s['n_collision']:>6}  "
+                      f"{'N/A':>8}  {'N/A':>8}  {'N/A':>8}  "
+                      f"{'N/A':>8}  {'N/A':>8}  {'N/A':>8}{flag}")
 
-    # --- Gate-3 D-offset sensitivity probe ---
+    _band = _HALF_OPEN - args.body_radius
+    _print_margin_table(per_gate_margin_stats(all_results, pass_band=_band),
+                        "POOLED (all starts)")
+    _print_margin_table(per_gate_margin_stats(all_results, start_filter="simstart",
+                                              pass_band=_band),
+                        "SIMSTART ONLY (competition-representative full-course)")
+    _print_margin_table(per_gate_margin_stats(all_results, start_filter="trainreset",
+                                              pass_band=_band),
+                        "TRAINRESET ONLY (synthetic at-rest 1 m-back)")
+    print("\n  NOTE: only SIMSTART carries a realistic high-speed post-gate-3 approach; "
+          "it alone answers the gate-4/5 binding question.")
+
+    # --- Multi-gate D-offset sensitivity probe (gates 3, 4, 5) ---
     if simstart_pos_traj is not None and len(simstart_pos_traj) > 1:
-        print(f"\n[GATE-3 D-OFFSET SENSITIVITY]  "
-              f"trajectory from simstart re-scored with gate-3 shifted +/-{args.g3_probe_range} m D")
-        print(f"  (D+ = gate physically LOWER in NED; live finding A: ~1.46 m offset detected)")
-        probes = [0.0, -args.g3_probe_range, +args.g3_probe_range]
-        for delta in probes:
-            res = gate3_d_offset_probe(
-                simstart_pos_traj, delta,
-                body_radius=args.body_radius, frame_depth=args.frame_depth
-            )
-            g3m = f"{res['g3_margin']:+.3f}" if not np.isnan(res['g3_margin']) else "N/A"
-            g3l = f"{res['g3_linf']:.3f}" if not np.isnan(res['g3_linf']) else "N/A"
-            label = "nominal" if delta == 0.0 else f"D{delta:+.1f}m"
-            print(f"  delta_D={delta:+.1f} m  ({label:9s})  outcome={res['outcome']:10s}  "
-                  f"g3_pass={res['n_g3_pass']}  g3_coll={res['n_g3_collision']}  "
-                  f"g3_linf={g3l}  g3_margin={g3m}")
-        print(f"  Interpretation: if live gate-3 is +1.5 m D lower than track_map, "
-              f"the D+{args.g3_probe_range:.0f} row shows the TRUE offline margin.")
+        print(f"\n[MULTI-GATE D-OFFSET SENSITIVITY]  "
+              f"simstart trajectory re-scored with each gate shifted +/-{args.g3_probe_range} m D")
+        print(f"  (D+ = gate physically LOWER in NED; tests whether a gate's margin is "
+              f"verdict-FRAGILE under a plausible map mis-cal — not that the map IS off)")
+        for gate_id in (3, 4, 5):
+            print(f"  -- gate {gate_id} --")
+            for delta in (0.0, -args.g3_probe_range, +args.g3_probe_range):
+                res = gate_d_offset_probe(
+                    simstart_pos_traj, delta, gate_id=gate_id,
+                    body_radius=args.body_radius, frame_depth=args.frame_depth
+                )
+                gm = f"{res['gate_margin']:+.3f}" if not np.isnan(res['gate_margin']) else "N/A"
+                gl = f"{res['gate_linf']:.3f}" if not np.isnan(res['gate_linf']) else "N/A"
+                label = "nominal" if delta == 0.0 else f"D{delta:+.1f}m"
+                print(f"    delta_D={delta:+.1f} m  ({label:9s})  outcome={res['outcome']:10s}  "
+                      f"g{gate_id}_pass={res['n_gate_pass']}  g{gate_id}_coll={res['n_gate_collision']}  "
+                      f"g{gate_id}_linf={gl}  g{gate_id}_margin={gm}")
+        print(f"  Interpretation: a gate whose verdict FLIPS pass->collision under +/-1.5 m is "
+              f"map-confounded (offline metric not yet trustworthy for it); a gate that "
+              f"stays PASS is robust to map mis-cal at this radius.")
     else:
-        print("\n[GATE-3 D-OFFSET SENSITIVITY] skipped (simstart pos_traj unavailable)")
+        print("\n[MULTI-GATE D-OFFSET SENSITIVITY] skipped (simstart pos_traj unavailable)")
 
     # --- Machine-readable summary ---
     sim_res = results_by_seed["simstart"][0]
