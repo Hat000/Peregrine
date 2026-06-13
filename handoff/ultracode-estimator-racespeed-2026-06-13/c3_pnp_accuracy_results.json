@@ -1,0 +1,365 @@
+{
+  "seed": 20260613,
+  "constants": {
+    "focal_px": 320.0,
+    "assumed_inner_size_m": 1.5,
+    "sigma_theta_rad": 0.024434609527920613,
+    "sigma_theta_deg": 1.4,
+    "cov_floor_std_m": 0.4,
+    "weighted_sigma_px_nominal": 1.5,
+    "c2_shipped": 0.003125,
+    "a1_shipped": 0.026048354568018517,
+    "sig0_tan_shipped": 0.28175392253875076
+  },
+  "n_good_fixes": 109,
+  "Q1_Q3_pixel_sweep": {
+    "description": "world-fix per-axis std vs per-corner pixel noise at gate-4 ranges",
+    "rows": [
+      {
+        "r": 5.0,
+        "sigma_px": 1.5,
+        "sig_depth_pixel": 0.078125,
+        "sig_lat_pixel": 0.01171875,
+        "sig_lever_tang": 0.12217304763960307,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.40755799050564573,
+        "std_tang_total": 0.3073253252452254,
+        "pixel_share_radial": 0.036745252513375265,
+        "pixel_share_tang": 0.0014540049297747215
+      },
+      {
+        "r": 8.0,
+        "sigma_px": 1.5,
+        "sig_depth_pixel": 0.2,
+        "sig_lat_pixel": 0.01875,
+        "sig_lever_tang": 0.1954768762233649,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.447213595499958,
+        "std_tang_total": 0.3434356482720119,
+        "pixel_share_radial": 0.2,
+        "pixel_share_tang": 0.002980655605426561
+      },
+      {
+        "r": 12.0,
+        "sigma_px": 1.5,
+        "sig_depth_pixel": 0.45000000000000007,
+        "sig_lat_pixel": 0.028124999999999997,
+        "sig_lever_tang": 0.29321531433504733,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.6020797289396148,
+        "std_tang_total": 0.40761686551414056,
+        "pixel_share_radial": 0.5586206896551724,
+        "pixel_share_tang": 0.004760809152533612
+      },
+      {
+        "r": 16.0,
+        "sigma_px": 1.5,
+        "sig_depth_pixel": 0.8,
+        "sig_lat_pixel": 0.0375,
+        "sig_lever_tang": 0.3909537524467298,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.894427190999916,
+        "std_tang_total": 0.4833594515659658,
+        "pixel_share_radial": 0.8,
+        "pixel_share_tang": 0.006018968980265441
+      },
+      {
+        "r": 20.0,
+        "sigma_px": 1.5,
+        "sig_depth_pixel": 1.25,
+        "sig_lat_pixel": 0.046875,
+        "sig_lever_tang": 0.4886921905584123,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 1.3124404748406688,
+        "std_tang_total": 0.5660411606974813,
+        "pixel_share_radial": 0.9071117561683598,
+        "pixel_share_tang": 0.006857827168533307
+      },
+      {
+        "r": 5.0,
+        "sigma_px": 0.5,
+        "sig_depth_pixel": 0.026041666666666664,
+        "sig_lat_pixel": 0.00390625,
+        "sig_lever_tang": 0.12217304763960307,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.40084681413574663,
+        "std_tang_total": 0.30712665990529636,
+        "pixel_share_radial": 0.004220663015511779,
+        "pixel_share_tang": 0.00016176517652085988
+      },
+      {
+        "r": 8.0,
+        "sigma_px": 0.5,
+        "sig_depth_pixel": 0.06666666666666667,
+        "sig_lat_pixel": 0.00625,
+        "sig_lever_tang": 0.1954768762233649,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.40551750201988135,
+        "std_tang_total": 0.34298038501351225,
+        "pixel_share_radial": 0.02702702702702702,
+        "pixel_share_tang": 0.0003320637496489514
+      },
+      {
+        "r": 12.0,
+        "sigma_px": 0.5,
+        "sig_depth_pixel": 0.15000000000000002,
+        "sig_lat_pixel": 0.009375000000000001,
+        "sig_lever_tang": 0.29321531433504733,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4272001872658766,
+        "std_tang_total": 0.406753468395259,
+        "pixel_share_radial": 0.1232876712328767,
+        "pixel_share_tang": 0.0005312268566648742
+      },
+      {
+        "r": 16.0,
+        "sigma_px": 0.5,
+        "sig_depth_pixel": 0.26666666666666666,
+        "sig_lat_pixel": 0.0125,
+        "sig_lever_tang": 0.3909537524467298,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4807401700618653,
+        "std_tang_total": 0.48206468385285317,
+        "pixel_share_radial": 0.30769230769230765,
+        "pixel_share_tang": 0.0006723716503465118
+      },
+      {
+        "r": 20.0,
+        "sigma_px": 0.5,
+        "sig_depth_pixel": 0.41666666666666663,
+        "sig_lat_pixel": 0.015625,
+        "sig_lever_tang": 0.4886921905584123,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.5775907817054485,
+        "std_tang_total": 0.5643132734605415,
+        "pixel_share_radial": 0.5203996669442131,
+        "pixel_share_tang": 0.0007666542027440996
+      },
+      {
+        "r": 5.0,
+        "sigma_px": 0.1,
+        "sig_depth_pixel": 0.005208333333333333,
+        "sig_lat_pixel": 0.00078125,
+        "sig_lever_tang": 0.12217304763960307,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.40003390698303454,
+        "std_tang_total": 0.3071028114281658,
+        "pixel_share_radial": 0.00016951336104311737,
+        "pixel_share_tang": 6.47161206704406e-06
+      },
+      {
+        "r": 8.0,
+        "sigma_px": 0.1,
+        "sig_depth_pixel": 0.013333333333333334,
+        "sig_lat_pixel": 0.00125,
+        "sig_lever_tang": 0.1954768762233649,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.40022216052809695,
+        "std_tang_total": 0.34292571280674927,
+        "pixel_share_radial": 0.0011098779134295228,
+        "pixel_share_tang": 1.3286785563399618e-05
+      },
+      {
+        "r": 12.0,
+        "sigma_px": 0.1,
+        "sig_depth_pixel": 0.03,
+        "sig_lat_pixel": 0.001875,
+        "sig_lever_tang": 0.29321531433504733,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.40112342240263166,
+        "std_tang_total": 0.40664973755256867,
+        "pixel_share_radial": 0.005593536357986325,
+        "pixel_share_tang": 2.1259916351589922e-05
+      },
+      {
+        "r": 16.0,
+        "sigma_px": 0.1,
+        "sig_depth_pixel": 0.05333333333333334,
+        "sig_lat_pixel": 0.0025,
+        "sig_lever_tang": 0.3909537524467298,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4035398920112415,
+        "std_tang_total": 0.48190907795781485,
+        "pixel_share_radial": 0.017467248908296942,
+        "pixel_share_tang": 2.6912237238212188e-05
+      },
+      {
+        "r": 20.0,
+        "sigma_px": 0.1,
+        "sig_depth_pixel": 0.08333333333333333,
+        "sig_lat_pixel": 0.003125,
+        "sig_lever_tang": 0.4886921905584123,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4085883557377088,
+        "std_tang_total": 0.56410557132841,
+        "pixel_share_radial": 0.041597337770382686,
+        "pixel_share_tang": 3.0688754665995997e-05
+      },
+      {
+        "r": 5.0,
+        "sigma_px": 0.0,
+        "sig_depth_pixel": 0.0,
+        "sig_lat_pixel": 0.0,
+        "sig_lever_tang": 0.12217304763960307,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4,
+        "std_tang_total": 0.3071018177014279,
+        "pixel_share_radial": 0.0,
+        "pixel_share_tang": 0.0
+      },
+      {
+        "r": 8.0,
+        "sigma_px": 0.0,
+        "sig_depth_pixel": 0.0,
+        "sig_lat_pixel": 0.0,
+        "sig_lever_tang": 0.1954768762233649,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4,
+        "std_tang_total": 0.3429234346089766,
+        "pixel_share_radial": 0.0,
+        "pixel_share_tang": 0.0
+      },
+      {
+        "r": 12.0,
+        "sigma_px": 0.0,
+        "sig_depth_pixel": 0.0,
+        "sig_lat_pixel": 0.0,
+        "sig_lever_tang": 0.29321531433504733,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4,
+        "std_tang_total": 0.40664541485989114,
+        "pixel_share_radial": 0.0,
+        "pixel_share_tang": 0.0
+      },
+      {
+        "r": 16.0,
+        "sigma_px": 0.0,
+        "sig_depth_pixel": 0.0,
+        "sig_lat_pixel": 0.0,
+        "sig_lever_tang": 0.3909537524467298,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4,
+        "std_tang_total": 0.4819025932884687,
+        "pixel_share_radial": 0.0,
+        "pixel_share_tang": 0.0
+      },
+      {
+        "r": 20.0,
+        "sigma_px": 0.0,
+        "sig_depth_pixel": 0.0,
+        "sig_lat_pixel": 0.0,
+        "sig_lever_tang": 0.4886921905584123,
+        "sig_floor_radial": 0.4,
+        "sig_floor_tang": 0.28175392253875076,
+        "std_radial_total": 0.4,
+        "std_tang_total": 0.5640969154132576,
+        "pixel_share_radial": 0.0,
+        "pixel_share_tang": 0.0
+      }
+    ]
+  },
+  "Q2_gatesize_bias": {
+    "depth_bias_slope_per_m": -0.015072177507276454,
+    "depth_bias_intercept_m": 0.0017947897315857895,
+    "fractional_depth_bias": -0.022839581687282645,
+    "implied_true_inner_size_m": 1.535060131262869,
+    "assumed_inner_size_m": 1.5,
+    "residual_const_depth_bias_after_cal_m": 0.0,
+    "depth_bias_at_5m_m": -0.11419790843641323,
+    "depth_bias_at_12m_m": -0.27407498024739174,
+    "note": "depth bias is range-proportional => GATE-SIZE-MODEL MISMATCH (a BIAS, removable by calibrating s). At gate-4 the LOS is ~along -N so this BIAS is ALONG-TRACK (N), NOT the in-plane (E,D) miss."
+  },
+  "Q2_axis_projection": {
+    "n_gate4_fixes": 23,
+    "gate4_off_mean_NED": [
+      -0.4111,
+      -0.363,
+      -0.3017
+    ],
+    "gate4_depth_bias_mean_m": -0.35508559176581206,
+    "corr_offN_vs_rangeerr": 0.9936235809277782,
+    "in_plane_bias_E_m": -0.3629574569318478,
+    "in_plane_bias_D_m": -0.30166543677176844,
+    "in_plane_bias_norm_m": 0.4719535478043745,
+    "note": "corr~1 => depth bias lives on N (along-track). The binding gate-4 in-plane bias is LATERAL (E) ~per-gate registration/bearing systematic, NOT depth, NOT pixel-noise."
+  },
+  "Q3_reproj_decorrelation": {
+    "reproj_px_median": 0.5032132265654761,
+    "reproj_px_mean": 0.9942603984721518,
+    "reproj_px_p90": 1.6976927219820612,
+    "assumed_nominal_sigma_px": 1.5,
+    "corr_reproj_vs_within_gate_noise": -0.14495410479582932,
+    "bins": [
+      {
+        "band": "reproj<0.5px",
+        "n": 54,
+        "within_gate_noise_norm_std_m": 1.160251068613731
+      },
+      {
+        "band": "0.5-1.5px",
+        "n": 42,
+        "within_gate_noise_norm_std_m": 0.7201726774098939
+      },
+      {
+        "band": ">1.5px",
+        "n": 13,
+        "within_gate_noise_norm_std_m": 0.948625797860749
+      }
+    ],
+    "verdict": "reproj is already ~0.5 px (vs assumed 1.5 px) AND within-gate world-fix noise does NOT correlate with reproj (corr~0). The world-fix noise is NOT pixel-driven => sub-pixel refinement buys ~nothing."
+  },
+  "Q_floor_dominance": {
+    "rows": [
+      {
+        "r": 5.0,
+        "std_tang_total_at_spx0.5_m": 0.30712665990529636,
+        "std_tang_irreducible_m": 0.3071018177014279,
+        "pixel_reducible_fraction_of_tang_std": 8.088585952159555e-05
+      },
+      {
+        "r": 8.0,
+        "std_tang_total_at_spx0.5_m": 0.34298038501351225,
+        "std_tang_irreducible_m": 0.3429234346089766,
+        "pixel_reducible_fraction_of_tang_std": 0.00016604566040523405
+      },
+      {
+        "r": 12.0,
+        "std_tang_total_at_spx0.5_m": 0.406753468395259,
+        "std_tang_irreducible_m": 0.40664541485989114,
+        "pixel_reducible_fraction_of_tang_std": 0.0002656487129517604
+      },
+      {
+        "r": 16.0,
+        "std_tang_total_at_spx0.5_m": 0.48206468385285317,
+        "std_tang_irreducible_m": 0.4819025932884687,
+        "pixel_reducible_fraction_of_tang_std": 0.0003362423546338089
+      },
+      {
+        "r": 20.0,
+        "std_tang_total_at_spx0.5_m": 0.5643132734605415,
+        "std_tang_irreducible_m": 0.5640969154132576,
+        "pixel_reducible_fraction_of_tang_std": 0.0003834005993819112
+      }
+    ],
+    "note": "'irreducible' = the lever(1.4deg)+tangential-floor part a perfect detector CANNOT remove. pixel_reducible_fraction = max in-plane std reduction a perfect detector could buy. If ~0, the detector is NOT the in-plane lever."
+  }
+}

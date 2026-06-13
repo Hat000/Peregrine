@@ -1,0 +1,172 @@
+{
+  "a_up_max": 78.28283850468465,
+  "c2_pooled": 0.052,
+  "line_length_m": 164.6460018131438,
+  "max_line_dev_m": 0.012531514019997162,
+  "max_curvature": 0.033371057371762346,
+  "tilt_sweep": [
+    {
+      "tilt_deg": 60.0,
+      "lap_time_s": 5.3481,
+      "contact_free": true
+    },
+    {
+      "tilt_deg": 65.0,
+      "lap_time_s": 5.076,
+      "contact_free": true
+    },
+    {
+      "tilt_deg": 75.0,
+      "lap_time_s": 4.6862,
+      "contact_free": true
+    },
+    {
+      "tilt_deg": 80.0,
+      "lap_time_s": 4.5741,
+      "contact_free": true
+    },
+    {
+      "tilt_deg": 90.0,
+      "lap_time_s": 4.5741,
+      "contact_free": true
+    }
+  ],
+  "rows": [
+    {
+      "tilt_deg": 60.0,
+      "lap_s": 5.3481,
+      "a_lat_max": 16.99,
+      "vmax": 38.1,
+      "misses": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cf38": true,
+      "cf33": true,
+      "cf28": true,
+      "feas": {
+        "max_req_a_up": 111.645,
+        "p99_req_a_up": 89.162,
+        "frac_over_ceiling": 0.022,
+        "max_req_tilt_deg": 113.802,
+        "p99_req_tilt_deg": 113.458
+      }
+    },
+    {
+      "tilt_deg": 65.0,
+      "lap_s": 5.076,
+      "a_lat_max": 21.03,
+      "vmax": 38.59,
+      "misses": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cf38": true,
+      "cf33": true,
+      "cf28": true,
+      "feas": {
+        "max_req_a_up": 101.375,
+        "p99_req_a_up": 81.51,
+        "frac_over_ceiling": 0.014,
+        "max_req_tilt_deg": 136.991,
+        "p99_req_tilt_deg": 135.016
+      }
+    },
+    {
+      "tilt_deg": 75.0,
+      "lap_s": 4.6862,
+      "a_lat_max": 36.6,
+      "vmax": 39.17,
+      "misses": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cf38": true,
+      "cf33": true,
+      "cf28": true,
+      "feas": {
+        "max_req_a_up": 77.798,
+        "p99_req_a_up": 66.407,
+        "frac_over_ceiling": 0.0,
+        "max_req_tilt_deg": 153.431,
+        "p99_req_tilt_deg": 148.216
+      }
+    },
+    {
+      "tilt_deg": 80.0,
+      "lap_s": 4.5741,
+      "a_lat_max": 55.62,
+      "vmax": 39.17,
+      "misses": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cf38": true,
+      "cf33": true,
+      "cf28": true,
+      "feas": {
+        "max_req_a_up": 70.525,
+        "p99_req_a_up": 59.724,
+        "frac_over_ceiling": 0.0,
+        "max_req_tilt_deg": 153.431,
+        "p99_req_tilt_deg": 148.216
+      }
+    },
+    {
+      "tilt_deg": 90.0,
+      "lap_s": 4.5741,
+      "a_lat_max": 1000000.0,
+      "vmax": 39.17,
+      "misses": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "cf38": true,
+      "cf33": true,
+      "cf28": true,
+      "feas": {
+        "max_req_a_up": 70.525,
+        "p99_req_a_up": 59.724,
+        "frac_over_ceiling": 0.0,
+        "max_req_tilt_deg": 153.431,
+        "p99_req_tilt_deg": 148.216
+      }
+    }
+  ],
+  "togt_corrected_aero_refined_s": 4.7139,
+  "togt_corrected_aero_init_s": 4.1227,
+  "twin_probe": {
+    "max_perp_err_m": 37.899254688116145,
+    "realized_end_pos": [
+      -98.0404877470177,
+      -4.70820365216679,
+      46.38842737148483
+    ],
+    "plan_end_pos": [
+      -159.19,
+      -4.4,
+      25.97
+    ],
+    "n_steps": 535
+  }
+}

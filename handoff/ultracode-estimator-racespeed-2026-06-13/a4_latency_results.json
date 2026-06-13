@@ -1,0 +1,235 @@
+{
+  "_role": "a4 latency geometry \u2014 along-track vs in-plane split at gate-4",
+  "_seed": 20260613,
+  "geometry": {
+    "g3_ned": [
+      -111.5,
+      -5.1,
+      24.57
+    ],
+    "g4_ned": [
+      -135.5,
+      -0.8,
+      25.36
+    ],
+    "leg_vec_ned": [
+      -24.0,
+      4.3,
+      0.7899999999999991
+    ],
+    "leg_len_m": 24.395,
+    "along_unit_ned": [
+      -0.9838,
+      0.1763,
+      0.0324
+    ],
+    "along_track_axis": "dominantly -N (N component -0.9838)",
+    "in_plane_axes": "E-perp + D-perp (the binding-miss plane)",
+    "approach_speed_mps": 37.7,
+    "gate4_margin_m": 0.155,
+    "sigma_bar_m": 0.05,
+    "descent_over_leg_m": 0.79,
+    "leg_tilt_from_horizontal_deg": 1.856
+  },
+  "latency_bands_s": {
+    "edge_p50": 0.00577,
+    "edge_p90": 0.0159,
+    "cpu_p50": 0.11265,
+    "cpu_p90": 0.12523
+  },
+  "latency_sources": {
+    "vision_compute_L": "detector + PnP->KF; edge 5.8-15.9 ms, CPU 112.6-125.2 ms (latency_results.json). Delays the ESTIMATE.",
+    "command_actuation_L": "67 ms = 2 ticks (planning-togt-s2). Delays the CONTROL RESPONSE. DIFFERENT latency from vision-compute."
+  },
+  "(1)_along_track_staleness": {
+    "edge_p50": {
+      "L_s": 0.00577,
+      "vL_total_m": 0.2174,
+      "along_track_N_m": 0.2174,
+      "in_plane_E_m_geom": 0.0,
+      "in_plane_D_m_geom": 0.0,
+      "frac_along_track": 1.0
+    },
+    "edge_p90": {
+      "L_s": 0.0159,
+      "vL_total_m": 0.5994,
+      "along_track_N_m": 0.5994,
+      "in_plane_E_m_geom": 0.0,
+      "in_plane_D_m_geom": 0.0,
+      "frac_along_track": 1.0
+    },
+    "cpu_p50": {
+      "L_s": 0.11265,
+      "vL_total_m": 4.247,
+      "along_track_N_m": 4.247,
+      "in_plane_E_m_geom": 0.0,
+      "in_plane_D_m_geom": 0.0,
+      "frac_along_track": 1.0
+    },
+    "cpu_p90": {
+      "L_s": 0.12523,
+      "vL_total_m": 4.7211,
+      "along_track_N_m": 4.7211,
+      "in_plane_E_m_geom": 0.0,
+      "in_plane_D_m_geom": 0.0,
+      "frac_along_track": 1.0
+    },
+    "_case_c_speeds_along_track_N_m": {
+      "VQ2_20": {
+        "edge_p50": 0.1153,
+        "edge_p90": 0.318,
+        "cpu_p50": 2.253,
+        "cpu_p90": 2.5046
+      },
+      "VQ2_high_30": {
+        "edge_p50": 0.173,
+        "edge_p90": 0.477,
+        "cpu_p50": 3.3796,
+        "cpu_p90": 3.7569
+      },
+      "gate4_37.7": {
+        "edge_p50": 0.2174,
+        "edge_p90": 0.5994,
+        "cpu_p50": 4.247,
+        "cpu_p90": 4.7211
+      }
+    }
+  },
+  "(2)_in_plane_leak": {
+    "heading_error_leak": {
+      "heading_err_0.5deg": {
+        "edge_p50_m": 0.001897,
+        "edge_p90_m": 0.005231,
+        "cpu_p50_m": 0.037061,
+        "cpu_p90_m": 0.041199
+      },
+      "heading_err_1.0deg": {
+        "edge_p50_m": 0.003794,
+        "edge_p90_m": 0.010461,
+        "cpu_p50_m": 0.07412,
+        "cpu_p90_m": 0.082395
+      },
+      "heading_err_2.0deg": {
+        "edge_p50_m": 0.007588,
+        "edge_p90_m": 0.02092,
+        "cpu_p50_m": 0.148217,
+        "cpu_p90_m": 0.164765
+      },
+      "heading_err_5.0deg": {
+        "edge_p50_m": 0.018949,
+        "edge_p90_m": 0.052244,
+        "cpu_p50_m": 0.370149,
+        "cpu_p90_m": 0.411474
+      }
+    },
+    "heading_leak_note": "in-plane leak = v*L*sin(theta), FIRST-ORDER in the velocity-heading mis-pointing theta. On a well-tracked straight leg theta is sub-degree -> sub-cm leak even at CPU L. The 2deg row is a worst-case BOUND on the UNCOMPENSATED-naive path (no rewind): at CPU L=0.125 s it reaches ~165 mm (a 2deg sustained heading error = 1.3 m/s lateral at 37.7 m/s, itself a tracking failure). Rewind/predict-forward removes this first-order term, collapsing the in-plane residual to the curvature term below.",
+    "curvature_leak": {
+      "path_radius_200m": {
+        "edge_p50_m": 0.000118,
+        "edge_p90_m": 0.000898,
+        "cpu_p50_m": 0.045092,
+        "cpu_p90_m": 0.055723
+      },
+      "path_radius_500m": {
+        "edge_p50_m": 4.7e-05,
+        "edge_p90_m": 0.000359,
+        "cpu_p50_m": 0.018037,
+        "cpu_p90_m": 0.022289
+      },
+      "path_radius_1000m": {
+        "edge_p50_m": 2.4e-05,
+        "edge_p90_m": 0.00018,
+        "cpu_p50_m": 0.009018,
+        "cpu_p90_m": 0.011145
+      }
+    },
+    "curvature_leak_note": "0.5*v^2*kappa*L^2. On the ~straight leg (R>=200 m) even the worst CPU band leaks <55.7 mm in-plane; the planned approach is straighter still."
+  },
+  "(3)_in_plane_verdict": {
+    "well_tracked_edge_p90_mm": 5.2309,
+    "well_tracked_edge_pct_of_sigma_bar": 10.4619,
+    "well_tracked_cpu_p90_mm": 41.1991,
+    "well_tracked_cpu_pct_of_sigma_bar": 82.3983,
+    "naive_uncompensated_edge_p90_mm": 20.9198,
+    "naive_uncompensated_cpu_p90_mm": 164.7652,
+    "naive_cpu_pct_of_margin": 106.3001,
+    "verdict": "FOR THE IN-PLANE MISS, well-tracked (the contact-free flight case, sub-degree heading + straight leg): latency is BENIGN at BOTH edge (5.23 mm = 10.5% of the 0.05 m bar) and CPU (41.20 mm = 82.4% of the bar). The in-plane miss is set by estimator VARIANCE+BIAS, NOT latency; latency's real cost is ALONG-TRACK. ONE caveat: a NAIVE in-place fix (no rewind) at CPU latency with a 2deg sustained velocity mis-pointing would leak 165 mm in-plane (106% of the 0.155 m margin) \u2014 this is the COST OF NOT COMPENSATING, and is exactly why predict-forward/rewind is worth keeping even though the in-plane question is otherwise latency-benign. At edge latency even this naive worst case is only 21 mm."
+  },
+  "(4)_rewind_vs_in_plane": {
+    "per_band": {
+      "edge_p50": {
+        "L_s": 0.00577,
+        "rewind_corrects_along_track_N_m": 0.2174,
+        "rewind_corrects_in_plane_E_m": 0.0,
+        "rewind_corrects_in_plane_D_m": 0.0,
+        "horizon_default_0.5s_covers": true,
+        "horizon_margin_s": 0.4942
+      },
+      "edge_p90": {
+        "L_s": 0.0159,
+        "rewind_corrects_along_track_N_m": 0.5994,
+        "rewind_corrects_in_plane_E_m": 0.0,
+        "rewind_corrects_in_plane_D_m": 0.0,
+        "horizon_default_0.5s_covers": true,
+        "horizon_margin_s": 0.4841
+      },
+      "cpu_p50": {
+        "L_s": 0.11265,
+        "rewind_corrects_along_track_N_m": 4.247,
+        "rewind_corrects_in_plane_E_m": 0.0,
+        "rewind_corrects_in_plane_D_m": 0.0,
+        "horizon_default_0.5s_covers": true,
+        "horizon_margin_s": 0.3873
+      },
+      "cpu_p90": {
+        "L_s": 0.12523,
+        "rewind_corrects_along_track_N_m": 4.7211,
+        "rewind_corrects_in_plane_E_m": 0.0,
+        "rewind_corrects_in_plane_D_m": 0.0,
+        "horizon_default_0.5s_covers": true,
+        "horizon_margin_s": 0.3748
+      }
+    },
+    "answer": "Rewind/predict-forward matters PRIMARILY for the ALONG-TRACK question: it corrects the N (phase) coordinate by ~v*L (up to 4.72 m at the CPU p90 band) so the plane-crossing timing + final-approach command are right. For the IN-PLANE miss it buys little IF the leg is well-tracked (E,D barely change over L on a straight leg, <~1 cm). It DOES additionally remove the first-order heading-leak term (the naive worst case, up to ~165 mm in-plane at CPU latency with a 2deg mis-pointing), since the replay uses the true buffered velocity heading. So: along-track is the headline win; the in-plane win is a worst-case insurance that only materialises under CPU latency AND a mis-pointed velocity \u2014 at edge latency it is sub-cm either way.",
+    "horizon_divergence_risk": {
+      "default_horizon_s": 0.5,
+      "edge_bands_safe": true,
+      "cpu_bands_safe": true,
+      "note": "RewindKF DROPS any fix older than horizon_s and diverges to ~21 m if it drops a run of fixes (FACTS / kf_rewind docstring: SHARPEST RISK). All four L bands (edge 5.8-15.9 ms, CPU 112.6-125.2 ms) are FAR below the 0.5 s horizon \u2014 margin >= 0.37 s even at CPU p90 \u2014 so horizon<L divergence is NOT a risk at these L. It would only bite if L exceeded ~0.5 s (e.g. a detector stall / dropped-frame burst), which the navigator should guard with a max-coast / re-init, not a wider horizon. The horizon must merely EXCEED the realized vision-compute L; 0.5 s is ~4x the CPU upper bound."
+    }
+  },
+  "cmd_side_attitude_cross_track_reproduction": {
+    "L_cmd_s": 0.067,
+    "held_attitude_error_2to5deg_m": {
+      "lo_2deg": 0.000769,
+      "hi_5deg": 0.001926
+    },
+    "in_mm": {
+      "lo_2deg": 0.7686,
+      "hi_5deg": 1.9257
+    },
+    "note": "Reproduces planning-togt-s2 0.77-1.93 mm. This is the COMMAND-side held-attitude cross-track over 67 ms \u2014 a DIFFERENT latency and a DIFFERENT (control) mechanism than the vision-compute v*L. Both can be true: planning measured cross-track of the command path; case-C measured the FULL magnitude of the estimate path."
+  },
+  "last_fix_rule_is_along_track": {
+    "rule_m": 10.0,
+    "per_band": {
+      "edge_p50": {
+        "along_track_staleness_m": 0.2174,
+        "exceeds_10m_rule": false
+      },
+      "edge_p90": {
+        "along_track_staleness_m": 0.5994,
+        "exceeds_10m_rule": false
+      },
+      "cpu_p50": {
+        "along_track_staleness_m": 4.247,
+        "exceeds_10m_rule": false
+      },
+      "cpu_p90": {
+        "along_track_staleness_m": 4.7211,
+        "exceeds_10m_rule": false
+      }
+    },
+    "note": "The '10 m last-fix' concern is ALONG-TRACK staleness, not in-plane. Even CPU p90 v*L (4.72 m) is well under 10 m; the rule is comfortable. The 2.3-4.2 m case-C numbers were the FULL v*L at 20-30 m/s and are along-track at gate-4."
+  }
+}

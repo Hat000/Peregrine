@@ -1,0 +1,11 @@
+{
+  "c2": 0.003125,
+  "c1": 0.0,
+  "sig0_rad": 0.4,
+  "a1": 0.026048354568018517,
+  "sig0_tan": 0.28175392253875076,
+  "sigma_theta": 0.024434609527920613,
+  "sig0_iso": 0.0,
+  "p3p_inflation": 9.0,
+  "source": "fit_range_R.py TRAIN gates [0, 2, 4] N=93 (c2,sigma_theta pinned to physics)"
+}

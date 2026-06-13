@@ -1,0 +1,316 @@
+{
+  "seed": 20260613,
+  "n_boot": 20000,
+  "role": "b2 ADVERSARIAL verifier of A2",
+  "attack2_geometry": {
+    "gate4_opening_centre_ned": [
+      -135.4937,
+      -0.8,
+      23.9957
+    ],
+    "gate_normal_col1_ned": [
+      -1.0,
+      -0.0,
+      -0.0
+    ],
+    "gate_lateral_col0_ned": [
+      -0.0,
+      1.0,
+      0.0
+    ],
+    "gate_height_col2_ned": [
+      -0.0,
+      -0.0,
+      1.0
+    ],
+    "flight_dir_g3_to_g4_ned": [
+      -0.9838,
+      0.1763,
+      0.0323
+    ],
+    "normal_dot_flight": 0.9838,
+    "inplane_axes_confirmed": "E (col0=+E) and D (col2=+down); along-track=N (col1=-N)",
+    "A2_inplane_assumption_correct": true
+  },
+  "g4_accepted_stream": {
+    "n": 26,
+    "range_span_m": [
+      8.25,
+      27.34
+    ],
+    "mean_off_ned": [
+      -0.2689,
+      -0.3803,
+      -0.359
+    ],
+    "std_off_ned": [
+      0.5277,
+      0.381,
+      0.1841
+    ]
+  },
+  "attack3_range_slope_fit": {
+    "N": {
+      "slope_m_per_m": -0.0533,
+      "intercept_m": 0.503,
+      "at_range_0": 0.503,
+      "at_range_3m": 0.3431,
+      "at_range_5m": 0.2364,
+      "mean_over_window": -0.2689
+    },
+    "E": {
+      "slope_m_per_m": 0.0017,
+      "intercept_m": -0.4055,
+      "at_range_0": -0.4055,
+      "at_range_3m": -0.4002,
+      "at_range_5m": -0.3968,
+      "mean_over_window": -0.3803
+    },
+    "D": {
+      "slope_m_per_m": -0.014,
+      "intercept_m": -0.156,
+      "at_range_0": -0.156,
+      "at_range_3m": -0.198,
+      "at_range_5m": -0.2261,
+      "mean_over_window": -0.359
+    }
+  },
+  "attack3_inplane_at_transit": {
+    "at_range_0": 0.4345,
+    "at_range_3m": 0.4465,
+    "at_range_5m": 0.4567,
+    "A2_window_mean": 0.523
+  },
+  "attack2_nearest_fixes": {
+    "k": 5,
+    "ranges_m": [
+      8.25,
+      8.4,
+      8.74,
+      9.14,
+      9.63
+    ],
+    "inplane_E_D_each": [
+      [
+        -0.028,
+        -0.105
+      ],
+      [
+        -0.007,
+        -0.254
+      ],
+      [
+        -0.079,
+        -0.203
+      ],
+      [
+        -0.285,
+        -0.275
+      ],
+      [
+        -0.237,
+        -0.223
+      ]
+    ],
+    "inplane_norm_each_m": [
+      0.1088,
+      0.2537,
+      0.2178,
+      0.3962,
+      0.3256
+    ],
+    "mean_inplane_E_D": [
+      -0.1273,
+      -0.2119
+    ],
+    "mean_inplane_norm_m": 0.2472,
+    "median_inplane_norm_m": 0.2537
+  },
+  "attack1_logo_generalization": {
+    "global_debias_full_data_gate_sense": [
+      0.3908,
+      -0.054,
+      0.3094
+    ],
+    "global_debias_LOGO(without_g4)_gate_sense": [
+      0.4106,
+      -0.1562,
+      0.2939
+    ],
+    "g4_offset_gate_sense": [
+      0.2915,
+      0.4569,
+      0.3872
+    ],
+    "g4_residual_after_full_data_debias": [
+      -0.0992,
+      0.5109,
+      0.0778
+    ],
+    "g4_residual_after_LOGO_debias": [
+      -0.1191,
+      0.6131,
+      0.0933
+    ],
+    "g4_inplane_resid_full_data_m": 0.5168,
+    "g4_inplane_resid_LOGO_m": 0.6201,
+    "interpretation": "If LOGO residual ~ full-data residual, the de-bias is NOT circular but the per-gate E offset is genuinely un-removable by a global constant (supports A2). If LOGO residual differs a lot, the global model is unstable / the offset is dominated by something other than a shared constant."
+  },
+  "attack1_global_constant_validity": {
+    "per_gate_E_offset_gate_sense": {
+      "0": 0.0365,
+      "1": -0.2182,
+      "2": 0.2764,
+      "3": -0.5547,
+      "4": 0.4569,
+      "5": -0.3209
+    },
+    "E_offset_std_across_gates_m": 0.3814,
+    "note": "Per-gate E offsets swing +0.46 (g4) to -0.55 (g3): a single global constant cannot fit them. BUT these resurvey offsets are robust-medians over each gate's FULL range window (mostly far fixes) -- attack 3 shows the E offset is range-driven, so the across-gate E scatter is largely a by-product of each gate being seen at a DIFFERENT range mix, not 6 independent constant registrations."
+  },
+  "attack4_depth_decomp": {
+    "n": 7,
+    "mean_off_ned": [
+      -0.2964,
+      -0.4396,
+      -0.0694
+    ],
+    "ray_world": [
+      -0.9933,
+      0.1155,
+      0.0068
+    ],
+    "mean_radial_m": 0.24319800760659857,
+    "depth_explained_ned": [
+      -0.2416,
+      0.0281,
+      0.0017
+    ],
+    "residual_reg_ned": [
+      -0.0549,
+      -0.4677,
+      -0.0711
+    ],
+    "residual_reg_norm_m": 0.47624295117220566,
+    "residual_D_m": -0.07108446367120874
+  },
+  "attack4_correlations": {
+    "corr_inplane_vs_range": 0.4586,
+    "corr_inplane_vs_abs_range_err": -0.026,
+    "corr_E_vs_range": 0.0248,
+    "corr_D_vs_range": -0.4146,
+    "note": "Strong positive corr(in-plane, range) => the 'bias' is a far-range geometry/depth effect that collapses at transit, NOT a transit-time constant. corr(in-plane,|range_err|) tests the depth-scale hypothesis."
+  },
+  "attack2b_inplane_by_range_cutoff": {
+    "le_9m": {
+      "n": 3,
+      "inplane_bias_m": 0.191,
+      "ci95": [
+        0.1088,
+        0.2537
+      ]
+    },
+    "le_10m": {
+      "n": 6,
+      "inplane_bias_m": 0.2654,
+      "ci95": [
+        0.1903,
+        0.3481
+      ]
+    },
+    "le_12m": {
+      "n": 12,
+      "inplane_bias_m": 0.3368,
+      "ci95": [
+        0.2691,
+        0.4026
+      ]
+    },
+    "le_16m": {
+      "n": 17,
+      "inplane_bias_m": 0.4472,
+      "ci95": [
+        0.3484,
+        0.5577
+      ]
+    },
+    "all_8_27m": {
+      "n": 26,
+      "inplane_bias_m": 0.523,
+      "ci95": [
+        0.3834,
+        0.672
+      ]
+    }
+  },
+  "attack2b_last_usable_fix": {
+    "min_associated_range_m": 8.25,
+    "note": "closer than ~8 m the detector locks gate-5 / loses 4-corner -> fix rejected",
+    "nearest3_ranges_m": [
+      8.25,
+      8.4,
+      8.74
+    ],
+    "nearest3_mean_inplane_E_D": [
+      -0.038,
+      -0.1872
+    ],
+    "nearest3_mean_inplane_norm_m": 0.191,
+    "nearest1_inplane_norm_m": 0.1088
+  },
+  "attack2b_monotone_regime": {
+    "n_mono": 23,
+    "n_depthflip_outliers_excluded": 3,
+    "fit": {
+      "N": {
+        "slope_m_per_m": -0.0453,
+        "intercept_m": 0.3906
+      },
+      "E": {
+        "slope_m_per_m": -0.0698,
+        "intercept_m": 0.441
+      },
+      "D": {
+        "slope_m_per_m": -0.0453,
+        "intercept_m": 0.2175
+      }
+    },
+    "note": "E and D both shrink monotonically with decreasing range until ~21 m, where 3 depth-flip fixes flip E positive. A linear fit on the FULL set is corrupted by these; the near-range collapse is the real signal. Linear extrapolation to range 0 is NOT valid (relationship is non-linear / collapses)."
+  },
+  "attack3b_callap_slope_removal": {
+    "transit_range_m": 3.0,
+    "per_axis": {
+      "N": {
+        "transit_value_m": 0.3431,
+        "scatter_std_about_curve_m": 0.4407
+      },
+      "E": {
+        "transit_value_m": -0.4002,
+        "scatter_std_about_curve_m": 0.3809
+      },
+      "D": {
+        "transit_value_m": -0.198,
+        "scatter_std_about_curve_m": 0.1676
+      }
+    },
+    "inplane_transit_after_slope_removal_m": 0.4465,
+    "inplane_scatter_about_curve_m": 0.4161
+  },
+  "VERDICT": {
+    "verdict": "WEAKENED",
+    "A2_claim": "gate-4 in-plane bias floor after global de-bias = 0.517 m; clears 0.05 = false",
+    "b2_geometry_check": "A2 in-plane axes (E,D) and N-normal CONFIRMED correct (attack 2 fails)",
+    "b2_inplane_bias_le9m_m": 0.191,
+    "b2_inplane_bias_le9m_ci95": [
+      0.1088,
+      0.2537
+    ],
+    "b2_nearest3_inplane_m": 0.191,
+    "b2_nearest1_inplane_m": 0.1088,
+    "A2_window_mean_inplane_m": 0.523,
+    "b2_logo_inplane_resid_m": 0.6201,
+    "HOLDS": "DIRECTION of A2 is correct: absolute world-fixing does NOT reach 0.05 m at gate-4 (even the closest-fix band is 0.11-0.19 m, > both the 0.05 m bar and the 0.155 m margin); the gate-relative observation is the right fix. Geometry is correct. Per-gate E offsets genuinely cannot be fit by one global constant.",
+    "BREAKS": "MAGNITUDE is overstated. A2's 0.45-0.52 m is a RANGE-WINDOW MEAN (8-27 m) dominated by far fixes (in-plane reaches 0.69 m at 13-20 m). The transit-relevant last-usable fix is at ~8.25 m where in-plane = 0.11 m (nearest-3 mean 0.23 m). FRAMING as an un-filterable CONSTANT is wrong: it is RANGE-COLLAPSING, so a recency/range-weighted R (downweight far fixes -- exactly what range_anisotropic_R does) and a cal-lap slope fit materially reduce it. A2's own table stopped at <=12 m (0.34) and never showed the <=9 m band (0.19).",
+    "corrected_floor_transit_m": "0.11-0.34 (range-band dependent), NOT 0.52"
+  }
+}

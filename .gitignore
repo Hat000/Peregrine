@@ -37,6 +37,7 @@ demo/
 # ML artifacts
 *.pt
 runs/
+rl/checkpoints/inc7_staging/   # stale staging copy of stage1_inc7_actor.pth (no sidecar); canonical is stage1_inc7_actor.pth
 
 # Academic papers (large/binary PDFs + extracts; reference only, untracked by design)
 Academic/
@@ -48,3 +49,4 @@ Academic/
 /.s15_ref/
 /.inc5_ref/
 handoff/shadowpc-refit-dataset-2026-06-12/extracted/
+handoff/**/scratch/   # ultracode agent throwaway; reports + named prototypes are kept, scratch is not

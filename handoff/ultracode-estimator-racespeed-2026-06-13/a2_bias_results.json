@@ -1,0 +1,234 @@
+{
+  "seed": 20260613,
+  "n_boot": 20000,
+  "course_good": {
+    "n": 109,
+    "per_fix_bias_ned": [
+      -0.2855,
+      0.0645,
+      -0.3463
+    ],
+    "per_fix_noise_std_ned": [
+      0.8201,
+      0.5793,
+      0.4383
+    ]
+  },
+  "resurvey": {
+    "diag": {
+      "n_rows_pooled": 312,
+      "n_sightings_used": 132,
+      "four_corner_only": true,
+      "maha_gate": 16.27
+    },
+    "per_gate_offset_ned": {
+      "0": [
+        0.2792,
+        0.0365,
+        0.2987
+      ],
+      "1": [
+        0.2363,
+        -0.2182,
+        0.2312
+      ],
+      "2": [
+        0.4777,
+        0.2764,
+        0.3239
+      ],
+      "3": [
+        0.758,
+        -0.5547,
+        0.3461
+      ],
+      "4": [
+        0.2915,
+        0.4569,
+        0.3872
+      ],
+      "5": [
+        0.3018,
+        -0.3209,
+        0.2695
+      ]
+    },
+    "per_gate_offset_sigma_ned": {
+      "0": [
+        0.2089,
+        0.0714,
+        0.0373
+      ],
+      "1": [
+        0.099,
+        0.0431,
+        0.0176
+      ],
+      "2": [
+        0.1711,
+        0.0409,
+        0.033
+      ],
+      "3": [
+        0.2877,
+        0.0547,
+        0.0389
+      ],
+      "4": [
+        0.084,
+        0.0631,
+        0.0382
+      ],
+      "5": [
+        0.1039,
+        0.0336,
+        0.026
+      ]
+    },
+    "global_bias_gate_sense_ned": [
+      0.3908,
+      -0.054,
+      0.3094
+    ],
+    "global_bias_fix_sense_ned(=-gate)": [
+      -0.3908,
+      0.054,
+      -0.3094
+    ],
+    "MEASURED_FIX_BIAS_NED(ref)": [
+      -0.42,
+      0.06,
+      -0.28
+    ],
+    "per_gate_residual_ned": {
+      "0": [
+        -0.1115,
+        0.0905,
+        -0.0107
+      ],
+      "1": [
+        -0.1545,
+        -0.1642,
+        -0.0782
+      ],
+      "2": [
+        0.087,
+        0.3304,
+        0.0144
+      ],
+      "3": [
+        0.3672,
+        -0.5007,
+        0.0366
+      ],
+      "4": [
+        -0.0992,
+        0.5109,
+        0.0778
+      ],
+      "5": [
+        -0.089,
+        -0.2669,
+        -0.0399
+      ]
+    },
+    "across_gate_residual_sigma_ned": [
+      0.1982,
+      0.3814,
+      0.0555
+    ]
+  },
+  "gate4_resurvey_path": {
+    "offset_ned (raw, est-map)": [
+      0.2915,
+      0.4569,
+      0.3872
+    ],
+    "residual_ned (after global de-bias)": [
+      -0.0992,
+      0.5109,
+      0.0778
+    ],
+    "offset_est_sigma_ned": [
+      0.084,
+      0.0631,
+      0.0382
+    ],
+    "inplane_E_D_raw": [
+      0.4569,
+      0.3872
+    ],
+    "inplane_E_D_after_debias": [
+      0.5109,
+      0.0778
+    ],
+    "inplane_bias_norm_raw_m": 0.5989,
+    "inplane_bias_norm_after_global_debias_m": 0.5168,
+    "inplane_residual_est_sigma_E_D": [
+      0.0667,
+      0.0405
+    ],
+    "alongtrack_N_resid_after_debias_m": -0.0992
+  },
+  "gate4_raw_fix_path": {
+    "n_kf_accepted_fixes": 26,
+    "true_range_span_m": [
+      8.25,
+      27.34
+    ],
+    "fix_bias_ned (raw, KF tracks this)": [
+      -0.2689,
+      -0.3803,
+      -0.359
+    ],
+    "fix_noise_std_ned": [
+      0.5277,
+      0.381,
+      0.1841
+    ],
+    "fix_bias_ned (after global de-bias)": [
+      0.1511,
+      -0.4403,
+      -0.079
+    ],
+    "inplane_bias_norm_raw_m": 0.523,
+    "inplane_bias_norm_raw_ci95": [
+      0.3829,
+      0.6714
+    ],
+    "inplane_bias_norm_after_global_debias_m": 0.4473,
+    "inplane_bias_norm_after_debias_ci95": [
+      0.2966,
+      0.6019
+    ],
+    "E_resid_after_debias_ci95": [
+      -0.4403,
+      [
+        -0.5803,
+        -0.2941
+      ]
+    ],
+    "D_resid_after_debias_ci95": [
+      -0.079,
+      [
+        -0.1507,
+        -0.0112
+      ]
+    ],
+    "N_alongtrack_resid_after_debias_ci95": [
+      0.1511,
+      [
+        -0.0579,
+        0.3416
+      ]
+    ]
+  },
+  "VERDICT": {
+    "inplane_bias_floor_raw_m": 0.5989,
+    "inplane_bias_floor_after_global_debias_m": 0.5168,
+    "bar_m": 0.05,
+    "clears_0.05_after_debias": false,
+    "debias_ci95_upper_m": 0.6019,
+    "headline": "Gate-4 un-filterable in-plane bias floor: RAW ~0.60 m, after GLOBAL de-bias ~0.52 m (95% CI [0.30,0.60]). DOES NOT CLEAR the 0.05 m bar."
+  }
+}

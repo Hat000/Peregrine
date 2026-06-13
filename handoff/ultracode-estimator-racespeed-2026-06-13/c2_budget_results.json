@@ -1,0 +1,83 @@
+{
+  "seed": 20260613,
+  "ideal_1oversqrtN_ceiling": {
+    "near_<=8m": {
+      "per_fix_sigma": 0.6,
+      "N_ideal_for_005": 143.99999999999997,
+      "note": "IDEAL independent fixes to reach 0.05 m/axis from 0.6 m; KF does WORSE (corr)."
+    },
+    "mid_8-16m": {
+      "per_fix_sigma": 0.5,
+      "N_ideal_for_005": 100.0,
+      "note": "IDEAL independent fixes to reach 0.05 m/axis from 0.5 m; KF does WORSE (corr)."
+    }
+  },
+  "kf_realized_efficiency": {
+    "Neff_vs_Nreal_fit": "N_eff = 1.333 * N_real^0.721",
+    "Neff_needed_for_005": 143.99999999999997,
+    "Nreal_fixes_needed_for_005": 662.3088100730464,
+    "note": "KF N_eff grows ~N_real^0.72 (sublinear: vel unobservable in case C so packed fixes are correlated). Need ~662 REAL landed fixes for 0.05 m/axis -- vs ~144 ideal independent."
+  },
+  "cadence_required_for_005": {
+    "47pct": {
+      "acceptance": 0.47,
+      "t_window_s": 0.6591891891891892,
+      "detector_hz_required": 2137.7287493743265,
+      "fix_spacing_m": 0.01730808925633302,
+      "note": "detector Hz to land ~662 fixes @ 47pct acceptance over the 0.66 s g3->g4 window at 37 m/s"
+    },
+    "100pct": {
+      "acceptance": 1.0,
+      "t_window_s": 0.6591891891891892,
+      "detector_hz_required": 1004.7325122059334,
+      "fix_spacing_m": 0.036825721821985145,
+      "note": "detector Hz to land ~662 fixes @ 100pct acceptance over the 0.66 s g3->g4 window at 37 m/s"
+    }
+  },
+  "a3_reality_check": {
+    "a3_effective_accepted_fixes": "~7-8 over the whole g3->g4 approach (30Hz, 37 m/s)",
+    "a3_fix_spacing_m_at_30Hz": 1.29,
+    "verdict": "a3 measures ~7-8 real fixes; reaching 0.05 m would need ~662 -- a >88x increase in landed fixes, impossible at the realistic accept window."
+  },
+  "compute_budget": {
+    "edge": {
+      "label": "~100 TOPS edge",
+      "detector_p50_ms": 5.0,
+      "detector_p90_ms": 15.0,
+      "pnp_chain_p50_ms": 0.767,
+      "pnp_chain_p90_ms": 0.9,
+      "rewind_ms_per_fix": 0.45,
+      "frame_ms_p50": 6.2170000000000005,
+      "frame_ms_p90": 16.35,
+      "max_throughput_hz_p50": 160.8492842206852,
+      "max_throughput_hz_p90": 61.16207951070336,
+      "supports_60Hz": true,
+      "supports_120Hz": false,
+      "note": "Serial single-thread bound. Detector is the gate; PnP chain 0.77ms + rewind 0.45ms are negligible next to the detector forward pass."
+    },
+    "cpu_upper_bound": {
+      "label": "laptop CPU (UPPER BOUND)",
+      "detector_p50_ms": 111.88430000038352,
+      "detector_p90_ms": 124.32899000123143,
+      "pnp_chain_p50_ms": 0.767,
+      "pnp_chain_p90_ms": 0.9,
+      "rewind_ms_per_fix": 0.45,
+      "frame_ms_p50": 113.10130000038352,
+      "frame_ms_p90": 125.67899000123144,
+      "max_throughput_hz_p50": 8.841631351687461,
+      "max_throughput_hz_p90": 7.956779410705017,
+      "supports_60Hz": false,
+      "supports_120Hz": false,
+      "note": "Serial single-thread bound. Detector is the gate; PnP chain 0.77ms + rewind 0.45ms are negligible next to the detector forward pass."
+    }
+  },
+  "feasibility_verdict": {
+    "edge_max_hz_p90": 61.16207951070336,
+    "cpu_max_hz_p90": 7.956779410705017,
+    "compute_allows_gt_30Hz_on_edge": true,
+    "compute_allows_gt_30Hz_on_cpu": false,
+    "c2_sim_240Hz_debiased_inplane_std_m": 0.119,
+    "c2_sim_cadence_inf_floor_m": 0.10617412493161707,
+    "bottom_line": "Compute permits >30 Hz ONLY on edge HW (edge p90 ~61 Hz cap); CPU is capped at ~8.0 Hz and cannot even sustain 30 Hz. BUT cadence is NOT the binding constraint: even infinite cadence floors the DEBIASED in-plane 1-sigma at ~0.106 m (>0.05 m), and the RAW (real, biased) error never drops below ~0.30 m at any cadence. More fixes do NOT close the gap."
+  }
+}

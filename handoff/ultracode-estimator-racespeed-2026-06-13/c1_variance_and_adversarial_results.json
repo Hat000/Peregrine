@@ -1,0 +1,139 @@
+{
+  "seed": 20260613,
+  "near_band_lateral": {
+    "[4,9)": {
+      "n": 3,
+      "lat_rms": 0.20139337826935835,
+      "lat_mean": 0.191491172431312,
+      "lat_p50": 0.21835920437873152,
+      "lat_min": 0.10529578496218633
+    },
+    "[6,9)": {
+      "n": 3,
+      "lat_rms": 0.20139337826935835,
+      "lat_mean": 0.191491172431312,
+      "lat_p50": 0.21835920437873152,
+      "lat_min": 0.10529578496218633
+    },
+    "[8,10)": {
+      "n": 7,
+      "lat_rms": 0.3116901067150091,
+      "lat_mean": 0.2953741058113753,
+      "lat_p50": 0.3533761739646026,
+      "lat_min": 0.10529578496218633
+    },
+    "[8,12)": {
+      "n": 14,
+      "lat_rms": 0.38546687419869796,
+      "lat_mean": 0.3688982730277049,
+      "lat_p50": 0.3839101591654619,
+      "lat_min": 0.10529578496218633
+    },
+    "[0,9)": {
+      "n": 3,
+      "lat_rms": 0.20139337826935835,
+      "lat_mean": 0.191491172431312,
+      "lat_p50": 0.21835920437873152,
+      "lat_min": 0.10529578496218633
+    }
+  },
+  "variance_sweep": {
+    "0.400": {
+      "per_axis_in": 0.4,
+      "filt_E_sigma": 0.13133607677763973,
+      "filt_D_sigma": 0.13206404690930287,
+      "filt_inplane_1sigma": 0.1317005648230193,
+      "inplane_rms": 0.1862858595661428,
+      "clears_bar": false,
+      "clears_margin": false
+    },
+    "0.300": {
+      "per_axis_in": 0.3,
+      "filt_E_sigma": 0.1076576097658971,
+      "filt_D_sigma": 0.11067574092333075,
+      "filt_inplane_1sigma": 0.10917710513068755,
+      "inplane_rms": 0.15452388331939457,
+      "clears_bar": false,
+      "clears_margin": true
+    },
+    "0.265": {
+      "per_axis_in": 0.265,
+      "filt_E_sigma": 0.09427884882560135,
+      "filt_D_sigma": 0.09604626797328066,
+      "filt_inplane_1sigma": 0.0951666615140928,
+      "inplane_rms": 0.134879382997795,
+      "clears_bar": false,
+      "clears_margin": true
+    },
+    "0.200": {
+      "per_axis_in": 0.2,
+      "filt_E_sigma": 0.07957424675321256,
+      "filt_D_sigma": 0.08138698074349499,
+      "filt_inplane_1sigma": 0.08048571730711973,
+      "inplane_rms": 0.11411675542673431,
+      "clears_bar": false,
+      "clears_margin": true
+    },
+    "0.150": {
+      "per_axis_in": 0.15,
+      "filt_E_sigma": 0.06935936122400453,
+      "filt_D_sigma": 0.07581242599619674,
+      "filt_inplane_1sigma": 0.07265756989065472,
+      "inplane_rms": 0.10279658570255874,
+      "clears_bar": false,
+      "clears_margin": true
+    },
+    "0.105": {
+      "per_axis_in": 0.105,
+      "filt_E_sigma": 0.058393717003702716,
+      "filt_D_sigma": 0.0625604741171711,
+      "filt_inplane_1sigma": 0.060512970127377455,
+      "inplane_rms": 0.08560981001066778,
+      "clears_bar": false,
+      "clears_margin": true
+    },
+    "0.080": {
+      "per_axis_in": 0.08,
+      "filt_E_sigma": 0.04999457844867808,
+      "filt_D_sigma": 0.04822197895019106,
+      "filt_inplane_1sigma": 0.04911627595885958,
+      "inplane_rms": 0.06961773534407587,
+      "clears_bar": true,
+      "clears_margin": true
+    },
+    "0.050": {
+      "per_axis_in": 0.05,
+      "filt_E_sigma": 0.03470152917537277,
+      "filt_D_sigma": 0.035401214565393004,
+      "filt_inplane_1sigma": 0.03505311769168501,
+      "inplane_rms": 0.0495875487029101,
+      "clears_bar": true,
+      "clears_margin": true
+    }
+  },
+  "adversarial": {
+    "p3p": {
+      "n_3corner": 4,
+      "n_3corner_accepted": 1,
+      "n_4corner": 54,
+      "ranges_3corner": [
+        23.86,
+        4.71,
+        35.41,
+        40.48
+      ]
+    },
+    "depth_flip": {
+      "n_gross_pnp_err": 21,
+      "n_gross_accepted_after_chi2": 0,
+      "accepted_flip_ranges": [],
+      "note": "gross PnP-relative errors (>3 m) are depth-flips/wrong-gate; count surviving chi2 gate"
+    },
+    "reproj_separation": {
+      "clean_reproj_p50": 1.0207228713838887,
+      "clean_reproj_p90": 2.1724339414733134,
+      "flip_reproj_p50": 0.712018054138064,
+      "note": "if flips have distinguishable reproj, a relative-innovation gate can reject them"
+    }
+  }
+}

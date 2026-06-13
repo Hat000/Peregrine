@@ -1,0 +1,180 @@
+{
+  "host": "Windows-11-10.0.26200-SP0",
+  "cpu": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel",
+  "native_res": [
+    640,
+    360
+  ],
+  "inference_res": [
+    640,
+    384
+  ],
+  "stage_i_pnp_chain": {
+    "pnp": {
+      "n": 120,
+      "p50_ms": 0.6480999945779331,
+      "p90_ms": 0.7366449906839989,
+      "p99_ms": 1.2219449973781598,
+      "mean_ms": 0.6839645817914667,
+      "min_ms": 0.5805499968118966,
+      "max_ms": 2.758899994660169
+    },
+    "assoc": {
+      "n": 120,
+      "p50_ms": 0.06265000411076471,
+      "p90_ms": 0.07726999174337834,
+      "p99_ms": 0.1857254969945644,
+      "mean_ms": 0.07093666560346416,
+      "min_ms": 0.04870000702794641,
+      "max_ms": 0.20485000277403742
+    },
+    "worldfix": {
+      "n": 120,
+      "p50_ms": 0.029000002541579306,
+      "p90_ms": 0.03225499822292477,
+      "p99_ms": 0.09801498468732467,
+      "mean_ms": 0.032545415888307616,
+      "min_ms": 0.022950000129640102,
+      "max_ms": 0.1544499973533675
+    },
+    "kf_update": {
+      "n": 120,
+      "p50_ms": 0.023000007786322385,
+      "p90_ms": 0.025155014009214938,
+      "p99_ms": 0.057065000728471205,
+      "mean_ms": 0.024174166901502758,
+      "min_ms": 0.018250022549182177,
+      "max_ms": 0.05744998634327203
+    },
+    "stage_i_total": {
+      "n": 120,
+      "p50_ms": 0.7672749852645211,
+      "p90_ms": 0.8996449934784323,
+      "p99_ms": 1.4196114851802126,
+      "mean_ms": 0.8116208301847413,
+      "min_ms": 0.6886999763082713,
+      "max_ms": 2.875799997127615
+    }
+  },
+  "stage_ii_detector_cpu_upper_bound": {
+    "n": 30,
+    "p50_ms": 111.88430000038352,
+    "p90_ms": 124.32899000123143,
+    "p99_ms": 129.30653200222878,
+    "mean_ms": 110.7096933342594,
+    "min_ms": 92.11620001588017,
+    "max_ms": 129.8776000039652,
+    "available": true,
+    "device": "cpu",
+    "cuda_available": false,
+    "is_upper_bound": true,
+    "imgsz_hw": [
+      384,
+      640
+    ],
+    "torch_version": "2.12.0+cpu",
+    "cpu": "Intel64 Family 6 Model 170 Stepping 4, GenuineIntel"
+  },
+  "stage_ii_detector_edge_estimate": {
+    "available": true,
+    "is_estimate": true,
+    "gflops_640sq": 22.54,
+    "gflops_at_inference_size": 13.524,
+    "params_millions": 9.715,
+    "edge_peak_tops_int8": 100.0,
+    "util_band": [
+      0.1,
+      0.35
+    ],
+    "compute_floor_ms_low_util": 1.352,
+    "compute_floor_ms_high_util": 0.386,
+    "edge_fwd_p50_ms": 5.0,
+    "edge_fwd_p90_ms": 15.0,
+    "note": "FLOP/TOPS quotient (compute_floor_*) is a floor only; the budget uses the empirical end-to-end edge bracket edge_fwd_p50/p90 (5-15 ms), which the FLOP floor confirms is compute-feasible (compute floor << 5 ms => detector is NOT compute-bound; preprocess/NMS/memory dominate). All ESTIMATE, not measured here."
+  },
+  "budget": {
+    "speeds_mps": {
+      "VQ1_recording_p50": 5.35,
+      "VQ2_target": 20.0,
+      "VQ2_high": 30.0
+    },
+    "budgets": [
+      {
+        "hw_assumption": "laptop CPU (torch+cpu) \u2014 UPPER BOUND",
+        "kind": "cpu_upper_bound",
+        "detector_p50_ms": 111.884,
+        "detector_p90_ms": 124.329,
+        "pnp_chain_p50_ms": 0.767,
+        "pnp_chain_p90_ms": 0.9,
+        "L_total_p50_ms": 112.652,
+        "L_total_p90_ms": 125.229,
+        "uncompensated_pos_err_m": {
+          "VQ1_recording_p50": {
+            "p50": 0.603,
+            "p90": 0.67
+          },
+          "VQ2_target": {
+            "p50": 2.253,
+            "p90": 2.505
+          },
+          "VQ2_high": {
+            "p50": 3.38,
+            "p90": 3.757
+          }
+        },
+        "extra_distance_at_30Hz_window_m": {
+          "VQ1_recording_p50": {
+            "p50": 0.603,
+            "p90": 0.67
+          },
+          "VQ2_target": {
+            "p50": 2.253,
+            "p90": 2.505
+          },
+          "VQ2_high": {
+            "p50": 3.38,
+            "p90": 3.757
+          }
+        }
+      },
+      {
+        "hw_assumption": "~100 TOPS edge (empirical 5-15 ms estimate)",
+        "kind": "edge_estimate",
+        "detector_p50_ms": 5.0,
+        "detector_p90_ms": 15.0,
+        "pnp_chain_p50_ms": 0.767,
+        "pnp_chain_p90_ms": 0.9,
+        "L_total_p50_ms": 5.767,
+        "L_total_p90_ms": 15.9,
+        "uncompensated_pos_err_m": {
+          "VQ1_recording_p50": {
+            "p50": 0.031,
+            "p90": 0.085
+          },
+          "VQ2_target": {
+            "p50": 0.115,
+            "p90": 0.318
+          },
+          "VQ2_high": {
+            "p50": 0.173,
+            "p90": 0.477
+          }
+        },
+        "extra_distance_at_30Hz_window_m": {
+          "VQ1_recording_p50": {
+            "p50": 0.031,
+            "p90": 0.085
+          },
+          "VQ2_target": {
+            "p50": 0.115,
+            "p90": 0.318
+          },
+          "VQ2_high": {
+            "p50": 0.173,
+            "p90": 0.477
+          }
+        }
+      }
+    ]
+  }
+}
