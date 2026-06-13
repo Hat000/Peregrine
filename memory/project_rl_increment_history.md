@@ -437,3 +437,66 @@ Config-matrix parity gate run on Adroit as job **3270602** (A100 partition). **C
 **Selection protocol:** ≥3-seed generalization average (durable — single-seed gen volatile; inc6 seeds ranged 0.741–0.982). Sbatch: `rl/peregrine_racing_inc7.sbatch`. Env: contact-true geometry (body_radius_m ∈ [0.28,0.38] + frame_depth_m=0.30) + dr_force_bias (regime-binned ≤3 m/s²); reward = c16 byte-identical; plant = S17 mixer.
 
 **Prediction on record (from training-doctrine session):** standing clears gate-3 ≥0.3 m corridor margin; tails ≤0.25; posture unchanged (~55° tilt crab); lap cost vs inc6 ≤0.3 s.
+
+---
+
+## ✅ INC7 COMPLETE + SHIPPED (2026-06-12, commit 7de36af; writeup handoff/laptop-inc7-eval-2026-06-13/WRITEUP.md)
+
+### Checkpoint
+
+**Winner: seed 0 / job 3270605** → `rl/checkpoints/stage1_inc7_actor.pth`
+md5 (verified local): **2AFF8D62569BA5FEC769028D72AF50E3**
+Sidecar: `{"act_max_thrust": 3.765, "act_max_rate": 3.14}`
+Staging dir: `rl/checkpoints/inc7_staging/` — s0 local, s1/s2 Adroit-only.
+
+### 3-seed outcome
+
+| seed | job | status | VQ1 sr | t_med | gen_sr | notes |
+|------|-----|--------|--------|-------|--------|-------|
+| s0 | 3270605 | COMPLETED | **1.000** | 9.76 s | **0.924** | SHIPPED |
+| s1 | 3270606 | COMPLETED | **0.000** | — | 0.000 | COLLAPSED (sr≈0.11 from iter 1000, no recovery) |
+| s2 | 3270608 | COMPLETED | **0.669** | 10.96 s | 0.375 | Weak (33% collision, slab_strikes=840) |
+
+2-seed viable gen mean (s0+s2): **(0.924+0.375)/2 = 0.650**. Escape hatch invoked (only 2 viable); proceed with reduced confidence. **🚩 Budget MORE seeds for inc8-class retrains** — narrow convergent basin confirmed.
+
+### VQ1 eval (s0, plant=mixer, r∈[0.28,0.38], 2560 eps standing-start)
+
+| metric | inc7 s0 | inc6 datum | delta |
+|--------|---------|-----------|-------|
+| sr | 1.000 | 1.000 | 0 |
+| t_med | 9.76 s | 9.86 s | **−0.10 s (faster)** |
+| PASS_OFFSET max | 0.169 m | 0.277 m | better |
+| PASS_MARGIN min | 0.207 m | — | — |
+| slab_strikes | 0 | — | clean |
+| thr_p95 | 0.030 | 0.061 | smoother |
+| crab (tilt max) | 64.3° | 64.3° | unchanged |
+
+### Prediction scoring (on record from training-doctrine)
+
+1. **Gate-3 barrier cleared** — ✅ BINARY PASS (0 collisions/2560 eps); ⚠️ INDETERMINATE quantitative (≥0.30 m sub-claim; sbatch PASS_MARGIN min=0.207 m all gates all eps, bottleneck likely gate 2 at r=0.38; trainreset gate-3 isolation at r=0.38 = 0.101 m cold-start; full-course approach likely higher).
+2. **Pass tails ≤0.25 m** — ✅ PASS (max 0.169 m).
+3. **G5 tail ≤0.37 m at worst r=0.38** — ✅ PASS (trainreset g5 = 0.292 m, FINISHED).
+4. **Crab unchanged** — ✅ PASS (64.3° identical).
+5. **Lap cost ≤0.3 s vs inc6** — ✅ PASS (−0.10 s, faster).
+
+### Deploy matrix (s0, lat=2 live operating point, plant=mixer, r=0.33 nominal)
+
+4/4 start modes FINISHED at lat=2 (live point); 10/16 total. Handoff/trainreset fail at lat=0/1 (latency DR pre-compensation; not a deployment concern at live lat=2).
+
+### Pre-flight verification (ultracode 5-lens adversarial fan-out, 2026-06-12, read-only)
+
+Artifact integrity PASS; plant-honesty PASS (eval ran `--plant mixer` + contact geometry r∈[0.28,0.38]/depth 0.30 — NOT legacy flat plant; footgun clean); anti-mirror PASS (deploy matrix built on corrected post-93023cf tools; anti-mirror test keys on LIVE external-reference data — NOT a self-mirror false pass); 9/9 frame-convention tests green. **Verdict: GO for live.** Replacement seed NOT warranted pre-live (s0 shows wide robust sub-basin).
+
+3 sub-blocker concerns on record:
+- **(a) Gate-3 margin thin:** ~0.10–0.15 m twin at worst r=0.38 vs known twin→live arrival residual ~0.15–0.25 m → live gate-3 outcome genuinely uncertain. A live gate-3 clip = residual-exceeds-margin (scopes inc8 margin fix), NOT a frame/eval failure.
+- **(b) Inc7 config less stable than inc6:** 2/3 seeds viable (1/3 COLLAPSED); two new elements (contact-true volumetric termination + dr_force_bias) plausibly narrowed convergent basin. Budget ≥4 seeds for inc8-class retrains.
+- **(c) `fly_rl.py` default-inc4 footgun reaffirmed** — pass `--checkpoint stage1_inc7_actor.pth` explicitly every run.
+
+### Supersession / lineage update
+
+inc6 (`stage1_inc6_actor.pth`) → **inc7 s0 (`stage1_inc7_actor.pth`) = CURRENT BEST (pending live confirm)**.
+inc6 remains **LIVE-CONFIRMED FALLBACK** (bridge 2/2 zero-contact ~9 s RL-segment confirmed 2026-06-12).
+
+### Next
+
+SHADOWPC-INC7-LIVE: standing ×5 + bridge ×2 regression. Gate-3 watch (thin margin above).
