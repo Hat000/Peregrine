@@ -1,0 +1,577 @@
+"""rl/contact_true_eval.py — inc8 Phase-0(b) metric instrument.
+
+Replaces the legacy point-mass L-inf<0.75 pass proxy with CONTACT-TRUE scoring
+(body-radius DR + 0.30 m frame extrusion) and provides:
+  * per-gate margin distributions with gate-3 isolated
+  * seed-stability score S_stable (fraction of start seeds achieving sr >= 0.90)
+  * gate-3 D-offset sensitivity probe (±1.5 m in NED Down)
+
+Geometry: reuses slab_frame_hit_np and _HALF_OPEN/_HALF_OUTER constants imported
+from offline_rollout verbatim -- no re-derivation of the geometry. The episode
+rollout logic mirrors offline_rollout.main()'s loop.
+
+ALL rollouts run with --plant mixer (default) matching inc6+ checkpoints and the
+FRAME-AUDIT 2026-06-12 fully measured plant. Pass --plant map for legacy evals.
+
+Cross-validation: _score_gate(body_radius=0, frame_depth=0) reproduces the legacy
+gate_event() output exactly (negative-control test in tests/test_contact_true_eval.py).
+
+Usage (from repo root, .venv active):
+  .venv\\Scripts\\python.exe rl/contact_true_eval.py ^
+      --ckpt rl/checkpoints/stage1_inc7_actor.pth
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+_RL = Path(__file__).resolve().parent
+_SRC = _RL.parent / "src"
+sys.path.insert(0, str(_SRC))
+sys.path.insert(0, str(_RL))
+
+from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams, PlantState,
+                            SUPER_RATE_S_MEASURED, QUAD_DRAG_C2_MEASURED,
+                            COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
+                            MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
+                            MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED,
+                            step as plant_step)
+from fly_rl import (N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST,
+                    _TRAIN_DT, load_actor, policy_step)
+from offline_rollout import (slab_frame_hit_np, _HALF_OPEN, _HALF_OUTER,
+                              _RATE_SIGN_LIVE, obs_from_truth, _quat_from_rpy)
+
+# ---------------------------------------------------------------------------
+# Contact-true geometry constants (verbatim from test_contact_geometry.py inc7 doctrine)
+# ---------------------------------------------------------------------------
+BODY_RADIUS_NOM = 0.33       # nominal mid-point of [0.28, 0.38] DR range
+FRAME_DEPTH_NOM = 0.30       # inc7 contact-true frame extrusion
+PASS_BAND_NOM = _HALF_OPEN - BODY_RADIUS_NOM   # 0.42 m
+
+# D-axis sensitivity probe (matches live finding A: gate-3 D-offset ~1.46 m)
+G3_D_PROBE_M = 1.5           # probe at ±1.5 m in NED Down = ∓1.5 in Z-up z
+
+# S_stable VQ1 threshold
+SR_STABLE_THRESHOLD = 0.90
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GateCrossing:
+    gate: int
+    verdict: str   # 'pass' | 'collision' | 'miss'
+    linf: float    # in-plane L-inf at plane crossing; NaN for slab-only collisions
+    t: float       # sim time at event
+
+    @property
+    def margin(self) -> float:
+        """Contact-true margin = PASS_BAND_NOM - linf; positive = safe."""
+        return PASS_BAND_NOM - self.linf
+
+
+@dataclass
+class EpisodeResult:
+    outcome: str   # 'FINISHED' | 'COLLISION' | 'MISS' | 'OOB' | 'TIMEOUT'
+    crossings: list[GateCrossing] = field(default_factory=list)
+    finish_t: float = float('nan')
+    start_label: str = ''
+
+    @property
+    def success(self) -> bool:
+        return self.outcome == 'FINISHED'
+
+    def passed_linfs(self, gate: int) -> list[float]:
+        return [c.linf for c in self.crossings
+                if c.gate == gate and c.verdict == 'pass']
+
+
+# ---------------------------------------------------------------------------
+# Core geometry: _score_gate
+# ---------------------------------------------------------------------------
+
+def _score_gate(
+    prev_ned: np.ndarray,
+    cur_ned: np.ndarray,
+    gate: int,
+    body_radius: float,
+    frame_depth: float,
+    gate_pos_zup: np.ndarray,
+) -> tuple[str | None, float]:
+    """Returns (verdict, linf) using the contact-true geometry.
+
+    Reuses slab_frame_hit_np (imported from offline_rollout) and _HALF_OPEN /
+    _HALF_OUTER constants verbatim. The gate_pos_zup argument enables overriding
+    the gate position for the map-offset sensitivity probe (score only; trajectory
+    is generated with the nominal map).
+
+    With body_radius=0 and frame_depth=0 this reproduces the legacy gate_event()
+    output exactly (verified by test_contact_true_eval.test_legacy_parity).
+    """
+    half_in = _HALF_OPEN - body_radius
+    half_out = _HALF_OUTER + body_radius
+    prev_rel = _R_W2G @ (prev_ned * _FLIP - gate_pos_zup[gate])
+    cur_rel = _R_W2G @ (cur_ned * _FLIP - gate_pos_zup[gate])
+
+    # Volumetric slab contact (pre-plane and steep-approach strikes, inc7 doctrine)
+    if frame_depth > 0.0 and slab_frame_hit_np(prev_rel, cur_rel, half_in, half_out,
+                                               frame_depth):
+        return "collision", max(abs(cur_rel[1]), abs(cur_rel[2]))
+
+    # Plane crossing
+    fwd = prev_rel[0] < 0.0 and cur_rel[0] >= 0.0
+    bwd = prev_rel[0] > 0.0 and cur_rel[0] <= 0.0
+    if not (fwd or bwd):
+        return None, float('nan')
+
+    f = -prev_rel[0] / ((cur_rel[0] - prev_rel[0]) or 1e-9)
+    y = prev_rel[1] + f * (cur_rel[1] - prev_rel[1])
+    z = prev_rel[2] + f * (cur_rel[2] - prev_rel[2])
+    linf = max(abs(y), abs(z))
+
+    if fwd and linf < half_in:
+        return "pass", linf
+    if half_in <= linf <= half_out:
+        return "collision", linf
+    return ("miss" if fwd else None), linf
+
+
+# ---------------------------------------------------------------------------
+# Plant construction
+# ---------------------------------------------------------------------------
+
+def _build_plant_params(plant: str) -> PlantParams:
+    _aero = dict(rate_sign=_RATE_SIGN_LIVE.copy(),
+                 super_rate_s=SUPER_RATE_S_MEASURED,
+                 alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED.copy(),
+                 linear_drag=0.0,
+                 quad_drag_c2=QUAD_DRAG_C2_MEASURED.copy(),
+                 coll_map_thr=COLL_MAP_THR_MEASURED.copy(),
+                 coll_map_accel=COLL_MAP_ACCEL_MEASURED.copy())
+    if plant == "mixer":
+        return PlantParams(**_aero,
+                           mixer_idle=MIXER_IDLE_MEASURED,
+                           mixer_kappa_err=MIXER_KAPPA_ERR_MEASURED,
+                           mixer_kappa_hold=MIXER_KAPPA_HOLD_MEASURED,
+                           mixer_zeta_yaw=MIXER_ZETA_YAW_MEASURED)
+    if plant == "aero":
+        return PlantParams(**_aero)
+    if plant == "map":
+        return PlantParams(rate_sign=_RATE_SIGN_LIVE.copy(),
+                           super_rate_s=SUPER_RATE_S_MEASURED,
+                           alpha_max_rps2=ALPHA_MAX_RPS2_MEASURED)
+    # flat legacy
+    return PlantParams(rate_sign=_RATE_SIGN_LIVE.copy())
+
+
+# ---------------------------------------------------------------------------
+# Start state construction
+# ---------------------------------------------------------------------------
+
+def _build_start(kind: str, gate: int = 0) -> tuple[PlantState, int, bool]:
+    """Returns (start_state, target_gate, virtual_flip).
+
+    virtual_flip mirrors offline_rollout conventions:
+      simstart / racestart: True  (nose-first spawn needs the π body-z flip)
+      trainreset: False           (already in the training-native tail-first frame)
+    """
+    if kind == "simstart":
+        pos_ned = np.array([0.0, 0.0, 0.02])
+        quat = _quat_from_rpy(0.0, np.radians(-17.8), np.radians(-179.9))
+        return PlantState(pos=pos_ned, vel=np.zeros(3), quat=quat,
+                          omega=np.zeros(3), thrust=np.float64(_HOVER_THRUST)), 0, True
+    if kind == "racestart":
+        pos_ned = np.zeros(3)
+        quat = np.array([0.0, 0.0, 0.0, 1.0])
+        return PlantState(pos=pos_ned, vel=np.zeros(3), quat=quat,
+                          omega=np.zeros(3), thrust=np.float64(_HOVER_THRUST)), 0, True
+    if kind == "trainreset":
+        pos_ned = (_GATE_POS_ZUP[gate] + np.array([1.0, 0.0, 0.0])) * _FLIP
+        quat = np.array([1.0, 0.0, 0.0, 0.0])
+        return PlantState(pos=pos_ned, vel=np.zeros(3), quat=quat,
+                          omega=np.zeros(3), thrust=np.float64(_HOVER_THRUST)), gate, False
+    raise ValueError(f"unknown start kind: {kind!r}")
+
+
+# ---------------------------------------------------------------------------
+# Episode rollout
+# ---------------------------------------------------------------------------
+
+def run_episode(
+    actor,
+    start_state: PlantState,
+    target_gate: int,
+    virtual_flip: bool,
+    params: PlantParams,
+    body_radius: float = BODY_RADIUS_NOM,
+    frame_depth: float = FRAME_DEPTH_NOM,
+    gate_pos_zup: np.ndarray | None = None,
+    max_time: float = 40.0,
+    dt: float = _TRAIN_DT,
+    start_label: str = '',
+    record_pos: bool = False,
+) -> tuple[EpisodeResult, np.ndarray | None]:
+    """Run one closed-loop episode and score with contact-true geometry.
+
+    Returns (EpisodeResult, pos_trajectory_ned) where pos_trajectory is (T+1, 3)
+    NED if record_pos=True (includes the start position), else None.
+
+    Physics and observation building replicate offline_rollout.main()'s loop.
+    gate_pos_zup overrides gate positions for scoring; when None uses _GATE_POS_ZUP.
+    """
+    if gate_pos_zup is None:
+        gate_pos_zup = _GATE_POS_ZUP
+
+    # OOB box (exact training box from peregrine_racing._update_boxes)
+    pts = np.vstack([gate_pos_zup, [0.0, 0.0, -0.02]])
+    oob_lo = pts.min(0) - np.array([15, 15, 12])
+    oob_hi = pts.max(0) + np.array([15, 15, 12])
+
+    st = start_state
+    gate = target_gate
+    last_normed = 0.0
+    n_steps = int(round(max_time / dt))
+    crossings: list[GateCrossing] = []
+    outcome = "TIMEOUT"
+    finish_t = float('nan')
+    pos_log = [start_state.pos.copy()] if record_pos else None
+
+    for k in range(n_steps):
+        obs = obs_from_truth(st, gate, last_normed, virtual_flip)
+        rate_frd, _coll, last_normed = policy_step(actor, obs, 0.0, virtual_flip)
+        collective = last_normed * _HOVER_THRUST   # un-clipped, exactly training
+        action = np.concatenate([rate_frd, [collective]])
+
+        prev_pos = st.pos.copy()
+        st = plant_step(st, action, dt, params)
+        t = (k + 1) * dt
+
+        if pos_log is not None:
+            pos_log.append(st.pos.copy())
+
+        # Non-target gate frame-strikes take precedence (mirrors offline_rollout)
+        collision_gate = None
+        for g in range(N_GATES):
+            if g == gate:
+                continue
+            v, linf = _score_gate(prev_pos, st.pos, g, body_radius, frame_depth, gate_pos_zup)
+            if v == "collision":
+                crossings.append(GateCrossing(gate=g, verdict="collision", linf=linf, t=t))
+                collision_gate = g
+                break
+
+        if collision_gate is not None:
+            outcome = "COLLISION"
+            break
+
+        # Target gate
+        v, linf = _score_gate(prev_pos, st.pos, gate, body_radius, frame_depth, gate_pos_zup)
+        if v == "pass":
+            crossings.append(GateCrossing(gate=gate, verdict="pass", linf=linf, t=t))
+            if gate == N_GATES - 1:
+                outcome = "FINISHED"
+                finish_t = t
+                break
+            gate += 1
+            continue
+        if v == "collision":
+            crossings.append(GateCrossing(gate=gate, verdict="collision", linf=linf, t=t))
+            outcome = "COLLISION"
+            break
+        if v == "miss":
+            crossings.append(GateCrossing(gate=gate, verdict="miss", linf=linf, t=t))
+            outcome = "MISS"
+            break
+
+        # OOB check (Z-up frame)
+        if np.any(st.pos * _FLIP < oob_lo) or np.any(st.pos * _FLIP > oob_hi):
+            outcome = "OOB"
+            break
+
+    result = EpisodeResult(
+        outcome=outcome, crossings=crossings, finish_t=finish_t, start_label=start_label
+    )
+    pos_arr = np.array(pos_log) if pos_log else None
+    return result, pos_arr
+
+
+# ---------------------------------------------------------------------------
+# Statistics helpers
+# ---------------------------------------------------------------------------
+
+def per_gate_margin_stats(results: list[EpisodeResult]) -> dict:
+    """Compute per-gate contact-true margin distributions across a list of episodes.
+
+    Returns a dict gate_id -> {'linfs': list, 'margins': list, 'n_pass': int,
+    'n_collision': int, 'p10': float, 'median': float, 'min': float} for each gate.
+    Gates with no passes report NaN statistics.
+    """
+    from collections import defaultdict
+    linfs_by_gate: dict[int, list[float]] = defaultdict(list)
+    coll_by_gate: dict[int, int] = defaultdict(int)
+    for r in results:
+        for c in r.crossings:
+            if c.verdict == "pass" and not np.isnan(c.linf):
+                linfs_by_gate[c.gate].append(c.linf)
+            elif c.verdict == "collision":
+                coll_by_gate[c.gate] += 1
+
+    stats: dict[int, dict] = {}
+    pass_band = PASS_BAND_NOM
+    for g in range(N_GATES):
+        linfs = linfs_by_gate[g]
+        if linfs:
+            arr = np.array(linfs)
+            margins = pass_band - arr
+            stats[g] = {
+                "linfs": linfs,
+                "margins": margins.tolist(),
+                "n_pass": len(linfs),
+                "n_collision": coll_by_gate[g],
+                "linf_p10": float(np.percentile(arr, 10)),
+                "linf_median": float(np.median(arr)),
+                "linf_max": float(arr.max()),
+                "margin_p10": float(np.percentile(margins, 10)),
+                "margin_median": float(np.median(margins)),
+                "margin_min": float(margins.min()),
+            }
+        else:
+            stats[g] = {
+                "linfs": [], "margins": [],
+                "n_pass": 0, "n_collision": coll_by_gate[g],
+                "linf_p10": float('nan'), "linf_median": float('nan'), "linf_max": float('nan'),
+                "margin_p10": float('nan'), "margin_median": float('nan'), "margin_min": float('nan'),
+            }
+    return stats
+
+
+def compute_s_stable(
+    results_by_seed: dict[str, list[EpisodeResult]],
+    threshold: float = SR_STABLE_THRESHOLD,
+) -> tuple[float, dict[str, float]]:
+    """Compute S_stable = fraction of seeds achieving sr >= threshold.
+
+    results_by_seed: {seed_label -> [EpisodeResult, ...]}. Each list may contain
+    multiple episodes for that seed (sr = fraction successful). Returns
+    (s_stable, {seed_label: sr}).
+    """
+    per_seed_sr: dict[str, float] = {}
+    for label, eps in results_by_seed.items():
+        if eps:
+            per_seed_sr[label] = float(np.mean([e.success for e in eps]))
+        else:
+            per_seed_sr[label] = 0.0
+    n_stable = sum(1 for sr in per_seed_sr.values() if sr >= threshold)
+    s_stable = n_stable / max(len(per_seed_sr), 1)
+    return s_stable, per_seed_sr
+
+
+# ---------------------------------------------------------------------------
+# Map-offset sensitivity probe
+# ---------------------------------------------------------------------------
+
+def gate3_d_offset_probe(
+    pos_traj: np.ndarray,
+    delta_d_m: float,
+    body_radius: float = BODY_RADIUS_NOM,
+    frame_depth: float = FRAME_DEPTH_NOM,
+) -> dict:
+    """Re-score a pre-computed trajectory with gate-3 shifted by delta_d_m in NED Down.
+
+    In NED: D (down) = +z_ned. In Z-up: z_zup = -z_ned. So shifting gate-3 down by
+    delta_d_m in NED = shifting _GATE_POS_ZUP[3][2] by -delta_d_m.
+
+    pos_traj: (T+1, 3) NED positions from a completed rollout.
+    delta_d_m: positive = gate physically lower (drone passes above), negative = higher.
+
+    Returns dict with gate-3 pass/collision counts and margin stats under the offset.
+    """
+    gate_pos = _GATE_POS_ZUP.copy()
+    gate_pos[3, 2] -= delta_d_m   # D down = Z-up z decreases
+
+    crossings: list[GateCrossing] = []
+    gate = 0
+    outcome = "TIMEOUT"
+
+    for k in range(1, len(pos_traj)):
+        prev_ned = pos_traj[k - 1]
+        cur_ned = pos_traj[k]
+        t = k * _TRAIN_DT
+
+        collision_g = None
+        for g in range(N_GATES):
+            if g == gate:
+                continue
+            v, linf = _score_gate(prev_ned, cur_ned, g, body_radius, frame_depth, gate_pos)
+            if v == "collision":
+                crossings.append(GateCrossing(gate=g, verdict="collision", linf=linf, t=t))
+                collision_g = g
+                break
+
+        if collision_g is not None:
+            outcome = "COLLISION"
+            break
+
+        v, linf = _score_gate(prev_ned, cur_ned, gate, body_radius, frame_depth, gate_pos)
+        if v == "pass":
+            crossings.append(GateCrossing(gate=gate, verdict="pass", linf=linf, t=t))
+            if gate == N_GATES - 1:
+                outcome = "FINISHED"
+                break
+            gate += 1
+        elif v == "collision":
+            crossings.append(GateCrossing(gate=gate, verdict="collision", linf=linf, t=t))
+            outcome = "COLLISION"
+            break
+        elif v == "miss":
+            crossings.append(GateCrossing(gate=gate, verdict="miss", linf=linf, t=t))
+            outcome = "MISS"
+            break
+
+    g3_passes = [c for c in crossings if c.gate == 3 and c.verdict == "pass"]
+    g3_colls = [c for c in crossings if c.gate == 3 and c.verdict == "collision"]
+    g3_linf = g3_passes[0].linf if g3_passes else float('nan')
+    g3_margin = g3_passes[0].margin if g3_passes else float('nan')
+
+    return {
+        "delta_d_m": delta_d_m,
+        "outcome": outcome,
+        "n_g3_pass": len(g3_passes),
+        "n_g3_collision": len(g3_colls),
+        "g3_linf": g3_linf,
+        "g3_margin": g3_margin,
+        "gates_passed": sum(1 for c in crossings if c.verdict == "pass"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--ckpt", required=True,
+                    help="path to actor.pth (inc7: stage1_inc7_actor.pth)")
+    ap.add_argument("--plant", default="mixer",
+                    choices=["map", "flat", "aero", "mixer"],
+                    help="plant model (mixer = fully measured, default for inc6+)")
+    ap.add_argument("--body-radius", type=float, default=BODY_RADIUS_NOM,
+                    help=f"contact-true body radius (default {BODY_RADIUS_NOM} m)")
+    ap.add_argument("--frame-depth", type=float, default=FRAME_DEPTH_NOM,
+                    help=f"frame slab depth (default {FRAME_DEPTH_NOM} m)")
+    ap.add_argument("--max-time", type=float, default=40.0)
+    ap.add_argument("--sr-threshold", type=float, default=SR_STABLE_THRESHOLD)
+    ap.add_argument("--g3-probe-range", type=float, default=G3_D_PROBE_M,
+                    help="gate-3 D-offset probe range in meters")
+    args = ap.parse_args()
+
+    actor = load_actor(args.ckpt)
+    params = _build_plant_params(args.plant)
+
+    print(f"\n{'='*80}")
+    print(f"CONTACT-TRUE EVAL  ckpt={Path(args.ckpt).name}  plant={args.plant}")
+    print(f"body_radius={args.body_radius}  frame_depth={args.frame_depth}")
+    print(f"pass_band={_HALF_OPEN - args.body_radius:.3f} m  "
+          f"(legacy L-inf<{_HALF_OPEN} -> contact-true L-inf<{_HALF_OPEN - args.body_radius:.3f})")
+    print(f"{'='*80}\n")
+
+    # --- Seed set: simstart + trainreset gates 0-5 ---
+    seeds = [("simstart", "simstart", 0)]
+    for g in range(N_GATES):
+        seeds.append((f"trainreset_g{g}", "trainreset", g))
+
+    results_by_seed: dict[str, list[EpisodeResult]] = {}
+    all_results: list[EpisodeResult] = []
+    simstart_pos_traj: np.ndarray | None = None
+
+    print("Running seed episodes...")
+    for label, kind, gate_idx in seeds:
+        st, tgt, vflip = _build_start(kind, gate_idx)
+        record = (kind == "simstart")
+        result, pos_traj = run_episode(
+            actor, st, tgt, vflip, params,
+            body_radius=args.body_radius, frame_depth=args.frame_depth,
+            max_time=args.max_time, start_label=label, record_pos=record,
+        )
+        results_by_seed[label] = [result]
+        all_results.append(result)
+        if record:
+            simstart_pos_traj = pos_traj
+        status = "FINISHED" if result.success else result.outcome
+        g3_linfs = result.passed_linfs(3)
+        g3_str = f"  g3_linf={g3_linfs[0]:.3f}" if g3_linfs else ""
+        print(f"  {label:20s}  {status}{g3_str}")
+
+    # --- S_stable ---
+    s_stable, per_seed_sr = compute_s_stable(results_by_seed, threshold=args.sr_threshold)
+    n_seeds = len(results_by_seed)
+    n_stable = sum(1 for sr in per_seed_sr.values() if sr >= args.sr_threshold)
+    print(f"\n[S_STABLE] {s_stable:.3f}  ({n_stable}/{n_seeds} seeds sr>={args.sr_threshold})")
+    if s_stable < 2.0 / 3.0:
+        print(f"  !! NARROW BASIN: S_stable < 2/3  (inc7 training was 1/3-viable; "
+              f"see memory inc7 convergence)")
+
+    # --- Per-gate margin distributions ---
+    stats = per_gate_margin_stats(all_results)
+    print(f"\n[PER-GATE MARGINS]  pass_band={_HALF_OPEN - args.body_radius:.3f} m  "
+          f"(L-inf < this = contact-true PASS)")
+    print(f"  {'gate':>4}  {'n_pass':>6}  {'n_coll':>6}  "
+          f"{'linf_p10':>8}  {'linf_med':>8}  {'linf_max':>8}  "
+          f"{'marg_p10':>8}  {'marg_med':>8}  {'marg_min':>8}")
+    for g in range(N_GATES):
+        s = stats[g]
+        flag = "GATE-3 (historically binding)" if g == 3 else ""
+        if s["n_pass"] > 0:
+            print(f"  {g:>4}  {s['n_pass']:>6}  {s['n_collision']:>6}  "
+                  f"{s['linf_p10']:>8.3f}  {s['linf_median']:>8.3f}  {s['linf_max']:>8.3f}  "
+                  f"{s['margin_p10']:>8.3f}  {s['margin_median']:>8.3f}  "
+                  f"{s['margin_min']:>8.3f}  {flag.strip()}")
+        else:
+            print(f"  {g:>4}  {s['n_pass']:>6}  {s['n_collision']:>6}  "
+                  f"{'N/A':>8}  {'N/A':>8}  {'N/A':>8}  "
+                  f"{'N/A':>8}  {'N/A':>8}  {'N/A':>8}{flag}")
+
+    # --- Gate-3 D-offset sensitivity probe ---
+    if simstart_pos_traj is not None and len(simstart_pos_traj) > 1:
+        print(f"\n[GATE-3 D-OFFSET SENSITIVITY]  "
+              f"trajectory from simstart re-scored with gate-3 shifted +/-{args.g3_probe_range} m D")
+        print(f"  (D+ = gate physically LOWER in NED; live finding A: ~1.46 m offset detected)")
+        probes = [0.0, -args.g3_probe_range, +args.g3_probe_range]
+        for delta in probes:
+            res = gate3_d_offset_probe(
+                simstart_pos_traj, delta,
+                body_radius=args.body_radius, frame_depth=args.frame_depth
+            )
+            g3m = f"{res['g3_margin']:+.3f}" if not np.isnan(res['g3_margin']) else "N/A"
+            g3l = f"{res['g3_linf']:.3f}" if not np.isnan(res['g3_linf']) else "N/A"
+            label = "nominal" if delta == 0.0 else f"D{delta:+.1f}m"
+            print(f"  delta_D={delta:+.1f} m  ({label:9s})  outcome={res['outcome']:10s}  "
+                  f"g3_pass={res['n_g3_pass']}  g3_coll={res['n_g3_collision']}  "
+                  f"g3_linf={g3l}  g3_margin={g3m}")
+        print(f"  Interpretation: if live gate-3 is +1.5 m D lower than track_map, "
+              f"the D+{args.g3_probe_range:.0f} row shows the TRUE offline margin.")
+    else:
+        print("\n[GATE-3 D-OFFSET SENSITIVITY] skipped (simstart pos_traj unavailable)")
+
+    # --- Machine-readable summary ---
+    sim_res = results_by_seed["simstart"][0]
+    sim_g3 = sim_res.passed_linfs(3)
+    print(f"\nCONTACT_TRUE_SUMMARY "
+          f"ckpt={Path(args.ckpt).name} plant={args.plant} "
+          f"body_r={args.body_radius} frame_d={args.frame_depth} "
+          f"s_stable={s_stable:.3f} n_stable={n_stable}/{n_seeds} "
+          f"simstart={sim_res.outcome} "
+          f"g3_linf_simstart={sim_g3[0] if sim_g3 else 'N/A'}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
