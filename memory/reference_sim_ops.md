@@ -59,7 +59,7 @@ Full report: `handoff/ultracode-autonomy-readiness-2026-06-13/REPORT.md`. Advers
 | F-C: `odo_recv_ns` + finite/zero-norm gate | D1, D2, R4, R5 | One struct + gate |
 | F-D: late-join GO gate + bounded arm-retry | N1, AR1 | Two small logic changes |
 
-**DISPATCHED as LAPTOP-FLYRL-AUTONOMY-HARDENING (opus, own worktree; implement + offline-verify; HOLD merge to main until LIVE-VERIFIED on next ShadowPC — launch-path behavior change).** F-C subsumes the earlier NaN-guard task.
+**DONE: LAPTOP-FLYRL-AUTONOMY-HARDENING — worktree Anduril-wt-flyrl, branch flyrl-autonomy-hardening, commit 7210c1d; suite 657 green; NOT merged to main (held for ShadowPC live-verify).** F-C subsumes the earlier NaN-guard task. F-C VERIFY-FIRST CONFIRMED: all 5 degraded-input failures propagated on old code (np.clip(nan)=nan reached wire; D1 stale-attitude reached wire via shared stamp advancing 1.79 ms while quat froze). obs[12] relabeled prev_normed_thrust. **🚩 DEV-RIG:** ShadowPC dev batch now needs --dev-auto-reset. **MERGE GATE:** ShadowPC §4 checklist must pass (clean finish + no 31000 on wire + late-join GO + odo/finite gates silent on healthy run + crash→disarm).
 
 ### N1 interaction — F-A creates a silent NO_GO on late-joined race
 `--no-auto-reset` + the strict `to_go > -2000 ms` fresh-GO gate → if the race is already running when our process attaches, we spin to 180 s deadline and exit without arming. F-D must widen the acceptance for the `--no-auto-reset` config (accept first-seen STARTED race at origin, gate 0, not finished).
