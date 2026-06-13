@@ -43,9 +43,10 @@ Mid-level index for competition rules, VQ1/VQ2 mechanics, Track-A strategy, user
 - 🚩 Every session addresses **Fengyou** by name in EVERY message. Missing name = context degradation → Fengyou rotates session.
 
 ## Git/env
-- `main` CANONICAL. 687/687 tests green (regression-suite promotion dc4b532). `.venv` Python 3.13.
+- `main` CANONICAL. 692/692 tests green (P4-C05 f50b9b4 adds 5 new tests). `.venv` Python 3.13.
 - `*.pt` + `data/runs` gitignored. Memory mirrored `memory/` ↔ `~/.claude`; ShadowPC via `handoff/`.
 - 🚩 **BANKING CONCURRENCY:** banking agents must `git add` only their OWN specific paths (never `git add -A`/`git add .`).
+- 🚩 **OPS LESSON (pytest-from-root):** always run `pytest` from the REPO ROOT — `test_navigator` loads a saved track-map JSON via root-relative path and FileNotFounds from `rl/`. The earlier P4-C05 "hang" was BENIGN: a 3rd backgrounded full-suite run hit its 15-min timeout at ~90% under load and was killed without a summary line; the polling loop then spun waiting for a summary that never came — NOT a code/test hang.
 - 🚩 Guards are DATA-DEPENDENT (skip on clean clone/CI/Adroit).
 
 ## Topic file pointers

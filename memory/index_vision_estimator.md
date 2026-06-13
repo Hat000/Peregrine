@@ -5,7 +5,7 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - **Case-C absolute world-frame nav = NO-GO at ANY speed:** deployable in-plane ~0.55 m vs 0.155 m gate-4 margin (3.5×); SPEED-FLAT.
 - **FIX = GATE-RELATIVE** (map bias drops out → 0.11–0.21 m RMS = **CONDITIONAL-GO**, velocity-prior-sensitive; straddles 0.155 m).
 - **RewindKF = DEFAULT** (ships regardless; already built).
-- Policy obs must be gate-relative → **P4-C05 is FOUNDATION** (see [[index-rl-training]]).
+- Policy obs must be gate-relative → **P4-C05 DONE (f50b9b4, 692 green) — see §P4-C05 below.**
 - 🚩 **ORGANIZER-PIVOT: build gate-relative REGARDLESS** — Q① = load-bearing vs free-insurance only (3 emails UNANSWERED; do NOT gate engineering on organizer answers; keep ONE nudge ~weekly).
 - COUPLING: faster speed worsens gate-4 margin/σ ratio → estimator accuracy must be verified at each speed rung. **PRIMARY MARGIN GUARD = GATE-4** (0.155 m @ r=0.38).
 
@@ -52,6 +52,14 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - ② ONNX/TRT latency.
 - ⑤⑥ Post-merge: at-speed gate-4 recording + 2-corner PnP + Bayesian-IoU extrinsic + per-gate last-fix distance + sigma_theta refit + yaw-active debug_obs capture.
 - K+L+N PLANNED. REJECTED: HSV pre-filter.
+
+## P4-C05 DONE (f50b9b4, 2026-06-13; suite 687→692 green)
+- **Fix:** opt-in `GateMap` (`make_gate_map`) threads runtime per-gate yaw through `fly_rl.obs_from_zup` / `build_obs` + `offline_rollout.py` + `contact_true_eval.py`.
+- **Yaw-aware path** reproduces `peregrine_racing.get_observations` BIT-EXACTLY (0.0, all 17 dims).
+- **Default `gate_map=None`** keeps exact VQ1 yaw=π specialization (bit-exact 0.0 over 2000 tilted states, both virtual_flip modes); old hardcoded-π diverged by exactly the audit's 4.22 m on `nxt_rely`.
+- **`get_gate_rotmat_w2g(gate_yaw[tg])`** is THE FOUNDATION HOOK for the gate-relative estimator rebuild (same code path, same rotation matrix).
+- `tests/test_confirmed_p4_c05.py` expanded 5→10 tests.
+- 🚩 **DEPLOY CONSTRAINT (current stack VQ1-only):** three loud guards now ship — `_assert_vq1_constants_consistent` (import-time, half-migrated constants), `_assert_live_course_is_vq1` (deploy-time, aborts if any gate yaw ≠ π before RL loop starts), `assert_gate_map_allpi` (public). **The current deployable stack fail-loud-aborts on any non-π/VQ2 course until gate-relative path is wired + `gate_map` passed.** Correct fail-loud behavior; removed by the gate-relative rebuild. → [[index-control-sim]]
 
 ## Topic file pointers
 - [[project-phase2-rl-vision-decisions]] — vision/estimator/case-C sections: §VISION-PKG2, §ESTIMATOR-RACESPEED, §ORGANIZER-PIVOT, §CASE-C-READINESS, §SPEED-CEILING-ANALYTIC, §GATE-MAPPER, §PARALLEL-SYSTEMS, §ADVISOR-TRIAGE-2026-06-11.

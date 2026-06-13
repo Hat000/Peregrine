@@ -4,7 +4,7 @@
 - **VQ1 PASSED. inc7 LIVE-CONFIRMED = current best** (standing 5/5, gate-3 barrier gone). Phase 2 = RL + VQ2 vision.
 - 🚩 **BINDING VQ2 RISK = ESTIMATOR** (not planner/policy). Case-C absolute world-frame nav = NO-GO at any speed; **FIX = gate-relative obs** (CONDITIONAL-GO, velocity-prior-sensitive). **Build gate-relative REGARDLESS** (organizer-pivot: Q① only decides load-bearing-vs-insurance). **RewindKF = DEFAULT.** → [[index-vision-estimator]]
 - **S2 DECIDED = `staged_monolithic_then_decomposed`.** Speed gap = TILT ENVELOPE, not architecture. → [[index-rl-training]]
-- **ACTIVE critical path:** hardening MERGED (6876f44, 687 green) → P4-C05 (dispatched, gate-yaw obs foundation) → gate-relative rebuild + inc8 envelope ladder. → [[index-control-sim]] · [[index-vision-estimator]]
+- **ACTIVE critical path:** P4-C05 DONE (f50b9b4, 692 green; gate-yaw obs foundation) → gate-relative pipeline DESIGN ultracode (dispatched) → build estimator chain + inc8 gate-relative retrain → integrate/validate. → [[index-control-sim]] · [[index-vision-estimator]]
 
 ## Operating directives — ALWAYS APPLY
 - 🚩 **CANARY (MANDATORY):** address **Fengyou** by name in EVERY message. Missing name = context degradation → Fengyou rotates session.
@@ -18,7 +18,7 @@
 - 🚩 **Judged runs use `rl/submit_rl.py`** (pins inc7, NO `MAV_CMD 31000` on the wire). `fly_rl.py` default ckpt = retired inc4 → pass inc7 explicitly if bypassing submit_rl.
 - 🚩 **CTBR/VQ1 LEGACY SIGN CONFIG is a self-consistent alias — DO NOT "fix".** → [[index-control-sim]]
 - 🚩 **ODOMETRY quat is R_y(π)-CONJUGATED;** run `scripts/frame_residual_report.py` after EVERY live session (internal consistency cannot catch a conjugation). → [[index-control-sim]]
-- 🚩 **`main` CANONICAL · 687 tests green · `*.pt` + `data/runs` gitignored.**
+- 🚩 **`main` CANONICAL · 692 tests green · `*.pt` + `data/runs` gitignored.**
 
 ## Library index (MEMORY → domain sub-index → topic files)
 - 🛩️ **[[index-rl-training]]** — RL increments/lineage, training doctrine, S2 decision, inc8 + speed-ladder, plant/sysid-for-RL, retrain footguns, Adroit/DiffAero.

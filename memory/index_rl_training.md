@@ -40,7 +40,7 @@ inc4 (RETIRED) → inc5 (RETIRED) → inc6 (fallback, bridge live-confirmed) →
 - **PRIMARY MARGIN GUARD = GATE-4** (0.155 m @ r=0.38). Gate-5 CLEAN (0.314 m).
 
 ## NEXT queue — RL items
-⑥ 🚩 **P4-C05 gate-yaw hardcode (GO-BEFORE-VQ2; FOUNDATION for gate-relative obs rebuild):** `obs_from_zup`/`build_obs` hardcode yaw=pi — silently wrong up to 4.22 m on any VQ2/non-pi course.
+⑥ ✅ **P4-C05 DONE (f50b9b4, 692 green):** `GateMap` per-gate-yaw obs wired; yaw-aware path BIT-EXACT; default=VQ1 yaw=π BIT-EXACT; `get_gate_rotmat_w2g` is gate-relative estimator hook. Current stack VQ1-only (loud-aborts non-π). → [[index-vision-estimator]] §P4-C05
 ⑦ 🚩 **CR1-01 + P1-C06 → WINNER-VALIDATION RIDER:** fold yaw-active segment into inc8 fresh-reset live batch; closes absolute yaw wire sign + obs yaw seam in one capture.
 ⑧ **INC8 sub-tasks (ordered):**
   1. Graft arc-length progress reward.
