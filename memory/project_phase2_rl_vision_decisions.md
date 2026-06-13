@@ -1543,3 +1543,48 @@ Per-fix lateral ≤ 0.10 m → 0.155 m margin held past 55 m/s (full inc8 ladder
 ### Artifacts
 
 All under `handoff/ultracode-estimator-racespeed-2026-06-13/`: `a1_sim.py` / `a1_results.json` (closed-loop KF sim, reproduced bit-for-bit by b1); `a2_bias.py` / `b2_verify.py` (bias decomposition + verifier); `a3_realism.py` (37 m/s model); `a4_latency.py` (latency geometry split); `c1_*` (gate-relative THE FIX); `c2_*`–`c5_*` (dead ends/traps/speed-ladder); `synth_synthesis.md` + `REPORT.md`.
+
+---
+
+## §ORGANIZER-PIVOT (2026-06-13) — stop gating engineering on organizer answers
+
+**Context:** Three organizer emails (sent ~5 days, ~2 days ago, and 2026-06-13) UNANSWERED as of 2026-06-13.
+
+**DIRECTIVE (durable): Build the ROBUST SUPERSET that handles every plausible case — do not gate engineering on organizer answers.**
+
+### Supersession of Q①-gated framing
+**SUPERSEDED:** "Q① is the master gate; build gate-relative ONLY after Q① confirms case C."
+**CURRENT:** Build gate-relative regardless. Q① only decides whether it's **load-bearing** (case C, no pose streamed) or free insurance (case A/B, pose given). Rationale: case A/B is covered by given-pose; ⑤'s verdict proved gate-relative is the ONLY case-C path → building it is free insurance either way. STOP treating Q① as a build gate; treat it as a routing signal.
+
+### Other unknowns — already handled defensively
+- **RewindKF = DEFAULT** (free at edge HW, mandatory at CPU HW — covers both Q⑤ branches; already built).
+- **Autonomy unknowns** (start sequence, telemetry reliability) handled by late-join gate + arm-retry + freshness gates from hardening (④ above). No organizer answer needed.
+- **Keep ONE more polite nudge in ~a week.** Plan as if no answer comes; organizer email is no longer a blocking gate.
+
+---
+
+## §RL-PORTFOLIO (2026-06-13) — policy speed-ladder as deliberate portfolio
+
+**Commander-assessed, GO as a refinement of the inc8 plan. NOT a new track — layered on §INC8-DESIGN + §S2-DECISION.**
+
+### Framing
+Train a deliberate LADDER of policies along the reliability↔speed (tilt/cone-envelope) spectrum; SELECT the fastest one that is VALID at race conditions. Right response to ⑤'s estimator-gates-speed reality (we don't yet know the valid-speed ceiling).
+
+### Portfolio rungs (already in plan, now explicitly framed)
+- **inc7** = the conservative guaranteed-valid floor (11.45 s deployment, sr=1.000, gate-4 confirmed).
+- **inc8 rung 1:** rw_tilt 96→48 (~1.4 s recovery, cone unchanged).
+- **inc8 rung 2:** free-cone 60°→~70° (~1.5 s recovery, 3 high-κ corners — THE binding kinematic lever), gated on gate-4 metric.
+- **inc8 rung 3+:** further relaxation if gate-4 metric and estimator σ permit.
+
+### Selection metric
+Fastest policy where:
+1. Required localization is achievable by the gate-relative estimator at that rung's race speed (ties to §ESTIMATOR-RACESPEED margin/σ analysis).
+2. Contact-valid (gate-4 margin ≥ 0 with adequate clearance; re-verify via `rl/contact_true_eval.py` per rung).
+Keep inc7 as the **guaranteed-valid floor fallback** ("slow valid > fast invalid" doctrine concretized).
+
+### Rejected end of the axis
+- **"Crazy flips / aerobatics":** ANTI-SPEED AND ANTI-VALIDITY for this race — rejected. The productive axis is TILT CONE, not maneuver complexity.
+- **Perturbation-recovery curricula:** REJECTED (basin-narrowing, confirmed prior).
+
+### Coupling to estimator
+Every cone-relaxation rung worsens gate-4 margin/σ ratio → **re-verify gate-relative per-fix lateral against achieved σ at that rung's speed before crowning any rung as valid.**
