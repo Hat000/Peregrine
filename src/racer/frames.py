@@ -12,10 +12,45 @@ All angles in radians.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from scipy.spatial.transform import Rotation
 
 CAMERA_PITCH_RAD = np.deg2rad(20.0)
+
+
+@dataclass(frozen=True)
+class BoresightCorrection:
+    """Unified STATIC camera-vs-body extrinsic correction. ALL fields default 0.0 => byte-identical
+    to the uncalibrated stack (VQ1/inc7 unchanged) until a measured number lands. P3's gate-0/1
+    head-on arbiter selects the FORM and pins the value(s); CALIB_V2 builds both forms now.
+
+      ANGULAR  -> pitch_rad (+ roll_rad): a mount-ORIENTATION boresight composed into
+                  R_camera_from_body(); world-vertical fix bias is PROPORTIONAL to range
+                  (back-out angle range-FLAT). pitch is about body-Y == camera-X ("right",
+                  the eps_vert axis); roll is about body-X == camera-Z (optical axis, bearing-coupled).
+      METRIC   -> vert_offset_m: a constant camera-optical-centre vs body-origin vertical TRANSLATION
+                  (body FRD +Z down, metres) applied in the localization +L lever; world-vertical fix
+                  bias is CONSTANT across range (back-out angle ~ 1/range). Covers the case where the
+                  sim's render rig / attitude-body reference differs from spec 3.8 (camera == body
+                  origin); cf localization.py's own note "the Elodin rig offsets the camera".
+
+    At a single range the two forms are DEGENERATE (both produce the same vertical bias); >= 2
+    well-separated ranges discriminate them (slope=angular vs intercept=metric; see CALIB_V2 #16).
+    YAW is deliberately ABSENT (refuted in VISION-PKG2; do NOT re-open without two flights showing a
+    consistent tau_pre sign). 20deg CAMERA_PITCH_RAD is UNCHANGED -- this is an ADDITIVE correction."""
+    pitch_rad: float = 0.0
+    roll_rad: float = 0.0
+    vert_offset_m: float = 0.0
+
+
+# The ONE correction instance every consumer reads. Default identity => byte-identical. P3 replaces
+# it post-arbiter, e.g. BORESIGHT = BoresightCorrection(pitch_rad=+0.00977)  (angular, +0.56 deg) OR
+# BORESIGHT = BoresightCorrection(vert_offset_m=-0.215)  (metric) OR both (mixed). The ESKF static
+# hook reads THIS struct (see CALIB_V2_DESIGN.md sec ESKF-COORDINATION; flag UP before changing).
+BORESIGHT = BoresightCorrection()
+
 
 # Measured 1-sigma of the chain's attitude-equivalent error (the given attitude as exercised
 # end-to-end by the vision chain: odo quat decode -> camera mount -> PnP world fix), replacing
@@ -166,9 +201,14 @@ def world_vec_from_body_quat(v_body, q_wxyz) -> np.ndarray:
 
 
 def R_camera_from_body() -> np.ndarray:
-    # Passive rotation by +20 deg about body Y (frame rotated, vector representation changes oppositely).
-    R_tilted_from_body = Rotation.from_euler("Y", -CAMERA_PITCH_RAD).as_matrix()
-    return _R_CAMERA_FROM_TILTED_BODY @ R_tilted_from_body
+    # Passive rotation by +(20 + boresight_pitch) deg about body Y (== camera-X / "right"), then the
+    # ANGULAR roll boresight about body X (== camera-Z, the optical axis). BORESIGHT defaults all-zero
+    # => R_roll == I and the pitch arg == CAMERA_PITCH_RAD exactly => byte-identical to the original
+    # 20deg-only mount (np.array_equal, proven in roundtrip_dualform.py (0)). The METRIC field
+    # (vert_offset_m) is NOT applied here -- it is a translation, applied in the localization lever.
+    R_tilted_from_body = Rotation.from_euler("Y", -(CAMERA_PITCH_RAD + BORESIGHT.pitch_rad)).as_matrix()
+    R_roll = Rotation.from_euler("X", -BORESIGHT.roll_rad).as_matrix()
+    return _R_CAMERA_FROM_TILTED_BODY @ R_roll @ R_tilted_from_body
 
 
 def world_point_in_body(
