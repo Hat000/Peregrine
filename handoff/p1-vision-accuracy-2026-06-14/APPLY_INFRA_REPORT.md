@@ -1,91 +1,73 @@
-# P1-CALIB-APPLY — APPLY INFRA REPORT
+# P1-CALIB-APPLY-2 — APPLY INFRA REPORT
 
-**Session:** P1-CALIB-APPLY (reports to P1 VISION-ACCURACY commander via Fengyou)
+**Fengyou** — dual-form boresight infra is **APPLIED, byte-identical, 0 regressions, and LIVE-READY for your merge gate.**
+
+**Session:** P1-CALIB-APPLY-2 (reports to P1 VISION-ACCURACY commander via Fengyou)
 **Model:** claude-opus-4.8 · **Effort:** HIGH · **Date:** 2026-06-14
-**Branch:** `calib-v2-apply` (local, created at `origin/p1-calib-v2` tip `a980823`)
+**Branch:** `calib-v2-apply2` → pushed to `origin/p1-calib-v2`
+**Infra commit:** `5091c88a848a127b951adfcd67ef8b5c77abe60f`
 
 ---
 
-## VERDICT: 🛑 STOP — patch NOT applied; clean unified-diff re-issue required.
+## VERDICT ✅ — APPLIED. Default-all-zero, byte-identical, 0 regressions. Ready for merge.
 
-**Decision (Fengyou / P1 commander, this session): strict escape-hatch — "Strict STOP, re-issue as diff."**
-No hand-application was performed (neither `Edit` nor hand-authored diff). `src/` is **pristine**.
+This supersedes the prior STOP (74cc72c): the artifact was a design doc not a diff, so per your re-issue the edits were made **directly** in `src/` (no `git apply`).
 
----
-
-## 1. Baseline (recorded BEFORE any change) — GREEN ✅
+## 1. Baseline (pristine src, recorded BEFORE edits) — GREEN ✅
 ```
-703 passed, 35 skipped in 290.09s   (venv: .venv/Scripts/python.exe, pytest 9.0.3, from repo ROOT)
+703 passed, 35 skipped in 191.99s   (.venv/Scripts/python.exe, pytest 9.0.3, from repo ROOT)
 ```
-Matches the expected ~703 / 35. Tree is healthy. `git diff -- src/` is **empty** (no edits made).
 
-## 2. Why the patch could not be applied — FORMAT, not drift
-`handoff/p1-vision-accuracy-2026-06-14/scratch-calib-v2/proposed_calib_dualform.patch` is a
-**human-readable DESIGN ARTIFACT** (its own line 1: *"PROPOSED, NOT APPLIED"*), authored that way
-because the calib-v2 authoring session was forbidden from touching `src/`. It uses
-`# --- insertion point …` comment markers and has **no** unified-diff structure
-(no `--- a/`, no `+++ b/`, no `@@` hunk headers, no `***` markers).
+## 2. Edits made (transcribed from CALIB_V2_DESIGN.md + the artifact, at the confirmed lines)
+**`src/racer/frames.py`** (3 edits):
+- `from dataclasses import dataclass` import.
+- `@dataclass(frozen=True) class BoresightCorrection` with `pitch_rad=roll_rad=vert_offset_m=0.0` (all-zero default) + module-level `BORESIGHT = BoresightCorrection()`.
+- `R_camera_from_body()` composes `BORESIGHT.pitch_rad` (about body-Y≡cam-X) and `BORESIGHT.roll_rad` (about body-X≡cam-Z): `_R_CAMERA_FROM_TILTED_BODY @ R_roll @ R_tilted_from_body`. At all-zero `R_roll==I` and the pitch arg `== CAMERA_PITCH_RAD` exactly.
 
-Evidence (exit 128 both):
+**`src/racer/localization.py`** (helper + both lever sites + import):
+- `_apply_camera_vert_offset(position_ned, R_world_body)` guarded on `vert_offset_m != 0.0` (default → line skipped → byte-identical).
+- Threaded into **both** `+L` lever sites: `gate_pose_to_world_position` and `gate_relative_inplane_fix`.
+
+## 3. ⚠️ DEVIATION-FROM-ARTIFACT (flagged for your merge-gate review) — required, low-risk, behaviorally identical
+**Found a latent bug in the calib-v2 deliverable:** the artifact's `src` and its own acceptance test are inconsistent. The artifact specified `from racer.frames import BORESIGHT` (a **snapshot** binding in localization's namespace), but the test `test_metric_field_shifts_lever_and_preserves_plus_L` monkeypatches `frames.BORESIGHT` and expects the localization lever to see it. With a snapshot binding it does NOT propagate → `pos1 == pos0` → **test FAILED**. (The calib-v2 author never caught this because that session never applied the patch — the 3 pins only activate against patched src.)
+
+**Resolution (option A, chosen):** localization reads `frames.BORESIGHT` **LIVE** — added `from racer import frames` and the helper references `frames.BORESIGHT.vert_offset_m`; the line-29 `from`-import reverts to the original (no `BORESIGHT`). Rationale:
+- This realizes the design doc's own words: *"the ONE correction instance every consumer reads"* / *"single source of truth: frames.BORESIGHT."* A snapshot does not.
+- It makes the two consumer paths **consistent**: `R_camera_from_body()` (frames' own global) and the localization lever now both track a single `frames.BORESIGHT`.
+- **Behaviorally identical** to the artifact at the all-zero default (byte-identical — guard False) AND in production (P3 sets the value via source-edit in frames.py; localization reads it live = same value). It differs ONLY for runtime swap (which is exactly what the acceptance test exercises).
+- It honors *"promote the test as-is"* — **the test is unchanged.**
+
+The alternative (option B: keep artifact `src`, edit the test's monkeypatch target) would paper over the src bug, violate *"promote test as-is,"* and leave the mount/lever paths inconsistent. **If you prefer option B, this is a clean revert of the two localization import/helper lines + a one-line test edit — flag at the gate.**
+
+## 4. Byte-identity verification (the load-bearing gate protecting inc7) — PASS ✅
+Direct check + the 3 now-active pins in `tests/test_calib_dualform.py`:
+- **MOUNT** `np.array_equal(R_camera_from_body(), 20°-only mount) == True` (bit-identical, not allclose) — `test_unified_default_zero_is_byte_identical_mount` PASS.
+- **+L LEVER** at default: `_apply_camera_vert_offset` returns the input array **object unchanged** (guard False) → both fix sites byte-identical; with `vert_offset_m` set the fix shifts by exactly `−R_wb·[0,0,voff]` (+L direction preserved) — `test_metric_field_shifts_lever_and_preserves_plus_L` PASS.
+- **ANGULAR compose** — `test_angular_fields_compose_into_mount` PASS.
+- Defaults confirmed all-zero: `(pitch_rad, roll_rad, vert_offset_m) == (0.0, 0.0, 0.0)`.
+
+## 5. Full suite + targeted confirms — 0 regressions ✅
 ```
-git apply --check --whitespace=nowarn  …/proposed_calib_dualform.patch
-  → error: No valid patches in input (allow with "--allow-empty")
-git apply --check -3                    …/proposed_calib_dualform.patch
-  → error: No valid patches in input (allow with "--allow-empty")
+FULL (repo ROOT):  725 passed, 35 skipped in 209.97s, exit 0   (0 failed)
 ```
-`"No valid patches in input"` = git found **zero** parseable hunks (a FORMAT rejection). A *drift*
-rejection would instead read `"patch does not apply"` / `"while searching for…"`. `patch -p1` would
-fail identically — there are no markers for any parser to anchor on.
+- **Before 703 → after 725 = +22** (exactly the new test file; `tests/test_calib_dualform.py` = 22 tests). **Skipped unchanged 35 → 35.** **0 regressions** (no `failed`; the 703 baseline-passing all still pass).
+- **NOTE on the 726 estimate:** actual is **725**, not 726. The file has exactly 22 tests (isolated run: "22 passed"); `703 + 22 = 725`. The task's "703 + 22 + 1 = 726" carried an off-by-one; skipped staying at 35 corroborates that no extra test un-skipped. 725/35 is the correct expected outcome.
+- **+L sign preserved:** `tests/test_obs_sign_faithfulness.py` green (targeted run: 48 passed across obs-sign + frames + localization + calib_dualform).
+- Untouched: 20° mount, +L sign, 0.38 radius, 20-dim obs contract. No residual/prior-width fields added. No `rl/`, sim harness, `fly_rl`/`submit_rl`, or `memory/` touched.
 
-## 3. ZERO src drift — current `src/` matches the artifact's context BYTE-FOR-BYTE
-Verified by direct read. Every insertion-point context line in the artifact matches the live source:
+## 6. Real diff exported (the genuine unified diff the artifact was not)
+`handoff/p1-vision-accuracy-2026-06-14/scratch-calib-v2/applied_calib_dualform.diff` (326 lines), validated: `git apply --check --reverse` succeeds → it is a real, machine-applicable diff. Committed in `5091c88`.
 
-| Artifact insertion point | File | Current src lines | Match |
-|---|---|---|---|
-| #1a imports (`from __future__`…`from scipy…`) | `src/racer/frames.py` | 13–16 | ✅ exact |
-| #1b `CAMERA_PITCH_RAD = np.deg2rad(20.0)` | `src/racer/frames.py` | 18 | ✅ exact |
-| #1c `def R_camera_from_body()` (3 body lines) | `src/racer/frames.py` | 168–171 | ✅ exact |
-| #2a `from racer.frames import ATTITUDE_NOISE_STD_RAD, R_camera_from_body` | `src/racer/localization.py` | 29 | ✅ exact |
-| #2c `gate_pose_to_world_position` (`position_ned = gate.position_ned - lever`) | `src/racer/localization.py` | 85–87 | ✅ exact |
-| #2d `gate_relative_inplane_fix` (`z_ned = gate.position_ned - lever`) | `src/racer/localization.py` | 161–163 | ✅ exact |
-
-**Conclusion:** the edits are fully + unambiguously specified and there is no drift — only the FORMAT
-of the artifact blocks a machine apply. The patch's own all-zero-default byte-identity claim is sound;
-it simply cannot be `git apply`-ed in its current form.
-
-## 4. What a clean re-issue must contain (so the next apply is a one-shot `git apply`)
-Re-issue the SAME edits (verbatim from §2 of `CALIB_V2_DESIGN.md` + the artifact) re-expressed as a
-proper **unified diff** against the current tree (the artifact is the source of truth — only its
-FORMAT changes, content is unchanged). The cleanest mechanical route, to avoid any hand-typed diff:
-apply the artifact's intent to a scratch checkout and `git diff > proposed_calib_dualform.diff`, or
-have the authoring session re-export it as a real diff. Line numbers above are current and stable.
-
-The re-issued diff must, at the all-zero default, remain byte-identical:
-- `frames.BoresightCorrection(pitch_rad=0.0, roll_rad=0.0, vert_offset_m=0.0)` (frozen dataclass) +
-  module-level `BORESIGHT = BoresightCorrection()`.
-- `R_camera_from_body()` composes `BORESIGHT` such that all-zero ⇒ `R_roll == I` and the pitch arg
-  `== CAMERA_PITCH_RAD` exactly ⇒ `np.array_equal` vs today's 20°-only mount.
-- `localization._apply_camera_vert_offset(...)` guarded on `vert_offset_m != 0.0` ⇒ the metric line
-  is **skipped** at default ⇒ both `+L` lever sites (`gate_pose_to_world_position`,
-  `gate_relative_inplane_fix`) are `np.array_equal` to today; `+L` sign preserved.
-
-**Land WITH the test** `handoff/…/scratch-calib-v2/proposed_test_calib_dualform.py`
-→ `tests/test_calib_dualform.py` (imports are already standard absolute `racer.*`; no path fix needed).
-It is **19 pass / 3 skip** standalone today; once `frames.BORESIGHT` exists the 3 skips activate, so the
-suite should land at **726 passed / 35 skipped** (703 + 22 new + 1 net), zero regressions. The 3 activated
-tests ARE the byte-identity pins (`np.array_equal` on mount; lever-shift `+L`-preserved).
-
-## 5. State left behind
-- `src/` **PRISTINE** — `git diff -- src/` empty. **No** hand-application (escape hatch honored).
-- Branch `p1-calib-v2` content otherwise unchanged at `a980823`; this report is the only addition.
-- `e` is still **unknown** — defaults stay all-zero; no nonzero correction was introduced anywhere.
+## 7. State
+- `e` is **unknown** → defaults stay all-zero (inert). When P3's arbiter pins it, it drops in as a one-line `frames.BORESIGHT = BoresightCorrection(...)` ({form, value}); no further code change.
+- `p1-calib-v2` @ `5091c88` (infra) — overall commander = sole merge gate; NOT merged to main.
 
 ---
 
 ## MEMORY-DELTA (≤10 lines)
-- 🛑 P1-CALIB-APPLY **STOPPED at escape hatch** (Fengyou/commander: "strict STOP, re-issue as diff"). NO src change; `src/` pristine; nothing merged/pushed to src.
-- ROOT CAUSE: `proposed_calib_dualform.patch` is a human-readable DESIGN ARTIFACT (marked "PROPOSED, NOT APPLIED"), NOT a unified diff → `git apply` fails on FORMAT ("No valid patches in input"), exit 128. Same for `-3` / `patch -p1`.
-- ZERO src drift — verified context matches BYTE-FOR-BYTE: frames.py 13–16/18/168–171; localization.py 29/85–87/161–163.
-- Baseline GREEN: **703 passed / 35 skipped** (venv pytest 9.0.3, from ROOT) — tree healthy, untouched.
-- ACTION FOR COMMANDER: re-issue the SAME edits as a real unified diff (`--- a/ +++ b/ @@`; content unchanged, only format) → then a one-shot `git apply` lands default-zero infra. Land WITH the test → `tests/test_calib_dualform.py` (expect **726 passed / 35 skipped**, 0 regressions).
-- `e` STILL unknown → defaults all-zero; `e` drops in later as a one-line `{form,value}` on `frames.BORESIGHT`.
+- ✅ **P1 CALIB-V2 APPLY DONE & pushed → `p1-calib-v2` @ `5091c88`** (infra commit; report commit follows). Dual-form boresight infra LIVE, DEFAULT-ALL-ZERO byte-identical.
+- **BYTE-IDENTITY PROVEN** at default-zero: MOUNT `np.array_equal` True (bit-identical 20° mount) + **+L LEVER** helper returns input unchanged (both fix sites); all 3 pins active+PASS; +L sign (`test_obs_sign_faithfulness`) green.
+- **SUITE: 703 → 725 passed / 35 skipped, 0 regressions** (file = 22 tests; the prior "726" estimate was off-by-one — 725 is correct, skipped unchanged confirms it).
+- **⚠️ DEVIATION-FROM-ARTIFACT (merge-gate review):** localization reads `frames.BORESIGHT` LIVE (`from racer import frames`) NOT the artifact's `from racer.frames import BORESIGHT` snapshot — required to pass the acceptance test + realize the design's "single source of truth"; byte-identical at default, identical in production, test untouched. Revertable to option-B if preferred.
+- **e STILL unknown → defaults all-zero; e drops in as one-line `frames.BORESIGHT = BoresightCorrection({form,value})`.** default-zero dual-form boresight infra LIVE-READY for merge gate.
+- Real machine-applicable diff: `handoff/p1-vision-accuracy-2026-06-14/scratch-calib-v2/applied_calib_dualform.diff` (validated via `git apply --check --reverse`). → [[index-vision-estimator]]
