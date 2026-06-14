@@ -27,6 +27,23 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - CAVEAT: 7% fix-rate is a LOWER BOUND — inc7 given-pose has no pointing incentive; vision-trained policy expected much higher.
 - Source: handoff/simops-mastery-2026-06-13/ (on ShadowPC — pending commit+push from ShadowPC to main).
 
+### 2-AXIS CAMERA-POINTING FINDING (2026-06-14; FIX-SURROGATE calibration; handoff/fix-surrogate-2026-06-14/REPORT.md)
+**ELEVATION CO-BINDS — decrab is NECESSARY but NOT SUFFICIENT.**
+- After de-crabbing (yaw — translationally ~free), the active gate is in horizontal FoV **100%** but vertical FoV only **~10%** (|el| ~45° vs VFoV 29° at +20° mount). Centering the gate through its 18–28 m window = **×8.5 in-window fix-density gain** (accept_density: 0.099 → 0.84).
+- This PROMOTES elevation from a flagged "second-order" concern to a **co-binding axis**, refining the earlier "decrab ≈ free solves pointing" framing. Elevation couples to PITCH = the accel knob (harder axis than yaw).
+- **MOUNT-UPTILT (+20° currently) = candidate CHEAP knob** to absorb the elevation gap, vs expensive policy pitch-modulation. A mount-uptilt → fix-density SWEEP using fix_surrogate is teed up as top inc8/pointing analysis — splits the gap into free(mount) vs must-train(pitch). **GATED on organizer Q: is the mount changeable for competition?** (Fengyou's call; not yet run.)
+- crab→fix-rate map is a callable + table; its accept_rate is a range-MARGINAL LOWER BOUND — use accept_density_in_window for the real in-window number.
+- **Inc8 camera-pointing reward spec: 2-AXIS (azimuth + elevation)**, not azimuth only.
+
+### FIX-SURROGATE DONE (2026-06-14; branch claude/stupefied-fermi-20126c, commits 0610591+c0d3f49, off main 613332a; NOT MERGED — C6 hold intact)
+- **What:** analytic NO-RENDER fix model for inc8 training. `rl/fix_surrogate.py` + `tests/test_fix_surrogate.py` (15 green) + `handoff/fix-surrogate-2026-06-14/REPORT.md`. CPU-only, torch-free. src/ UNTOUCHED.
+- **Interface:** geometry(drone_pos, R_world_body, gate) → GT relative geometry, mirroring the DEPLOYED camera chain (same intrinsics, +20° mount, predict_gates_in_camera). `p_accept(geom)` (range band-pass × in-image), `fix_sigma`/`fix_covariance` (gate-plane anisotropic SPD, mirrors `gate_relative_inplane_fix`), `sample_fix(geom,rng)→(z,cov)|None` feeds LinearKF.update_position directly; `crab_to_fix_rate` + `accept_density_in_window`. INFRA ONLY — reward NOT decided (Fengyou owns brainstorm).
+- **Calibration vs Track-3 (1821 frames / 126 fixes), within tolerance:** accept @ peak(18–24 m) 0.835→0.826; accept @ inc7-crab 0.069 (anchor); in-FoV 0.332; σ lateral 0.104 (CI68 .094–.114) / vertical 0.282 / depth 0.852. Floors carry ±15–18% small-n CI (~16–24 rows/flight).
+- **Validated NOT overfit:** leave-one-flight-out CV (held-out accept AUC .862 vs .867; lateral floor .098 vs .104) + 4-agent adversarial workflow (concerns addressed). CPU smoke: sample_fix→LinearKF mean Mahalanobis 3.00 = dof, 20000/20000 SPD/finite.
+- **σ is a SINGLE swappable checkpoint** — `fix_surrogate_fit.py` recalibrates from an L3 at-speed recording.
+- Full suite: 703 passed / 35 skip / 0 fail = no regression.
+- 🚩 **SURROGATE σ vs L3 GATE-4 σ RECONCILIATION REQUIRED BEFORE LOCKING THE MARGIN σ:** surrogate POOLED σ (lat 0.104 / vert 0.282) ≠ L3 GATE-4 at-speed σ (lat 0.19 / vert 0.10) axis-for-axis. NOT a bug — different purposes (surrogate = training DR distribution; L3 = gate-4 margin number). Reconcile axis-convention vs per-gate/speed variation BEFORE locking the σ the margin verdict uses.
+
 ### Corrected framing (supersedes any "c1 0.139 clears margin" language)
 - c1 0.139 = **RMS** (clears on RMS); p90 = **0.203 m** (does NOT clear 0.155 m). The mandated worst-case read is **p90**. Stop citing c1-warm RMS 0.139 or d4v-visvel RMS 0.144 as "clears" — both are p90-FAILS (0.203 / 0.213).
 - d3 anchor reproduces c1 exactly (0.139 RMS / 0.203 p90, N=600) — machinery validated.
@@ -152,7 +169,7 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 - 🚩 **CLOSE IS PROVISIONAL:** common-mode-across-gates does NOT prove +L cancellation (see footgun). DIRECT δ_map pin (sim true opening-center-z vs track_map z) launched as discriminator: handoff/dmap-vert-discriminator-2026-06-14.
 - **σ (gate-4 specific):** lateral 0.19 m / vertical 0.10 m (< modeled 0.265 m); along-track +0.40 loose. NOTE: gate-4 σ_lat 0.19 is ABOVE the pooled headline 0.10 — use gate-4 value for gate-4 margin; the "σ=0.10" pooled figure was pooled across all gates.
 - **Relinnov gate:** accepts 100% of offered gate-4 fixes (d2 p90 0.94 ≪ 13.82) — NOT the limiter.
-- **BINDING LIMIT = FIX-RATE 1.4% of frames at gate-4** (gate-4 is worst case; pooled ~7%): detector 92%; gate-4-in-FoV 42%; crab p50 66°; at >60° crab (51% of frames) gate-4-in-FoV 5% / 0 fixes; ALL 81 fixes from the crab-30–45° gate-3-approach window. Root cause = camera POINTING (addressable via inc8 gate-in-FoV reward).
+- **BINDING LIMIT = FIX-RATE 1.4% of frames at gate-4** (gate-4 is worst case; pooled ~7%): detector 92%; gate-4-in-FoV 42%; crab p50 66°; at >60° crab (51% of frames) gate-4-in-FoV 5% / 0 fixes; ALL 81 fixes from the crab-30–45° gate-3-approach window. Root cause = camera POINTING **2-AXIS** (azimuth + ELEVATION co-bind — see §2-AXIS CAMERA-POINTING FINDING; addressable via inc8 2-axis gate-in-FoV reward + mount-uptilt sweep).
 - **Depth blow-up:** clean fixes only in the ~20–22 m band; gate-3 @ 31.8 m showed +2.05 m along-track depth blow-up (beyond 32 m cap) — consistent with the a1·r >24 m extrapolation warning.
 - 🚩 **FOOTGUN: COMMON-MODE-ACROSS-GATES ≠ PROOF OF +L CANCELLATION.** Identical vertical offset at multiple gates is consistent with BOTH (a) track_map representation offset [+L CANCELS → close] AND (b) detector/camera-EXTRINSIC sighting bias [+L does NOT cancel → fails] — one camera sees every gate, so extrinsic bias is also common-mode. Only the DIRECT δ_map pin distinguishes them.
 
