@@ -37,19 +37,21 @@ inc4 (RETIRED) → inc5 (RETIRED) → inc6 (fallback, bridge live-confirmed) →
 - 🚩 ≤65° roll = ~2.87 s/lap (ledger; inc5 A/B). 60° cone bound ~9.8–10.6 s ≈ inc7 live 9.76 s → gap = CONE, not policy/architecture.
 - Relaxation ladder: (1) rw_tilt 96→48 (~1.4 s); (2) free-cone 60°→75–80° (~1.5 s — **THE binding kinematic lever**); (3) unconstrained.
 - **COUPLING:** faster speed worsens gate-4 margin/σ ratio → estimator accuracy must be verified at each speed rung.
-- **PRIMARY MARGIN GUARD = GATE-4** (0.155 m @ r=0.38). Gate-5 CLEAN (0.314 m).
+- **PRIMARY MARGIN GUARD = GATE-4.** Reporting discipline (body-radius reconciliation 2026-06-13): quote gate-4 margin as a FUNCTION of r ∈ {0.21, 0.26, 0.30, 0.33, 0.38}, ALWAYS p90 AND p99 — NEVER a single number. Central planning radius = **0.30 m** (budget 0.235 m); worst-case stress knob = **0.38 m** (budget 0.155 m). Gate-5 CLEAN (0.314 m @ r=0.30).
 
 ## NEXT queue — RL items
 ⑥ ✅ **P4-C05 DONE (f50b9b4, 692 green):** `GateMap` per-gate-yaw obs wired; yaw-aware path BIT-EXACT; default=VQ1 yaw=π BIT-EXACT; `get_gate_rotmat_w2g` is gate-relative estimator hook. Current stack VQ1-only (loud-aborts non-π). → [[index-vision-estimator]] §P4-C05
 ⑦ 🚩 **CR1-01 + P1-C06 → WINNER-VALIDATION RIDER:** fold yaw-active segment into inc8 fresh-reset live batch; closes absolute yaw wire sign + obs yaw seam in one capture.
-⑧ **INC8 sub-tasks (ordered):**
-  1. Graft arc-length progress reward.
-  2. Corrected-aero min-snap+TOPP reference line.
-  3. rw_tilt 96→48 + free-cone 60°→~70° **GATED on gate-4 metric** (BSR3 spin-margin gate MANDATORY before retrain — widen spin_rate_abort→~9–10 + spin_time_abort→3.0 s).
-  4. Retrain ≥4 seeds.
-  5. scipy-SLSQP toy MPCC probe.
-  - **INC8 BINDING GATE = GATE-4 (0.155 m @ r=0.38, SIMSTART, registration-confirmed).**
-- **RL SPEED-LADDER PORTFOLIO:** train deliberate envelope ladder; select fastest contact-valid policy the gate-relative estimator can DELIVER.
+⑧ **INC8 SPEC (gate-relative BLUEPRINT.md, 2026-06-13 — Adroit-ready):**
+  - **BSR3 spin-gate MANDATORY FIRST** (spin_rate_abort→9–10, spin_time_abort→3.0 s; super-rate plant legitimately commands ~11 rad/s).
+  - Obs: 20-dim (C1); train env populates pos_g as GT +L offset + MEASURED estimator residual (NEVER pristine truth, NEVER R_w2g@(gate_map−p_KF) anti-pattern). Critic 36-dim.
+  - DR (estimator, on obs only): per-fix lateral σ~U[0.08,0.30] m/axis; **one-signed PnP/extrinsic bias U[0,0.19] m with per-episode constant RANDOM SIGN** (SUPERSEDES ±0.10 zero-mean — cannot cover a one-signed 0.19 m bias). Map bias NOT injected (drops out).
+  - Reward: R1' arc-length over REBUILT corrected-aero reference line (reference_line_vq1.json drag-infeasible+170° inverted → MUST rebuild); T4 finish-time KEPT; R4' **fixed relaxed cone = L0 default** (tilt_free_rad is scalar; confidence-gated cone is portfolio ablation).
+  - **SELECT on p90 gate**: gate-4 SIMSTART in-plane p90 < 0.155 m @ r=0.38 (NOT RMS); design point COLD; ≥5 seeds; BSR3 FIRST. ESTIMATOR sets the ceiling, not the policy.
+  - **HARD prereq for G4/G6:** contact_true_eval currently runs obs_from_truth (perfect pose, no noise) → selecting on it crowns a fiction. Must build: estimator-emulation obs wrapper + v* (achieved gate-4 approach speed) extraction instrument FIRST.
+  - **INC8 BINDING GATE = GATE-4 (SIMSTART, p90 AND p99, COLD design point).** Report as function of r ∈ {0.21,0.26,0.30,0.33,0.38}; central = r=0.30 (budget 0.235); select at r=0.38 worst-case (budget 0.155). ESKF attitude-bias estimation elevated to BINDING MARGIN LEVER — if live L3 recording pins effective bias ≤ ~0.6°, margin CLOSES at r=0.30 cold.
+- **RL SPEED-LADDER PORTFOLIO:** train deliberate envelope ladder; select fastest contact-valid policy the gate-relative estimator can DELIVER. Speed ceiling GATED on L3 at-speed recording — CANNOT be settled offline. Binding factor = systematic attitude/accel bias, not contact radius.
+- 🚩 **LSQ VISION-VELOCITY REFUTED — NOT LOAD-BEARING (SUPERSEDES earlier banking).** Honest inter-frame PnP-delta σ_v ≈ 2.81 m/s (NOT assumed 0.3–1.0) + mandated RewindKF L≈115 ms → cold in-plane NO-GO at every smoothing window. Demoted to P2 insurance. Margin closure rests on attitude/accel-bias control (≤~0.6°) + uncertainty speed-down. Position-fix-differencing IS the KF (free baseline); do NOT build a load-bearing vision-velocity channel.
 
 ## DiffAero / Adroit substrate
 - `src/racer/rl_plant.py` + `rl/diffaero_dynamics.py`, parity BIT-IDENTICAL; 2048-env PPO ~88.9 K steps/s.

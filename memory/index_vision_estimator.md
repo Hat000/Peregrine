@@ -7,7 +7,74 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - **RewindKF = DEFAULT** (ships regardless; already built).
 - Policy obs must be gate-relative → **P4-C05 DONE (f50b9b4, 692 green) — see §P4-C05 below.**
 - 🚩 **ORGANIZER-PIVOT: build gate-relative REGARDLESS** — Q① = load-bearing vs free-insurance only (3 emails UNANSWERED; do NOT gate engineering on organizer answers; keep ONE nudge ~weekly).
-- COUPLING: faster speed worsens gate-4 margin/σ ratio → estimator accuracy must be verified at each speed rung. **PRIMARY MARGIN GUARD = GATE-4** (0.155 m @ r=0.38).
+- COUPLING: faster speed worsens gate-4 margin/σ ratio → estimator accuracy must be verified at each speed rung. **PRIMARY MARGIN GUARD = GATE-4** (0.155 m @ r=0.38; reporting discipline: always quote margin as function of r ∈ {0.21,0.26,0.30,0.33,0.38} at p90/p99 — never a single number; central planning radius = 0.30 m, worst-case stress knob = 0.38).
+
+## COLD-MARGIN CLOSURE (2026-06-13; BLUEPRINT.md + REPORT.md in handoff/ultracode-gate-relative-pipeline-design-2026-06-13/)
+**TRI-CONFIRMED VERDICT: CANNOT-SETTLE-OFFLINE.** Source: d3 full-lap sim + v3 verifier + commander independent cross-check (3 independent constructions; all agree on load-bearing numbers). The gate-relative OBSERVATION fix is SOLID and MUST be built (map bias drops EXACTLY: rel E_bias −0.000 vs abs/submap +0.176; RMS 0.139 m). But the margin DOES NOT close offline in any regime.
+
+### Corrected framing (supersedes any "c1 0.139 clears margin" language)
+- c1 0.139 = **RMS** (clears on RMS); p90 = **0.203 m** (does NOT clear 0.155 m). The mandated worst-case read is **p90**. Stop citing c1-warm RMS 0.139 or d4v-visvel RMS 0.144 as "clears" — both are p90-FAILS (0.203 / 0.213).
+- d3 anchor reproduces c1 exactly (0.139 RMS / 0.203 p90, N=600) — machinery validated.
+
+### Contact-radius reconciliation (2026-06-13; handoff/body-contact-reconcile-2026-06-13/)
+**The 0.155 m budget = budget(r=0.38) = (0.75 − 0.38) − 0.215, where linf₀=0.215 m is the radius-invariant gate-4 simstart crossing offset [X].** Budget identity confirmed bit-for-bit vs d3's MARGIN_G4=0.155.
+
+**Reconciled contact radius:** 0.38 is NOT geometric — rigid-body chassis geometry caps at **0.2135 m** (3D half-diagonal √(0.14²+0.14²+0.08²); tilt adds only +0.015 m; posture-free absolute ceiling). The extra ~0.17 m is an unmodeled rotor-wash/blade-strike halo (props UNDOCUMENTED in spec). Posture-matched empirical data (gate-3 steep crashes, tilt ~55°, 12–18 m/s) logs contacts at L-inf 0.37–0.49 m → r_eff ≥ 0.26–0.38 (LOWER BOUNDS). **Central best-estimate = 0.30 m (band 0.26–0.33); worst-case tail = 0.38 m** [X].
+
+🚩 **DO NOT adopt 0.18–0.20 m (gate-0, near-level corner-pass probe) as the gate-4 radius** — that is the WRONG POSTURE (~3 m/s CTBR bridge, near-level; not gate-4 steep). DO NOT re-litigate 0.38 as a geometry bug.
+
+**Budget table (budget(r) = (0.75−r) − 0.215):**
+| r | budget | vs incumbent |
+|---|---|---|
+| 0.213 (geom floor) | 0.322 m | +0.167 |
+| 0.26 (best-est lo) | 0.275 m | +0.120 |
+| **0.30 (central)** | **0.235 m** | **+0.080 (~1.5×)** |
+| 0.33 (best-est hi) | 0.205 m | +0.050 |
+| 0.38 (worst-case) | 0.155 m | — |
+
+### Cold verdict @ gate-4, 37 m/s — p90/p99 full matrix
+| mode | p90 | vs budget@0.30 | vs budget@0.38 | p99 clears? |
+|---|---|---|---|---|
+| **warm (vel=truth — NOT case C)** | 0.203 | PASS (+0.032) | FAIL | Y(r≤0.38) |
+| **cold @ bias 0 (case-C ideal)** | 0.234 | PASS (+0.001) KNIFE-EDGE | FAIL | FAIL (p99=0.322; clears only at r≤0.213) |
+| **cold @ 1.4° attitude bias (REALISTIC)** | 0.338 | **FAIL (−0.103)** | **FAIL** | **FAIL at ALL r** |
+| cold@1.4° in-plane worst | 0.348 | FAIL | FAIL | FAIL at ALL r |
+
+**Verdict (QUALIFIED-NO-CLOSE):** With r=0.30 (central), warm and cold@bias0 p90 clear — but cold@bias0 is KNIFE-EDGE (+0.001 m) and **FAILS at p99** (p99=0.322 > budget 0.235). The realistic case-C tail (cold@1.4°) **fails at every admissible radius at p90 AND p99** — needs budget > 0.338 → r < 0.197 m, **below the chassis geometry floor (0.2135 m)**. Radius correction is REAL but operationally inert for the binding case.
+
+EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). RewindKF latency 15→115 ms ~equal once capture-timed — **NOT binding.**
+
+### Binding factor (SHARPENED by radius reconciliation)
+- **The binding factor = effective systematic attitude/accel bias entering gate-4, NOT the contact radius.** The radius correction (~1.5× budget) does not move the binding case. The cold@1.4° p90 (0.338 m) fails at every physically admissible radius.
+- **HOPE FLAG:** The cold@1.4° design point is likely PESSIMISTIC — it treats the ATTITUDE_NOISE_STD_RAD (1.4°, σ) as if it were a constant systematic bias. The true systematic drift-causing bias is probably smaller. **If the live recording pins it ≤ ~0.6°, the margin CLOSES at r=0.30.** This is the decisive open question.
+- **ESKF attitude-bias estimation (bias state) = BINDING MARGIN LEVER** for fast/case-C margin closing — elevated from raise-ceiling stash. Confirms d3's "ESKF/attitude pipeline in the critical path for the MARGIN, not just absolute nav."
+- Cold-prior risk = **HIGH** (variance/window-driven, NOT init-driven). "Warm by gate-4" is FALSE — a full lap does NOT pre-converge velocity to warm quality.
+- Closure rests on **attitude/accel-bias control (≤~0.6°) + the uncertainty-aware speed-down**, NOT the velocity channel and NOT the contact radius.
+
+### Vision-velocity channel — REFUTED, demoted to P2 insurance (SUPERSEDES "LOAD-BEARING" framing)
+- ~~**LSQ-over-window (σ_v 0.3–0.4, d4v visvel):** p90 cold 0.34→**0.18 m**. Build this. NECESSARY.~~
+- **REFUTED (verify_velchannel_v6.py, re-run):** honest inter-frame PnP-delta σ_v ≈ **2.81 m/s** (NOT assumed 0.3–1.0); mandated RewindKF L≈115 ms → cold in-plane RMS 0.19–0.35 m **NO-GO at every smoothing window**. d4v ran at L=0 with GT-cheat velocity — those "0.18 m" numbers were fiction.
+- **DEMOTED to P2 insurance.** Position-fix-differencing IS the KF (free baseline). Direct vision-velocity is NOT the margin lever. Do NOT make it load-bearing.
+- **Naive fix-difference (σ_v~5.2):** p90 ≈ cold or worse. Same verdict.
+
+### Speed-ladder and escape hatch
+- **Speed-ladder selection metric = p90/p99 gate** (gate-4 SIMSTART in-plane — report across r ∈ {0.21,0.26,0.30,0.33,0.38}, ALWAYS p90 AND p99; central on 0.30; 0.38 as worst-case stress knob; NEVER a single number tied to one radius), NOT RMS.
+- **ESCAPE HATCH = ShadowPC at-speed (~37 m/s) gate-4 recording (L3):** ≥5 laps, all fields on ONE clock, GT position+velocity. Pins: **true effective attitude/accel bias** (the binding factor), realized cold velocity-prior distribution, per-fix σ at real blur, one-signed PnP bias magnitude+sign. If measured bias ≤ ~0.6°, margin CLOSES at r=0.30. Plus one eval-HW latency run (L4) + TIMESYNC wire trace.
+
+### Obs sign — +L CORRECT IN CODE; spec PROSE wrong; pinned by test (2026-06-13)
+- 🚩 **Obs sign = +L and was ALWAYS correct in code.** `obs_from_zup:348 = R_w2g @ (gate_pos − pos)`; `localization.py:86` builds the +L lever. There was NEVER a code bug.
+- The d1/d2 spec PROSE "estimator delivers −L" was wrong prose, not wrong code. The 24 m "flip" is the cost a FUTURE C2 estimator→obs interface would pay IF it implemented −L.
+- **Pinned by `tests/test_obs_sign_faithfulness.py`:** +L end-to-end identity 4.77e-7 (≤1e-5 pass) AND a −L sign-flip negative control that BREAKS at 24.0 m. The future C2 estimator→obs MUST deliver +L — the test will catch any regression.
+- d1's "0.0 bit-exact unification proof" was a tautology (tested identity within one frame, never exercising the NED↔Z-up conversion). The adversarial faithfulness test supersedes it.
+
+## OBS CONTRACT (2026-06-13, FROZEN — d5 layout wins; resolves d1/d5/d6 seam)
+- **obs_dim = 20.** [0:17] unchanged, bit-exact (d1 faithfulness proof holds). [17] c_inplane, [18] c_along, [19] age_norm.
+- [17]/[18] = `clip(σ_ref/σ_hat, 0, 1)` bounded **confidence ratios** (σ_ref ≈ 0.05 m). **NOT raw σ in metres** (raw σ has no natural scale → explodes PPO obs-normalizer).
+- [19] = `clip(t_since_last_accepted_fix / TAU_STALE, 0, 1)`, TAU_STALE ≈ 0.10 s.
+- `σ_hat` = **CALIBRATED gate-frame KF covariance (NEES≈3)** supplied by RewindKF — calibration is the binding interface requirement on the estimator.
+- **Critic get_state 33→36** (same triple + ground-truth gate-relative state added for critic).
+- **Deploy:** `fly_rl` gates new dims on checkpoint sidecar obs-dim → inc7 (17-dim) still runs unchanged.
+- **WHY d5's 20 over d1(18/19)/d6(18):** cold verdict confirms cold/coast regimes are real; confidence + staleness channels are load-bearing (not cosmetic). The encoding choice (bounded ratio vs raw) is locked — do not reopen.
 
 ## VISION-PKG2 specs (2026-06-10)
 - **Detector: SHIP v2** (`models/gate_yolo11s_curriculum_v2.pt`, multi-gate). v3 `--hard` = NEGATIVE.
@@ -22,7 +89,7 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 
 ## Case-C readiness (STACK-REVIEW-VQ2)
 - Architecture **AFFIRMED**. Case-C **GO-WITH-CONDITIONS** (binding = unmeasured in-loop latency L).
-- **3 P0 bugs:** _initialize crutch / TIMESYNC / cold-start untested.
+- **3 P0 bugs FIXED (P0-CASEC-FOUNDATION, pending merge):** _initialize seed gating / IMU-clock timestamping / cold-start guard-tested. See §P0-CASEC-FOUNDATION below.
 - Prototypes in `handoff/ultracode-vision-case-c-2026-06-13/`.
 - Full-lap case-C sim at ~37 m/s gate-4 recording = collapses dominant uncertainty (queued §⑩).
 
@@ -60,6 +127,12 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - **`get_gate_rotmat_w2g(gate_yaw[tg])`** is THE FOUNDATION HOOK for the gate-relative estimator rebuild (same code path, same rotation matrix).
 - `tests/test_confirmed_p4_c05.py` expanded 5→10 tests.
 - 🚩 **DEPLOY CONSTRAINT (current stack VQ1-only):** three loud guards now ship — `_assert_vq1_constants_consistent` (import-time, half-migrated constants), `_assert_live_course_is_vq1` (deploy-time, aborts if any gate yaw ≠ π before RL loop starts), `assert_gate_map_allpi` (public). **The current deployable stack fail-loud-aborts on any non-π/VQ2 course until gate-relative path is wired + `gate_map` passed.** Correct fail-loud behavior; removed by the gate-relative rebuild. → [[index-control-sim]]
+
+## P0-CASEC-FOUNDATION DONE (2026-06-13; branch pending merge; 692→700 green, 0 regressions)
+- **P0-a:** `_initialize` now gates position/velocity seed on `config.use_given_position` / `use_given_velocity` flags (mirroring per-tick guards at :315/:320). True case-C seeds origin @ pos_std=5.0 (P[0,0]=25) even with LOCAL_POSITION_NED broadcasting. This closed the leak that made every case-C test secretly case-A.
+- **P0-b:** `time_since_vision_update_s` measured on IMU master clock (delta_epoch learned once recv-paired, re-learned on reset()), plus predict-forward fallback (`reconcile_vision_clock=False`, `vision_latency_const_s`). delta_epoch=0 on same-clock data → back-compat exact. **OOSM capture-time rewind DEFERRED to C2** — implemented at navigator STAMPING level only; LinearKF has no `update_position_at`. tsv-observable effect identical.
+- **P0-c:** case-C cold-velocity = KF pos/vel coupling; already exported via `NavState.velocity_ned` + `pos_vel_covariance[3:6,3:6]`. Confirmed + guard-tested; no behavior change.
+- New test files: `tests/test_obs_sign_faithfulness.py` + one P0 integration test file.
 
 ## Topic file pointers
 - [[project-phase2-rl-vision-decisions]] — vision/estimator/case-C sections: §VISION-PKG2, §ESTIMATOR-RACESPEED, §ORGANIZER-PIVOT, §CASE-C-READINESS, §SPEED-CEILING-ANALYTIC, §GATE-MAPPER, §PARALLEL-SYSTEMS, §ADVISOR-TRIAGE-2026-06-11.

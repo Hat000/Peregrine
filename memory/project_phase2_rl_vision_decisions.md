@@ -1519,6 +1519,69 @@ Achievable in-plane miss: **0.11–0.21 m RMS — CONDITIONAL-GO on the 0.155 m 
 
 c1 reported 0.11–0.14 m (per-fix/~2.8 with warm velocity prior). Commander cold-prior re-run: **0.17–0.21 m (per-fix/~1.6), OVER the 0.155 m margin.** Fork is real: case-C velocity is observable only through position-fix differencing. Effective velocity prior entering the gate-4 window sits between cold and warm → **margin-clear STRADDLES the 0.155 m line.** Resolved by: (a) a full-lap case-C sim (pure offline); (b) at-speed recording. Mildly **reopens the deferred vision-velocity channel** (P3-1 from §CASE-C-READINESS) as a margin lever — the velocity prior is the swing variable.
 
+### §COLD-MARGIN-CLOSURE (2026-06-13; ultracode gate-relative pipeline BLUEPRINT — tri-confirmed; authoritative artifacts: handoff/ultracode-gate-relative-pipeline-design-2026-06-13/BLUEPRINT.md + REPORT.md)
+
+**TRI-CONFIRMED VERDICT: CANNOT-SETTLE-OFFLINE.** Source: d3 full-lap sim + v3 verifier + commander independent cross-check (margin_xcheck_v2.py). All agree on load-bearing numbers. The gate-relative OBSERVATION fix is SOLID (map bias drops EXACTLY: rel E_bias −0.000 vs abs/submap +0.176; RMS 0.139). But the p90/p99 margin DOES NOT close offline for the realistic case-C tail.
+
+**KEY CORRECTION — "c1 0.139 clears the margin" was RMS-only:**
+- c1 0.139 = RMS (clears on RMS). c1 p90 = **0.203 m** (does NOT clear 0.155 m). Stop citing c1-warm RMS 0.139 or d4v-visvel RMS 0.144 as "clears" — both are **p90-FAILS** (0.203 / 0.213).
+
+### §BODY-RADIUS-RECONCILE (2026-06-13; handoff/body-contact-reconcile-2026-06-13/{CORRECTED_MARGIN.md, BODY_RECONCILE_VERIFY.md, provenance.md, geom_radius.py, empirical_radius.md})
+
+**Contact radius reconciliation — the 0.155 m budget derives from r=0.38:**
+Budget identity: `budget(r) = (0.75 − r) − 0.215`, where 0.215 m = radius-invariant gate-4 simstart crossing offset (back-out from d3: (0.75−0.38)−0.155; confirmed bit-for-bit). d3's hardcoded MARGIN_G4=0.155 IS the r=0.38 instance of this identity [X].
+
+**0.38 is NOT chassis geometry — it is an empirically-calibrated crash halo:**
+- Rigid-body chassis geometry absolute ceiling = **0.2135 m** (3D half-diagonal √(0.14²+0.14²+0.08²); posture-free; yaw-invariant). Tilt to gate-4 posture (roll 55°, pitch −38°) adds only +0.015 m → tilt-projected L-inf = 0.2127 m [X-HIGH-conf].
+- Spec chassis: 280×280×160 mm (§3.6). Propellers: **UNDOCUMENTED** in spec. The ~0.17 m gap (0.38 − 0.213) is unmodeled rotor-wash/blade-strike halo.
+- 0.38 is the DR band upper tail (`peregrine_racing.py:160–164`): "[0.28,0.38] brackets measured live contact offsets (corner-pass probe 0.60; live crashes 0.37–0.49 on steep descents)."
+- 🚩 **DO NOT "fix" 0.38 as a geometry bug. DO NOT adopt the near-level gate-0 anchor (r_eff ~0.18–0.20 m, ~3 m/s CTBR bridge) for gate-4** — wrong posture.
+
+**Reconciled effective contact radius:**
+- Posture-matched data (gate-3 steep crashes, tilt ~55°, 12–18 m/s) → contacts at L-inf 0.37–0.49 → r_eff ≥ 0.26–0.38 (LOWER BOUNDS; 4 events).
+- **Central best-estimate = 0.30 m (band 0.26–0.33)** [X-MED-conf]. 0.38 = worst-case conservative tail. Keep `--body-radius 0.38` as the stress knob; report central on **0.30**.
+- Code's own "rotor halo ~0.3 m" prose corroborates the 0.30 central.
+
+**Budget table (budget(r) = (0.75−r) − 0.215):**
+| r | budget | change from 0.38 |
+|---|---|---|
+| 0.213 (geom floor) | 0.322 m | +0.167 (~2.1×) |
+| 0.26 | 0.275 m | +0.120 |
+| **0.30 (central)** | **0.235 m** | **+0.080 (~1.5×)** |
+| 0.33 | 0.205 m | +0.050 |
+| 0.38 (worst-case) | 0.155 m | — |
+
+**Full clear matrix — p90 AND p99 (ALWAYS report both):**
+| case | p90 | r=0.30 p90 | r=0.30 p99 | r=0.38 p90 |
+|---|---|---|---|---|
+| warm (vel=truth — NOT case C) | 0.203 | PASS +0.032 | PASS | FAIL |
+| cold @ bias 0 (case-C ideal) | 0.234 | PASS +0.001 KNIFE-EDGE | FAIL (p99=0.322) | FAIL |
+| **cold @ 1.4° att-bias (REALISTIC)** | **0.338** | **FAIL −0.103** | **FAIL** | **FAIL** |
+| cold@1.4° in-plane worst | 0.348 | FAIL | FAIL | FAIL |
+
+**VERDICT (QUALIFIED-NO-CLOSE):** With r=0.30, warm and cold@bias0 clear p90 — but the realistic case-C tail (cold@1.4°) FAILS at EVERY admissible radius at p90 AND p99. To clear it at p90 requires r < 0.197 m — **below the chassis geometry floor (0.2135 m); physically impossible.** CANNOT-SETTLE-OFFLINE SURVIVES, sharpened: the binding factor is NOT the radius — it is the **effective systematic attitude/accel bias**.
+
+**HOPE FLAG:** The 1.4° design point treats ATTITUDE_NOISE_STD_RAD (a σ, noise parameter) as if it were a constant systematic bias. The true systematic drift bias is probably smaller. **If the live L3 recording pins effective bias ≤ ~0.6°, the margin CLOSES at r=0.30.** This is the decisive open question.
+
+**ESKF attitude-bias estimation = BINDING MARGIN LEVER:** Elevates from "raise-ceiling stash" to the PRIMARY lever for closing the cold@1.4° case. Confirmed by d3's "ESKF/attitude pipeline in the critical path for the MARGIN, not just absolute nav." Resolving the true systematic bias is what the live recording settles.
+
+**Spec confirmations (from 260508_Technical_Spec_0002.pdf §3.6/§3.7 via pdftotext):**
+- Chassis: 280×280×160 mm (confirmed). Gate inner: 1500 mm half=0.750 m (code HALF_OPEN=0.75, EXACT match). Gate outer: 2700 mm (code _HALF_OUTER=1.36 = 2720 mm, +0.010 m generous on outer, does not affect in-plane pass). Frame depth: 260 mm (eval default 300 mm, +0.040 m conservative). None of these deltas move the in-plane gate-4 pass margin.
+
+**Verdict (all cells p90-FAIL, v3b re-run):**
+- COLD gate-4 p90 @37 m/s = **0.338 m** (measured 1.4°/0.24 m/s² att-bias) = **2.2× the 0.155 m margin @ r=0.38; −0.103 m vs 0.235 m budget @ r=0.30**. Bias-free floor 0.234 m. Best cell (σ_v=0.3, bias=0): RMS 0.126 / p90 0.190 / 24% contact — STILL FAIL on p90.
+- **p90 TAIL BREACHES EVEN WARM: ~0.20 m** (over 0.155 @ r=0.38 / over 0.235 budget @ r=0.30 for the cold cases). c1 warm RMS 0.139 is an RMS-clear / p90-FAIL.
+- **Binding SWING = effective systematic attitude/accel bias** (SUPERSEDES "per-fix σ = the binding p90 wall"; SUPERSEDES "cold velocity prior / accel-bias" framing — sharpened: the BIAS component, not the velocity prior, is the load-bearing factor after radius reconciliation). Cold-prior risk = HIGH (variance/window-driven, NOT init-driven — "warm by gate-4" is FALSE).
+- ~~**LSQ vision-velocity (σ_v 0.3–0.4) = LOAD-BEARING:**~~ **REFUTED AND DEMOTED TO P2 INSURANCE.** Honest inter-frame PnP-delta σ_v ≈ 2.81 m/s (NOT assumed 0.3–1.0) + mandated RewindKF L≈115 ms → cold in-plane 0.19–0.35 m NO-GO. d4v ran at L=0 with GT-cheat velocity (fiction). Position-fix-differencing IS the KF (free baseline). Do NOT make vision-velocity load-bearing.
+- **Naive fix-differencing (weakvel, σ_v~5.2):** p90 ≈ cold or worse. Same verdict.
+- **RewindKF SOLVES latency** (tri-confirmed; L=15 vs 115 ms ~equal once capture-timed). NOT binding.
+- **Speed-ladder selection = p90 AND p99 gate** (report across r ∈ {0.21,0.26,0.30,0.33,0.38} — NEVER a single number; central = 0.30, worst-case = 0.38), NOT RMS.
+- Margin closure rests on **attitude/accel-bias control (≤~0.6°) + uncertainty-aware speed-down**.
+
+**Escape hatch = ShadowPC at-speed (~37 m/s) gate-4 recording (L3):** ≥5 laps, all fields on ONE clock, GT vel. Pins: **true effective attitude/accel bias** (the binding factor — if ≤ ~0.6° CLOSES at r=0.30), realized cold velocity-prior distribution, per-fix σ at real blur, one-signed PnP bias magnitude+sign. Plus one eval-HW latency run (L4) + TIMESYNC wire trace.
+
+**Action:** Build gate-relative pipeline (BLUEPRINT.md). Select on p90/p99 across r-band. Gate speed ladder on L3. Estimator/ESKF attitude-bias sets the ceiling.
+
 ### Latency
 
 **In-plane BENIGN at edge HW** (5 mm leak; latency cost is along-track). CPU-class naive update is CATASTROPHIC (NEES 411, +4.3 m along-track, in-plane 0.83 m) → **RewindKF MANDATORY on CPU-class HW.** Ship it regardless — cheap on edge, decisive on CPU. No horizon<L divergence risk at these L (≥0.37 s margin even at CPU p90). See §CASE-C-READINESS piece B.
@@ -1543,6 +1606,32 @@ Per-fix lateral ≤ 0.10 m → 0.155 m margin held past 55 m/s (full inc8 ladder
 ### Artifacts
 
 All under `handoff/ultracode-estimator-racespeed-2026-06-13/`: `a1_sim.py` / `a1_results.json` (closed-loop KF sim, reproduced bit-for-bit by b1); `a2_bias.py` / `b2_verify.py` (bias decomposition + verifier); `a3_realism.py` (37 m/s model); `a4_latency.py` (latency geometry split); `c1_*` (gate-relative THE FIX); `c2_*`–`c5_*` (dead ends/traps/speed-ladder); `synth_synthesis.md` + `REPORT.md`.
+
+---
+
+## §OBS-CONTRACT (2026-06-13, FROZEN — d5 layout, 20 dims; resolves d1/d5/d6 seam)
+
+**Commander decision. Locked. Do not reopen encoding or dimension choices.**
+
+### Layout
+- **obs_dim = 20.** [0:17] = unchanged inc7/VQ1 dims (bit-exact; d1 faithfulness proof holds).
+- [17] `c_inplane` = `clip(σ_ref / σ_hat_inplane, 0, 1)` — bounded in-plane confidence ratio.
+- [18] `c_along` = `clip(σ_ref / σ_hat_along, 0, 1)` — bounded along-track confidence ratio.
+- [19] `age_norm` = `clip(t_since_last_accepted_fix / TAU_STALE, 0, 1)`, TAU_STALE ≈ 0.10 s.
+- σ_ref ≈ 0.05 m (reference scale). Encoding = **bounded ratio, NOT raw σ in metres** (raw σ has no natural scale → explodes PPO obs-normalizer).
+
+### Critic
+- `get_state`: 33 → **36** dims (same 3-dim gate-relative ground-truth state appended for critic).
+
+### Estimator binding interface requirement
+- `σ_hat` = **CALIBRATED gate-frame KF covariance (NEES ≈ 3)** supplied by RewindKF. Calibration is the binding interface requirement on the estimator side. Un-calibrated σ will mis-weight the confidence channels.
+
+### Deploy / backward-compat
+- `fly_rl` gates the new dims on the checkpoint sidecar `obs_dim` field → inc7 (17-dim sidecar) still runs unchanged.
+- inc8+ checkpoints will carry 20-dim sidecar.
+
+### Why d5 beats d1(18/19)/d6(18)
+- Cold-margin closure (§COLD-MARGIN-CLOSURE) confirms cold/coast regimes are real operating points, not edge cases. The confidence + staleness channels are **load-bearing** — they let the policy gracefully degrade when gate-relative fixes are absent (cold start, blind arc). Without them the policy has no signal for fix quality.
 
 ---
 
@@ -1588,3 +1677,55 @@ Keep inc7 as the **guaranteed-valid floor fallback** ("slow valid > fast invalid
 
 ### Coupling to estimator
 Every cone-relaxation rung worsens gate-4 margin/σ ratio → **re-verify gate-relative per-fix lateral against achieved σ at that rung's speed before crowning any rung as valid.**
+
+---
+
+## §GATE-RELATIVE-BLUEPRINT (2026-06-13 — design DONE; authoritative: handoff/ultracode-gate-relative-pipeline-design-2026-06-13/BLUEPRINT.md + REPORT.md)
+
+**Workflow: 19 opus agents, 2.74M tok, ~183 min (Design 6 components → adversarially Verify each → Completeness-critic → Synthesize). BLUEPRINT.md = the reconciled build plan (34 KB, 6 components). This section is the THIN POINTER — read BLUEPRINT.md for full detail.**
+
+### Headline verdict (read first)
+1. Gate-relative OBSERVATION fix is SOLID and MUST be built. Map bias drops EXACTLY (rel E_bias −0.000 m, RMS 0.139 m). Reuses P4-C05 `get_gate_rotmat_w2g` path. Degrades gracefully to case A/B. Build regardless of Q①.
+2. Gate-4 0.155 m worst-case margin DOES-NOT-CLOSE offline in ANY regime. CANNOT-SETTLE-OFFLINE. → escape hatch = L3.
+3. d4v "cheap velocity lever" REFUTED, demoted to P2 insurance (honest σ_v 2.81 m/s + L≈115 ms → NO-GO).
+4. RewindKF SOLVES latency (tri-confirmed). Binding swing = cold velocity prior / effective accel-bias.
+5. Build the pipeline; select on p90; gate the speed ladder on L3.
+
+### Sign footgun (NEW, CRITICAL)
+🚩 **Obs slot = R_w2g @ (+L) = (gate_pos − pos), NOT −L.** d1/d2 spec text says "estimator delivers −L" — WRONG = 24 m flip. d1's "0.0 unification proof" was a tautology. G1 MUST run the end-to-end +L identity (4.8e-7) AND −L negative control (must BREAK at 24 m). d1_obs_spec.md / d2_estimator_chain_spec.md −L text = KNOWN-WRONG.
+
+### 6-component pipeline (build-ready)
+- **C1 — Gate-relative obs (20-dim FROZEN).** [0:17] unchanged byte-identical. [17–19] bounded confidence triple (c_inplane, c_along, age_norm; σ_ref=0.05 m, τ_stale=0.10 s). pos_g from SEEN gate +L (map bias drops out EXACTLY). Critic 33→36.
+- **C2 — Case-C estimator chain.** Detector→PnP→associate (unchanged) → gate-relative in-plane fix (+L_seen, anisotropic cov in-plane σ=0.265 m, NO 0.40 m floor in-plane) → RewindKF OOSM (horizon 0.5 s, STRICTLY > L) → calibrated P → confidence triple. AUGMENTS absolute KF. Required relative-innovation outlier gate χ²(2,0.999)=13.82 (reproj alone passes 93% of depth-flips). 3 P0 bugs fixed: (a) `_initialize` seed guarded on `config.use_given_position` (navigator.py:255–271); (b) TIMESYNC `delta_epoch` reconciliation to IMU clock (navigator.py:426); (c) velocity = KF pos/vel coupling (no new vision-vel surface).
+- **C3 — Margin closure (load-bearing empirical).** CANNOT-SETTLE-OFFLINE → escape hatch L3.
+- **C4 — Velocity acquisition.** Position-fix-differencing IS the KF. Vision-velocity = REFUTED P2 insurance.
+- **C5 — inc8 retrain spec** (see §INC8-DESIGN BLUEPRINT below).
+- **C6 — Integration + validation** (gauntlet G0–G7 + live L0–L4).
+
+### inc8 retrain spec (Adroit-ready; SUPERSEDES prior inc8 spec)
+- **BSR3 spin-gate MANDATORY FIRST** (spin_rate_abort→9–10, spin_time_abort→3.0 s).
+- Obs: 20-dim; train env populates pos_g as GT +L + MEASURED estimator residual (NEVER pristine truth; NEVER R_w2g@(gate_map−p_KF) anti-pattern).
+- DR (obs only; true dynamics/contact unperturbed): per-fix lateral σ~U[0.08,0.30] m/axis, N_eff~U[4,9]; range-collapse σ(r); along-track latency staleness v·L (L~U[6,125] ms, rewind residual ~U[0,0.05] m); **one-signed PnP/extrinsic bias U[0,0.19] m per-episode constant RANDOM SIGN** (SUPERSEDES ±0.10 zero-mean). MAP bias NOT injected.
+- Reward: R1' arc-length over REBUILT corrected-aero reference line (reference_line_vq1.json is drag-infeasible + 170° inverted → MUST rebuild = C4); T4 finish-time KEPT; R4' fixed relaxed cone L0 default (tilt_free_rad is scalar; confidence-gated cone = portfolio ablation).
+- **SELECT on p90/p99 gate:** gate-4 SIMSTART in-plane, report across r ∈ {0.21,0.26,0.30,0.33,0.38} (NEVER single number); central on 0.30 (budget 0.235 m), worst-case on 0.38 (budget 0.155 m); design point COLD; ≥5 seeds; BSR3 FIRST. NOT RMS.
+- **HARD prereqs for G4/G6:** estimator-emulation obs wrapper + v* (achieved gate-4 approach speed) instrument — contact_true_eval currently runs obs_from_truth (fiction; selecting on it crowns a fiction).
+
+### Integration (guard replacement)
+- Central change: judged path `_fly_armed` currently calls `build_obs(s,...)` on RAW wire pose — never runs the KF. Rebuild inserts estimator stage that does not currently exist.
+- `_assert_vq1_constants_consistent` (import-time) — KEEP.
+- `_assert_live_course_is_vq1` (deploy-time) — REPLACE with `gate_map` threading + estimator-readiness assert. Non-π courses still LOUD-ABORT.
+- `submit_rl.py`: structurally unchanged; pin inc7→inc8 + ship .json sidecar. NO MAV_CMD 31000 on judged wire.
+
+### Offline gauntlet (cheapest fails first: G0–G7)
+G0 import/sidecar → G1 obs bit-exactness + **+L sign-flip negative control** → G2 estimator unit checks (OOSM, horizon>L, σ=0.265 no floor) → G3 margin sim (p90 gate; EXPECT p90>0.155 → escape-hatch, by design) → G4 contact_true_eval selection (needs estimator-emulation wrapper) → G5 S_stable+BSR3 → G6 speed-ladder → G7 full 692-suite.
+
+### Live ShadowPC ladder (after gauntlet; zero gate-contact = THE validity rule)
+L0 case-A smoke → L1 case-C cold-start activation → L2 at-speed fresh-reset batch → **L3 at-speed gate-4 recording (RESOLVES escape hatch)** → L4 eval-HW latency + TIMESYNC wire-trace. L3/L4 HARD-blocked on TIMESYNC.
+
+### Build sequence (dependency-ordered)
+P0 bug fixes → C2 estimator → C1 obs → C5 inc8 retrain (LONGEST POLE, ≥5 seeds) → C6 gauntlet G0–G7 → C6 live L0–L4. C3 margin sim + C4 corrected line = OFF critical path (parallel feeders). NEES: c1's 1.96 = in-plane 2-DOF (mildly OVER-confident), NOT the χ²(3)=3 target — calibrate c_cal on L3.
+
+### Ranked residual risks (top 3)
+1. Gate-4 p90/p99 margin DOES NOT clear offline for the realistic case-C tail (cold p90@1.4°-bias = 0.338 m — fails at EVERY admissible radius at p90 AND p99). RMS-clears are p90-fails. **BINDING FACTOR = EFFECTIVE SYSTEMATIC ATTITUDE/ACCEL BIAS** (not radius — radius reconciliation confirmed). **HIGH** → L3 decisive (if live bias ≤ ~0.6°, closes at r=0.30).
+2. Effective systematic attitude/accel bias UNPINNED (1.4° ATTITUDE_NOISE_STD_RAD is a noise σ, not a measured systematic; true drift bias likely smaller; ESKF bias state = BINDING MARGIN LEVER). **HIGH** → L3 + ESKF attitude-bias estimation pipeline.
+3. In-loop latency L on eval HW UNMEASURED (CPU ~125 ms → 2.3–4.2 m staleness; horizon sizing hinges on L<~0.45 s). **HIGH** → L4.

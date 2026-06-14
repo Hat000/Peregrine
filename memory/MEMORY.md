@@ -2,9 +2,13 @@
 
 ## NOW (2026-06-13)
 - **VQ1 PASSED. inc7 LIVE-CONFIRMED = current best** (standing 5/5, gate-3 barrier gone). Phase 2 = RL + VQ2 vision.
-- 🚩 **BINDING VQ2 RISK = ESTIMATOR** (not planner/policy). Case-C absolute world-frame nav = NO-GO at any speed; **FIX = gate-relative obs** (CONDITIONAL-GO, velocity-prior-sensitive). **Build gate-relative REGARDLESS** (organizer-pivot: Q① only decides load-bearing-vs-insurance). **RewindKF = DEFAULT.** → [[index-vision-estimator]]
+- 🚩 **BINDING VQ2 RISK = ESTIMATOR** (not planner/policy). Case-C absolute world-frame nav = NO-GO at any speed; **FIX = gate-relative obs** (SOLID: map bias drops EXACTLY — rel E_bias −0.000 vs abs/submap +0.176; RMS 0.139). Build gate-relative REGARDLESS (Q① only decides load-bearing-vs-insurance). → [[index-vision-estimator]]
+- 🚩 **HEADLINE: gate-4 0.155 m WORST-CASE margin DOES-NOT-CLOSE offline → CANNOT-SETTLE-OFFLINE.** A margin is a p90/p99 gate, NOT RMS. EVERY {σ_v×accel-bias} cell p90-FAIL (cold p90 0.234@bias0 → 0.338@1.4°; best cell 0.190). Tri-confirmed. SUPERSEDES any "c1-warm 0.139 clears" language — that is an RMS-clear / p90-FAIL. Binding swing = **cold velocity prior / effective accel-bias** (NOT speed, NOT latency). **Escape hatch = ShadowPC at-speed gate-4 recording (L3) ≥5 laps, one clock, GT vel.** → [[index-vision-estimator]]
+- 🚩 **OBS SIGN = +L (CORRECT IN CODE; obs_from_zup:348 = R_w2g@(gate−pos), localization:86).** d1/d2 spec PROSE "estimator delivers −L" is wrong (would be a 24 m flip). NOT a past code bug — pinned by tests/test_obs_sign_faithfulness.py (+L 4.77e-7 / −L control breaks 24 m). Future C2 estimator→obs MUST deliver +L. → [[index-vision-estimator]]
+- ✅ **P0-CASEC-FOUNDATION DONE (700 green, 0 regressions; pending merge to main).** P0-a _initialize seed gated on config flags; P0-b IMU-clock timestamping + predict-forward fallback (OOSM capture-time rewind DEFERRED → C2); P0-c cold-velocity coupling confirmed+guard-tested. → [[index-vision-estimator]]
+- 🚩 **OBS CONTRACT FROZEN (d5 layout, 2026-06-13): obs_dim=20.** [0:17] unchanged bit-exact; [17] c_inplane, [18] c_along = clip(σ_ref/σ_hat,0,1) bounded confidence ratios (σ_ref≈0.05 m); [19] age_norm = clip(t_since_last_fix/TAU_STALE,0,1) TAU_STALE≈0.10 s. Critic get_state 33→36. Deploy: fly_rl gates on checkpoint sidecar obs-dim (inc7 17-dim unchanged). → [[index-vision-estimator]] · [[index-rl-training]]
 - **S2 DECIDED = `staged_monolithic_then_decomposed`.** Speed gap = TILT ENVELOPE, not architecture. → [[index-rl-training]]
-- **ACTIVE critical path:** P4-C05 DONE (f50b9b4, 692 green; gate-yaw obs foundation) → gate-relative pipeline DESIGN ultracode (dispatched) → build estimator chain + inc8 gate-relative retrain → integrate/validate. → [[index-control-sim]] · [[index-vision-estimator]]
+- **ACTIVE critical path:** gate-relative pipeline DESIGN DONE (BLUEPRINT.md, 19 opus agents / 2.74M tok). BUILD = P0 → C2 estimator → C1 obs → C5 inc8 retrain (longest pole) → C6 gauntlet G0–G7 → live L0–L4. Speed ceiling GATED on L3 at-speed recording. ESTIMATOR (not policy) sets the speed ceiling. → [[index-control-sim]] · [[index-vision-estimator]]
 
 ## Operating directives — ALWAYS APPLY
 - 🚩 **CANARY (MANDATORY):** address **Fengyou** by name in EVERY message. Missing name = context degradation → Fengyou rotates session.
@@ -18,7 +22,11 @@
 - 🚩 **Judged runs use `rl/submit_rl.py`** (pins inc7, NO `MAV_CMD 31000` on the wire). `fly_rl.py` default ckpt = retired inc4 → pass inc7 explicitly if bypassing submit_rl.
 - 🚩 **CTBR/VQ1 LEGACY SIGN CONFIG is a self-consistent alias — DO NOT "fix".** → [[index-control-sim]]
 - 🚩 **ODOMETRY quat is R_y(π)-CONJUGATED;** run `scripts/frame_residual_report.py` after EVERY live session (internal consistency cannot catch a conjugation). → [[index-control-sim]]
-- 🚩 **`main` CANONICAL · 692 tests green · `*.pt` + `data/runs` gitignored.**
+- 🚩 **`main` CANONICAL · 692 tests green · `*.pt` + `data/runs` gitignored.** (P0-CASEC-FOUNDATION branch: 700 green, pending merge.)
+- 🚩 **OBS SIGN = +L (CORRECT IN CODE; obs_from_zup:348 = R_w2g@(gate−pos), localization:86).** The d1/d2 spec PROSE "estimator delivers −L" is wrong (would be a 24 m flip). NOT a past code bug — pinned by tests/test_obs_sign_faithfulness.py (+L 4.77e-7 / −L control breaks 24 m). The future C2 estimator→obs MUST deliver +L. → [[index-vision-estimator]]
+- 🚩 **CONTACT RADIUS 0.38 = EMPIRICAL CRASH HALO, NOT GEOMETRY.** Rigid-body chassis geometry caps at 0.2135 m (3D half-diagonal; tilt adds only +0.015 m). 0.38 is the DR upper tail of a posture-matched steep-crash band [0.28,0.38]. DO NOT "fix" it as a geometry bug. Central reporting radius = **0.30 m** (band 0.26–0.33); 0.38 stays as worst-case stress knob. → [[index-vision-estimator]]
+- 🚩 **BINDING MARGIN FACTOR = ATTITUDE/ACCEL BIAS, NOT CONTACT RADIUS.** cold@1.4°-bias p90 = 0.338 m fails at EVERY physically admissible radius (needs r < 0.197 m — below chassis geometry). Radius correction (0.38→0.30) moves the budget ~1.5× but does NOT close the realistic case-C tail at p90 or p99. CANNOT-SETTLE-OFFLINE survives. → [[index-vision-estimator]]
+- 🚩 **GATE-0-NEAR-LEVEL ANCHOR IS WRONG POSTURE FOR GATE-4.** Corner-pass probe (r_eff ~0.18–0.20 m) is gate-0, ~3 m/s CTBR bridge, near-level. Do NOT use that as the gate-4 radius. Gate-4 posture-matched data = gate-3 steep crashes (tilt ~55°, 12–18 m/s) → r_eff ≥ 0.26–0.38 (lower bounds). → [[index-vision-estimator]]
 
 ## Library index (MEMORY → domain sub-index → topic files)
 - 🛩️ **[[index-rl-training]]** — RL increments/lineage, training doctrine, S2 decision, inc8 + speed-ladder, plant/sysid-for-RL, retrain footguns, Adroit/DiffAero.

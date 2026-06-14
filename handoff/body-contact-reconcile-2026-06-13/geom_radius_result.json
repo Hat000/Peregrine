@@ -1,0 +1,55 @@
+{
+  "_canary": "Fengyou",
+  "_units": "meters; angles degrees",
+  "inputs": {
+    "chassis_WxLxH_m": [
+      0.28,
+      0.28,
+      0.16
+    ],
+    "flag_chassis": "[M] spec section 3.6, Fengyou-confirmed",
+    "posture_pitch_deg": -38.0,
+    "posture_roll_deg": 55.0,
+    "flag_posture": "[M] memory gate-4 drag-hold pitch ~-38, crab/roll ~55",
+    "approach_normal_world": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "flag_normal": "[A] nominal g3->g4 heading along world +x; result swept over yaw",
+    "prop_tip_full_span_m": null,
+    "flag_props": "[A] spec documents NO prop extent; chassis-only is the primary result"
+  },
+  "flat_lower_bound": {
+    "flat_half_side_Linf_m": 0.14,
+    "flat_half_diag_euclid_m": 0.198,
+    "flag": "[X] derived; strict lower bound (level body)"
+  },
+  "gate4_tilted_silhouette": {
+    "Linf_gate_aligned_worstcase_over_yaw_m": 0.2127,
+    "Linf_gate_aligned_worstcase_yaw_deg": 0.0,
+    "Linf_gate_aligned_bestcase_over_yaw_m": 0.2127,
+    "Linf_spinmin_bounding_square_m": 0.1586,
+    "euclid_disk_radius_m": 0.2135,
+    "pitch_only_Linf_axis_m": 0.1492,
+    "roll_only_Linf_axis_m": 0.1606,
+    "flag": "[X] derived; rigid chassis, constant attitude through 0.30 m tube"
+  },
+  "frame_depth_note": "0.30 m tube adds NOTHING beyond the single-plane silhouette for a convex body at CONSTANT attitude (swept set is a prism; cross-section constant along the normal). [X], constant-attitude is [A] for the crossing.",
+  "prop_inclusive_whatif_Linf_axis_m": null,
+  "comparison_to_budget": {
+    "effective_radius_best_estimate_m": 0.2127,
+    "budget_worstcase_0p38": 0.38,
+    "budget_nominal_0p33": 0.33,
+    "geom_minus_0p38_m": -0.1673,
+    "ratio_geom_over_0p38": 0.56,
+    "verdict": "Pure rigid-body tilt-projected silhouette is FAR below 0.38. The tilt inflates the flat 0.198 m half-diagonal to ~0.213 m (L-inf gate-aligned, worst yaw) -- only +0.015 m. 0.38 is NOT geometric; ~0.17 m of it is unmodeled rotor/prop/aero halo (empirically fit to steep-crash L-inf)."
+  },
+  "margin_at_gate4_simstart_linf_0p215": {
+    "r_geom_tilted": 0.3223,
+    "r_0p30": 0.235,
+    "r_0p33": 0.205,
+    "r_0p38": 0.155,
+    "flag": "[X] margin = (0.75 - r) - 0.215; positive at every r"
+  }
+}

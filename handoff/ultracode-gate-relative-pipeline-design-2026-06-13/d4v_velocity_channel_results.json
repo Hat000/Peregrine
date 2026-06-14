@@ -1,0 +1,227 @@
+{
+  "seed": 20260613,
+  "margin_g4_m": 0.155,
+  "bar_m": 0.05,
+  "v_race": 37.0,
+  "t_transit_s": 0.6593,
+  "part_a": {
+    "note": "dv=b_a*T (linear, -> vel_g); dp=0.5*b_a*T^2 (quadratic, -> gate-4 in-plane miss)",
+    "rows": [
+      {
+        "source": "accel_bias_0.03",
+        "eff_accel_bias_mps2": 0.03,
+        "dv@0.1s": 0.003,
+        "dp@0.1s": 0.0002,
+        "dv@0.3s": 0.009,
+        "dp@0.3s": 0.0013,
+        "dv@0.66s": 0.0198,
+        "dp@0.66s": 0.0065,
+        "dv@1.0s": 0.03,
+        "dp@1.0s": 0.015,
+        "dv@11.45s": 0.3435,
+        "dp@11.45s": 1.9665
+      },
+      {
+        "source": "accel_bias_0.10",
+        "eff_accel_bias_mps2": 0.1,
+        "dv@0.1s": 0.01,
+        "dp@0.1s": 0.0005,
+        "dv@0.3s": 0.03,
+        "dp@0.3s": 0.0045,
+        "dv@0.66s": 0.066,
+        "dp@0.66s": 0.0218,
+        "dv@1.0s": 0.1,
+        "dp@1.0s": 0.05,
+        "dv@11.45s": 1.145,
+        "dp@11.45s": 6.5551
+      },
+      {
+        "source": "att_bias_0.5deg",
+        "eff_accel_bias_mps2": 0.0856,
+        "dv@0.1s": 0.0086,
+        "dp@0.1s": 0.0004,
+        "dv@0.3s": 0.0257,
+        "dp@0.3s": 0.0039,
+        "dv@0.66s": 0.0565,
+        "dp@0.66s": 0.0186,
+        "dv@1.0s": 0.0856,
+        "dp@1.0s": 0.0428,
+        "dv@11.45s": 0.9799,
+        "dp@11.45s": 5.6098
+      },
+      {
+        "source": "att_bias_1.0deg",
+        "eff_accel_bias_mps2": 0.1711,
+        "dv@0.1s": 0.0171,
+        "dp@0.1s": 0.0009,
+        "dv@0.3s": 0.0513,
+        "dp@0.3s": 0.0077,
+        "dv@0.66s": 0.113,
+        "dp@0.66s": 0.0373,
+        "dv@1.0s": 0.1711,
+        "dp@1.0s": 0.0856,
+        "dv@11.45s": 1.9597,
+        "dp@11.45s": 11.2191
+      },
+      {
+        "source": "att_bias_1.4deg(meas_1sig)",
+        "eff_accel_bias_mps2": 0.2396,
+        "dv@0.1s": 0.024,
+        "dp@0.1s": 0.0012,
+        "dv@0.3s": 0.0719,
+        "dp@0.3s": 0.0108,
+        "dv@0.66s": 0.1581,
+        "dp@0.66s": 0.0522,
+        "dv@1.0s": 0.2396,
+        "dp@1.0s": 0.1198,
+        "dv@11.45s": 2.7434,
+        "dp@11.45s": 15.7059
+      }
+    ],
+    "key": {
+      "between_fix_gap_s": 0.0714,
+      "dv_per_fix_gap_att1deg": 0.0122,
+      "dp_per_fix_gap_att1deg": 0.00044,
+      "dv_terminal_coast_0.3s_att1deg": 0.0513,
+      "dp_terminal_coast_0.3s_att1deg": 0.0077
+    }
+  },
+  "part_b": {
+    "lateral_gate_rel": {
+      "per_fix_sigma_m": 0.265,
+      "naive_difference": [
+        {
+          "dt_s": 0.0714,
+          "sigma_v_naive_mps": 5.247
+        },
+        {
+          "dt_s": 0.1,
+          "sigma_v_naive_mps": 3.748
+        },
+        {
+          "dt_s": 0.2,
+          "sigma_v_naive_mps": 1.874
+        },
+        {
+          "dt_s": 0.5,
+          "sigma_v_naive_mps": 0.75
+        },
+        {
+          "dt_s": 0.6593,
+          "sigma_v_naive_mps": 0.568
+        }
+      ]
+    },
+    "radial_abs": {
+      "per_fix_sigma_m": 0.5,
+      "naive_difference": [
+        {
+          "dt_s": 0.0714,
+          "sigma_v_naive_mps": 9.899
+        },
+        {
+          "dt_s": 0.1,
+          "sigma_v_naive_mps": 7.071
+        },
+        {
+          "dt_s": 0.2,
+          "sigma_v_naive_mps": 3.536
+        },
+        {
+          "dt_s": 0.5,
+          "sigma_v_naive_mps": 1.414
+        },
+        {
+          "dt_s": 0.6593,
+          "sigma_v_naive_mps": 1.072
+        }
+      ]
+    },
+    "lsq_over_window": {
+      "note": "KF/LSQ velocity over the whole g3->g4 window (N fixes) -- the right way to difference",
+      "rows": [
+        {
+          "axis": "lateral",
+          "N_fix": 9,
+          "window_s": 0.659,
+          "sigma_v_lsq_mps": 0.415
+        },
+        {
+          "axis": "radial",
+          "N_fix": 9,
+          "window_s": 0.659,
+          "sigma_v_lsq_mps": 0.783
+        }
+      ]
+    }
+  },
+  "part_c": {
+    "injected_att_bias_deg": 0.5,
+    "a_phantom_mps2": 0.0856,
+    "cold": {
+      "regime": "cold",
+      "vis_vel_sigma": null,
+      "vel_sigma_E": 0.48765706756308397,
+      "vel_bias_E": 0.2787656216671876,
+      "vel_sigma_D": 0.4954230436640146,
+      "vel_sigma_N": 0.5164084241377408,
+      "vel_bias_N": 0.019627669453505376,
+      "vel_inplane_sigma": 0.695164302692207,
+      "vel_inplane_rms": 0.7489896816478642,
+      "inplane_pos_rms": 0.21507981428541795,
+      "inplane_pos_p90": 0.3236631938925934
+    },
+    "warm": {
+      "regime": "warm",
+      "vis_vel_sigma": null,
+      "vel_sigma_E": 0.03710767771959821,
+      "vel_bias_E": 0.05330484118198178,
+      "vel_sigma_D": 0.03905119876072912,
+      "vel_sigma_N": 0.03146934027471796,
+      "vel_bias_N": -0.0029497276667385225,
+      "vel_inplane_sigma": 0.05386999044358127,
+      "vel_inplane_rms": 0.07579662941578416,
+      "inplane_pos_rms": 0.11911314911824637,
+      "inplane_pos_p90": 0.18207555213373638
+    },
+    "visvel_1.0": {
+      "regime": "visvel",
+      "vis_vel_sigma": 1.0,
+      "vel_sigma_E": 0.2727470264411741,
+      "vel_bias_E": 0.06879325690041253,
+      "vel_sigma_D": 0.2575988623445246,
+      "vel_sigma_N": 0.2860694959847125,
+      "vel_bias_N": 0.0009606727055994331,
+      "vel_inplane_sigma": 0.3751641165059578,
+      "vel_inplane_rms": 0.38184462576628747,
+      "inplane_pos_rms": 0.14372897072781526,
+      "inplane_pos_p90": 0.21257687795240238
+    },
+    "visvel_0.5": {
+      "regime": "visvel",
+      "vis_vel_sigma": 0.5,
+      "vel_sigma_E": 0.14710614970132563,
+      "vel_bias_E": 0.03602598713357863,
+      "vel_sigma_D": 0.15349583024384666,
+      "vel_sigma_N": 0.15114335620510835,
+      "vel_bias_N": -0.0017684416101518608,
+      "vel_inplane_sigma": 0.21260571295756994,
+      "vel_inplane_rms": 0.21567047233392828,
+      "inplane_pos_rms": 0.12438077579585614,
+      "inplane_pos_p90": 0.1848699846850016
+    },
+    "visvel_0.3": {
+      "regime": "visvel",
+      "vis_vel_sigma": 0.3,
+      "vel_sigma_E": 0.09712149611929642,
+      "vel_bias_E": 0.022823915858183108,
+      "vel_sigma_D": 0.08904643474732,
+      "vel_sigma_N": 0.09642843848261122,
+      "vel_bias_N": -0.00391905249037291,
+      "vel_inplane_sigma": 0.13176438270511204,
+      "vel_inplane_rms": 0.1337953295644435,
+      "inplane_pos_rms": 0.11809577433895146,
+      "inplane_pos_p90": 0.17948969367106457
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "data": {
+    "clean_n": 103,
+    "flip_n": 143,
+    "clean_reproj_p50": 0.6567715143928761,
+    "clean_reproj_p90": 1.886227181814257,
+    "flip_reproj_p50": 0.4445867669283291,
+    "flip_reproj_p90": 3.087907102491127,
+    "reproj_separates": false
+  },
+  "mc": {
+    "chi2_2_999": 13.815510557964274,
+    "reproj_thr_px_at_99pct_clean": 4.482119747777532,
+    "reproj_gate": {
+      "clean_kept_frac": 0.99,
+      "flip_survived_frac": 0.9316666666666666
+    },
+    "relinnov_gate": {
+      "clean_kept_frac": 0.9991176470588236,
+      "flip_survived_frac": 0.0016666666666666668
+    },
+    "d2_clean_p50": 1.3856186246685942,
+    "d2_clean_p999": 13.302434567972853,
+    "d2_flip_p01": 16.941322206194368,
+    "d2_flip_p50": 63.92618371711647
+  }
+}
