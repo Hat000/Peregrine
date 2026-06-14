@@ -9,8 +9,23 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - 🚩 **ORGANIZER-PIVOT: build gate-relative REGARDLESS** — Q① = load-bearing vs free-insurance only (3 emails UNANSWERED; do NOT gate engineering on organizer answers; keep ONE nudge ~weekly).
 - COUPLING: faster speed worsens gate-4 margin/σ ratio → estimator accuracy must be verified at each speed rung. **PRIMARY MARGIN GUARD = GATE-4** (0.155 m @ r=0.38; reporting discipline: always quote margin as function of r ∈ {0.21,0.26,0.30,0.33,0.38} at p90/p99 — never a single number; central planning radius = 0.30 m, worst-case stress knob = 0.38).
 
-## COLD-MARGIN CLOSURE (2026-06-13; BLUEPRINT.md + REPORT.md in handoff/ultracode-gate-relative-pipeline-design-2026-06-13/)
+## COLD-MARGIN CLOSURE (2026-06-13; BLUEPRINT.md + REPORT.md in handoff/ultracode-gate-relative-pipeline-design-2026-06-13/; SHADOWVISION UPDATE below)
 **TRI-CONFIRMED VERDICT: CANNOT-SETTLE-OFFLINE.** Source: d3 full-lap sim + v3 verifier + commander independent cross-check (3 independent constructions; all agree on load-bearing numbers). The gate-relative OBSERVATION fix is SOLID and MUST be built (map bias drops EXACTLY: rel E_bias −0.000 vs abs/submap +0.176; RMS 0.139 m). But the margin DOES NOT close offline in any regime.
+
+### SHADOWVISION UPDATE (2026-06-13; shadow mode on inc7 given-pose flights at gate-4 band, range 20–26 m)
+**MEASURED vision precision — BETTER than modeled:**
+- **Accepted-fix lateral (cross-track) σ ≈ 0.10 m** (was modeled 0.265 m in DR/cov; ~2.5× tighter); ~zero bias.
+- **Along-track (depth) σ ≈ 0.8 m** — weak axis; this is WHY the KF fuses velocity prior (correct design).
+- Detector: ~90% detection in-image; FINE.
+- **🚩 NEW BINDING LEVER = camera pointing / fix DENSITY (NOT per-fix σ):** only ~7% of frames yield an ACCEPTED FIX (vs ~47% modeled). Root cause: inc7 64° racing crab aims camera off-gate; only ~33% of frames have any gate centre in-image (gate sits near ~45° FoV edge). This is a TRAINING/POLICY-addressable problem, not a sensor limit. Inc7 on given pose has ZERO incentive to aim the camera — a vision-trained policy should do markedly better.
+- **Update DR/cov table: per-fix lateral σ = 0.10 m (MEASURED), NOT 0.265 m.** Fix-RATE is the new binding variable for the gate-4 margin (was treated as ~47%; measured ~7% un-pointed; improvable via de-crab/camera-pointing reward).
+
+**HOPEFUL SYNTHESIS:**
+- With measured σ=0.10, the old speed-gate (σ≤0.10 → >55 m/s viable) implies the margin VERY LIKELY CLOSES at race speed IF fix density is adequate.
+- Denser, tighter fixes attack the WHOLE problem at once: per-fix error (0.10 solved), cold velocity prior (faster convergence), AND attitude-bias drift (corrected more often).
+- **Unified path to close gate-4 margin = camera pointing/fix-density (primary lever) + ESKF attitude-bias estimation (secondary, residual worst-case).** This SOFTENS the CANNOT-SETTLE-OFFLINE picture: σ is great; live confirmation now hinges on fix density via pointing.
+- CAVEAT: 7% fix-rate is a LOWER BOUND — inc7 given-pose has no pointing incentive; vision-trained policy expected much higher.
+- Source: handoff/simops-mastery-2026-06-13/ (on ShadowPC — pending commit+push from ShadowPC to main).
 
 ### Corrected framing (supersedes any "c1 0.139 clears margin" language)
 - c1 0.139 = **RMS** (clears on RMS); p90 = **0.203 m** (does NOT clear 0.155 m). The mandated worst-case read is **p90**. Stop citing c1-warm RMS 0.139 or d4v-visvel RMS 0.144 as "clears" — both are p90-FAILS (0.203 / 0.213).
@@ -44,12 +59,13 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 
 EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). RewindKF latency 15→115 ms ~equal once capture-timed — **NOT binding.**
 
-### Binding factor (SHARPENED by radius reconciliation)
-- **The binding factor = effective systematic attitude/accel bias entering gate-4, NOT the contact radius.** The radius correction (~1.5× budget) does not move the binding case. The cold@1.4° p90 (0.338 m) fails at every physically admissible radius.
+### Binding factor (SHARPENED by radius reconciliation + SHADOWVISION)
+- **The binding factor = effective systematic attitude/accel bias entering gate-4, NOT the contact radius and NOT per-fix σ.** The radius correction (~1.5× budget) does not move the binding case. The cold@1.4° p90 (0.338 m) fails at every physically admissible radius.
+- **🆕 SHADOWVISION SHARPENING:** per-fix lateral σ IS SOLVED (0.10 m measured). The remaining binding factor is **camera pointing / fix DENSITY** (primary lever, policy-addressable via inc8 gate-in-FoV reward) + **ESKF attitude-bias estimation** (secondary, residual worst-case). See §SHADOWVISION UPDATE above.
 - **HOPE FLAG:** The cold@1.4° design point is likely PESSIMISTIC — it treats the ATTITUDE_NOISE_STD_RAD (1.4°, σ) as if it were a constant systematic bias. The true systematic drift-causing bias is probably smaller. **If the live recording pins it ≤ ~0.6°, the margin CLOSES at r=0.30.** This is the decisive open question.
-- **ESKF attitude-bias estimation (bias state) = BINDING MARGIN LEVER** for fast/case-C margin closing — elevated from raise-ceiling stash. Confirms d3's "ESKF/attitude pipeline in the critical path for the MARGIN, not just absolute nav."
-- Cold-prior risk = **HIGH** (variance/window-driven, NOT init-driven). "Warm by gate-4" is FALSE — a full lap does NOT pre-converge velocity to warm quality.
-- Closure rests on **attitude/accel-bias control (≤~0.6°) + the uncertainty-aware speed-down**, NOT the velocity channel and NOT the contact radius.
+- **ESKF attitude-bias estimation (bias state) = SECONDARY MARGIN LEVER** (elevated from raise-ceiling stash; residual worst-case after pointing is solved). Confirms d3's "ESKF/attitude pipeline in the critical path for the MARGIN, not just absolute nav."
+- Cold-prior risk = **HIGH** (variance/window-driven, NOT init-driven). "Warm by gate-4" is FALSE — a full lap does NOT pre-converge velocity to warm quality. (But denser fixes via pointing ACCELERATE cold-prior convergence.)
+- Closure rests on **camera pointing/fix-density (primary) + attitude/accel-bias control ≤~0.6° (secondary) + uncertainty-aware speed-down**, NOT the velocity channel and NOT the contact radius and NOT per-fix σ (solved).
 
 ### Vision-velocity channel — REFUTED, demoted to P2 insurance (SUPERSEDES "LOAD-BEARING" framing)
 - ~~**LSQ-over-window (σ_v 0.3–0.4, d4v visvel):** p90 cold 0.34→**0.18 m**. Build this. NECESSARY.~~
@@ -59,7 +75,8 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 
 ### Speed-ladder and escape hatch
 - **Speed-ladder selection metric = p90/p99 gate** (gate-4 SIMSTART in-plane — report across r ∈ {0.21,0.26,0.30,0.33,0.38}, ALWAYS p90 AND p99; central on 0.30; 0.38 as worst-case stress knob; NEVER a single number tied to one radius), NOT RMS.
-- **ESCAPE HATCH = ShadowPC at-speed (~37 m/s) gate-4 recording (L3):** ≥5 laps, all fields on ONE clock, GT position+velocity. Pins: **true effective attitude/accel bias** (the binding factor), realized cold velocity-prior distribution, per-fix σ at real blur, one-signed PnP bias magnitude+sign. If measured bias ≤ ~0.6°, margin CLOSES at r=0.30. Plus one eval-HW latency run (L4) + TIMESYNC wire trace.
+- **ESCAPE HATCH = ShadowPC at-speed (~37 m/s) gate-4 recording (L3):** ≥5 laps, all fields on ONE clock, GT position+velocity. GT velocity = **LOCAL_POSITION_NED.{vx,vy,vz}** (world NED, ~97 Hz, live-verified to 21.3 m/s; stored as DroneState.velocity_ned); ODOMETRY twist as cross-check. Pins: **true effective attitude/accel bias** (secondary binding factor), realized cold velocity-prior distribution, per-fix σ at real blur (σ=0.10 is current lower bound — measured at inc7 speed; may tighten at 37 m/s with blur), one-signed PnP bias magnitude+sign. **Key open question: what fix DENSITY does a vision-trained policy achieve? (primary binding factor).** If measured bias ≤ ~0.6°, margin CLOSES at r=0.30. Plus one eval-HW latency run (L4) + TIMESYNC wire trace.
+- **🆕 Recording harness VALIDATED:** verify_bundle.py ALL_PASS (video↔LPN 2.5 ms p50 recv-clock-aligned). Tooling in handoff/simops-mastery-2026-06-13/ on ShadowPC — **pending commit+push from ShadowPC to main.** frame_residual_report.py mirror canary TRUE +0.97 / AS-IS −0.81 = OK (telemetry convention stable).
 
 ### Obs sign — +L CORRECT IN CODE; spec PROSE wrong; pinned by test (2026-06-13)
 - 🚩 **Obs sign = +L and was ALWAYS correct in code.** `obs_from_zup:348 = R_w2g @ (gate_pos − pos)`; `localization.py:86` builds the +L lever. There was NEVER a code bug.

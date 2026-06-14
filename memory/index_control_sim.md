@@ -37,12 +37,14 @@ Mid-level index for sim wire facts, CTBR/legacy sign config, RL deployment recip
 ## Sim build 1.0.3364 regression fix
 - Fix: `launch_ramp_s=0.6 s` + `--rate 100`.
 
-## Sim ops mechanics (unattended PROVEN)
+## Sim ops mechanics (unattended PROVEN — MASTERED 2026-06-13)
+- **SIM-OPS MASTERED:** 10/10 consecutive clean autonomous launch→race→reset cycles; 13 clean inc7 flights; 0 contact. Orchestrator pattern: `partA_cycle.py` runs `fly_rl --flights 1` per cycle so every state transition is MAVLink-confirmed (not a blind between-flight reset). All 4 failure modes handled live (stale-started, zombie dual-instance, spawn-artefact detection, off-race-pause).
 - **31000 restart:** Win32 foreground + Enter×2.
 - Sim AUTORESETS on gate contact → guard cuts RL commands instantly.
 - Use raw ODOMETRY rate.
 - 🚩 **SPAWN-ARTEFACT:** gate-3 hard-collision reset → next respawn 0-tick crash; NOT policy failure; affects per-batch stats.
 - **🚩 OPS:** concurrent laptop sessions must use separate git worktrees or stagger suite runs.
+- 🚩 **ShadowPC tooling** (partA_cycle.py + recorder) in handoff/simops-mastery-2026-06-13/ on ShadowPC — **NOT YET on main (pending commit+push from ShadowPC).**
 
 ## Substrate audit (DONE 2026-06-13)
 - VQ1 substrate **EXTERNALLY CLEAN 68/68** (no live-code train/deploy-corrupting bug found). COLL_MAP NOT A BUG.
@@ -65,13 +67,19 @@ Mid-level index for sim wire facts, CTBR/legacy sign config, RL deployment recip
 - **Tooling built** (handoff/shadowpc-vision-cal-2026-06-13/): `simops.py`, `wire/mav_relay.py`, `cr1_direct.py`, `latency_harness.py`. `simops.py` promotion to `scripts/` DISPATCHED (LAPTOP-PROMOTE-SIMOPS).
 - **Remaining queued items** (sigma_theta refit, per-gate last-fix distance, 2-corner PnP, Bayesian-IoU extrinsic, yaw-active debug_obs, full-lap ~37 m/s gate-4 recording): DEFERRED to post-merge phase.
 
-## Sim-ops state machine (Fengyou-confirmed 2026-06-13)
-- HOME→Enter→waiting-room (started=False, drone at origin) → Enter AGAIN → GO (extra Enter out of waiting-room is the gotcha).
-- Fresh-race chain = full ESC+Down×3+Enter+Enter×2 (verified by fresh to_go + new race_start_boot_ms).
-- ESC+Down×3+Enter alone is context-dependent (restart from FINISHED; no-op from stale race).
+## Sim-ops state machine (Fengyou-confirmed 2026-06-13; REFINED 2026-06-13 SHADOWVISION)
+- HOME→Enter→waiting-room (started=False, drone at origin) → **Enter AGAIN → GO** (extra Enter out of waiting-room is the gotcha; **cold-launch waiting room takes TWO Enters**).
+- **From a FINISHED race: ESC+Down×3+Enter RESTARTS the race (does NOT exit to HOME).** Fresh-race chain from finished = ESC+Down×3+Enter (back in waiting-room) + Enter×2 (to GO); confirmed by fresh to_go + new race_start_boot_ms.
+- ESC+Down×3+Enter alone is context-dependent: restart from FINISHED (stays in race context), no-op from stale/HOME.
 - 🚩 Stale started=True race STOPS streaming video — never trust started=True alone.
 - 🚩 computer-use does NOT work for sim (request_access can't resolve DCGame-Win64-Shipping / "AI-GP") — telemetry-only Win32 is the standing method.
 - Cross-cutting gotchas: epoch-vs-sim-boot clock; Windows SIO_UDP_CONNRESET; run_in_background+& double-launch.
+
+## Ground-truth velocity (step-5 at-speed recording — CONFIRMED 2026-06-13)
+- **GT velocity = `LOCAL_POSITION_NED.{vx,vy,vz}`** (world NED; ~97 Hz; live-verified to 21.3 m/s; stored as `DroneState.velocity_ned`). ODOMETRY twist (~75 Hz) = cross-check.
+- Recorder captures full step-5 bundle recv-clock-aligned (video↔LPN 2.5 ms p50). `verify_bundle.py` ALL_PASS on banked at-speed + fresh standing session.
+- frame_residual_report.py mirror canary TRUE +0.97 / AS-IS −0.81 = OK (telemetry convention stable across sim relaunch).
+- Step-5 at-speed recording plan UNCHANGED. Tooling in handoff/simops-mastery-2026-06-13/ on ShadowPC — **pending commit+push from ShadowPC.**
 
 ## Topic file pointers
 - [[project-ctbr-control-sysid]] — flyable stack: gains/signs, offline twin, Gate-0 saga, alt-relay.

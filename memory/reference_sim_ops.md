@@ -1,9 +1,10 @@
 ---
 name: reference-sim-ops
 description: "Unattended FlightSim operation mechanics — launch/login chain, MAV_CMD 31000 restart semantics, window-kick recovery, the three idle states, zombie dual-instance, autoreset/spin guards, fullscreen auto-minimize, measurement footguns."
-metadata:
+metadata: 
   node_type: memory
   type: reference
+  originSessionId: 972b9a84-aa8d-44c1-b7d1-36e8c7f9a995
 ---
 
 # Sim ops — unattended FlightSim control (ShadowPC)
@@ -15,10 +16,17 @@ Facts moved verbatim from the MEMORY.md index (2026-06-11 restructure). Operatio
 - **🚩 2026-06-10 — UNATTENDED SIM CONTROL proven:** S1.2 cold-launched FlightSim.exe + raced NO human.
 - `rl/fly_rl.py --flights N` chains attempts.
 
-## Race restart semantics + idle states
+## Race restart semantics + idle states (REFINED 2026-06-13 — two state-machine corrections)
 - **MAV_CMD 31000** restarts race once race context exists — **NO-OP from HOME**; from HOME: Win32 `SetForegroundWindow` + **Enter ×2**.
 - **🚩 THIRD idle state** (~90 min post-race): 31000 NO-OP, stale telemetry; recovery = Win32+Enter×2 — wired as auto-escalation in `rate_sysid.py`.
-- Full between-flight reset = **ESC→HOME→Enter** (mandatory, protocol (c) below).
+- **🚩 REFINEMENT 1 — cold-launch waiting room takes TWO Enters:** HOME→Enter→waiting-room (started=False, drone at origin) → **Enter AGAIN** → GO. The extra Enter out of the waiting room is required and was previously the common gotcha.
+- **🚩 REFINEMENT 2 — from FINISHED race, ESC+Down×3+Enter RESTARTS the race (does NOT exit to HOME):** this returns to the waiting-room, not HOME. Confirmed by fresh to_go + new race_start_boot_ms. Chain from FINISHED to a new race: ESC+Down×3+Enter (back in waiting-room) + Enter×2 (to GO). ESC+Down×3+Enter alone is context-dependent (restart from FINISHED; no-op from stale race / HOME).
+- Full fresh-race chain (from HOME or after FINISHED): ESC+Down×3+Enter+Enter×2 (verified via fresh to_go + new race_start_boot_ms).
+
+## Unattended orchestrator pattern (MASTERED 2026-06-13)
+- **`partA_cycle.py` pattern (ShadowPC):** run `fly_rl --flights 1` per cycle so every state transition (arm, race, reset) is MAVLink-confirmed before the next cycle begins. Avoids blind between-flight resets. 10/10 clean autonomous cycles; 13 clean inc7 flights; 0 gate contact.
+- All 4 failure modes handled live: stale-started, zombie dual-instance, spawn-artefact detection, off-race-pause.
+- 🚩 Tooling in handoff/simops-mastery-2026-06-13/ on ShadowPC — **NOT yet on main (pending commit+push from ShadowPC).**
 
 ## Failure modes / mandatory guards (the "NEW SIM OPS" list)
 - **🚩 ZOMBIE DUAL-INSTANCE:** two instances on 14550 → drone arms but ignores; killing zombie kills BOTH → relaunch fresh.
