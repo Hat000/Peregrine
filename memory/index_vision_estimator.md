@@ -9,8 +9,8 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - 🚩 **ORGANIZER-PIVOT: build gate-relative REGARDLESS** — Q① = load-bearing vs free-insurance only (3 emails UNANSWERED; do NOT gate engineering on organizer answers; keep ONE nudge ~weekly).
 - COUPLING: faster speed worsens gate-4 margin/σ ratio → estimator accuracy must be verified at each speed rung. **PRIMARY MARGIN GUARD = GATE-4** (0.155 m @ r=0.38; reporting discipline: always quote margin as function of r ∈ {0.21,0.26,0.30,0.33,0.38} at p90/p99 — never a single number; central planning radius = 0.30 m, worst-case stress knob = 0.38).
 
-## COLD-MARGIN CLOSURE (2026-06-13 offline; L3 at-speed 2026-06-14; BLUEPRINT.md + REPORT.md in handoff/ultracode-gate-relative-pipeline-design-2026-06-13/; SHADOWVISION + L3 UPDATES below)
-**VERDICT: CANNOT-SETTLE-OFFLINE → PROVISIONALLY RESOLVED toward CLOSE (2026-06-14).** Offline (tri-confirmed): d3 full-lap sim + v3 verifier + commander cross-check; margin does NOT close offline. L3 at-speed (2026-06-14): gate-4 chain bias lateral ≈0 / vertical −0.215 m (common-mode); HYPOTHESIS: δ_map offset → +L CANCELS → ε≈0 → margin CLOSES at r=0.30 (budget 0.235; rel p90 0.197). PENDING direct δ_map pin. → §L3 AT-SPEED above. The gate-relative OBSERVATION fix is SOLID and MUST be built (map bias drops EXACTLY: rel E_bias −0.000 vs abs/submap +0.176; RMS 0.139 m).
+## COLD-MARGIN CLOSURE (2026-06-13 offline; L3 at-speed 2026-06-14; δ_map discriminator 2026-06-14; BLUEPRINT.md + REPORT.md in handoff/ultracode-gate-relative-pipeline-design-2026-06-13/; SHADOWVISION + L3 + DMAP UPDATES below)
+**VERDICT: CANNOT-SETTLE-OFFLINE SURVIVES — L3 "CLOSE" REFUTED by δ_map discriminator (case b, high-confidence; 2026-06-14; branch worktree-agent-a88bc717008e79cd9, commit d7c592e, NOT merged; handoff/dmap-vert-discriminator-2026-06-14/REPORT.md).** Offline (tri-confirmed): d3 full-lap sim + v3 verifier + commander cross-check; margin does NOT close offline. L3 at-speed (2026-06-14): gate-4 chain bias lateral ≈0 / vertical −0.215 m (common-mode). FORMER HYPOTHESIS (case a, now REFUTED): δ_map offset → +L CANCELS → ε≈0 → close. ACTUAL (case b): no map offset → ε_vert ≈ +0.15…+0.26 m = genuine PERCEPTION/ATTITUDE sighting bias → +L does NOT cancel → margin stays OPEN. L3's own rel in-plane p90 = 0.492 m does NOT close at r=0.30 (budget 0.235) or r=0.38 (budget 0.155). The gate-relative OBSERVATION fix is SOLID and MUST be built (map bias drops EXACTLY: rel E_bias −0.000 vs abs/submap +0.176; RMS 0.139 m). → §δ_MAP VERTICAL DISCRIMINATOR below; §L3 AT-SPEED above.
 
 ### SHADOWVISION UPDATE (2026-06-13; shadow mode on inc7 given-pose flights at gate-4 band, range 20–26 m)
 **MEASURED vision precision — BETTER than modeled:**
@@ -76,13 +76,14 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 
 EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). RewindKF latency 15→115 ms ~equal once capture-timed — **NOT binding.**
 
-### Binding factor (SHARPENED by radius reconciliation + SHADOWVISION)
-- **The binding factor = effective systematic attitude/accel bias entering gate-4, NOT the contact radius and NOT per-fix σ.** The radius correction (~1.5× budget) does not move the binding case. The cold@1.4° p90 (0.338 m) fails at every physically admissible radius.
-- **🆕 SHADOWVISION SHARPENING:** per-fix lateral σ IS SOLVED (0.10 m measured). The remaining binding factor is **camera pointing / fix DENSITY** (primary lever, policy-addressable via inc8 gate-in-FoV reward) + **ESKF attitude-bias estimation** (secondary, residual worst-case). See §SHADOWVISION UPDATE above.
-- **HOPE FLAG:** The cold@1.4° design point is likely PESSIMISTIC — it treats the ATTITUDE_NOISE_STD_RAD (1.4°, σ) as if it were a constant systematic bias. The true systematic drift-causing bias is probably smaller. **If the live recording pins it ≤ ~0.6°, the margin CLOSES at r=0.30.** This is the decisive open question.
-- **ESKF attitude-bias estimation (bias state) = SECONDARY MARGIN LEVER** (elevated from raise-ceiling stash; residual worst-case after pointing is solved). Confirms d3's "ESKF/attitude pipeline in the critical path for the MARGIN, not just absolute nav."
+### Binding factor (SHARPENED by radius reconciliation + SHADOWVISION + δ_MAP DISCRIMINATOR)
+- **The binding factor = VERTICAL BORESIGHT BIAS ε_vert ≈ 0.215 m (~0.56° camera-pitch mismatch, CALIBRATABLE) + effective systematic attitude/accel bias, NOT the contact radius and NOT per-fix σ.** The radius correction (~1.5× budget) does not move the binding case. The cold@1.4° p90 (0.338 m) fails at every physically admissible radius.
+- **🆕 δ_MAP DISCRIMINATOR (2026-06-14):** δ_map_vert ≈ 0 across all 6 gates — L3 "CLOSE" was REFUTED. L3's vertical −0.215 m = ε_vert (genuine perception/attitude sighting bias; +L does NOT cancel). See §δ_MAP VERTICAL DISCRIMINATOR above. Path to close: boresight calibration + ESKF attitude-bias estimation.
+- **SHADOWVISION SHARPENING:** per-fix lateral σ IS SOLVED (0.10 m measured). The remaining binding factors are **camera pointing / fix DENSITY** (primary lever, policy-addressable via inc8 gate-in-FoV reward) + **ESKF attitude-bias estimation + boresight calibration** (co-equal margin levers — PROMOTED by δ_map finding). See §SHADOWVISION UPDATE and §δ_MAP VERTICAL DISCRIMINATOR above.
+- **HOPE FLAG:** ε_vert ≈ 0.56° is CALIBRATABLE (boresight calibration / ESKF attitude-bias state). After calibration, the bias-free regime is the correct design point. Airtight lock test pending (morning ShadowPC static head-on fix at g2/g4).
+- **ESKF attitude-bias estimation (bias state) = CO-EQUAL MARGIN LEVER** (PROMOTED from secondary by δ_map finding; now co-equal with 2-axis camera-pointing/fix-rate). Confirms d3's "ESKF/attitude pipeline in the critical path for the MARGIN, not just absolute nav."
 - Cold-prior risk = **HIGH** (variance/window-driven, NOT init-driven). "Warm by gate-4" is FALSE — a full lap does NOT pre-converge velocity to warm quality. (But denser fixes via pointing ACCELERATE cold-prior convergence.)
-- Closure rests on **camera pointing/fix-density (primary) + attitude/accel-bias control ≤~0.6° (secondary) + uncertainty-aware speed-down**, NOT the velocity channel and NOT the contact radius and NOT per-fix σ (solved).
+- Closure rests on **boresight calibration (ε_vert→0) + camera pointing/fix-density (fix-rate) + attitude/accel-bias estimation + uncertainty-aware speed-down**, NOT the velocity channel and NOT the contact radius and NOT per-fix σ (solved).
 
 ### Vision-velocity channel — REFUTED, demoted to P2 insurance (SUPERSEDES "LOAD-BEARING" framing)
 - ~~**LSQ-over-window (σ_v 0.3–0.4, d4v visvel):** p90 cold 0.34→**0.18 m**. Build this. NECESSARY.~~
@@ -162,16 +163,50 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 - `tests/test_confirmed_p4_c05.py` expanded 5→10 tests.
 - 🚩 **DEPLOY CONSTRAINT (current stack VQ1-only):** three loud guards now ship — `_assert_vq1_constants_consistent` (import-time, half-migrated constants), `_assert_live_course_is_vq1` (deploy-time, aborts if any gate yaw ≠ π before RL loop starts), `assert_gate_map_allpi` (public). **The current deployable stack fail-loud-aborts on any non-π/VQ2 course until gate-relative path is wired + `gate_map` passed.** Correct fail-loud behavior; removed by the gate-relative rebuild. → [[index-control-sim]]
 
-## L3 AT-SPEED GATE-4 BIAS PINNED — PROVISIONAL CLOSE (2026-06-14; branch claude/blissful-kalam-75f52b)
+## L3 AT-SPEED GATE-4 BIAS PINNED — "CLOSE" NOW REFUTED (2026-06-14; branch claude/blissful-kalam-75f52b; discriminator refutes case-a → see §δ_MAP VERTICAL DISCRIMINATOR)
 - **Recording:** 13 clean inc7 laps, 0 gate contact, FINISHED 6/6, fully unattended. GT vel live to 21.4 m/s. R_y(π) canary OK (mirror +0.97 / as-is −0.81 → bias REAL, not a frame flip). Offline shadow analysis replayed production C2 chain vs GT, gate-4 focus, N=81 sightings @ 22.3 m / 17.4 m/s.
 - **Gate-4 effective in-plane FIX-vs-GT bias:** lateral −0.04 ≈ 0; VERTICAL −0.215 m. Vertical is COMMON-MODE (gate-2 −0.211 ≡ gate-4 −0.215).
-- **L3 HYPOTHESIS (PROVISIONAL CLOSE):** −0.215 vertical = track_map corner_to_center half-height-lift MAP offset δ_map → the +L fix CANCELS it ⇒ chain bias ε ≈ 0 on BOTH axes ⇒ margin CLOSES at central r=0.30 (budget 0.235; rel p90 0.197), FAILS at worst-case r=0.38 (stress knob 0.155). Corroborated qualitatively by inc7-live's contact-free gate-3 crossing above map-center.
-- 🚩 **CLOSE IS PROVISIONAL:** common-mode-across-gates does NOT prove +L cancellation (see footgun). DIRECT δ_map pin (sim true opening-center-z vs track_map z) launched as discriminator: handoff/dmap-vert-discriminator-2026-06-14.
+- **L3 FORMER HYPOTHESIS (case a — REFUTED by δ_map discriminator):** −0.215 vertical = track_map MAP offset δ_map → +L CANCELS → close. REFUTED: δ_map_vert ≈ 0 (max 0.077 m across 6 gates) → rel_vert −0.215 m = ε_vert (perception/attitude sighting bias) → +L does NOT cancel → margin stays OPEN. L3's own rel in-plane p90 = 0.492 m (NOT 0.197 m claimed under case-a) → does NOT close at any r. See §δ_MAP VERTICAL DISCRIMINATOR for full analysis.
 - **σ (gate-4 specific):** lateral 0.19 m / vertical 0.10 m (< modeled 0.265 m); along-track +0.40 loose. NOTE: gate-4 σ_lat 0.19 is ABOVE the pooled headline 0.10 — use gate-4 value for gate-4 margin; the "σ=0.10" pooled figure was pooled across all gates.
 - **Relinnov gate:** accepts 100% of offered gate-4 fixes (d2 p90 0.94 ≪ 13.82) — NOT the limiter.
 - **BINDING LIMIT = FIX-RATE 1.4% of frames at gate-4** (gate-4 is worst case; pooled ~7%): detector 92%; gate-4-in-FoV 42%; crab p50 66°; at >60° crab (51% of frames) gate-4-in-FoV 5% / 0 fixes; ALL 81 fixes from the crab-30–45° gate-3-approach window. Root cause = camera POINTING **2-AXIS** (azimuth + ELEVATION co-bind — see §2-AXIS CAMERA-POINTING FINDING; addressable via inc8 2-axis gate-in-FoV reward + mount-uptilt sweep).
 - **Depth blow-up:** clean fixes only in the ~20–22 m band; gate-3 @ 31.8 m showed +2.05 m along-track depth blow-up (beyond 32 m cap) — consistent with the a1·r >24 m extrapolation warning.
-- 🚩 **FOOTGUN: COMMON-MODE-ACROSS-GATES ≠ PROOF OF +L CANCELLATION.** Identical vertical offset at multiple gates is consistent with BOTH (a) track_map representation offset [+L CANCELS → close] AND (b) detector/camera-EXTRINSIC sighting bias [+L does NOT cancel → fails] — one camera sees every gate, so extrinsic bias is also common-mode. Only the DIRECT δ_map pin distinguishes them.
+- 🚩 **FOOTGUN: COMMON-MODE-ACROSS-GATES ≠ PROOF OF +L CANCELLATION.** Identical vertical offset at multiple gates is consistent with BOTH (a) track_map representation offset [+L CANCELS → close] AND (b) detector/camera-EXTRINSIC sighting bias [+L does NOT cancel → fails] — one camera sees every gate, so extrinsic bias is also common-mode. Only the DIRECT δ_map pin distinguishes them. **The discriminator chose (b).**
+
+## δ_MAP VERTICAL DISCRIMINATOR — CASE (b) CONFIRMED; L3 "CLOSE" REFUTED (2026-06-14; branch worktree-agent-a88bc717008e79cd9, commit d7c592e, NOT merged; handoff/dmap-vert-discriminator-2026-06-14/REPORT.md)
+
+**VERDICT: CASE (b) — the L3 gate-4 "CLOSE" is REFUTED. CANNOT-SETTLE-OFFLINE SURVIVES.**
+
+### Direct δ_map measurement
+- δ_map_vert (track_map opening-z − true-opening-z) = gate-2 **+0.044 m**, gate-4 **−0.067 m**; MAX across 6 gates **0.077 m**. There is **NO −0.2 m map offset**.
+- MAP IS GOOD VERTICALLY: direct δ_map ≈ 0; piece-F (ultracode-vision-case-c) GT-transit resurvey D-residual σ = 0.03 m (max 0.10); contact-free GT crossings within ±0.07 m of track_map OPENING centres at all 6 gates.
+
+### Decomposition of L3 vertical bias
+- L3's rel_vert −0.215 m decomposes: rel_vert = δ_map_vert − ε_vert → ε_vert ≈ **+0.15…+0.26 m** = a genuine **PERCEPTION/ATTITUDE sighting bias**.
+- The +L gate-relative fix does **NOT cancel ε_vert** — it removes only the map-position term. ε_vert survives.
+- **L3's OWN shadow_gate4.py: rel in-plane p90 = 0.492 m → does NOT close at r=0.30 (budget 0.235) or r=0.38 (budget 0.155).** The L3 report flipped to "CLOSE" only by ASSUMING case (a).
+
+### Binding factor identified
+🚩 **BINDING FACTOR = VERTICAL BORESIGHT BIAS ε_vert ≈ 0.215 m (= 0.56° apparent camera pitch at 22 m; matches L3 |b|=0.218 exactly).** NOT the map, NOT the body radius.
+
+### Non-circular signature confirming case (b)
+- Vertical bias is **DEPTH-FREE** (corr range_err vs off_D = +0.11).
+- Vertical bias is **BEARING-CORRELATED** (corr off_D vs bearing = +0.44).
+- A world-frame map offset would be bearing-INVARIANT; the bearing-dependence is a camera/perception-geometry signature.
+- Likely mechanism: **sim-render-vs-decode MOUNT MISMATCH** — estimator decodes with `CAMERA_PITCH_RAD = 20.0°` exactly; currently uncalibrated, hiding inside the 1.4° attitude / 0.40 m cov floor.
+
+### Silver lining: CALIBRATABLE
+- ε_vert is **CALIBRATABLE** via boresight calibration / ESKF attitude-bias state → drives ε_vert → 0 → back to the bias-free regime where the margin CLOSES.
+- Path to close = **calibrate boresight + solve 2-axis camera-pointing/fix-rate**.
+- ESKF attitude-bias estimation PROMOTED from secondary to **co-equal margin lever** (alongside 2-axis camera-pointing/fix-rate).
+
+### Residual caveat + airtight lock test
+- "GT crosses near map centre" evidence is mildly SELF-FULFILLING on the vertical axis (inc7/calibration laps aim at map centre); depth-free + bearing + resurvey lines break it to case (b) but not airtightly.
+- **AIRTIGHT LOCK (morning, ShadowPC):** a STATIC, head-on, LEVEL vision fix at g2 & g4 (bearing ≈ 0) isolates boresight ε from any map term. Expect δ_map_vert ≈ 0, small head-on ε. Alternatively: bearing-resolve the ShadowPC-local data/runs/*_l3atspeed_* via shadow_gate4.py.
+
+### 🚩 Two stale map-offset citations — CORRECTED
+1. **"gate-3 crosses 1.46 m above (map) center"** = BOTTOM-vs-OPENING reference-frame confusion; true miss is **0.017 m**. NOT evidence of a map vertical offset. Do NOT cite as case-(a)/map-offset support.
+2. **piece-F "+0.3 m registration_D"** = ε − δ_map MISLABELLED as registration; its own GT-transit resurvey σ=0.03 m contradicts it. NOT a real map offset. Do NOT cite as case-(a)/map-offset support.
 
 ## C2-ESTIMATOR-CHAIN DONE & MERGED (2026-06-14; merge commit 05ed750; feature 2d85d7e; 700→723 green, 0 regressions)
 - **RewindKF (`kf_rewind.py`):** productionized OOSM. `update_position_at` rewinds to capture-time + replays buffered IMU exactly. horizon=0.5 s with `assert_horizon_gt(L)` guarding the horizon≤L "drop 100% of fixes" trap. t_fix≥now = bit-identical to bare update. Full live OOSM TIMESYNC-blocked → predict-forward fallback ships first.
