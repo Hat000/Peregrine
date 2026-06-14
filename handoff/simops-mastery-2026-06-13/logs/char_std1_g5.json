@@ -1,0 +1,347 @@
+{
+  "bundle": "20260613_033558_rl_inc7_std_f1",
+  "weights": "gate_yolo11s_curriculum_v2.pt",
+  "assoc_mode": "robust",
+  "cov_inflation": 2.0,
+  "attitude_noise_std_deg": 1.4,
+  "fix_cov_floor_m": 0.4,
+  "map": "C:\\Users\\Shadow\\Peregrine\\handoff\\shadowpc-firstcontact-2026-06-02\\track_map.json",
+  "rows": [
+    {
+      "frame_id": 409,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 410,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 411,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 412,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 413,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 414,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 415,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 416,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 417,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 418,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 419,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 420,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 421,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 422,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 423,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 424,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 425,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 426,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 427,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 428,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 429,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 430,
+      "range_m": 0.196,
+      "speed_mps": 17.065,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 408,
+      "range_m": 0.419,
+      "speed_mps": 16.96,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 407,
+      "range_m": 0.979,
+      "speed_mps": 16.872,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 406,
+      "range_m": 1.558,
+      "speed_mps": 16.866,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 405,
+      "range_m": 2.257,
+      "speed_mps": 16.929,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 404,
+      "range_m": 2.726,
+      "speed_mps": 16.995,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 403,
+      "range_m": 3.197,
+      "speed_mps": 17.063,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 402,
+      "range_m": 3.789,
+      "speed_mps": 17.147,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 401,
+      "range_m": 4.265,
+      "speed_mps": 17.217,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 400,
+      "range_m": 4.982,
+      "speed_mps": 17.34,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 399,
+      "range_m": 5.584,
+      "speed_mps": 17.465,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 398,
+      "range_m": 6.068,
+      "speed_mps": 17.578,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 397,
+      "range_m": 6.678,
+      "speed_mps": 17.73,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 396,
+      "range_m": 7.169,
+      "speed_mps": 17.849,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 395,
+      "range_m": 7.931,
+      "speed_mps": 18.017,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 394,
+      "range_m": 8.572,
+      "speed_mps": 18.149,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 393,
+      "range_m": 9.081,
+      "speed_mps": 18.257,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 392,
+      "range_m": 9.712,
+      "speed_mps": 18.388,
+      "n_det": 5,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 391,
+      "range_m": 10.475,
+      "speed_mps": 18.536,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 390,
+      "range_m": 10.858,
+      "speed_mps": 18.613,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 389,
+      "range_m": 11.371,
+      "speed_mps": 18.721,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    }
+  ]
+}

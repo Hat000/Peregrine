@@ -1,0 +1,26 @@
+[
+  {
+    "demo": "zombie",
+    "t": 1781405545.63,
+    "dcgame_procs_before": 1
+  },
+  {
+    "demo": "zombie",
+    "t": 1781405570.96,
+    "dcgame_procs_after_2nd_launch": 2,
+    "ZOMBIE_DETECTED": true
+  },
+  {
+    "demo": "zombie",
+    "t": 1781405575.54,
+    "dcgame_procs_after_killall": 0
+  },
+  {
+    "demo": "zombie",
+    "t": 1781405583.81,
+    "relaunched_dcgame_procs": 1,
+    "heartbeat_after_s": 5.0,
+    "RECOVERED": true,
+    "RECOVERY": "kill ALL (DCGame+FlightSim) then relaunch ONE FlightSim.exe -> single clean instance on 14550. A live worker must verify exactly 1 DCGame before flying."
+  }
+]

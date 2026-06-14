@@ -1,0 +1,657 @@
+{
+  "bundle": "20260613_033646_rl_inc7_std_f2",
+  "weights": "gate_yolo11s_curriculum_v2.pt",
+  "assoc_mode": "robust",
+  "cov_inflation": 2.0,
+  "attitude_noise_std_deg": 1.4,
+  "fix_cov_floor_m": 0.4,
+  "map": "C:\\Users\\Shadow\\Peregrine\\handoff\\shadowpc-firstcontact-2026-06-02\\track_map.json",
+  "rows": [
+    {
+      "frame_id": 730,
+      "range_m": 0.297,
+      "speed_mps": 17.448,
+      "n_det": 5,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 729,
+      "range_m": 0.46,
+      "speed_mps": 17.534,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 731,
+      "range_m": 0.771,
+      "speed_mps": 17.412,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 728,
+      "range_m": 1.064,
+      "speed_mps": 17.579,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 732,
+      "range_m": 1.374,
+      "speed_mps": 17.483,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 727,
+      "range_m": 1.551,
+      "speed_mps": 17.593,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 733,
+      "range_m": 1.86,
+      "speed_mps": 17.585,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 726,
+      "range_m": 2.16,
+      "speed_mps": 17.611,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 734,
+      "range_m": 2.597,
+      "speed_mps": 17.773,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 725,
+      "range_m": 2.649,
+      "speed_mps": 17.619,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 735,
+      "range_m": 3.368,
+      "speed_mps": 17.968,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 724,
+      "range_m": 3.382,
+      "speed_mps": 17.622,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 736,
+      "range_m": 3.767,
+      "speed_mps": 18.06,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 723,
+      "range_m": 3.993,
+      "speed_mps": 17.606,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 737,
+      "range_m": 4.289,
+      "speed_mps": 18.158,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 722,
+      "range_m": 4.481,
+      "speed_mps": 17.574,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 738,
+      "range_m": 4.921,
+      "speed_mps": 18.251,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 721,
+      "range_m": 5.089,
+      "speed_mps": 17.514,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 739,
+      "range_m": 5.429,
+      "speed_mps": 18.31,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 720,
+      "range_m": 5.695,
+      "speed_mps": 17.434,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 740,
+      "range_m": 6.066,
+      "speed_mps": 18.371,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 719,
+      "range_m": 6.298,
+      "speed_mps": 17.347,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 741,
+      "range_m": 6.705,
+      "speed_mps": 18.423,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 718,
+      "range_m": 6.897,
+      "speed_mps": 17.252,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 717,
+      "range_m": 7.374,
+      "speed_mps": 17.163,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 742,
+      "range_m": 7.474,
+      "speed_mps": 18.474,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 716,
+      "range_m": 7.967,
+      "speed_mps": 17.042,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 743,
+      "range_m": 7.987,
+      "speed_mps": 18.505,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 715,
+      "range_m": 8.438,
+      "speed_mps": 16.943,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 744,
+      "range_m": 8.63,
+      "speed_mps": 18.538,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 714,
+      "range_m": 9.139,
+      "speed_mps": 16.797,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 745,
+      "range_m": 9.145,
+      "speed_mps": 18.56,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 713,
+      "range_m": 9.719,
+      "speed_mps": 16.677,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 746,
+      "range_m": 9.789,
+      "speed_mps": 18.579,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 712,
+      "range_m": 10.18,
+      "speed_mps": 16.577,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 747,
+      "range_m": 10.563,
+      "speed_mps": 18.593,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 711,
+      "range_m": 10.752,
+      "speed_mps": 16.447,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 748,
+      "range_m": 11.079,
+      "speed_mps": 18.598,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 710,
+      "range_m": 11.206,
+      "speed_mps": 16.339,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 749,
+      "range_m": 11.725,
+      "speed_mps": 18.597,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 709,
+      "range_m": 11.88,
+      "speed_mps": 16.173,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 708,
+      "range_m": 12.437,
+      "speed_mps": 16.022,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 707,
+      "range_m": 12.878,
+      "speed_mps": 15.892,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 706,
+      "range_m": 13.424,
+      "speed_mps": 15.723,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 705,
+      "range_m": 13.857,
+      "speed_mps": 15.577,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 704,
+      "range_m": 14.497,
+      "speed_mps": 15.337,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 703,
+      "range_m": 15.023,
+      "speed_mps": 15.12,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 702,
+      "range_m": 15.437,
+      "speed_mps": 14.932,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 701,
+      "range_m": 15.948,
+      "speed_mps": 14.674,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 700,
+      "range_m": 16.349,
+      "speed_mps": 14.452,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 699,
+      "range_m": 16.939,
+      "speed_mps": 14.092,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 698,
+      "range_m": 17.418,
+      "speed_mps": 13.763,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 697,
+      "range_m": 17.793,
+      "speed_mps": 13.479,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 696,
+      "range_m": 18.249,
+      "speed_mps": 13.098,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 695,
+      "range_m": 18.779,
+      "speed_mps": 12.606,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 694,
+      "range_m": 19.12,
+      "speed_mps": 12.262,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 693,
+      "range_m": 19.532,
+      "speed_mps": 11.811,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 692,
+      "range_m": 19.85,
+      "speed_mps": 11.433,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 691,
+      "range_m": 20.232,
+      "speed_mps": 10.938,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 690,
+      "range_m": 20.524,
+      "speed_mps": 10.52,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 689,
+      "range_m": 20.94,
+      "speed_mps": 9.863,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 688,
+      "range_m": 21.264,
+      "speed_mps": 9.29,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 687,
+      "range_m": 21.509,
+      "speed_mps": 8.808,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 686,
+      "range_m": 21.794,
+      "speed_mps": 8.182,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 685,
+      "range_m": 22.006,
+      "speed_mps": 7.66,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 684,
+      "range_m": 22.296,
+      "speed_mps": 6.844,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 683,
+      "range_m": 22.51,
+      "speed_mps": 6.136,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 682,
+      "range_m": 22.663,
+      "speed_mps": 5.561,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 681,
+      "range_m": 22.831,
+      "speed_mps": 4.839,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 680,
+      "range_m": 22.947,
+      "speed_mps": 4.258,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 679,
+      "range_m": 23.09,
+      "speed_mps": 3.396,
+      "n_det": 3,
+      "detected": true,
+      "associated": true,
+      "gate_id": 1,
+      "score": 0.3690928816795349,
+      "n_corners": 4,
+      "reproj_px": 0.42319215597009036,
+      "pose_range_m": 36.364507997746415,
+      "true_range_m": 46.8800777037142,
+      "range_err_m": -10.515569705967785,
+      "bearing_deg": 28.039450553501933,
+      "t_cam_err_m": 10.524369135951382,
+      "range_ok": false,
+      "range_cap_ok": false,
+      "off_ned": [
+        -10.502541045805376,
+        -0.4345983534758404,
+        0.5197129612537833
+      ],
+      "world_fix_err_m": 10.52436913595137,
+      "maha": 5.012914072519445
+    },
+    {
+      "frame_id": 678,
+      "range_m": 23.182,
+      "speed_mps": 2.704,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 677,
+      "range_m": 23.239,
+      "speed_mps": 2.179,
+      "n_det": 3,
+      "detected": true,
+      "associated": true,
+      "gate_id": 0,
+      "score": 0.9291258454322815,
+      "n_corners": 4,
+      "reproj_px": 0.24247829515244493,
+      "pose_range_m": 22.57549851962051,
+      "true_range_m": 23.238768747733783,
+      "range_err_m": -0.663270228113273,
+      "bearing_deg": 26.7912829417346,
+      "t_cam_err_m": 0.6930767378766873,
+      "range_ok": true,
+      "range_cap_ok": true,
+      "off_ned": [
+        -0.6528740880321157,
+        0.03307073686871073,
+        -0.230254459511618
+      ],
+      "world_fix_err_m": 0.6930767378766897,
+      "maha": 0.212089152118283
+    },
+    {
+      "frame_id": 676,
+      "range_m": 23.29,
+      "speed_mps": 1.496,
+      "n_det": 3,
+      "detected": true,
+      "associated": true,
+      "gate_id": 0,
+      "score": 0.9100794196128845,
+      "n_corners": 4,
+      "reproj_px": 0.09941792682284786,
+      "pose_range_m": 24.2502552189628,
+      "true_range_m": 23.290493758662098,
+      "range_err_m": 0.959761460300701,
+      "bearing_deg": 21.335829443273266,
+      "t_cam_err_m": 0.9869388930146281,
+      "range_ok": true,
+      "range_cap_ok": true,
+      "off_ned": [
+        0.9582652203446254,
+        -0.2138019004689418,
+        0.10032394220053101
+      ],
+      "world_fix_err_m": 0.9869388930146183,
+      "maha": 0.2604924657766538
+    }
+  ]
+}

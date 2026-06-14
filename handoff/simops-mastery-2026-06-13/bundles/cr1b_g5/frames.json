@@ -1,0 +1,1374 @@
+{
+  "schema": "racer.frame_bundle/v1",
+  "run": "20260613_165145_instr_cr1b_f1",
+  "source_commit": "7210c1d",
+  "primary_gate": 5,
+  "purpose": "Perception characterization (per-gate (nearest=gate 5) approach): navigator vision chain (YOLO->PnP) world-fix error vs range. Built for characterize_perception.py.",
+  "native_resolution_wh": [
+    640,
+    360
+  ],
+  "map": "handoff\\shadowpc-firstcontact-2026-06-02\\track_map.json",
+  "range_to": "nearest of all 6 gate opening-centres (corner_to_center=True)",
+  "n_frames": 41,
+  "range_span_m": [
+    0.209,
+    11.669
+  ],
+  "pair_gap_ms_max": 7.7,
+  "frames": [
+    {
+      "frame_id": 1219,
+      "png": "000_id1219_g5_0.2m.png",
+      "sim_time_ns": 1781369527673294000,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.529749,
+        0.37191,
+        0.167047,
+        0.743737
+      ],
+      "odo_angular_rate": [
+        0.51494,
+        -2.03299,
+        0.21827
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 6.63,
+      "lpn_gap_ms": 3.06,
+      "odo_gap_ms": 6.63,
+      "sync_pos_err_m": 0.1131
+    },
+    {
+      "frame_id": 1220,
+      "png": "001_id1220_g5_0.2m.png",
+      "sim_time_ns": 1781369527699344200,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 5.55,
+      "lpn_gap_ms": 2.21,
+      "odo_gap_ms": 5.55,
+      "sync_pos_err_m": 0.0947
+    },
+    {
+      "frame_id": 1221,
+      "png": "002_id1221_g5_0.2m.png",
+      "sim_time_ns": 1781369527733724100,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 4.8,
+      "lpn_gap_ms": 4.8,
+      "odo_gap_ms": 0.43,
+      "sync_pos_err_m": 0.082
+    },
+    {
+      "frame_id": 1222,
+      "png": "003_id1222_g5_0.2m.png",
+      "sim_time_ns": 1781369527768878500,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 6.55,
+      "lpn_gap_ms": 0.75,
+      "odo_gap_ms": 6.55,
+      "sync_pos_err_m": 0.1118
+    },
+    {
+      "frame_id": 1223,
+      "png": "004_id1223_g5_0.2m.png",
+      "sim_time_ns": 1781369527803279800,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 1.7,
+      "lpn_gap_ms": 1.7,
+      "odo_gap_ms": 1.57,
+      "sync_pos_err_m": 0.0289
+    },
+    {
+      "frame_id": 1224,
+      "png": "005_id1224_g5_0.2m.png",
+      "sim_time_ns": 1781369527837867700,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 4.6,
+      "lpn_gap_ms": 4.46,
+      "odo_gap_ms": 4.6,
+      "sync_pos_err_m": 0.0785
+    },
+    {
+      "frame_id": 1225,
+      "png": "006_id1225_g5_0.2m.png",
+      "sim_time_ns": 1781369527865654300,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 3.1,
+      "lpn_gap_ms": 3.1,
+      "odo_gap_ms": 3.04,
+      "sync_pos_err_m": 0.053
+    },
+    {
+      "frame_id": 1226,
+      "png": "007_id1226_g5_0.2m.png",
+      "sim_time_ns": 1781369527900502400,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 4.91,
+      "lpn_gap_ms": 4.04,
+      "odo_gap_ms": 4.91,
+      "sync_pos_err_m": 0.0839
+    },
+    {
+      "frame_id": 1227,
+      "png": "008_id1227_g5_0.2m.png",
+      "sim_time_ns": 1781369527935054700,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 1.3,
+      "lpn_gap_ms": 0.22,
+      "odo_gap_ms": 1.3,
+      "sync_pos_err_m": 0.0222
+    },
+    {
+      "frame_id": 1228,
+      "png": "009_id1228_g5_0.2m.png",
+      "sim_time_ns": 1781369527969987400,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 7.45,
+      "lpn_gap_ms": 4.88,
+      "odo_gap_ms": 7.45,
+      "sync_pos_err_m": 0.1272
+    },
+    {
+      "frame_id": 1229,
+      "png": "010_id1229_g5_0.2m.png",
+      "sim_time_ns": 1781369528004664600,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 3.48,
+      "lpn_gap_ms": 3.48,
+      "odo_gap_ms": 1.41,
+      "sync_pos_err_m": 0.0593
+    },
+    {
+      "frame_id": 1230,
+      "png": "011_id1230_g5_0.2m.png",
+      "sim_time_ns": 1781369528032332300,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 1.95,
+      "lpn_gap_ms": 1.95,
+      "odo_gap_ms": 1.68,
+      "sync_pos_err_m": 0.0333
+    },
+    {
+      "frame_id": 1231,
+      "png": "012_id1231_g5_0.2m.png",
+      "sim_time_ns": 1781369528067098700,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 3.31,
+      "lpn_gap_ms": 3.31,
+      "odo_gap_ms": 1.82,
+      "sync_pos_err_m": 0.0564
+    },
+    {
+      "frame_id": 1232,
+      "png": "013_id1232_g5_0.2m.png",
+      "sim_time_ns": 1781369528101808300,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 3.35,
+      "lpn_gap_ms": 0.28,
+      "odo_gap_ms": 3.35,
+      "sync_pos_err_m": 0.0572
+    },
+    {
+      "frame_id": 1233,
+      "png": "014_id1233_g5_0.2m.png",
+      "sim_time_ns": 1781369528136515200,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 4.38,
+      "lpn_gap_ms": 4.38,
+      "odo_gap_ms": 0.16,
+      "sync_pos_err_m": 0.0748
+    },
+    {
+      "frame_id": 1234,
+      "png": "015_id1234_g5_0.2m.png",
+      "sim_time_ns": 1781369528171454400,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 6.45,
+      "lpn_gap_ms": 1.92,
+      "odo_gap_ms": 6.45,
+      "sync_pos_err_m": 0.1101
+    },
+    {
+      "frame_id": 1235,
+      "png": "016_id1235_g5_0.2m.png",
+      "sim_time_ns": 1781369528199192800,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 4.76,
+      "lpn_gap_ms": 4.31,
+      "odo_gap_ms": 4.76,
+      "sync_pos_err_m": 0.0812
+    },
+    {
+      "frame_id": 1236,
+      "png": "017_id1236_g5_0.2m.png",
+      "sim_time_ns": 1781369528233814200,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 2.53,
+      "lpn_gap_ms": 1.86,
+      "odo_gap_ms": 2.53,
+      "sync_pos_err_m": 0.0432
+    },
+    {
+      "frame_id": 1237,
+      "png": "018_id1237_g5_0.2m.png",
+      "sim_time_ns": 1781369528268639800,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 2.33,
+      "lpn_gap_ms": 2.24,
+      "odo_gap_ms": 2.33,
+      "sync_pos_err_m": 0.0398
+    },
+    {
+      "frame_id": 1238,
+      "png": "019_id1238_g5_0.2m.png",
+      "sim_time_ns": 1781369528303276900,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 6.23,
+      "lpn_gap_ms": 4.3,
+      "odo_gap_ms": 6.23,
+      "sync_pos_err_m": 0.1063
+    },
+    {
+      "frame_id": 1239,
+      "png": "020_id1239_g5_0.2m.png",
+      "sim_time_ns": 1781369528338044200,
+      "drone_position_ned": [
+        -159.2797,
+        -4.4148,
+        24.418
+      ],
+      "lpn_vel": [
+        -16.0799,
+        -4.9879,
+        2.8041
+      ],
+      "odo_q_wxyz": [
+        0.527157,
+        0.367686,
+        0.171782,
+        0.746594
+      ],
+      "odo_angular_rate": [
+        0.50985,
+        -2.05768,
+        0.28058
+      ],
+      "range_m": 0.209,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.068,
+      "pair_gap_ms": 7.7,
+      "lpn_gap_ms": 2.83,
+      "odo_gap_ms": 7.7,
+      "sync_pos_err_m": 0.1314
+    },
+    {
+      "frame_id": 1218,
+      "png": "021_id1218_g5_0.6m.png",
+      "sim_time_ns": 1781369527634270300,
+      "drone_position_ned": [
+        -158.724,
+        -4.2422,
+        24.3188
+      ],
+      "lpn_vel": [
+        -15.9202,
+        -4.9394,
+        2.9109
+      ],
+      "odo_q_wxyz": [
+        0.539859,
+        0.392052,
+        0.142594,
+        0.731105
+      ],
+      "odo_angular_rate": [
+        0.52138,
+        -1.90817,
+        -0.04903
+      ],
+      "range_m": 0.574,
+      "nearest_gate_id": 5,
+      "speed_mps": 16.921,
+      "pair_gap_ms": 6.34,
+      "lpn_gap_ms": 0.27,
+      "odo_gap_ms": 6.34,
+      "sync_pos_err_m": 0.1073
+    },
+    {
+      "frame_id": 1217,
+      "png": "022_id1217_g5_1.0m.png",
+      "sim_time_ns": 1781369527599725300,
+      "drone_position_ned": [
+        -158.2824,
+        -4.1055,
+        24.2378
+      ],
+      "lpn_vel": [
+        -15.8877,
+        -4.8948,
+        2.9062
+      ],
+      "odo_q_wxyz": [
+        0.544938,
+        0.406728,
+        0.123045,
+        0.722824
+      ],
+      "odo_angular_rate": [
+        0.50466,
+        -1.66493,
+        -0.19672
+      ],
+      "range_m": 1.027,
+      "nearest_gate_id": 5,
+      "speed_mps": 16.877,
+      "pair_gap_ms": 4.65,
+      "lpn_gap_ms": 4.65,
+      "odo_gap_ms": 2.15,
+      "sync_pos_err_m": 0.0785
+    },
+    {
+      "frame_id": 1216,
+      "png": "023_id1216_g5_1.6m.png",
+      "sim_time_ns": 1781369527571896400,
+      "drone_position_ned": [
+        -157.7303,
+        -3.9362,
+        24.1379
+      ],
+      "lpn_vel": [
+        -15.9376,
+        -4.8441,
+        2.8172
+      ],
+      "odo_q_wxyz": [
+        0.547723,
+        0.418492,
+        0.105185,
+        0.716798
+      ],
+      "odo_angular_rate": [
+        0.47809,
+        -1.32359,
+        -0.3106
+      ],
+      "range_m": 1.606,
+      "nearest_gate_id": 5,
+      "speed_mps": 16.894,
+      "pair_gap_ms": 3.52,
+      "lpn_gap_ms": 0.59,
+      "odo_gap_ms": 3.52,
+      "sync_pos_err_m": 0.0594
+    },
+    {
+      "frame_id": 1215,
+      "png": "024_id1215_g5_2.1m.png",
+      "sim_time_ns": 1781369527536994800,
+      "drone_position_ned": [
+        -157.2864,
+        -3.802,
+        24.0606
+      ],
+      "lpn_vel": [
+        -16.0176,
+        -4.8056,
+        2.7099
+      ],
+      "odo_q_wxyz": [
+        0.548625,
+        0.42988,
+        0.085363,
+        0.711988
+      ],
+      "odo_angular_rate": [
+        0.40435,
+        -1.07534,
+        -0.4208
+      ],
+      "range_m": 2.072,
+      "nearest_gate_id": 5,
+      "speed_mps": 16.941,
+      "pair_gap_ms": 4.64,
+      "lpn_gap_ms": 4.64,
+      "odo_gap_ms": 1.46,
+      "sync_pos_err_m": 0.0786
+    },
+    {
+      "frame_id": 1214,
+      "png": "025_id1214_g5_2.8m.png",
+      "sim_time_ns": 1781369527502338600,
+      "drone_position_ned": [
+        -156.6163,
+        -3.6027,
+        23.951
+      ],
+      "lpn_vel": [
+        -16.1734,
+        -4.748,
+        2.5164
+      ],
+      "odo_q_wxyz": [
+        0.54753,
+        0.437673,
+        0.071212,
+        0.709635
+      ],
+      "odo_angular_rate": [
+        0.28351,
+        -0.90398,
+        -0.49948
+      ],
+      "range_m": 2.777,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.043,
+      "pair_gap_ms": 5.8,
+      "lpn_gap_ms": 1.71,
+      "odo_gap_ms": 5.8,
+      "sync_pos_err_m": 0.0989
+    },
+    {
+      "frame_id": 1213,
+      "png": "026_id1213_g5_3.4m.png",
+      "sim_time_ns": 1781369527467690600,
+      "drone_position_ned": [
+        -156.0529,
+        -3.4386,
+        23.866
+      ],
+      "lpn_vel": [
+        -16.3073,
+        -4.6904,
+        2.3482
+      ],
+      "odo_q_wxyz": [
+        0.542484,
+        0.447782,
+        0.054603,
+        0.708675
+      ],
+      "odo_angular_rate": [
+        0.05519,
+        -0.60859,
+        -0.57308
+      ],
+      "range_m": 3.367,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.13,
+      "pair_gap_ms": 0.83,
+      "lpn_gap_ms": 0.83,
+      "odo_gap_ms": 0.55,
+      "sync_pos_err_m": 0.0143
+    },
+    {
+      "frame_id": 1212,
+      "png": "027_id1212_g5_3.8m.png",
+      "sim_time_ns": 1781369527432844300,
+      "drone_position_ned": [
+        -155.5988,
+        -3.3088,
+        23.8022
+      ],
+      "lpn_vel": [
+        -16.4141,
+        -4.6399,
+        2.2096
+      ],
+      "odo_q_wxyz": [
+        0.53424,
+        0.456125,
+        0.043338,
+        0.710394
+      ],
+      "odo_angular_rate": [
+        -0.06609,
+        -0.40595,
+        -0.58681
+      ],
+      "range_m": 3.842,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.2,
+      "pair_gap_ms": 4.38,
+      "lpn_gap_ms": 4.38,
+      "odo_gap_ms": 4.23,
+      "sync_pos_err_m": 0.0754
+    },
+    {
+      "frame_id": 1211,
+      "png": "028_id1211_g5_4.4m.png",
+      "sim_time_ns": 1781369527405152600,
+      "drone_position_ned": [
+        -155.027,
+        -3.1486,
+        23.728
+      ],
+      "lpn_vel": [
+        -16.5507,
+        -4.5758,
+        2.0269
+      ],
+      "odo_q_wxyz": [
+        0.528331,
+        0.460513,
+        0.037854,
+        0.712293
+      ],
+      "odo_angular_rate": [
+        -0.07649,
+        -0.28961,
+        -0.53748
+      ],
+      "range_m": 4.439,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.291,
+      "pair_gap_ms": 4.16,
+      "lpn_gap_ms": 0.52,
+      "odo_gap_ms": 4.16,
+      "sync_pos_err_m": 0.072
+    },
+    {
+      "frame_id": 1210,
+      "png": "029_id1210_g5_4.9m.png",
+      "sim_time_ns": 1781369527370469700,
+      "drone_position_ned": [
+        -154.566,
+        -3.022,
+        23.6733
+      ],
+      "lpn_vel": [
+        -16.6694,
+        -4.529,
+        1.8677
+      ],
+      "odo_q_wxyz": [
+        0.524246,
+        0.463118,
+        0.03431,
+        0.7138
+      ],
+      "odo_angular_rate": [
+        -0.03779,
+        -0.24574,
+        -0.48691
+      ],
+      "range_m": 4.918,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.374,
+      "pair_gap_ms": 3.56,
+      "lpn_gap_ms": 3.46,
+      "odo_gap_ms": 3.56,
+      "sync_pos_err_m": 0.0619
+    },
+    {
+      "frame_id": 1209,
+      "png": "030_id1209_g5_5.6m.png",
+      "sim_time_ns": 1781369527335616600,
+      "drone_position_ned": [
+        -153.868,
+        -2.8343,
+        23.5999
+      ],
+      "lpn_vel": [
+        -16.8706,
+        -4.4711,
+        1.6036
+      ],
+      "odo_q_wxyz": [
+        0.517511,
+        0.466813,
+        0.027635,
+        0.716592
+      ],
+      "odo_angular_rate": [
+        0.02632,
+        -0.18738,
+        -0.41572
+      ],
+      "range_m": 5.642,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.527,
+      "pair_gap_ms": 2.93,
+      "lpn_gap_ms": 2.93,
+      "odo_gap_ms": 2.83,
+      "sync_pos_err_m": 0.0513
+    },
+    {
+      "frame_id": 1208,
+      "png": "031_id1208_g5_6.2m.png",
+      "sim_time_ns": 1781369527300960900,
+      "drone_position_ned": [
+        -153.2796,
+        -2.6796,
+        23.5475
+      ],
+      "lpn_vel": [
+        -17.0548,
+        -4.4305,
+        1.3658
+      ],
+      "odo_q_wxyz": [
+        0.513679,
+        0.468461,
+        0.02349,
+        0.71842
+      ],
+      "odo_angular_rate": [
+        0.02876,
+        -0.13326,
+        -0.39626
+      ],
+      "range_m": 6.25,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.674,
+      "pair_gap_ms": 5.01,
+      "lpn_gap_ms": 0.5,
+      "odo_gap_ms": 5.01,
+      "sync_pos_err_m": 0.0886
+    },
+    {
+      "frame_id": 1207,
+      "png": "032_id1207_g5_6.7m.png",
+      "sim_time_ns": 1781369527266100100,
+      "drone_position_ned": [
+        -152.8044,
+        -2.5569,
+        23.5116
+      ],
+      "lpn_vel": [
+        -17.2018,
+        -4.3959,
+        1.1735
+      ],
+      "odo_q_wxyz": [
+        0.508107,
+        0.469907,
+        0.018018,
+        0.721588
+      ],
+      "odo_angular_rate": [
+        0.03636,
+        -0.07284,
+        -0.40493
+      ],
+      "range_m": 6.74,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.793,
+      "pair_gap_ms": 3.93,
+      "lpn_gap_ms": 3.93,
+      "odo_gap_ms": 0.7,
+      "sync_pos_err_m": 0.0699
+    },
+    {
+      "frame_id": 1206,
+      "png": "033_id1206_g5_7.4m.png",
+      "sim_time_ns": 1781369527238347500,
+      "drone_position_ned": [
+        -152.2045,
+        -2.4049,
+        23.4742
+      ],
+      "lpn_vel": [
+        -17.3864,
+        -4.3508,
+        0.9298
+      ],
+      "odo_q_wxyz": [
+        0.5042,
+        0.470344,
+        0.01447,
+        0.72412
+      ],
+      "odo_angular_rate": [
+        0.04917,
+        -0.03763,
+        -0.43793
+      ],
+      "range_m": 7.356,
+      "nearest_gate_id": 5,
+      "speed_mps": 17.947,
+      "pair_gap_ms": 0.83,
+      "lpn_gap_ms": 0.69,
+      "odo_gap_ms": 0.83,
+      "sync_pos_err_m": 0.0149
+    },
+    {
+      "frame_id": 1205,
+      "png": "034_id1205_g5_8.1m.png",
+      "sim_time_ns": 1781369527203677900,
+      "drone_position_ned": [
+        -151.4764,
+        -2.2247,
+        23.4405
+      ],
+      "lpn_vel": [
+        -17.5991,
+        -4.2874,
+        0.6412
+      ],
+      "odo_q_wxyz": [
+        0.498101,
+        0.470031,
+        0.008726,
+        0.728622
+      ],
+      "odo_angular_rate": [
+        0.12655,
+        -0.00817,
+        -0.45922
+      ],
+      "range_m": 8.103,
+      "nearest_gate_id": 5,
+      "speed_mps": 18.125,
+      "pair_gap_ms": 5.17,
+      "lpn_gap_ms": 4.98,
+      "odo_gap_ms": 5.17,
+      "sync_pos_err_m": 0.0937
+    },
+    {
+      "frame_id": 1204,
+      "png": "035_id1204_g5_8.6m.png",
+      "sim_time_ns": 1781369527169139600,
+      "drone_position_ned": [
+        -150.9861,
+        -2.1061,
+        23.4246
+      ],
+      "lpn_vel": [
+        -17.7329,
+        -4.2368,
+        0.4542
+      ],
+      "odo_q_wxyz": [
+        0.494485,
+        0.469146,
+        0.004147,
+        0.73169
+      ],
+      "odo_angular_rate": [
+        0.20342,
+        -0.01858,
+        -0.4489
+      ],
+      "range_m": 8.604,
+      "nearest_gate_id": 5,
+      "speed_mps": 18.238,
+      "pair_gap_ms": 2.99,
+      "lpn_gap_ms": 2.99,
+      "odo_gap_ms": 1.79,
+      "sync_pos_err_m": 0.0545
+    },
+    {
+      "frame_id": 1203,
+      "png": "036_id1203_g5_9.2m.png",
+      "sim_time_ns": 1781369527134170000,
+      "drone_position_ned": [
+        -150.368,
+        -1.96,
+        23.412
+      ],
+      "lpn_vel": [
+        -17.894,
+        -4.1645,
+        0.2257
+      ],
+      "odo_q_wxyz": [
+        0.490588,
+        0.467453,
+        -0.002727,
+        0.735394
+      ],
+      "odo_angular_rate": [
+        0.30103,
+        -0.03739,
+        -0.45741
+      ],
+      "range_m": 9.235,
+      "nearest_gate_id": 5,
+      "speed_mps": 18.374,
+      "pair_gap_ms": 3.55,
+      "lpn_gap_ms": 0.98,
+      "odo_gap_ms": 3.55,
+      "sync_pos_err_m": 0.0652
+    },
+    {
+      "frame_id": 1202,
+      "png": "037_id1202_g5_10.0m.png",
+      "sim_time_ns": 1781369527099581000,
+      "drone_position_ned": [
+        -149.6192,
+        -1.7881,
+        23.4073
+      ],
+      "lpn_vel": [
+        -18.0825,
+        -4.0637,
+        -0.0409
+      ],
+      "odo_q_wxyz": [
+        0.488078,
+        0.465714,
+        -0.009222,
+        0.738109
+      ],
+      "odo_angular_rate": [
+        0.37428,
+        -0.06976,
+        -0.429
+      ],
+      "range_m": 9.997,
+      "nearest_gate_id": 5,
+      "speed_mps": 18.534,
+      "pair_gap_ms": 5.24,
+      "lpn_gap_ms": 5.24,
+      "odo_gap_ms": 5.19,
+      "sync_pos_err_m": 0.0972
+    },
+    {
+      "frame_id": 1201,
+      "png": "038_id1201_g5_10.4m.png",
+      "sim_time_ns": 1781369527071846300,
+      "drone_position_ned": [
+        -149.2418,
+        -1.7039,
+        23.409
+      ],
+      "lpn_vel": [
+        -18.1767,
+        -4.0072,
+        -0.1714
+      ],
+      "odo_q_wxyz": [
+        0.486372,
+        0.463723,
+        -0.016697,
+        0.740354
+      ],
+      "odo_angular_rate": [
+        0.46015,
+        -0.10236,
+        -0.41252
+      ],
+      "range_m": 10.38,
+      "nearest_gate_id": 5,
+      "speed_mps": 18.614,
+      "pair_gap_ms": 6.96,
+      "lpn_gap_ms": 2.39,
+      "odo_gap_ms": 6.96,
+      "sync_pos_err_m": 0.1295
+    },
+    {
+      "frame_id": 1200,
+      "png": "039_id1200_g5_11.2m.png",
+      "sim_time_ns": 1781369527037016500,
+      "drone_position_ned": [
+        -148.4812,
+        -1.5391,
+        23.4206
+      ],
+      "lpn_vel": [
+        -18.3651,
+        -3.8782,
+        -0.4239
+      ],
+      "odo_q_wxyz": [
+        0.484907,
+        0.460207,
+        -0.029562,
+        0.743103
+      ],
+      "odo_angular_rate": [
+        0.52797,
+        -0.11623,
+        -0.39917
+      ],
+      "range_m": 11.151,
+      "nearest_gate_id": 5,
+      "speed_mps": 18.775,
+      "pair_gap_ms": 4.94,
+      "lpn_gap_ms": 4.94,
+      "odo_gap_ms": 0.29,
+      "sync_pos_err_m": 0.0927
+    },
+    {
+      "frame_id": 1199,
+      "png": "040_id1199_g5_11.7m.png",
+      "sim_time_ns": 1781369527002310000,
+      "drone_position_ned": [
+        -147.9697,
+        -1.4323,
+        23.4341
+      ],
+      "lpn_vel": [
+        -18.4957,
+        -3.7821,
+        -0.5888
+      ],
+      "odo_q_wxyz": [
+        0.483925,
+        0.456063,
+        -0.043175,
+        0.745627
+      ],
+      "odo_angular_rate": [
+        0.62182,
+        -0.11121,
+        -0.39634
+      ],
+      "range_m": 11.669,
+      "nearest_gate_id": 5,
+      "speed_mps": 18.888,
+      "pair_gap_ms": 5.36,
+      "lpn_gap_ms": 0.6,
+      "odo_gap_ms": 5.36,
+      "sync_pos_err_m": 0.1012
+    }
+  ]
+}

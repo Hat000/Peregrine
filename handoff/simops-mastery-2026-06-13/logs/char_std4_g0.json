@@ -1,0 +1,665 @@
+{
+  "bundle": "20260613_033723_rl_inc7_std_f4",
+  "weights": "gate_yolo11s_curriculum_v2.pt",
+  "assoc_mode": "robust",
+  "cov_inflation": 2.0,
+  "attitude_noise_std_deg": 1.4,
+  "fix_cov_floor_m": 0.4,
+  "map": "C:\\Users\\Shadow\\Peregrine\\handoff\\shadowpc-firstcontact-2026-06-02\\track_map.json",
+  "rows": [
+    {
+      "frame_id": 1826,
+      "range_m": 0.208,
+      "speed_mps": 17.458,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1827,
+      "range_m": 0.552,
+      "speed_mps": 17.384,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1825,
+      "range_m": 0.795,
+      "speed_mps": 17.505,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1824,
+      "range_m": 1.279,
+      "speed_mps": 17.522,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1828,
+      "range_m": 1.312,
+      "speed_mps": 17.45,
+      "n_det": 5,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1829,
+      "range_m": 1.56,
+      "speed_mps": 17.5,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1823,
+      "range_m": 1.886,
+      "speed_mps": 17.532,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1830,
+      "range_m": 2.197,
+      "speed_mps": 17.657,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1822,
+      "range_m": 2.616,
+      "speed_mps": 17.539,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1831,
+      "range_m": 2.689,
+      "speed_mps": 17.794,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1821,
+      "range_m": 3.103,
+      "speed_mps": 17.533,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1832,
+      "range_m": 3.311,
+      "speed_mps": 17.957,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1820,
+      "range_m": 3.712,
+      "speed_mps": 17.513,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1833,
+      "range_m": 3.937,
+      "speed_mps": 18.097,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1819,
+      "range_m": 4.198,
+      "speed_mps": 17.481,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1834,
+      "range_m": 4.568,
+      "speed_mps": 18.2,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1818,
+      "range_m": 4.803,
+      "speed_mps": 17.422,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1835,
+      "range_m": 5.201,
+      "speed_mps": 18.282,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1817,
+      "range_m": 5.285,
+      "speed_mps": 17.363,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1836,
+      "range_m": 5.71,
+      "speed_mps": 18.338,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1816,
+      "range_m": 6.006,
+      "speed_mps": 17.265,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1837,
+      "range_m": 6.348,
+      "speed_mps": 18.4,
+      "n_det": 4,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1815,
+      "range_m": 6.602,
+      "speed_mps": 17.172,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1814,
+      "range_m": 7.077,
+      "speed_mps": 17.087,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1838,
+      "range_m": 7.116,
+      "speed_mps": 18.463,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1839,
+      "range_m": 7.629,
+      "speed_mps": 18.501,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1813,
+      "range_m": 7.668,
+      "speed_mps": 16.969,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1812,
+      "range_m": 8.137,
+      "speed_mps": 16.868,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1840,
+      "range_m": 8.272,
+      "speed_mps": 18.539,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1841,
+      "range_m": 8.787,
+      "speed_mps": 18.564,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1811,
+      "range_m": 8.835,
+      "speed_mps": 16.721,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1810,
+      "range_m": 9.412,
+      "speed_mps": 16.599,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1842,
+      "range_m": 9.432,
+      "speed_mps": 18.59,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1843,
+      "range_m": 9.948,
+      "speed_mps": 18.603,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1809,
+      "range_m": 9.985,
+      "speed_mps": 16.477,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1808,
+      "range_m": 10.44,
+      "speed_mps": 16.378,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1844,
+      "range_m": 10.722,
+      "speed_mps": 18.617,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1807,
+      "range_m": 11.005,
+      "speed_mps": 16.248,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1845,
+      "range_m": 11.369,
+      "speed_mps": 18.621,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1806,
+      "range_m": 11.676,
+      "speed_mps": 16.087,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1846,
+      "range_m": 11.885,
+      "speed_mps": 18.621,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1805,
+      "range_m": 12.119,
+      "speed_mps": 15.976,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1804,
+      "range_m": 12.559,
+      "speed_mps": 15.855,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1803,
+      "range_m": 13.105,
+      "speed_mps": 15.694,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1802,
+      "range_m": 13.537,
+      "speed_mps": 15.558,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1801,
+      "range_m": 14.177,
+      "speed_mps": 15.337,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1800,
+      "range_m": 14.703,
+      "speed_mps": 15.139,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1799,
+      "range_m": 15.118,
+      "speed_mps": 14.967,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1798,
+      "range_m": 15.63,
+      "speed_mps": 14.737,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1797,
+      "range_m": 16.034,
+      "speed_mps": 14.534,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1796,
+      "range_m": 16.627,
+      "speed_mps": 14.201,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1795,
+      "range_m": 17.111,
+      "speed_mps": 13.893,
+      "n_det": 3,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1794,
+      "range_m": 17.489,
+      "speed_mps": 13.625,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1793,
+      "range_m": 17.951,
+      "speed_mps": 13.269,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1792,
+      "range_m": 18.488,
+      "speed_mps": 12.808,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1791,
+      "range_m": 18.835,
+      "speed_mps": 12.482,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1790,
+      "range_m": 19.255,
+      "speed_mps": 12.052,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1789,
+      "range_m": 19.58,
+      "speed_mps": 11.694,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1788,
+      "range_m": 19.972,
+      "speed_mps": 11.226,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1787,
+      "range_m": 20.419,
+      "speed_mps": 10.63,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1786,
+      "range_m": 20.702,
+      "speed_mps": 10.21,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1785,
+      "range_m": 21.039,
+      "speed_mps": 9.661,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1784,
+      "range_m": 21.294,
+      "speed_mps": 9.203,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1783,
+      "range_m": 21.594,
+      "speed_mps": 8.605,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1782,
+      "range_m": 21.925,
+      "speed_mps": 7.852,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1781,
+      "range_m": 22.127,
+      "speed_mps": 7.33,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1780,
+      "range_m": 22.359,
+      "speed_mps": 6.657,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1779,
+      "range_m": 22.527,
+      "speed_mps": 6.102,
+      "n_det": 0,
+      "detected": false,
+      "associated": false
+    },
+    {
+      "frame_id": 1778,
+      "range_m": 22.714,
+      "speed_mps": 5.389,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1777,
+      "range_m": 22.875,
+      "speed_mps": 4.674,
+      "n_det": 1,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1776,
+      "range_m": 23.011,
+      "speed_mps": 3.958,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1775,
+      "range_m": 23.102,
+      "speed_mps": 3.378,
+      "n_det": 3,
+      "detected": true,
+      "associated": true,
+      "gate_id": 1,
+      "score": 0.4055853486061096,
+      "n_corners": 4,
+      "reproj_px": 0.2651235187502249,
+      "pose_range_m": 33.77492184089769,
+      "true_range_m": 46.891385327431124,
+      "range_err_m": -13.116463486533434,
+      "bearing_deg": 26.452711523203234,
+      "t_cam_err_m": 13.119569881122157,
+      "range_ok": false,
+      "range_cap_ok": false,
+      "off_ned": [
+        -13.072326770841613,
+        -0.7209952370741913,
+        0.8470847242758519
+      ],
+      "world_fix_err_m": 13.119569881122152,
+      "maha": 10.320691756850264
+    },
+    {
+      "frame_id": 1774,
+      "range_m": 23.192,
+      "speed_mps": 2.679,
+      "n_det": 2,
+      "detected": true,
+      "associated": false
+    },
+    {
+      "frame_id": 1773,
+      "range_m": 23.26,
+      "speed_mps": 1.987,
+      "n_det": 4,
+      "detected": true,
+      "associated": true,
+      "gate_id": 0,
+      "score": 0.9229048490524292,
+      "n_corners": 4,
+      "reproj_px": 0.17762505222551536,
+      "pose_range_m": 23.07925065598486,
+      "true_range_m": 23.25949201586929,
+      "range_err_m": -0.18024135988443035,
+      "bearing_deg": 27.038386995722977,
+      "t_cam_err_m": 0.4813934126479087,
+      "range_ok": true,
+      "range_cap_ok": true,
+      "off_ned": [
+        -0.1610043587594442,
+        0.08818117814539464,
+        -0.4450183075134651
+      ],
+      "world_fix_err_m": 0.4813934126479076,
+      "maha": 0.42407929692654994
+    },
+    {
+      "frame_id": 1772,
+      "range_m": 23.297,
+      "speed_mps": 1.446,
+      "n_det": 4,
+      "detected": true,
+      "associated": true,
+      "gate_id": 0,
+      "score": 0.925875723361969,
+      "n_corners": 4,
+      "reproj_px": 0.20838211956010505,
+      "pose_range_m": 23.343009393711725,
+      "true_range_m": 23.29721421688178,
+      "range_err_m": 0.045795176829944495,
+      "bearing_deg": 21.930946370141786,
+      "t_cam_err_m": 0.23228832061528365,
+      "range_ok": true,
+      "range_cap_ok": true,
+      "off_ned": [
+        0.05845043056790473,
+        -0.05348121795489355,
+        -0.21836018498516674
+      ],
+      "world_fix_err_m": 0.232288320615283,
+      "maha": 0.10590043872714722
+    }
+  ]
+}

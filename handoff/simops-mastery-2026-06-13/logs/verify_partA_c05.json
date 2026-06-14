@@ -1,0 +1,136 @@
+{
+  "run": "20260614_024235_simopsA_c05_f1",
+  "meta": {
+    "label": "simopsA_c05",
+    "final_state": "FINISHED",
+    "gate_index": 5,
+    "collisions": 0,
+    "duration_s": 14.566351,
+    "video_frames": 437,
+    "checkpoint": "C:\\Users\\Shadow\\Peregrine\\rl\\checkpoints\\stage1_inc7_actor.pth"
+  },
+  "type_counts": {
+    "ATTITUDE": 1721,
+    "LOCAL_POSITION_NED": 1396,
+    "HIGHRES_IMU": 1721,
+    "ODOMETRY": 1087,
+    "ACTUATOR_OUTPUT_STATUS": 1397,
+    "HEARTBEAT": 146,
+    "ENCAPSULATED_DATA": 58,
+    "COMMAND_ACK": 2
+  },
+  "streams": {
+    "video": {
+      "n": 437,
+      "dur_s": 14.532,
+      "rate_hz": 30.0,
+      "max_gap_ms": 52.0,
+      "p99_gap_ms": 36.9
+    },
+    "HIGHRES_IMU": {
+      "n": 1721,
+      "dur_s": 14.563,
+      "rate_hz": 118.11,
+      "max_gap_ms": 20.1,
+      "p99_gap_ms": 11.6
+    },
+    "LOCAL_POSITION_NED": {
+      "n": 1396,
+      "dur_s": 14.562,
+      "rate_hz": 95.79,
+      "max_gap_ms": 25.8,
+      "p99_gap_ms": 12.3
+    },
+    "ODOMETRY": {
+      "n": 1087,
+      "dur_s": 14.557,
+      "rate_hz": 74.61,
+      "max_gap_ms": 23.5,
+      "p99_gap_ms": 17.1
+    },
+    "ATTITUDE": {
+      "n": 1721,
+      "dur_s": 14.563,
+      "rate_hz": 118.11,
+      "max_gap_ms": 24.4,
+      "p99_gap_ms": 11.6
+    }
+  },
+  "ground_truth_velocity": {
+    "LOCAL_POSITION_NED_world_ned": {
+      "present": true,
+      "max_mag": 21.119,
+      "p50_mag": 17.442,
+      "frac_moving_gt0p5": 0.696
+    },
+    "ODOMETRY_body_twist": {
+      "present": true,
+      "max_mag": 21.119,
+      "p50_mag": 17.435,
+      "frac_moving_gt0p5": 0.695
+    }
+  },
+  "accel_body_HIGHRES_IMU_frd": {
+    "present": true,
+    "max_mag": 89.394,
+    "p50_mag": 9.81,
+    "frac_moving_gt0p5": 1.0
+  },
+  "attitude_quat_source": "ODOMETRY.q (TRUE attitude)",
+  "attitude_euler_present": true,
+  "alignment_recv_clock": {
+    "video_to_LPN_gap_ms": {
+      "p50": 2.5,
+      "p99": 5.64,
+      "max": 5.94
+    },
+    "video_to_ODO_gap_ms": {
+      "p50": 3.32,
+      "p99": 7.85,
+      "max": 8.84
+    }
+  },
+  "checks": {
+    "video": {
+      "rate_hz": 30.0,
+      "required_hz": 30.0,
+      "pass": true
+    },
+    "HIGHRES_IMU": {
+      "rate_hz": 118.11,
+      "required_hz": 90.0,
+      "pass": true
+    },
+    "LOCAL_POSITION_NED": {
+      "rate_hz": 95.79,
+      "required_hz": 60.0,
+      "pass": true
+    },
+    "ODOMETRY": {
+      "rate_hz": 74.61,
+      "required_hz": 60.0,
+      "pass": true
+    },
+    "ATTITUDE": {
+      "rate_hz": 118.11,
+      "required_hz": 60.0,
+      "pass": true
+    },
+    "accel_body_present": {
+      "pass": true
+    },
+    "odo_quat_present": {
+      "pass": true
+    },
+    "gt_position_present": {
+      "pass": true
+    },
+    "gt_velocity_present": {
+      "pass": true
+    },
+    "gt_velocity_LIVE": {
+      "pass": true
+    }
+  },
+  "ALL_PASS": true
+}

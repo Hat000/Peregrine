@@ -1,0 +1,163 @@
+[
+  {
+    "demo": "pause",
+    "t": 1781405461.65,
+    "state": "ACTIVE_OR_COUNTDOWN",
+    "sim_time_1": 4958922000,
+    "sim_time_2": 8966115000,
+    "physics_frozen_offrace": false
+  },
+  {
+    "t": 1781405463.6519616,
+    "step": "drive_to_waiting probe#1",
+    "state": "ACTIVE_OR_COUNTDOWN",
+    "probe": {
+      "heartbeat": true,
+      "started": true,
+      "finished": false,
+      "to_go_s": -7.49,
+      "active_gate": 0,
+      "pos_off_m": 0.02,
+      "sim_time_ns": 10973300000,
+      "armed": true,
+      "n_gates": 0,
+      "msg_types": {
+        "ATTITUDE": 237,
+        "LOCAL_POSITION_NED": 192,
+        "ODOMETRY": 150,
+        "HIGHRES_IMU": 236,
+        "ACTUATOR_OUTPUT_STATUS": 191,
+        "ENCAPSULATED_DATA": 8,
+        "HEARTBEAT": 19
+      }
+    }
+  },
+  {
+    "t": 1781405474.2835174,
+    "step": "drive_to_waiting probe#2",
+    "state": "WAITING",
+    "probe": {
+      "heartbeat": true,
+      "started": false,
+      "finished": false,
+      "to_go_s": -21.55,
+      "active_gate": 0,
+      "pos_off_m": 0.02,
+      "sim_time_ns": 21609869000,
+      "armed": false,
+      "n_gates": 0,
+      "msg_types": {
+        "ATTITUDE": 236,
+        "LOCAL_POSITION_NED": 191,
+        "ACTUATOR_OUTPUT_STATUS": 191,
+        "HIGHRES_IMU": 236,
+        "ODOMETRY": 150,
+        "HEARTBEAT": 19,
+        "ENCAPSULATED_DATA": 8
+      }
+    }
+  },
+  {
+    "demo": "pause",
+    "t": 1781405481.11,
+    "after_GO_state": "ACTIVE_OR_COUNTDOWN",
+    "sim_time_a": 25422471000,
+    "sim_time_b": 28436802000,
+    "physics_advancing_inrace": true,
+    "RECOVERY": "off-race pause is EXPECTED; live control/sysid needs an ACTIVE race (drive HOME->waiting->GO)."
+  },
+  {
+    "t": 1781405483.114298,
+    "step": "drive_to_waiting probe#1",
+    "state": "ACTIVE_OR_COUNTDOWN",
+    "probe": {
+      "heartbeat": true,
+      "started": true,
+      "finished": false,
+      "to_go_s": -4.98,
+      "active_gate": 0,
+      "pos_off_m": 0.02,
+      "sim_time_ns": 30436993000,
+      "armed": true,
+      "n_gates": 0,
+      "msg_types": {
+        "ACTUATOR_OUTPUT_STATUS": 191,
+        "HIGHRES_IMU": 236,
+        "ATTITUDE": 236,
+        "LOCAL_POSITION_NED": 191,
+        "ODOMETRY": 150,
+        "HEARTBEAT": 19,
+        "ENCAPSULATED_DATA": 8
+      }
+    }
+  },
+  {
+    "t": 1781405493.7452643,
+    "step": "drive_to_waiting probe#2",
+    "state": "WAITING",
+    "probe": {
+      "heartbeat": true,
+      "started": false,
+      "finished": false,
+      "to_go_s": -41.07,
+      "active_gate": 0,
+      "pos_off_m": 0.02,
+      "sim_time_ns": 41064401000,
+      "armed": false,
+      "n_gates": 0,
+      "msg_types": {
+        "HIGHRES_IMU": 236,
+        "ATTITUDE": 236,
+        "LOCAL_POSITION_NED": 192,
+        "ACTUATOR_OUTPUT_STATUS": 191,
+        "ODOMETRY": 150,
+        "HEARTBEAT": 19,
+        "ENCAPSULATED_DATA": 8
+      }
+    }
+  },
+  {
+    "demo": "stale",
+    "t": 1781405500.07,
+    "induced_state": "ACTIVE_OR_COUNTDOWN",
+    "started": true,
+    "to_go_s": -2.53,
+    "pos_off": 0.02,
+    "note": "started=True, drone parked at origin (stale precursor)"
+  },
+  {
+    "demo": "stale",
+    "t": 1781405509.7,
+    "recovered_state": "WAITING",
+    "started": false,
+    "pos_off": 0.02,
+    "RECOVERED": true,
+    "RECOVERY": "full chain esc,down*3,enter,enter -> fresh waiting room (started=False). The real stale state (video stopped after idle minutes) uses this SAME chain."
+  },
+  {
+    "demo": "artefact",
+    "t": 1781405509.7,
+    "healthy_samples": [
+      {
+        "run": "20260614_023957_simopsA_c01_f1",
+        "video_frames": 439,
+        "final_state": "FINISHED",
+        "artefact_flag": false
+      },
+      {
+        "run": "20260614_024036_simopsA_c02_f1",
+        "video_frames": 436,
+        "final_state": "FINISHED",
+        "artefact_flag": false
+      },
+      {
+        "run": "20260614_024116_simopsA_c03_f1",
+        "video_frames": 440,
+        "final_state": "FINISHED",
+        "artefact_flag": false
+      }
+    ],
+    "DETECTION": "meta.video_frames < 10 AND final_state != FINISHED (obs header only, 0 usable ticks) -> spawn-artefact.",
+    "RECOVERY": "sleep 2-3 s after the full-reset BEFORE issuing arm (let residual gate-3 collision geometry clear); wired in partA_cycle.run_cycle. NOT induced here (needs a gate-3 hard collision; violates the zero-contact validity rule)."
+  }
+]

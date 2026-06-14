@@ -1,0 +1,189 @@
+{
+  "summary": {
+    "cycles": 2,
+    "clean": 2,
+    "longest_streak": 2
+  },
+  "cycles": [
+    {
+      "cycle": 1,
+      "transitions": [
+        {
+          "t": 1781404683.017,
+          "step": "waiting_room",
+          "state": "WAITING",
+          "started": false,
+          "pos_off": 0.02,
+          "n_gates": 0
+        },
+        {
+          "t": 1781404683.017,
+          "step": "launch_flyrl",
+          "cmd_label": "simopsA_smoke_c01"
+        },
+        {
+          "t": 1781404689.298,
+          "step": "GO_sent",
+          "after_s": 4.0,
+          "via": "banner"
+        },
+        {
+          "t": 1781404701.929,
+          "step": "flyrl_exit",
+          "rc": 0,
+          "final_state": "FINISHED",
+          "gate_index": 5,
+          "collisions": 0,
+          "video_frames": 440,
+          "session": "20260614_023806_simopsA_smoke_c01_f1"
+        },
+        {
+          "t": 1781404703.992,
+          "step": "post_flight_probe",
+          "state": "FINISHED",
+          "finished": true,
+          "active_gate": 6,
+          "pos_off": 161.16
+        },
+        {
+          "t": 1781404709.699,
+          "step": "full_reset_to_home",
+          "keys_ok": true
+        }
+      ],
+      "result": "FINISHED",
+      "collisions": 0,
+      "gate_index": 5,
+      "clean": true,
+      "t_start": 1781404680.0934222,
+      "t_end": 1781404709.6991398,
+      "dur_s": 29.6
+    },
+    {
+      "cycle": 2,
+      "transitions": [
+        {
+          "t": 1781404722.652,
+          "step": "waiting_room",
+          "state": "WAITING",
+          "started": false,
+          "pos_off": 0.02,
+          "n_gates": 0
+        },
+        {
+          "t": 1781404722.652,
+          "step": "launch_flyrl",
+          "cmd_label": "simopsA_smoke_c02"
+        },
+        {
+          "t": 1781404728.933,
+          "step": "GO_sent",
+          "after_s": 4.0,
+          "via": "banner"
+        },
+        {
+          "t": 1781404741.424,
+          "step": "flyrl_exit",
+          "rc": 0,
+          "final_state": "FINISHED",
+          "gate_index": 5,
+          "collisions": 0,
+          "video_frames": 437,
+          "session": "20260614_023846_simopsA_smoke_c02_f1"
+        },
+        {
+          "t": 1781404743.433,
+          "step": "post_flight_probe",
+          "state": "FINISHED",
+          "finished": true,
+          "active_gate": 6,
+          "pos_off": 161.2
+        }
+      ],
+      "result": "FINISHED",
+      "collisions": 0,
+      "gate_index": 5,
+      "clean": true,
+      "t_start": 1781404709.961793,
+      "t_end": 1781404743.4328945,
+      "dur_s": 33.5
+    }
+  ],
+  "drive_log": [
+    {
+      "t": 1781404683.016581,
+      "step": "drive_to_waiting probe#1",
+      "state": "WAITING",
+      "probe": {
+        "heartbeat": true,
+        "started": false,
+        "finished": false,
+        "to_go_s": -243.81,
+        "active_gate": 0,
+        "pos_off_m": 0.02,
+        "sim_time_ns": 243938614000,
+        "armed": false,
+        "n_gates": 0,
+        "msg_types": {
+          "HIGHRES_IMU": 237,
+          "ODOMETRY": 150,
+          "ATTITUDE": 236,
+          "ACTUATOR_OUTPUT_STATUS": 191,
+          "LOCAL_POSITION_NED": 191,
+          "HEARTBEAT": 19,
+          "ENCAPSULATED_DATA": 8
+        }
+      }
+    },
+    {
+      "t": 1781404712.0214958,
+      "step": "drive_to_waiting probe#1",
+      "state": "ACTIVE_OR_COUNTDOWN",
+      "probe": {
+        "heartbeat": true,
+        "started": true,
+        "finished": false,
+        "to_go_s": -0.98,
+        "active_gate": 0,
+        "pos_off_m": 0.02,
+        "sim_time_ns": 4368511000,
+        "armed": true,
+        "n_gates": 0,
+        "msg_types": {
+          "ATTITUDE": 237,
+          "HIGHRES_IMU": 236,
+          "ODOMETRY": 150,
+          "ACTUATOR_OUTPUT_STATUS": 191,
+          "LOCAL_POSITION_NED": 191,
+          "HEARTBEAT": 19,
+          "ENCAPSULATED_DATA": 8
+        }
+      }
+    },
+    {
+      "t": 1781404722.6515284,
+      "step": "drive_to_waiting probe#2",
+      "state": "WAITING",
+      "probe": {
+        "heartbeat": true,
+        "started": false,
+        "finished": false,
+        "to_go_s": -14.78,
+        "active_gate": 0,
+        "pos_off_m": 0.02,
+        "sim_time_ns": 15004451000,
+        "armed": false,
+        "n_gates": 0,
+        "msg_types": {
+          "HIGHRES_IMU": 237,
+          "ATTITUDE": 238,
+          "ODOMETRY": 150,
+          "ACTUATOR_OUTPUT_STATUS": 192,
+          "LOCAL_POSITION_NED": 191,
+          "ENCAPSULATED_DATA": 8,
+          "HEARTBEAT": 19
+        }
+      }
+    }
+  ]
+}
