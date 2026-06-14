@@ -61,4 +61,5 @@ Mid-level index for competition rules, VQ1/VQ2 mechanics, Track-A strategy, user
 - [[feedback-walking-skeleton-no-vq1-crutches]] — VQ1 must be full VQ2 stack under-tuned.
 - [[project-red-team-pass-2]] — historical triage; kept to avoid re-litigation.
 - [[feedback-commander-orchestrate-not-execute]] — commander must NOT run tasks/compute (even "quick" offline sims); hand a worker prompt or use sanctioned orchestration. (2026-06-13)
-- [[feedback-worker-prompt-copy-paste-box]] — emit every worker prompt in ONE fenced code block for frictionless copy-paste. (2026-06-13)
+- [[feedback-worker-prompt-copy-paste-box]] — emit every worker prompt (AND every sub-commander relay) in ONE fenced code block for frictionless copy-paste. (2026-06-13; extended 2026-06-14)
+- [[feedback-sim-no-physical-risk]] — sim flights carry no physical risk; commander authorizes non-POC measurement flights directly; C6/POC hold = sequencing gate, not risk. (2026-06-14)

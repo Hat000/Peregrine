@@ -32,3 +32,5 @@ Every worker prompt must include:
 
 - [[index-strategy-meta]] — pointer registered here.
 - [[feedback-commander-orchestrate-not-execute]] — WHY the commander is emitting prompts instead of running the work.
+
+**EXTENSION (Fengyou, 2026-06-14):** this rule applies to ALL commander↔sub-commander communication relayed through Fengyou, not just worker prompts. ANY relay/directive you need Fengyou to forward to a sub-commander goes in ONE fenced copy-paste code box — never prose bullets. A "brief" relay is still a code box.

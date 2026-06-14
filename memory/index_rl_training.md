@@ -72,6 +72,8 @@ Design principle: reward the OUTCOME (estimator error vs GT); let camera pointin
 - 🚩 **Retrain footguns:** evals default legacy flat plant — all evals must run **map-ON**; `/scratch/network/fl3689/peregrine_repo` is FILE COPY not git clone; parity gate CLEARED job 3270602.
 - 🚩 **30 Hz = inherited default (DiffAero racing.yaml).** Binds ONLY at ≥30 m/s × last-fix ≤10 m; fixes to 15 m → NOT bottleneck.
 
+- 🚩 **ADROIT AUP (binding; #62 resolved 2026-06-14):** SLURM only — NO compute on login nodes; NO internet on compute nodes (pre-download git/pip/conda/HF+YOLO weights on login/vis BEFORE submit); output→/scratch not /projects; accurate --mem + 1-core serial (over-alloc / multi-core-serial → SUSPENSION); zero-GPU-util killed at 2h (PPO must saturate GPU); `checkquota` routinely. → [[reference-adroit-princeton]] §Acceptable-Use Policy.
+
 ## Topic file pointers
 - [[project-rl-increment-history]] — checkpoint lineage inc1→inc7, stage history S1.1→S17, inc7 job IDs, md5s/commits, NaN/sidecar/OOB bug histories, §INC7-LIVE-CONFIRMED, §Phase-0(b).
 - [[project-phase2-rl-vision-decisions]] — RL/S2/inc8/doctrine sections: §S2-DECISION, §PLANNING-TOGT-S2, §S17, §TRAINING-DOCTRINE, §CORNER-PASS, §INC8-DESIGN, §RL-PORTFOLIO, §FRAME-AUDIT.

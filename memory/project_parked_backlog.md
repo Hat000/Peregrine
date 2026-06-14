@@ -26,7 +26,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 - **#40** corrected-aero min-snap + coupled-TOPP reference-line rebuild (replaces drag-infeasible reference_line_vq1.json) → **P2** inc8 R1' arc-length DEPENDENCY; proto in handoff/ultracode-planning-togt-s2.
 - **#55** BSR3 spin-gate (spin_rate_abort→9–10, spin_time_abort→3.0 s) → **P2** prereq before ANY inc8 run.
 - **#60** organizer Qs (6 open: Q①④⑤ + Q-A/B/C/D) → **COWORK-1** attacks; keep ONE weekly nudge.
-- **#62** ⚠️ **FENGYOU ASK:** confirm Princeton acceptable-use policy permits Adroit for this competition entry.
+- **#62** ✅ **RESOLVED (2026-06-14):** Adroit acceptable-use PERMITTED with rules — Fengyou provided the Princeton RC AUP; banked in reference_adroit_princeton.md §Acceptable-Use Policy + MEMORY.md footgun. (Closed.)
 - **#30** photoreal Blender/Cycles detector → **P5 PILOT** (laptop pilot; promote to full campaign if fragility probe / COWORK-1 justify).
 
 ## ⏳ DORMANT-TRIGGERED (T) — [trigger]

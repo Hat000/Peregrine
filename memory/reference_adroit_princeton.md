@@ -45,3 +45,12 @@ metadata:
   (`echo <b64> | base64 -d > f`) and run that, instead of inlining.
 
 Related: [[project-ai-grand-prix]], [[project-hardware-constraint]], [[project-phase2-rl-vision-decisions]]
+
+## Acceptable-Use Policy — Princeton Research Computing (provided by Fengyou 2026-06-14; #62 RESOLVED — Adroit use PERMITTED with these rules)
+Violations → account SUSPENSION or killed jobs. Bake into EVERY SLURM worker prompt (P2 inc8, P5 detector).
+- **Login nodes (adroit.princeton.edu, adroit5) = submit/compile/install/SHORT tests only** (<5 CPU-min, few cores). NO compute on login; all real work → SLURM batch/interactive. claude/codex are flagged + lowered-priority on login; processes >5 min, >15 identical copies, loky, or tight poll-loops are auto-terminated — put `sleep 60` in any `squeue --me` loop; keep login RAM <10 GB; no jupyter on login (→ vis nodes / OnDemand).
+- **NO INTERNET on compute nodes** (batch/interactive/OnDemand). Pre-download ALL (git pull, pip/conda, HuggingFace/YOLO weights) on the LOGIN or VIS node (adroit-vis.princeton.edu) BEFORE submit. Compile GPU code on the GPU node (adroit-gpu.princeton.edu).
+- **Output → /scratch (fast), NOT /projects** (shared/slow/non-volatile, backup-only — copy to /projects post-job if a backup is wanted). 🚩 Verify Adroit scratch path: memory has /scratch/network/fl3689/; AUP example says /scratch/gpfs/ — confirm via `checkquota` on Adroit.
+- **Accurate --mem / --mem-per-cpu** (over-allocation → SUSPENSION). **1 CPU-core for serial jobs** (multi-core serial → SUSPENSION). **GPU only for GPU code**; scaling analysis before multi-GPU/multi-node. **Zero-GPU-utilization jobs killed after 2h** (2 warning emails) → ensure the PPO job saturates the GPU.
+- Run **`checkquota`** routinely; don't exceed storage quota (exceeding → batch failures, X11 breakage, confusing errors). `module load` a newer gcc if the system version is insufficient. Get help from RC staff rather than fighting scheduler/software issues.
+- Node types: login = adroit.princeton.edu/adroit5 (submit); GPU = adroit-gpu.princeton.edu (compile GPU); vis = adroit-vis.princeton.edu (post-process / internet-needing compute).
