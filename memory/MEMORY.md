@@ -40,6 +40,8 @@
 
 - 🚩 **ADROIT ACCEPTABLE-USE = SUSPENSION RISK (#62 RESOLVED 2026-06-14 — use PERMITTED with rules):** NEVER compute on login nodes (SLURM only); compute nodes have NO INTERNET (pre-download git/pip/HF/weights on login/vis FIRST); output → /scratch NOT /projects; accurate --mem + 1-core-serial (over-alloc / multi-core-serial → ACCOUNT SUSPENSION); zero-GPU-util jobs killed at 2h; run `checkquota` routinely. Full AUP → [[reference-adroit-princeton]]. Bake into every P2/P5 SLURM worker prompt.
 
+- 🚩 **WORKTREE HYGIENE (2026-06-14):** the harness AUTO-creates one isolated worktree per spawned session — that ALONE satisfies non-interference. Do NOT put `git worktree add` in prompts (doubles worktrees + clutters sibling dirs). The `.claude/worktrees/*` pool is harness-managed + RECYCLES (observed: an "empty" worktree was reclaimed as oneoff-regsuite) — NEVER manually prune it (racy, can knife a launching session); only `git worktree prune` (gone dirs) + remove confirmed-DONE manual worktrees. Code-workers REPORT their branch name UP; the overall commander keeps the branch↔role ledger, merges, and prunes BRANCHES on merge. → [[index-strategy-meta]] §worktrees
+
 ## Library index (MEMORY → domain sub-index → topic files)
 - 🛩️ **[[index-rl-training]]** — RL increments/lineage, training doctrine, S2 decision, inc8 + speed-ladder, plant/sysid-for-RL, retrain footguns, Adroit/DiffAero.
 - 👁️ **[[index-vision-estimator]]** — estimator race-speed verdict + gate-relative, VISION-PKG2, detector pipeline, case-C readiness, estimator robustness, advisor-triage.
