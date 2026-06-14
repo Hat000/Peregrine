@@ -1,0 +1,30 @@
+# realistic continuous trajectory; budget |b_a_inplane| < 0.103 m/s^2
+# RECOMMENDED design = 2-axis accel-bias on BODY lateral(Y)+vertical(Z) (the gate-plane axes);
+# along-track(X) is DROPPED (unobservable, aliased w/ velocity, maps to gate-normal).
+
+=== (1) 2-axis (Y,Z) sigma(b_a_inplane) vs laps, CONSTANT-rate fixes, q_ba=0 ===
+fix-rate    tau_s  1lap  2lap  3lap  6lap  12lap
+fr0.07      0.476  0.106   0.049<  0.038<  0.026<  0.018<
+fr0.15      0.222  0.074<  0.036<  0.028<  0.019<  0.013<
+fr0.25      0.133  0.058<  0.030<  0.023<  0.015<  0.011<
+
+=== (2) OBSERVABILITY-SUBSPACE: 3-axis (X,Y,Z) MC reveals along-track X is UNOBSERVABLE ===
+  3-axis X,Y,Z              : err_mean [-0.1    0.001 -0.   ]  err_rms [0.103 0.025 0.005]  NEES 18.04 (target ~3.0)
+  2-axis Y,Z (recommended)  : err_mean [ 0.001 -0.   ]  err_rms [0.025 0.005]  NEES 1.97 (target ~2.0)
+
+=== (3) laps-to-budget (2-axis Y,Z), q_ba=0 ===
+  fr0.07: lap 2
+  fr0.15: lap 1
+  fr0.25: lap 1
+
+=== (4) drift floor: steady-state sigma_inplane vs random walk q_ba (2-axis, fr0.07, 12 laps) ===
+  q_ba=0.000 -> ss sigma_inplane 0.018 m/s^2  <budget
+  q_ba=0.005 -> ss sigma_inplane 0.035 m/s^2  <budget
+  q_ba=0.010 -> ss sigma_inplane 0.053 m/s^2  <budget
+  q_ba=0.020 -> ss sigma_inplane 0.083 m/s^2  <budget
+  q_ba=0.050 -> ss sigma_inplane 0.155 m/s^2  OVER
+
+=== (5) GYRO-DEAD confirmation (2-axis accel + dead gyro, fr0.07, 6 laps) ===
+  accel-bias inplane 0.026 m/s^2 (LIVE); gyro-bias [0.5 0.5 0.5] deg/s (prior 0.500 -> UNCHANGED = DEAD; zero coupling, no measurement)
+
+# wrote accelbias_realistic_results.json

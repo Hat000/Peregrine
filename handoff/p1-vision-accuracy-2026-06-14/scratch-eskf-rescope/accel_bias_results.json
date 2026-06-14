@@ -1,0 +1,83 @@
+{
+  "course_src": "C:\\Users\\Fengy\\Downloads\\Projects\\Anduril\\.claude\\worktrees\\stoic-cray-33a854\\handoff\\shadowpc-firstcontact-2026-06-02\\track_map.json",
+  "g_sin_budget_ms2": 0.10269312170358179,
+  "scenarios": {
+    "g4_terminal_inband": {
+      "n_fix": 2,
+      "sd_bx": 0.49982009307161884,
+      "sd_by": 0.49981033916009054,
+      "sd_bz": 0.4998310731272886,
+      "sd_horiz": 0.7068454573451304,
+      "under_budget": false,
+      "note": "terminal in-band only, sparse"
+    },
+    "pre_terminal_g0to3": {
+      "n_fix": 28,
+      "sd_bx": 0.047686159656494254,
+      "sd_by": 0.04782628160669102,
+      "sd_bz": 0.046672950864736745,
+      "sd_horiz": 0.06753756758358397,
+      "under_budget": true,
+      "note": "lap-1 gates 0-3: b_a carried INTO first g4"
+    },
+    "g4_full_approach": {
+      "n_fix": 7,
+      "sd_bx": 0.25167556401854935,
+      "sd_by": 0.25178972269625055,
+      "sd_bz": 0.2477308687426504,
+      "sd_horiz": 0.35600372747979714,
+      "under_budget": false,
+      "note": "single gate, full approach"
+    },
+    "pooled_lap": {
+      "n_fix": 42,
+      "sd_bx": 0.06146161822699568,
+      "sd_by": 0.062390613419206674,
+      "sd_bz": 0.04866413305948412,
+      "sd_horiz": 0.08757921647232213,
+      "under_budget": true,
+      "note": "all 6 gates, 1 lap"
+    },
+    "pooled_3laps": {
+      "n_fix": 126,
+      "sd_bx": 0.06037707748221198,
+      "sd_by": 0.061690232956105054,
+      "sd_bz": 0.048311340076604974,
+      "sd_horiz": 0.08631961728061321,
+      "under_budget": true,
+      "note": "all 6 gates, 3 laps"
+    },
+    "pooled_3laps_fr0.25": {
+      "n_fix": 450,
+      "sd_bx": 0.046589270497997985,
+      "sd_by": 0.04686737552526958,
+      "sd_bz": 0.04588692809189624,
+      "sd_horiz": 0.06608412074138736,
+      "under_budget": true,
+      "note": "all gates, 3 laps, fr 0.25"
+    }
+  },
+  "maneuvering": {
+    "straight_n": 42,
+    "maneuver_n": 42
+  },
+  "gyro_dead": {
+    "sd_ba_horiz": 0.06745754369725875,
+    "sd_bg_degps": [
+      0.5245643695277115,
+      0.5245643695277115,
+      0.5245643695277115
+    ],
+    "gyro_prior_degps": 0.5
+  },
+  "mc": {
+    "n_fix": 144,
+    "err_mean": [
+      0.002284734657292722,
+      -0.0008395622519279414,
+      -0.001853118261666344
+    ],
+    "rms_horiz": 0.03943458649832818,
+    "nees_mean": 0.7349915907655141
+  }
+}
