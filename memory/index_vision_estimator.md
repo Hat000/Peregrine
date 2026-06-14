@@ -35,7 +35,7 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 - crab→fix-rate map is a callable + table; its accept_rate is a range-MARGINAL LOWER BOUND — use accept_density_in_window for the real in-window number.
 - **Inc8 camera-pointing reward spec: 2-AXIS (azimuth + elevation)**, not azimuth only.
 
-### FIX-SURROGATE DONE (2026-06-14; branch claude/stupefied-fermi-20126c, commits 0610591+c0d3f49, off main 613332a; NOT MERGED — C6 hold intact)
+### FIX-SURROGATE MERGED (2026-06-14; merged to main ffb2c74 — code + calibrated checkpoints only, branch memory excluded; 15 green; green-by-construction. C6/POC hold INTACT — offline training infra, touches nothing live. Branch claude/stupefied-fermi-20126c commits 0610591+c0d3f49)
 - **What:** analytic NO-RENDER fix model for inc8 training. `rl/fix_surrogate.py` + `tests/test_fix_surrogate.py` (15 green) + `handoff/fix-surrogate-2026-06-14/REPORT.md`. CPU-only, torch-free. src/ UNTOUCHED.
 - **Interface:** geometry(drone_pos, R_world_body, gate) → GT relative geometry, mirroring the DEPLOYED camera chain (same intrinsics, +20° mount, predict_gates_in_camera). `p_accept(geom)` (range band-pass × in-image), `fix_sigma`/`fix_covariance` (gate-plane anisotropic SPD, mirrors `gate_relative_inplane_fix`), `sample_fix(geom,rng)→(z,cov)|None` feeds LinearKF.update_position directly; `crab_to_fix_rate` + `accept_density_in_window`. INFRA ONLY — reward NOT decided (Fengyou owns brainstorm).
 - **Calibration vs Track-3 (1821 frames / 126 fixes), within tolerance:** accept @ peak(18–24 m) 0.835→0.826; accept @ inc7-crab 0.069 (anchor); in-FoV 0.332; σ lateral 0.104 (CI68 .094–.114) / vertical 0.282 / depth 0.852. Floors carry ±15–18% small-n CI (~16–24 rows/flight).

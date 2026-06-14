@@ -39,8 +39,8 @@ Mid-level index for competition rules, VQ1/VQ2 mechanics, Track-A strategy, user
 - When amending any worker prompt, ALWAYS re-emit COMPLETE prompt — never a splice/delta.
 - Every prompt carries SESSION + MODEL(version) + EFFORT + canary + MEMORY-DELTA requirement + escape hatch + report path.
 
-## Canary protocol (MANDATORY)
-- 🚩 Every session addresses **Fengyou** by name in EVERY message. Missing name = context degradation → Fengyou rotates session.
+## Canary protocol (rev 2, 2026-06-14)
+- 🚩 OVERALL COMMANDER persistent session addresses **Fengyou** by name in EVERY message (missing name = context degradation → rotate). **Sub-commanders + workers do NOT need the canary** (Fengyou, 2026-06-14).
 
 ## Git/env
 - `main` CANONICAL. 692/692 tests green (P4-C05 f50b9b4 adds 5 new tests). `.venv` Python 3.13.
@@ -48,6 +48,8 @@ Mid-level index for competition rules, VQ1/VQ2 mechanics, Track-A strategy, user
 - 🚩 **BANKING CONCURRENCY:** banking agents must `git add` only their OWN specific paths (never `git add -A`/`git add .`).
 - 🚩 **OPS LESSON (pytest-from-root):** always run `pytest` from the REPO ROOT — `test_navigator` loads a saved track-map JSON via root-relative path and FileNotFounds from `rl/`. The earlier P4-C05 "hang" was BENIGN: a 3rd backgrounded full-suite run hit its 15-min timeout at ~90% under load and was killed without a summary line; the polling loop then spun waiting for a summary that never came — NOT a code/test hang.
 - 🚩 Guards are DATA-DEPENDENT (skip on clean clone/CI/Adroit).
+- 🚩 **fix_surrogate MERGED to main (ffb2c74, 2026-06-14):** code (rl/fix_surrogate.py + tests) + calibrated checkpoints (handoff/fix-surrogate-2026-06-14/models/) only; branch memory excluded (already banked). 15 tests green; full-suite green-by-construction (base..main divergence = memory commits only); from-root full-count reconfirm pending.
+- 🚩 **Branch cleanup (2026-06-14):** 2 stale local-only branches+worktrees pruned (claude/inspiring-tereshkova-9bd0f7, claude/magical-sutherland-546d7e; 0 commits ahead of main). 3 real-artifact branches KEPT on origin (claude/blissful-kalam-75f52b L3, worktree-agent-a88bc717008e79cd9 δ_map, claude/charming-jemison-b111c5 margin-env) — handoff artifacts only, findings banked, NOT merged.
 
 ## Topic file pointers
 - [[project-master-plan]] — architecture, Track-A strategy, risks R1–R11, build sequence (LIVING SSOT).
