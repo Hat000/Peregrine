@@ -82,6 +82,8 @@ class EpisodeResult:
     crossings: list[GateCrossing] = field(default_factory=list)
     finish_t: float = float('nan')
     start_label: str = ''
+    emulator: object | None = None   # the EstimatorEmulator (estim-emul runs only); carries the
+                                      # per-step instrumentation (v*, gate-4 fix-rate, terminal lock)
 
     @property
     def success(self) -> bool:
@@ -222,6 +224,10 @@ def run_episode(
     dt: float = _TRAIN_DT,
     start_label: str = '',
     record_pos: bool = False,
+    estim_emul: bool = False,
+    emul_config=None,
+    obs_dim: int = 17,
+    emul_seed: int = 0,
 ) -> tuple[EpisodeResult, np.ndarray | None]:
     """Run one closed-loop episode and score with contact-true geometry.
 
@@ -230,6 +236,13 @@ def run_episode(
 
     Physics and observation building replicate offline_rollout.main()'s loop.
     gate_pos_zup overrides gate positions for scoring; when None uses _GATE_POS_ZUP.
+
+    ``estim_emul`` (default OFF = the OPTIMISTIC obs_from_truth control): when ON, the policy obs is
+    sourced from an ACTUAL LinearKF driven by the calibrated fix_surrogate (rl/estimator_emul.py),
+    so camera-pointing -> fix density -> KF accuracy -> the obs the policy is scored on. The KF
+    replaces ONLY pos/vel (truth attitude/rates kept) -- the deploy seam. ``obs_dim`` (17 inc7 / 20
+    inc8) selects the obs width. The emulator (with its per-step instrumentation: v*, gate-4 fix-rate,
+    terminal gate-lock, gate-frame error series) is attached to the returned EpisodeResult.emulator.
 
     ``gate_yaw`` (P4-C05): None = the hardcoded all-π VQ1 course (obs gate_map=None +
     yaw=π scoring, bit-exact). Pass per-gate yaws for a non-π / VQ2 course: the obs is then
@@ -256,8 +269,26 @@ def run_episode(
     finish_t = float('nan')
     pos_log = [start_state.pos.copy()] if record_pos else None
 
+    # ESTIMATOR-EMULATION obs path (opt-in). Run an actual LinearKF off the calibrated fix_surrogate
+    # so the policy is scored on the obs the estimator delivers, not perfect pose. The emulator owns
+    # the gate frames (Z-up positions threaded through), the per-episode DR, and the staleness clock.
+    emulator = None
+    st_prev_obs = start_state
+    if estim_emul:
+        from estimator_emul import EmulConfig, EstimatorEmulator
+        emul_rng = np.random.default_rng(emul_seed)
+        emulator = EstimatorEmulator(emul_config or EmulConfig(),
+                                     gate_pos_zup=gate_pos_zup, gate_yaw=gate_yaw)
+        emulator.reset(start_state, gate, emul_rng)
+
     for k in range(n_steps):
-        obs = obs_from_truth(st, gate, last_normed, virtual_flip, gate_map=gate_map)
+        if estim_emul:
+            if k > 0:
+                emulator.step(st_prev_obs, st, gate, dt, emul_rng)
+            obs = emulator.obs(st, gate, last_normed, virtual_flip, gate_map, obs_dim)
+            st_prev_obs = st
+        else:
+            obs = obs_from_truth(st, gate, last_normed, virtual_flip, gate_map=gate_map)
         rate_frd, _coll, last_normed = policy_step(actor, obs, 0.0, virtual_flip)
         collective = last_normed * _HOVER_THRUST   # un-clipped, exactly training
         action = np.concatenate([rate_frd, [collective]])
@@ -311,7 +342,8 @@ def run_episode(
             break
 
     result = EpisodeResult(
-        outcome=outcome, crossings=crossings, finish_t=finish_t, start_label=start_label
+        outcome=outcome, crossings=crossings, finish_t=finish_t, start_label=start_label,
+        emulator=emulator,
     )
     pos_arr = np.array(pos_log) if pos_log else None
     return result, pos_arr
@@ -533,10 +565,28 @@ def main() -> int:
     ap.add_argument("--sr-threshold", type=float, default=SR_STABLE_THRESHOLD)
     ap.add_argument("--g3-probe-range", type=float, default=G3_D_PROBE_M,
                     help="gate-3 D-offset probe range in meters")
+    ap.add_argument("--estim-emul", action="store_true",
+                    help="score on ESTIMATOR-EMULATED obs (LinearKF + fix_surrogate) instead of "
+                         "perfect pose -- the inc8 selection path; default OFF = optimistic control")
+    ap.add_argument("--obs-dim", type=int, default=0,
+                    help="policy obs width (17 inc7 / 20 inc8); 0 = infer from the actor")
+    ap.add_argument("--emul-seed", type=int, default=0,
+                    help="base RNG seed for the per-episode estimator-emulation DR draws")
     args = ap.parse_args()
 
     actor = load_actor(args.ckpt)
     params = _build_plant_params(args.plant)
+
+    # Infer the policy obs width from the actor's first linear layer (inc7=17, inc8=20) unless pinned.
+    obs_dim = args.obs_dim
+    if obs_dim <= 0:
+        try:
+            obs_dim = int(actor.head[0].linear.in_features)
+        except (AttributeError, IndexError):
+            obs_dim = 17
+    if args.estim_emul:
+        print(f"[estim-emul] ON  obs_dim={obs_dim}  emul_seed={args.emul_seed}  "
+              f"(scoring on KF+fix_surrogate emulated obs, NOT perfect pose)")
 
     print(f"\n{'='*80}")
     print(f"CONTACT-TRUE EVAL  ckpt={Path(args.ckpt).name}  plant={args.plant}")
@@ -555,13 +605,14 @@ def main() -> int:
     simstart_pos_traj: np.ndarray | None = None
 
     print("Running seed episodes...")
-    for label, kind, gate_idx in seeds:
+    for si, (label, kind, gate_idx) in enumerate(seeds):
         st, tgt, vflip = _build_start(kind, gate_idx)
         record = (kind == "simstart")
         result, pos_traj = run_episode(
             actor, st, tgt, vflip, params,
             body_radius=args.body_radius, frame_depth=args.frame_depth,
             max_time=args.max_time, start_label=label, record_pos=record,
+            estim_emul=args.estim_emul, obs_dim=obs_dim, emul_seed=args.emul_seed + si,
         )
         results_by_seed[label] = [result]
         all_results.append(result)
@@ -641,12 +692,40 @@ def main() -> int:
     # --- Machine-readable summary ---
     sim_res = results_by_seed["simstart"][0]
     sim_g3 = sim_res.passed_linfs(3)
+
+    # --- ESTIM-EMUL inc8 selection numbers (gate-4 binding gate) ---
+    emul_summary = ""
+    if args.estim_emul:
+        def _emul_numbers(res):
+            """(v*, gate4_band_fix_rate, terminal_gate_lock, g4_inplane_p90, g4_inplane_p99)."""
+            emu = res.emulator
+            if emu is None:
+                return (float('nan'),) * 5
+            err = emu.gate4_inplane_error_series()
+            p90 = float(np.percentile(err, 90)) if err.size else float('nan')
+            p99 = float(np.percentile(err, 99)) if err.size else float('nan')
+            return (emu.v_star(), emu.gate4_band_fix_rate(), emu.terminal_gate_lock_frac(), p90, p99)
+
+        print(f"\n[ESTIM-EMUL gate-4 selection numbers]  (central report r=0.30, select r=0.38)")
+        print(f"  {'seed':22s}  {'v*':>6}  {'g4_fix_rate':>11}  {'term_lock':>9}  "
+              f"{'g4_ip_p90':>9}  {'g4_ip_p99':>9}")
+        for lbl in ("simstart", "trainreset_g4"):
+            if lbl in results_by_seed:
+                vs, fr, tl, p90, p99 = _emul_numbers(results_by_seed[lbl][0])
+                print(f"  {lbl:22s}  {vs:6.1f}  {fr:11.3f}  {tl:9.3f}  {p90:9.3f}  {p99:9.3f}")
+        sv, sf, stl, sp90, sp99 = _emul_numbers(sim_res)
+        emul_summary = (f" estim_emul=ON obs_dim={obs_dim} "
+                        f"v_star_simstart={sv:.1f} gate4_fix_rate_simstart={sf:.3f} "
+                        f"terminal_gate_lock_simstart={stl:.3f} "
+                        f"g4_inplane_p90_simstart={sp90:.3f} g4_inplane_p99_simstart={sp99:.3f}")
+
     print(f"\nCONTACT_TRUE_SUMMARY "
           f"ckpt={Path(args.ckpt).name} plant={args.plant} "
           f"body_r={args.body_radius} frame_d={args.frame_depth} "
           f"s_stable={s_stable:.3f} n_stable={n_stable}/{n_seeds} "
           f"simstart={sim_res.outcome} "
-          f"g3_linf_simstart={sim_g3[0] if sim_g3 else 'N/A'}")
+          f"g3_linf_simstart={sim_g3[0] if sim_g3 else 'N/A'}"
+          f"{emul_summary}")
 
     return 0
 
