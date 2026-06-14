@@ -1,0 +1,129 @@
+# PROPOSED, NOT APPLIED (this session makes NO src/ edits). SUPERSEDES the audit's standalone
+# scratch-audit/proposed_frames_boresight.patch: this is the SINGLE dual-form patch to land (frames.py
+# unified struct + angular pitch/roll; localization.py metric vert-offset) once P3's gate-0/1 head-on
+# arbiter selects the FORM and pins the value(s). At the all-zero default the WHOLE stack is
+# byte-identical to today (proven: scratch-calib-v2/roundtrip_dualform.py (0); np.array_equal True for
+# BOTH the mount and the +L lever). Land WITH scratch-calib-v2/proposed_test_calib_dualform.py.
+#
+# Design + validation: handoff/p1-vision-accuracy-2026-06-14/CALIB_V2_DESIGN.md.
+#
+# ===================================================================================================
+# (1) src/racer/frames.py  --  the UNIFIED correction struct + the ANGULAR form (pitch + roll)
+# ===================================================================================================
+#
+# --- insertion point #1a: imports (top of file, ~line 13-16) ---
+
+ from __future__ import annotations
++
++from dataclasses import dataclass
+
+ import numpy as np
+ from scipy.spatial.transform import Rotation
+
+# --- insertion point #1b: next to CAMERA_PITCH_RAD (~line 18) ---
+
+ CAMERA_PITCH_RAD = np.deg2rad(20.0)
++
++
++@dataclass(frozen=True)
++class BoresightCorrection:
++    """Unified STATIC camera-vs-body extrinsic correction. ALL fields default 0.0 => byte-identical
++    to the uncalibrated stack (VQ1/inc7 unchanged) until a measured number lands. P3's gate-0/1
++    head-on arbiter selects the FORM and pins the value(s); CALIB_V2 builds both forms now.
++
++      ANGULAR  -> pitch_rad (+ roll_rad): a mount-ORIENTATION boresight composed into
++                  R_camera_from_body(); world-vertical fix bias is PROPORTIONAL to range
++                  (back-out angle range-FLAT). pitch is about body-Y == camera-X ("right",
++                  the eps_vert axis); roll is about body-X == camera-Z (optical axis, bearing-coupled).
++      METRIC   -> vert_offset_m: a constant camera-optical-centre vs body-origin vertical TRANSLATION
++                  (body FRD +Z down, metres) applied in the localization +L lever; world-vertical fix
++                  bias is CONSTANT across range (back-out angle ~ 1/range). Covers the case where the
++                  sim's render rig / attitude-body reference differs from spec 3.8 (camera == body
++                  origin); cf localization.py's own note "the Elodin rig offsets the camera".
++
++    At a single range the two forms are DEGENERATE (both produce the same vertical bias); >= 2
++    well-separated ranges discriminate them (slope=angular vs intercept=metric; see CALIB_V2 #16).
++    YAW is deliberately ABSENT (refuted in VISION-PKG2; do NOT re-open without two flights showing a
++    consistent tau_pre sign). 20deg CAMERA_PITCH_RAD is UNCHANGED -- this is an ADDITIVE correction."""
++    pitch_rad: float = 0.0
++    roll_rad: float = 0.0
++    vert_offset_m: float = 0.0
++
++
++# The ONE correction instance every consumer reads. Default identity => byte-identical. P3 replaces
++# it post-arbiter, e.g. BORESIGHT = BoresightCorrection(pitch_rad=+0.00977)  (angular, +0.56 deg) OR
++# BORESIGHT = BoresightCorrection(vert_offset_m=-0.215)  (metric) OR both (mixed). The ESKF static
++# hook reads THIS struct (see CALIB_V2_DESIGN.md sec ESKF-COORDINATION; flag UP before changing).
++BORESIGHT = BoresightCorrection()
+
+# --- insertion point #1c: R_camera_from_body (~line 168) ---
+
+ def R_camera_from_body() -> np.ndarray:
+-    # Passive rotation by +20 deg about body Y (frame rotated, vector representation changes oppositely).
+-    R_tilted_from_body = Rotation.from_euler("Y", -CAMERA_PITCH_RAD).as_matrix()
+-    return _R_CAMERA_FROM_TILTED_BODY @ R_tilted_from_body
++    # Passive rotation by +(20 + boresight_pitch) deg about body Y (== camera-X / "right"), then the
++    # ANGULAR roll boresight about body X (== camera-Z, the optical axis). BORESIGHT defaults all-zero
++    # => R_roll == I and the pitch arg == CAMERA_PITCH_RAD exactly => byte-identical to the original
++    # 20deg-only mount (np.array_equal, proven in roundtrip_dualform.py (0)). The METRIC field
++    # (vert_offset_m) is NOT applied here -- it is a translation, applied in the localization lever.
++    R_tilted_from_body = Rotation.from_euler("Y", -(CAMERA_PITCH_RAD + BORESIGHT.pitch_rad)).as_matrix()
++    R_roll = Rotation.from_euler("X", -BORESIGHT.roll_rad).as_matrix()
++    return _R_CAMERA_FROM_TILTED_BODY @ R_roll @ R_tilted_from_body
+
+# ===================================================================================================
+# (2) src/racer/localization.py  --  the METRIC form (constant camera-centre vertical offset)
+# ===================================================================================================
+#
+# --- insertion point #2a: import the struct (top, ~line 29) ---
+
+-from racer.frames import ATTITUDE_NOISE_STD_RAD, R_camera_from_body
++from racer.frames import ATTITUDE_NOISE_STD_RAD, BORESIGHT, R_camera_from_body
+
+# --- insertion point #2b: a shared lever-offset helper (module-level, after the constants) ---
+
++def _apply_camera_vert_offset(position_ned: np.ndarray, R_world_body: np.ndarray) -> np.ndarray:
++    """METRIC boresight: the +L lever recovers the camera OPTICAL CENTRE world position; if the camera
++    centre sits at body-frame offset [0,0,vert_offset_m] (FRD +Z down) from the body origin (spec 3.8
++    says 0; the render rig / CoM reference may differ), the body/drone position is
++        p_body = p_camera_centre - R_world_body @ [0, 0, vert_offset_m].
++    Guarded on != 0.0 so the DEFAULT path is byte-identical (line skipped). Applied identically at BOTH
++    +L lever sites (gate_pose_to_world_position, gate_relative_inplane_fix). Does NOT touch +L."""
++    if BORESIGHT.vert_offset_m != 0.0:
++        return position_ned - np.asarray(R_world_body, dtype=np.float64) @ np.array(
++            [0.0, 0.0, BORESIGHT.vert_offset_m])
++    return position_ned
+
+# --- insertion point #2c: gate_pose_to_world_position (~line 85-87) ---
+
+     R_world_camera = np.asarray(R_world_body, dtype=np.float64) @ R_camera_from_body().T
+     lever = R_world_camera @ np.asarray(gate_pose.t_cam_gate, dtype=np.float64)  # gate rel. drone, world NED
+-    position_ned = gate.position_ned - lever
++    position_ned = _apply_camera_vert_offset(gate.position_ned - lever, R_world_body)
+
+# --- insertion point #2d: gate_relative_inplane_fix (~line 161-163) ---
+
+     R_world_camera = np.asarray(R_world_body, dtype=np.float64) @ R_camera_from_body().T
+     lever = R_world_camera @ np.asarray(gate_pose.t_cam_gate, dtype=np.float64)   # +L, gate rel. drone
+-    z_ned = gate.position_ned - lever
++    z_ned = _apply_camera_vert_offset(gate.position_ned - lever, R_world_body)
+
+# ===================================================================================================
+# NOTES
+# ---------------------------------------------------------------------------------------------------
+# * SINGLE SOURCE OF TRUTH: frames.BORESIGHT. The angular fields propagate through R_camera_from_body()
+#   to EVERY mount consumer (localization fix, association forward model, fix_surrogate, navigator,
+#   characterize_perception, AND the ESKF's R_wc); the metric field is applied at the two +L lever
+#   sites only. No K change, no 20-dim obs change, no 20deg CAMERA_PITCH_RAD change, +L preserved.
+# * BYTE-IDENTITY at all-zero is PROVEN by np.array_equal for BOTH the mount and the lever
+#   (roundtrip_dualform.py (0)); the metric line is skipped entirely at vert_offset_m == 0.0.
+# * SELECTOR (which field P3 populates): see CALIB_V2_DESIGN.md sec SELECTOR. angular->pitch_rad(+roll);
+#   metric->vert_offset_m; mixed->both (intercept->vert_offset_m, slope-> pitch_rad=-atan(slope)).
+# * ESTIMATORS (scratch-validated, NOT in src): #15 IoU-BO (iou_bo_calib.py, recovers pitch+roll to
+#   <=0.01 deg) for the angular form; #16 level-hover WLS regression (level_hover_regression.py) for the
+#   metric form AND the discriminator. The audit's mean-vert -atan stays as the cheap pitch cross-check.
+# * ESKF: frames.BORESIGHT replaces the eskf design's scalar `static_boresight_rad` hook -- the angular
+#   mean is ALREADY removed in R_camera_from_body() / the metric mean in the lever, so the ESKF must NOT
+#   re-apply it (double-count); it reads the struct only to set its prior (mean 0, width = residual).
+#   This is a SIGNATURE CHANGE on the eskf branch's hook -- flagged UP to the P1 commander, do NOT edit
+#   the eskf branch here. (CALIB_V2_DESIGN.md sec ESKF-COORDINATION.)
