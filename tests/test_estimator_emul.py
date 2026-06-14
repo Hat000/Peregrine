@@ -300,3 +300,96 @@ def test_estim_emul_off_is_byte_identical_to_legacy():
     assert r3.outcome == r1.outcome
     assert [(c.gate, c.verdict, round(c.linf, 9)) for c in r3.crossings] \
         == [(c.gate, c.verdict, round(c.linf, 9)) for c in r1.crossings]
+
+
+# =========================================================================== PASSIVE-OBSERVER
+def test_passive_observer_records_fix_rate_on_truth_trajectory():
+    """PASSIVE-OBSERVER instrument: run_episode with estim_emul=True, emul_passive=True.
+    Policy flies on obs_from_truth (completes the validated course); the estimator runs alongside
+    recording the fix stream + KF error WITHOUT closing the loop.
+    Acceptance: (1) episode FINISHES (truth obs -> course-completing control), (2) result.emulator
+    is populated with gate-4 instrumentation (fix-rate is a valid float in [0,1], not NaN)."""
+    import contact_true_eval as CTE
+    from fly_rl import load_actor
+
+    ckpt = ROOT / "rl" / "checkpoints" / "stage1_inc7_actor.pth"
+    actor = load_actor(str(ckpt))
+    params = CTE._build_plant_params("mixer")
+    # simstart = the realistic full-course approach; gate-4 fix-rate is the inc8 selection number.
+    st, tgt, vflip = CTE._build_start("simstart", 0)
+
+    result, _ = CTE.run_episode(
+        actor, st, tgt, vflip, params,
+        max_time=12.0, start_label="simstart",
+        estim_emul=True, emul_seed=42, emul_passive=True,
+    )
+
+    # (1) policy flew on truth obs -> MUST FINISH (passive = no loop closure, no degradation)
+    assert result.outcome == "FINISHED", (
+        f"passive-observer episode must finish (policy on truth obs); got {result.outcome}")
+
+    # (2) emulator instrumentation is populated
+    assert result.emulator is not None, "emulator must be attached when estim_emul=True"
+    emu = result.emulator
+
+    fr = emu.gate4_band_fix_rate()
+    assert not np.isnan(fr), "gate4_band_fix_rate() must be a valid float (gate-4 was reached)"
+    assert 0.0 <= fr <= 1.0, f"fix rate must be in [0,1], got {fr:.4f}"
+
+    lock = emu.terminal_gate_lock_frac()
+    assert not np.isnan(lock), "terminal_gate_lock_frac() must be valid (gate-4 was reached)"
+    assert 0.0 <= lock <= 1.0, f"terminal lock frac must be in [0,1], got {lock:.4f}"
+
+    ip = emu.gate4_inplane_error_series()
+    assert ip.size > 0, "gate4_inplane_error_series() must be non-empty (gate-4 approach recorded)"
+
+    # passive-observer: the emulator tracked the fix stream on a completing trajectory, so at least
+    # some fixes should have been recorded (inc7 gate-4 approach is within the offered window).
+    n_fix = int(sum(emu.trace.fix_accepted))
+    assert n_fix > 0, (
+        f"at least one fix expected on the completing simstart trajectory (n_fix={n_fix})")
+
+
+# =========================================================================== CLOSED-LOOP S_stable
+def test_closed_loop_sstable_inc7_on_emulated_obs():
+    """CLOSED-LOOP S_stable instrument: run all 7 seeds (simstart + trainreset_g0..g5) with
+    estim_emul=True (closed-loop: policy flies on emulated KF obs, NOT truth). Compute S_stable.
+    Acceptance: S_stable in [0.40, 0.75] -- reproducing the banked 'inc7 0.571 / 4-7' finding
+    (4 out of 7 seeds FINISH under emulated obs; some fail due to KF noise + perception bias).
+    This verifies (a) the closed-loop emul path runs end-to-end, (b) the emulated obs degrades
+    performance vs perfect pose (S_stable < 1.0), (c) the policy is still viable (S_stable > 0)."""
+    import contact_true_eval as CTE
+    from fly_rl import load_actor
+
+    ckpt = ROOT / "rl" / "checkpoints" / "stage1_inc7_actor.pth"
+    actor = load_actor(str(ckpt))
+    params = CTE._build_plant_params("mixer")
+
+    seeds = [("simstart", "simstart", 0)]
+    for g in range(6):
+        seeds.append((f"trainreset_g{g}", "trainreset", g))
+
+    results_by_seed: dict[str, list] = {}
+    for si, (label, kind, gate_idx) in enumerate(seeds):
+        st, tgt, vflip = CTE._build_start(kind, gate_idx)
+        result, _ = CTE.run_episode(
+            actor, st, tgt, vflip, params,
+            max_time=12.0, start_label=label,
+            estim_emul=True, obs_dim=17, emul_seed=si,   # emul_seed=0+si for determinism
+        )
+        results_by_seed[label] = [result]
+
+    s_stable, per_seed_sr = CTE.compute_s_stable(results_by_seed, threshold=CTE.SR_STABLE_THRESHOLD)
+    n_seeds = len(results_by_seed)
+    n_stable = sum(1 for sr in per_seed_sr.values() if sr >= CTE.SR_STABLE_THRESHOLD)
+
+    # emulated obs MUST degrade performance vs perfect pose (S_stable < 1.0)
+    assert s_stable < 1.0, (
+        f"S_stable={s_stable:.3f} must be < 1.0 under emulated obs (some seeds should fail)")
+    # policy must still be viable on emulated obs (at least 2 of 7 finish)
+    assert s_stable >= 2.0 / n_seeds, (
+        f"S_stable={s_stable:.3f} too low; expected >= 2/{n_seeds} (inc7 is emul-viable)")
+    # reproduce the banked ~0.571 finding (4/7): allow ±1 seed slack [3/7, 5/7]
+    assert 3 <= n_stable <= 5, (
+        f"expected 3-5/{n_seeds} seeds stable under emulated obs (banked ~0.571 / 4-7); "
+        f"got {n_stable}/{n_seeds} (S_stable={s_stable:.3f})")

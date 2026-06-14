@@ -411,3 +411,16 @@ class EstimatorEmulator:
     @property
     def episode_bias(self) -> float:
         return self._bias_ep
+
+
+def actor_obs_dim(actor) -> int:
+    """The policy's input width (17 inc7 / 20 inc8) from the first nn.Linear in_features.
+    Falls back to 17 (the inc7 contract) if no Linear is found."""
+    try:
+        import torch.nn as nn
+        for m in actor.modules():
+            if isinstance(m, nn.Linear):
+                return int(m.in_features)
+    except Exception:
+        pass
+    return 17
