@@ -207,6 +207,21 @@ class NavigatorConfig:
     attitude_noise_std: float = ATTITUDE_NOISE_STD_RAD
     fix_cov_floor_std: float = FIX_COV_FLOOR_STD
 
+    # P0-b TIMESYNC + predict-forward. ``frame.sim_time_ns`` (camera/server epoch) and
+    # ``DroneState.sim_time_ns`` (HIGHRES_IMU master epoch) are DISTINCT, unreconciled clocks
+    # (contracts.py clock note). ``time_since_vision_update_s`` must be measured on ONE clock —
+    # the IMU master clock — or it mixes epochs and reads garbage live. Two ways to put a fix's
+    # timestamp on the IMU clock:
+    #   reconcile_vision_clock=True : learn ``delta_epoch = frame.sim − imu.sim`` ONCE (paired via
+    #     recv_monotonic_ns), then stamp a fix at its CAPTURE time ``obs.sim − delta_epoch``.
+    #   reconcile_vision_clock=False: PREDICT-FORWARD — stamp every fix at a constant calibrated
+    #     age ``now − vision_latency_const_s`` on the IMU clock; needs NO capture stamp and works
+    #     BEFORE a live TIMESYNC trace exists (the path the BLUEPRINT §1.5 ships first).
+    # delta_epoch is 0 on same-clock data (synthetic/VQ1 tests) so back-compat is exact. The full
+    # capture-time OOSM RewindKF that consumes the precise stamp is a LATER step (deferred, §1.5).
+    reconcile_vision_clock: bool = True
+    vision_latency_const_s: float = 0.0    # predict-forward constant fix age (s); calibrated L3/L4
+
 
 @dataclass
 class _VisionDiag:
@@ -246,6 +261,9 @@ class Navigator:
     _reset_counter: int = field(default=0, repr=False)
     _last_frame_id: int | None = field(default=None, repr=False)
     _last_vision_sim_time_ns: int | None = field(default=None, repr=False)
+    # P0-b: learned camera/server -> IMU epoch offset (frame.sim - imu.sim, recv-paired). None
+    # until the first processed frame; re-learned on reset(). 0 on same-clock data.
+    _delta_epoch_ns: int | None = field(default=None, repr=False)
     _gates_by_id: dict[int, Gate] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -253,18 +271,22 @@ class Navigator:
 
     # -- lifecycle ----------------------------------------------------------
     def _initialize(self, ds: DroneState) -> None:
-        """Seed the KF from the first usable state (given position if present, else origin)."""
-        pos = (
-            np.asarray(ds.position_ned, dtype=np.float64)
-            if ds.position_ned is not None
-            else np.zeros(3)
-        )
-        vel = (
-            np.asarray(ds.velocity_ned, dtype=np.float64)
-            if ds.velocity_ned is not None
-            else None
-        )
-        pos_std = self.config.given_pos_std if ds.position_ned is not None else 5.0
+        """Seed the KF from the first usable state.
+
+        P0-a (case-C foundation): the position/velocity SEED is gated on the given-state
+        CONFIG flags, NOT on the mere presence of ``position_ned`` / ``velocity_ned`` on the
+        wire — exactly mirroring the per-tick guards (navigator.py:315/320). In TRUE case C
+        (``use_given_position`` False) the seed is the ORIGIN at ``pos_std=5.0`` (P[0,0]=25)
+        EVEN when LOCAL_POSITION_NED is broadcasting, so a "case C" run is genuinely vision-only
+        and not secretly anchored to the ground-truth pose. Without this gate every case-C test
+        is secretly case A (a hidden GT seed) — this was THE leak that invalidated case-C
+        validation. [P0-a, BLUEPRINT §1.5]
+        """
+        use_pos = self.config.use_given_position and ds.position_ned is not None
+        use_vel = self.config.use_given_velocity and ds.velocity_ned is not None
+        pos = np.asarray(ds.position_ned, dtype=np.float64) if use_pos else np.zeros(3)
+        vel = np.asarray(ds.velocity_ned, dtype=np.float64) if use_vel else None
+        pos_std = self.config.given_pos_std if use_pos else 5.0
         self.kf = LinearKF.initialize(pos, vel, pos_std=pos_std, vel_std=1.0)
         self._last_sim_time_ns = int(ds.sim_time_ns)
         self._reset_counter = int(ds.reset_counter)
@@ -276,6 +298,7 @@ class Navigator:
         self.initialized = False
         self._last_frame_id = None
         self._last_vision_sim_time_ns = None
+        self._delta_epoch_ns = None        # P0-b: re-learn the epoch offset after a sim restart
 
     # -- per-tick -----------------------------------------------------------
     def update(self, ds: DroneState, frame: Frame | None = None) -> NavState:
@@ -337,6 +360,15 @@ class Navigator:
         ):
             return
         self._last_frame_id = frame.frame_id
+        # P0-b: learn the camera/server -> IMU epoch offset ONCE, from this paired (frame, ds).
+        # At the frame's capture instant the IMU clock reads ds.sim + (frame.recv - ds.recv)
+        # (assuming 1:1 realtime), so delta_epoch = frame.sim - ds.sim - (frame.recv - ds.recv).
+        # Same-clock data (recv=0, frame.sim==ds.sim) -> 0 -> back-compat is exact.
+        if self.config.reconcile_vision_clock and self._delta_epoch_ns is None:
+            self._delta_epoch_ns = (
+                int(frame.sim_time_ns) - int(ds.sim_time_ns)
+                - (int(frame.recv_monotonic_ns) - int(ds.recv_monotonic_ns))
+            )
         observations = self.detector.detect(frame)
         self.vision_diag.n_detections = len(observations)
         if not observations:
@@ -345,9 +377,10 @@ class Navigator:
         drone_pos = self.kf.position
         predicted = predict_gates_in_camera(self.gates, drone_pos, R_wb)
         for obs in observations:
-            self._process_observation(obs, predicted, drone_pos, R_wb)
+            self._process_observation(obs, predicted, drone_pos, R_wb, ds)
 
-    def _process_observation(self, obs: GateObservation, predicted: dict, drone_pos, R_wb) -> None:
+    def _process_observation(self, obs: GateObservation, predicted: dict, drone_pos, R_wb,
+                             ds: DroneState) -> None:
         gate_id = self._associate(obs, predicted)
         if gate_id is None:
             return
@@ -397,7 +430,8 @@ class Navigator:
         self.kf.update_position(position_ned, cov)
         self.n_vision_fixes += 1
         self.vision_diag.n_applied += 1
-        self._last_vision_sim_time_ns = int(obs.sim_time_ns)
+        # P0-b: stamp the fix on the IMU master clock (NOT the raw camera/server epoch obs.sim).
+        self._last_vision_sim_time_ns = self._vision_fix_time_imu_ns(ds, obs)
 
     def _associate(self, obs: GateObservation, predicted: dict) -> int | None:
         """Match a detection to the map gate whose predicted SHAPE agrees best (or None)."""
@@ -414,6 +448,22 @@ class Navigator:
         except np.linalg.LinAlgError:
             return 0.0   # singular S -> don't reject on a numerical artefact
 
+    def _vision_fix_time_imu_ns(self, ds: DroneState, obs: GateObservation) -> int:
+        """Effective time of a just-applied vision fix, on the IMU MASTER clock (P0-b).
+
+        ``_nav_state`` measures ``time_since_vision_update_s`` as ``ds.sim_time_ns`` minus this,
+        so this MUST be on the IMU epoch — not the raw camera/server epoch ``obs.sim_time_ns``.
+          - Capture-time path (``reconcile_vision_clock`` + a learned ``delta_epoch``): the fix's
+            true capture instant, ``obs.sim - delta_epoch``. delta_epoch is 0 on same-clock data,
+            so this reduces to ``obs.sim`` and back-compat is exact.
+          - Predict-forward fallback (no reconciliation / delta_epoch unknown): a constant
+            calibrated age, ``now - vision_latency_const_s`` — needs NO usable capture stamp, so
+            the chain works before a live TIMESYNC trace exists (BLUEPRINT §1.5, shipped first).
+        """
+        if self.config.reconcile_vision_clock and self._delta_epoch_ns is not None:
+            return int(obs.sim_time_ns) - self._delta_epoch_ns
+        return int(ds.sim_time_ns) - int(round(self.config.vision_latency_const_s * 1e9))
+
     # -- output -------------------------------------------------------------
     def _nav_state(self, ds: DroneState) -> NavState:
         if self.kf is None:                       # not yet initialized (no usable state seen)
@@ -424,4 +474,10 @@ class Navigator:
             tsv = float("inf")
         else:
             tsv = max(0.0, (int(ds.sim_time_ns) - self._last_vision_sim_time_ns) / 1e9)
+        # P0-c velocity: case-C velocity is NOT a separate vision-velocity surface (the d4v
+        # vision-velocity channel was REFUTED, BLUEPRINT §0.4). Vision is position-only; velocity
+        # is observable ONLY through position-fix differencing inside the KF (the pos/vel coupling
+        # in predict's F). make_nav_state exports it as the frozen interface: NavState.velocity_ned
+        # = kf.velocity (the obs vel_g = R_w2g @ vel consumes it) and pos_vel_covariance = the full
+        # 6x6 KF P (its [3:6,3:6] block is the velocity covariance). No new estimator surface here.
         return make_nav_state(self.kf, ds, tsv)
