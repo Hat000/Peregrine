@@ -59,3 +59,8 @@ The 5 must-verify items, RESOLVED LIVE:
 ### Apply-before-vision/control TODOs: ✅ jpeg dedup by frame_id (DONE, 04a4bc8) · re-test pos/vel in ANGLE mode · probe real max setpoint rate · SET_ACTUATOR_CONTROL_TARGET scaling · `innerloop_step` system-ID (needs a running race).
 
 Runbook: `docs/first_contact.md`. Related: [[project-master-plan]], [[reference-competition-materials]], [[project-detector-training-pipeline]], [[project-red-team-pass-2]] (deferred ESKF/delayed-vision triggers).
+
+## 🚩 WIRE-SPEC DISCREPANCY — OUR SIM vs OFFICIAL SPEC (2026-06-14; COWORK-1)
+Our ShadowPC sim (substrate for ALL our frame-convention work) streams **LOCAL_POSITION_NED (97 Hz) + ODOMETRY (75 Hz)** — position IS on the wire. The OFFICIAL public spec VADR-TS-002 §4.3 lists ONLY HEARTBEAT/ATTITUDE/HIGHRES_IMU/TIMESYNC (§4.5 adds "linear velocities"; §3.3 "absolute global position NOT exposed") → **the official eval does NOT stream position.** Likely our sim = the Elodin practice rig or an early/permissive build.
+**IMPLICATIONS:** (1) the DEPLOYED stack MUST self-localize (case-C gate-relative — built); any case-A/given-pose path BREAKS on the official eval. (2) all LPN/ODOMETRY-dependent tooling (GT velocity from LOCAL_POSITION_NED, the R_y(π) conventions, L3 recordings, frame_residual_report) is OFFLINE-CALIBRATION-ONLY, tied to OUR sim, may NOT transfer. (3) IF the official sim DOES stream "linear velocities," the cold-velocity-prior problem EASES (velocity given, only position estimated) — UNVERIFIED.
+**ACTION:** the moment the official VQ1 sim drops, RE-VERIFY the entire wire (messages? velocity? position? ODOMETRY? conventions? rates? arming handshake?) BEFORE trusting any LPN/ODOMETRY tooling on it. Scheduled sim-release monitor authorized (Cowork).

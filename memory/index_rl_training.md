@@ -74,6 +74,14 @@ Design principle: reward the OUTCOME (estimator error vs GT); let camera pointin
 
 - 🚩 **ADROIT AUP (binding; #62 resolved 2026-06-14):** SLURM only — NO compute on login nodes; NO internet on compute nodes (pre-download git/pip/conda/HF+YOLO weights on login/vis BEFORE submit); output→/scratch not /projects; accurate --mem + 1-core serial (over-alloc / multi-core-serial → SUSPENSION); zero-GPU-util killed at 2h (PPO must saturate GPU); `checkquota` routinely. → [[reference-adroit-princeton]] §Acceptable-Use Policy.
 
+## INC8 PERCEPTION-REWARD CANDIDATE (2026-06-14; COWORK-3; handoff/cowork-2026-06-14/perception-reward.md; NOT frozen — Fengyou owns freeze)
+Spine (SWIFT Nature'23 / Geles RSS'24): keep the DOMINANT potential-based gate-progress reward; add ONE small look-at term:
+**r_perc = λp · w_term(d) · exp[ −((α/σα)⁴ + (β/σβ)⁴) ] · max(Δs, 0)** (gate centre in camera frame; α=atan2(X,Z), β=atan2(Y,√(X²+Z²))).
+- **2-axis** (Qin α/β): σα≈45°, σβ≈29.5° (match 90°H/59°V; elevation tighter). **Terminal-locked:** w_term→full inside ~5 m (Azhari λ(d); floor w0≈0.1–0.2) = our TERMINAL gate-lock. **Progress-gated** ·max(Δs,0): slow-to-farm earns ≈0 (THEIR construction → validate in A4).
+- Routing: azimuth→yaw (free → emergent crab reduction); elevation→pitch GENTLE (fights accel axis; 20° tilt partly offsets → keep σβ generous). λp≈5% of progress; **asymmetric PRIVILEGED critic** (critic sees true α/β/gate pose; actor discovers fix-timing). Anneal λp from 0; CAPS + yaw/pitch-RATE penalties for chatter.
+- **Ablation:** A0 none → A1 1-axis → A2 2-axis → A3 +terminal → A4 +progress-gate; orthogonal critic on/off + λp∈{2,5,10}%. Metrics: lap-time(true), terminal-window fix-rate, worst-gate fix-rate, rate-RMS; watch a phase-transition cliff (Pan).
+- Honesty: progress-gating not in any drone paper (A4 validates); terminal-vs-uniform unproven on localization (A3 generates evidence — we have fix-rate instrumentation nobody published); SWIFT λ-values not public. LATENCY (COWORK-1): VQ eval = desktop GPU → don't over-engineer for CPU latency.
+
 ## Topic file pointers
 - [[project-rl-increment-history]] — checkpoint lineage inc1→inc7, stage history S1.1→S17, inc7 job IDs, md5s/commits, NaN/sidecar/OOB bug histories, §INC7-LIVE-CONFIRMED, §Phase-0(b).
 - [[project-phase2-rl-vision-decisions]] — RL/S2/inc8/doctrine sections: §S2-DECISION, §PLANNING-TOGT-S2, §S17, §TRAINING-DOCTRINE, §CORNER-PASS, §INC8-DESIGN, §RL-PORTFOLIO, §FRAME-AUDIT.

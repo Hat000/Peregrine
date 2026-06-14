@@ -5,7 +5,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 - **T = DORMANT-TRIGGERED** — parked until [trigger] fires; do not spend before then.
 - **D = DEAD/SUPERSEDED** — closed; recorded to prevent re-litigation.
 
-🔑 **COWORK-1 (competition intel) is a CLUSTER KEY:** its answers to organizer Q①/④/⑤ + eval-HW un-gate #12, #13, #47, #48, #49, #53, #58, #67 at once. Re-scan this file the moment COWORK-1 lands.
+🔑 **COWORK-1 CLUSTER KEY — ✅ LANDED 2026-06-14** (handoff/cowork-2026-06-14/competition-intel.md): Q① = NO pose streamed → estimator LOAD-BEARING; Q⑤ = eval is desktop GPU → LATENCY axis CLOSES (#13 ONNX/TRT now lower-urgency for VQ, still the physical-round portability play); Q④ = offline retune BETWEEN runs ALLOWED → #48/#53 between-attempt refinement LEGAL. UN-GATED (blocked→ALLOWED; triage on merit, NOT all critical-path): #12, #47, #48, #49 (vision-only confirmed), #53, #58 (Round-2 3D-scan → appearance gap REAL), #67. #13 demoted (VQ latency closed).
 
 ---
 
