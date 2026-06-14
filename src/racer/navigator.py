@@ -49,8 +49,20 @@ from scipy.spatial.transform import Rotation
 
 from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, NavState
 from racer.frames import ATTITUDE_NOISE_STD_RAD, R_world_from_body, R_world_from_odo_quat_wxyz
-from racer.localization import FIX_COV_FLOOR_STD, gate_pose_to_world_position
+from racer.kf_rewind import RewindKF
+from racer.localization import (
+    FIX_COV_FLOOR_STD,
+    GATE_REL_ALONG_SIGMA,
+    GATE_REL_INPLANE_SIGMA,
+    GATE_REL_RANGE_GROWTH_A1,
+    gate_pose_to_world_position,
+    gate_relative_inplane_fix,
+)
 from racer.state_estimator import LinearKF, make_nav_state
+
+# chi-square 99.9% quantile, 2 DOF -- the IN-PLANE relative-innovation outlier gate (BLUEPRINT §1.3).
+# (The absolute 3-DOF Mahalanobis gate is 16.27; the gate-relative fix is 2-DOF in-plane -> 13.82.)
+GATE_REL_CHI2_2_999 = 13.815510557964274
 from racer.vision.association import (
     ASSOC_MAX_CENTER_UNITS,
     ASSOC_MAX_SIZE_RATIO,
@@ -222,6 +234,26 @@ class NavigatorConfig:
     reconcile_vision_clock: bool = True
     vision_latency_const_s: float = 0.0    # predict-forward constant fix age (s); calibrated L3/L4
 
+    # --- C2 estimator chain (case-C VQ2 gate-relative pipeline, BLUEPRINT §1.2-1.6) ---
+    # OFF by default -> the VQ1 / case-A path is byte-identical (bare LinearKF, in-place fixes). Flip
+    # both ON for the case-C gate-relative pipeline.
+    # RewindKF OOSM wrap (§1.4/§1.5): vision fixes are applied at their CAPTURE time and the buffered
+    # IMU re-propagated, so a fix corrects where the drone WAS, not where it is. ``horizon_s`` MUST be
+    # strictly > the max fix age L (horizon<=L drops 100% of fixes -> divergence); 0.5 s covers the
+    # CPU-class L~125 ms. Asserted at init against ``vision_latency_const_s`` (the known predict-forward L).
+    use_rewind_kf: bool = False
+    rewind_horizon_s: float = 0.5
+    # Gate-relative in-plane +L fix (§1.2/§1.3): a SECOND, in-plane-only correction layered on top of the
+    # absolute fix (which is KEPT for planning / along-track / g4->g5 handoff). It pins the terminal
+    # in-plane centering miss to the SEEN opening with the tight PnP lateral sigma (NO bias floor), so the
+    # per-track map bias cancels in the policy obs. Gated by its OWN relative-innovation outlier test
+    # (depth-flips that reproj + the absolute Maha gate pass).
+    use_gate_relative: bool = False
+    gate_rel_inplane_sigma: float = GATE_REL_INPLANE_SIGMA    # single swappable calibration constant
+    gate_rel_range_growth_a1: float = GATE_REL_RANGE_GROWTH_A1
+    gate_rel_along_sigma: float = GATE_REL_ALONG_SIGMA
+    gate_rel_chi2: float = GATE_REL_CHI2_2_999               # chi2(2, 0.999) in-plane gate
+
 
 @dataclass
 class _VisionDiag:
@@ -232,10 +264,13 @@ class _VisionDiag:
     n_applied: int = 0
     n_rejected_gate: int = 0
     n_rejected_range: int = 0       # post-PnP depth-sanity rejections (range_consistent)
+    n_rel_applied: int = 0          # gate-relative in-plane fixes applied (C2)
+    n_rel_rejected: int = 0         # gate-relative fixes rejected by the relative-innovation gate (C2)
     last_gate_id: int | None = None
     last_range_m: float = float("nan")
     last_reproj_px: float = float("nan")
     last_mahalanobis: float = float("nan")
+    last_d2_rel: float = float("nan")   # last gate-relative in-plane innovation statistic (C2)
 
 
 @dataclass
@@ -264,6 +299,11 @@ class Navigator:
     # P0-b: learned camera/server -> IMU epoch offset (frame.sim - imu.sim, recv-paired). None
     # until the first processed frame; re-learned on reset(). 0 on same-clock data.
     _delta_epoch_ns: int | None = field(default=None, repr=False)
+    # C2: True when self.kf is a RewindKF (case-C OOSM path); set at _initialize from the config.
+    _rewind: bool = field(default=False, repr=False)
+    # C2: R_world_gate (3,3) of the gate the last ACCEPTED gate-relative fix landed on -- the frame the
+    # NavState confidence export projects P into (§1.6). None until the first gate-relative fix.
+    _last_fix_gate_R: np.ndarray | None = field(default=None, repr=False)
     _gates_by_id: dict[int, Gate] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -287,7 +327,17 @@ class Navigator:
         pos = np.asarray(ds.position_ned, dtype=np.float64) if use_pos else np.zeros(3)
         vel = np.asarray(ds.velocity_ned, dtype=np.float64) if use_vel else None
         pos_std = self.config.given_pos_std if use_pos else 5.0
-        self.kf = LinearKF.initialize(pos, vel, pos_std=pos_std, vel_std=1.0)
+        kf = LinearKF.initialize(pos, vel, pos_std=pos_std, vel_std=1.0)
+        # C2 (case C): wrap in the RewindKF OOSM buffer so vision fixes apply at capture time. The
+        # horizon MUST be strictly > the predict-forward latency L (else 100% of fixes drop -> diverge);
+        # assert it loudly at init. The VQ1 / case-A path keeps the bare LinearKF (byte-identical).
+        self._rewind = bool(self.config.use_rewind_kf)
+        if self._rewind:
+            rk = RewindKF(kf=kf, horizon_s=self.config.rewind_horizon_s)
+            rk.assert_horizon_gt(self.config.vision_latency_const_s, where="Navigator._initialize")
+            self.kf = rk
+        else:
+            self.kf = kf
         self._last_sim_time_ns = int(ds.sim_time_ns)
         self._reset_counter = int(ds.reset_counter)
         self.initialized = True
@@ -299,6 +349,7 @@ class Navigator:
         self._last_frame_id = None
         self._last_vision_sim_time_ns = None
         self._delta_epoch_ns = None        # P0-b: re-learn the epoch offset after a sim restart
+        self._last_fix_gate_R = None       # C2: drop the confidence-export gate frame on restart
 
     # -- per-tick -----------------------------------------------------------
     def update(self, ds: DroneState, frame: Frame | None = None) -> NavState:
@@ -333,7 +384,10 @@ class Navigator:
         # (looser, innovation-gated, against the propagated prior). 3) given pos/vel (tight,
         # authoritative for VQ1). Vision before given so the innovation gate compares vision to
         # the IMU prior (a meaningful disagreement check), while given still anchors the estimate.
-        self.kf.predict(ds.accel_body, R_wb, dt)
+        if self._rewind:
+            self.kf.predict(ds.accel_body, R_wb, dt, int(ds.sim_time_ns))   # RewindKF: IMU-clock stamp
+        else:
+            self.kf.predict(ds.accel_body, R_wb, dt)
         self._maybe_run_vision(ds, frame, R_wb)
         if self.config.use_given_position and ds.position_ned is not None:
             self.kf.update_position(
@@ -427,11 +481,63 @@ class Navigator:
             self.n_vision_rejected += 1
             self.vision_diag.n_rejected_gate += 1
             return
-        self.kf.update_position(position_ned, cov)
+        # The vision CAPTURE time on the IMU master clock (P0-b): for the RewindKF this is the OOSM
+        # rewind target (apply the fix where the drone WAS); for the bare KF it is just the tsv stamp.
+        t_fix_ns = self._vision_fix_time_imu_ns(ds, obs)
+        # ABSOLUTE world fix (KEPT -- owns planning / along-track / g4->g5 handoff). Capture-time OOSM
+        # when wrapped (degenerates to in-place at t_fix>=now); in-place for the bare KF (unchanged).
+        self._apply_pos_fix(position_ned, cov, t_fix_ns)
         self.n_vision_fixes += 1
         self.vision_diag.n_applied += 1
         # P0-b: stamp the fix on the IMU master clock (NOT the raw camera/server epoch obs.sim).
-        self._last_vision_sim_time_ns = self._vision_fix_time_imu_ns(ds, obs)
+        self._last_vision_sim_time_ns = t_fix_ns
+        # C2 gate-relative in-plane +L AUGMENT (BLUEPRINT §1.2/§1.3): a SECOND in-plane-only correction
+        # applied AFTER the absolute fix, gated on its OWN relative-innovation test (the in-plane
+        # backstop for depth-flips the absolute Maha + reproj gates pass).
+        if self.config.use_gate_relative:
+            self._apply_gate_relative_fix(pose, gate, R_wb, t_fix_ns)
+
+    def _apply_pos_fix(self, z: np.ndarray, cov: np.ndarray, t_fix_ns: int) -> None:
+        """Apply a world-position fix to the KF -- capture-time OOSM (RewindKF) or in-place (bare KF)."""
+        if self._rewind:
+            self.kf.update_position_at(int(t_fix_ns), z, cov)
+        else:
+            self.kf.update_position(z, cov)
+
+    def _apply_gate_relative_fix(self, pose: GatePose, gate: Gate, R_wb: np.ndarray,
+                                 t_fix_ns: int) -> None:
+        """Gate-relative in-plane +L fix + the REQUIRED relative-innovation outlier gate (C2 §1.2/§1.3).
+
+        The pseudo-fix world position ``z_rel == gate.position_ned - L`` equals the absolute fix; the WIN
+        is the anisotropic cov (tight in-plane PnP lateral, NO bias floor; loose along-track). Reproj +
+        the 3-DOF absolute Maha gate let depth-flips through, so this 2-DOF IN-PLANE innovation gate is
+        the backstop: ``d2_rel = nu_ip^T S_ip^-1 nu_ip`` against the (post-absolute-fix) prior; accept
+        iff ``<= chi2(2, 0.999)``. A rejected relative fix leaves the absolute estimate intact."""
+        assert self.kf is not None
+        z_rel, cov_rel = gate_relative_inplane_fix(
+            pose, gate, R_wb,
+            inplane_sigma=self.config.gate_rel_inplane_sigma,
+            range_growth_a1=self.config.gate_rel_range_growth_a1,
+            along_sigma=self.config.gate_rel_along_sigma,
+            attitude_noise_std=self.config.attitude_noise_std,
+            fix_cov_floor_std=self.config.fix_cov_floor_std,
+        )
+        # in-plane basis (world NED): gate-plane axes = R_world_gate columns 0 (right) and 1 (down).
+        B = np.asarray(gate.R_world_gate, dtype=np.float64)[:, :2].T          # (2,3)
+        nu_ip = B @ (z_rel - self.kf.x[:3])
+        S_ip = B @ (self.kf.P[:3, :3] + cov_rel) @ B.T
+        try:
+            d2_rel = float(nu_ip @ np.linalg.solve(S_ip, nu_ip))
+        except np.linalg.LinAlgError:
+            d2_rel = 0.0   # singular in-plane S -> don't reject on a numerical artefact
+        self.vision_diag.last_d2_rel = d2_rel
+        if d2_rel > self.config.gate_rel_chi2:
+            self.n_vision_rejected += 1
+            self.vision_diag.n_rel_rejected += 1
+            return
+        self._apply_pos_fix(z_rel, cov_rel, t_fix_ns)
+        self.vision_diag.n_rel_applied += 1
+        self._last_fix_gate_R = np.asarray(gate.R_world_gate, dtype=np.float64).copy()
 
     def _associate(self, obs: GateObservation, predicted: dict) -> int | None:
         """Match a detection to the map gate whose predicted SHAPE agrees best (or None)."""
@@ -480,4 +586,23 @@ class Navigator:
         # in predict's F). make_nav_state exports it as the frozen interface: NavState.velocity_ned
         # = kf.velocity (the obs vel_g = R_w2g @ vel consumes it) and pos_vel_covariance = the full
         # 6x6 KF P (its [3:6,3:6] block is the velocity covariance). No new estimator surface here.
-        return make_nav_state(self.kf, ds, tsv)
+        inplane_sig, along_sig = self._gate_frame_pos_sigma()
+        return make_nav_state(self.kf, ds, tsv, nav_inplane_sigma=inplane_sig,
+                              nav_along_sigma=along_sig)
+
+    def _gate_frame_pos_sigma(self) -> tuple[float, float]:
+        """Calibrated gate-frame position 1-sigma for the future confidence channel (C2 §1.6).
+
+        Project the KF position covariance ``P[:3,:3]`` into the LAST-fix gate plane and return
+        ``(inplane_sigma, along_sigma)`` where ``inplane = sqrt(P_g[ip0,ip0]+P_g[ip1,ip1])`` (the §1.6
+        ``sigma_inplane_hat`` -- the combined in-plane 1-sigma) and ``along = sqrt(P_g[along,along])``.
+        Gate-plane axes are ``R_world_gate`` columns 0,1 (in-plane) / 2 (along-track/normal). Returns
+        ``(inf, inf)`` until a gate-relative fix has anchored a gate frame. BUILT for inc8; UNCONSUMED by
+        the inc7 17-dim obs."""
+        if self.kf is None or self._last_fix_gate_R is None:
+            return float("inf"), float("inf")
+        R_g2w = self._last_fix_gate_R
+        P_gate = R_g2w.T @ self.kf.P[:3, :3] @ R_g2w               # NED cov -> gate frame
+        inplane = float(np.sqrt(max(P_gate[0, 0] + P_gate[1, 1], 0.0)))
+        along = float(np.sqrt(max(P_gate[2, 2], 0.0)))
+        return inplane, along

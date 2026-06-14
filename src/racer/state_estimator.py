@@ -156,9 +156,18 @@ class LinearKF:
 
 
 def make_nav_state(
-    kf: LinearKF, drone_state: DroneState, time_since_vision_update_s: float
+    kf: LinearKF,
+    drone_state: DroneState,
+    time_since_vision_update_s: float,
+    nav_inplane_sigma: float = float("inf"),
+    nav_along_sigma: float = float("inf"),
 ) -> NavState:
-    """Assemble a NavState from the KF (position/velocity) + given attitude/rates."""
+    """Assemble a NavState from the KF (position/velocity) + given attitude/rates.
+
+    ``nav_inplane_sigma`` / ``nav_along_sigma`` are the calibrated gate-frame position 1-sigma (C2
+    confidence-channel feeder, BLUEPRINT §1.6); ``inf`` when no gate-relative fix has anchored a gate
+    frame yet. ``kf`` is a ``LinearKF`` or its ``RewindKF`` proxy (``.position`` / ``.velocity`` / ``.P``
+    forward to the wrapped filter)."""
     return NavState(
         sim_time_ns=drone_state.sim_time_ns,
         position_ned=kf.position,
@@ -169,4 +178,6 @@ def make_nav_state(
         angular_rate_body=np.asarray(drone_state.angular_rate_body, dtype=np.float64).copy(),
         pos_vel_covariance=kf.P.copy(),
         time_since_vision_update_s=time_since_vision_update_s,
+        nav_inplane_sigma=float(nav_inplane_sigma),
+        nav_along_sigma=float(nav_along_sigma),
     )

@@ -99,6 +99,81 @@ def gate_pose_to_world_position(
     return position_ned, cov
 
 
+# Gate-relative in-plane per-fix lateral 1-sigma [C2-ESTIMATOR-CHAIN, MEASURED c1_gate_relative
+# 2026-06-13]. The accepted (maha<=16.27, 4-corner) gate-4 PnP lateral noise, per gate-plane axis, at
+# the transit band. This is the per-fix in-plane noise the gate-relative observation delivers -- it does
+# NOT carry the per-track map/registration bias (the obs is referenced to the SEEN corners, not the
+# map), so the 0.40 m FIX_COV_FLOOR_STD bias-absorption floor is REMOVED in-plane. SINGLE swappable
+# constant by design: Track-3 shadow-mode (vision-vs-truth at speed) may recalibrate it; everything keys
+# off this one number. [BLUEPRINT §1.2 / §1.5; note: per-fix sigma at 37 m/s is a best-case LOWER bound]
+GATE_REL_INPLANE_SIGMA = 0.265   # m/axis, in-plane (gate-plane) gate-relative PnP lateral 1-sigma
+
+# Range growth of the lateral sigma [range_anisotropic_R.py lateral law, a1 = sigma_px/(f*sqrt(N))].
+# The in-plane sigma is ``max(GATE_REL_INPLANE_SIGMA, a1*r)``: the c1-MEASURED 0.265 is the in-band
+# floor (accepted gate-4 fixes, ~9-10 m, which is exactly a1*~10.2 m -> the law and the measurement
+# AGREE there, so 0.265 is NOT double-counted), and the ``a1*r`` law takes over only at LONGER range
+# (r > 0.265/a1 ~= 10.2 m). The gate-relative fix is consumed inside ~12 m of gate-4 so it is essentially
+# flat 0.265 in-band (matches the c1 validated 0.139 RMS arm). CAVEAT (carry): a1=0.026 EXTRAPOLATES
+# BADLY past ~24 m (the depth axis extrapolates faithfully, the lateral does not) -- flag for >24 m.
+GATE_REL_RANGE_GROWTH_A1 = 0.026   # per-metre lateral sigma growth law (takes over beyond ~10 m)
+
+# Along-track (gate-normal) base 1-sigma for the gate-relative fix. LOOSE by design: the absolute fix +
+# IMU own depth; the relative term must NEVER fight the absolute term on the along-track axis. Set ~the
+# absolute radial sigma; the helper adds the attitude lever-arm term + the FIX_COV_FLOOR_STD on top
+# (where the range/depth bias still lives). [BLUEPRINT §1.5]
+GATE_REL_ALONG_SIGMA = 0.50        # m, along-track base 1-sigma (loose)
+
+
+def gate_relative_inplane_fix(
+    gate_pose: GatePose,
+    gate: Gate,
+    R_world_body: np.ndarray,
+    inplane_sigma: float = GATE_REL_INPLANE_SIGMA,
+    range_growth_a1: float = GATE_REL_RANGE_GROWTH_A1,
+    along_sigma: float = GATE_REL_ALONG_SIGMA,
+    attitude_noise_std: float = ATTITUDE_NOISE_STD_RAD,
+    fix_cov_floor_std: float = FIX_COV_FLOOR_STD,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Gate-RELATIVE in-plane position pseudo-fix + anisotropic covariance (BLUEPRINT §1.2/§1.3/§1.5).
+
+    THE core case-C fix. The PnP lever to the SEEN opening is ``L = R_world_camera @ t_cam_gate`` (the
+    +L lever, world NED -- exactly as ``gate_pose_to_world_position`` builds it). The pseudo-fix world
+    position ``z = gate.position_ned - L`` is the SAME measurement the absolute fix produces; the
+    gate-relative WIN is NOT a different ``z`` but (1) the COVARIANCE shaping below and (2) sourcing the
+    policy obs from the resulting tightly-pinned in-plane estimate, where the per-track map bias ``db``
+    cancels EXACTLY: ``pos_g = R_w2g @ (gate_map - p_KF)`` with ``p_KF`` pulled to ``gate_map - L`` by
+    this tight in-plane fix == ``R_w2g @ L`` (the +L direct lever), and ``gate_map``'s ``db`` is common
+    to both terms (re-run: rel E_bias -0.000 vs abs/submap +0.176/+0.174, c1_gate_relative).
+
+    Covariance is shaped in the GATE-PLANE frame (``gate.R_world_gate`` columns: X=right, Y=down are
+    in-plane; Z=through is along-track) then rotated to world NED:
+      - in-plane (X,Y): tight PnP lateral ``sigma = max(inplane_sigma, a1*range)`` (flat 0.265 in the
+        gate-4 window, the a1*r law taking over only beyond ~10 m), NO 0.40 m floor (that floor is
+        bias-absorption; the relative obs has no bias to absorb -- adding it would stop the rel arm
+        clearing the margin).
+      - along-track (Z): LOOSE -- ``along_sigma`` base + the attitude lever-arm term ``(sigma_theta*|L|)``
+        + the ``fix_cov_floor_std`` floor (range/depth bias lives here); the absolute fix + IMU own it.
+
+    Returns ``(z_ned, cov_ned)`` ready for ``LinearKF.update_position`` / ``RewindKF.update_position_at``
+    (a 3-DOF update whose anisotropic cov makes it effectively in-plane-only; no new KF method needed).
+    The caller gates it on the relative-innovation test (navigator) before applying. ``inplane_sigma``
+    is the single swappable calibration constant (Track-3 may recalibrate)."""
+    R_world_camera = np.asarray(R_world_body, dtype=np.float64) @ R_camera_from_body().T
+    lever = R_world_camera @ np.asarray(gate_pose.t_cam_gate, dtype=np.float64)   # +L, gate rel. drone
+    z_ned = gate.position_ned - lever
+    r = float(np.linalg.norm(lever))
+    sig_ip = max(inplane_sigma, range_growth_a1 * r)   # flat 0.265 in-band; a1*r law beyond ~10 m
+    var_along = along_sigma ** 2
+    if attitude_noise_std > 0.0:
+        var_along += (attitude_noise_std * r) ** 2
+    if fix_cov_floor_std > 0.0:
+        var_along += fix_cov_floor_std ** 2
+    R_gate_to_world = np.asarray(gate.R_world_gate, dtype=np.float64)            # gate-frame -> world NED
+    cov_gate = np.diag([sig_ip ** 2, sig_ip ** 2, var_along])                   # (X_ip, Y_ip, Z_along)
+    cov_ned = R_gate_to_world @ cov_gate @ R_gate_to_world.T
+    return z_ned, cov_ned
+
+
 # Gate-transit coast policy [red-team 2026-05-30, Tier B]. A 3-corner P3P fix (a gate
 # clipping out of frame at transit; GatePose.n_corners < 4) is geometrically weaker and can't
 # self-disambiguate, so we DON'T let it yank the estimate: inflate its measurement covariance
