@@ -1,0 +1,23 @@
+====================================================================================
+#15  BAYESIAN-IoU PITCH+ROLL BORESIGHT ESTIMATOR  (MonoRace IoU-BO, self-contained GP-EI)
+====================================================================================
+
+  [noiseless pitch-only      ]  injected pitch=+0.560 roll=+0.000 deg
+    IoU-BO     (40 evals): pitch=+0.5600 roll=-0.0000 deg | IoU*=1.0000 | err (p,r)=(+0.0000,-0.0000)
+    reproj-BO  (fallback)  : pitch=+0.5600 roll=+0.0000 deg | px*=0.0000 | err (p,r)=(-0.0000,+0.0000)
+
+  [noiseless pitch+roll      ]  injected pitch=+0.560 roll=+0.300 deg
+    IoU-BO     (40 evals): pitch=+0.5600 roll=+0.3000 deg | IoU*=1.0000 | err (p,r)=(+0.0000,-0.0000)
+    reproj-BO  (fallback)  : pitch=+0.5600 roll=+0.3000 deg | px*=0.0000 | err (p,r)=(-0.0000,+0.0000)
+
+  [noisy(0.5px,8fr) pitch+roll]  injected pitch=+0.560 roll=+0.300 deg
+    IoU-BO     (40 evals): pitch=+0.5545 roll=+0.2920 deg | IoU*=0.9591 | err (p,r)=(-0.0055,-0.0080)
+    reproj-BO  (fallback)  : pitch=+0.5550 roll=+0.2924 deg | px*=0.6201 | err (p,r)=(-0.0050,-0.0076)
+
+  CROSS-CHECK: the audit's cheap mean-vert -atan(v/r) is pitch-ONLY; round-trip (A) already pins
+  it to +0.5600 deg at the injected 0.56 deg. IoU-BO adds the roll axis + full-shape robustness.
+
+====================================================================================
+VERDICT: IoU-BO (primary) and reproj-distance BO (fallback) both recover the injected pitch to
+<=~0.05 deg; roll recovers from OFF-AXIS gates (degenerate head-on). IoU-BO uses full corner shape
+(stronger than the vertical-only -atan), and needs no detector polygon offline (synthetic corners).

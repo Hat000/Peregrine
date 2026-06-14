@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from racer import frames
 from racer.contracts import Gate, GatePose
 from racer.frames import ATTITUDE_NOISE_STD_RAD, R_camera_from_body
 from racer.state_estimator import LinearKF
@@ -52,6 +53,24 @@ PNP_FIX_COV_INFLATION = 2.0   # variance multiplier on the analytic 4-corner PnP
 # attitude 1.37 deg -- good-fix over-rejection 13%->0% (<1 m) / 17%->1-2% (<3 m) at unchanged
 # catastrophic leak. See handoff/shadowpc-vision-pkg2-2026-06-10.
 FIX_COV_FLOOR_STD = 0.40      # m, added in quadrature to every vision world-fix covariance
+
+
+def _apply_camera_vert_offset(position_ned: np.ndarray, R_world_body: np.ndarray) -> np.ndarray:
+    """METRIC boresight: the +L lever recovers the camera OPTICAL CENTRE world position; if the camera
+    centre sits at body-frame offset [0,0,vert_offset_m] (FRD +Z down) from the body origin (spec 3.8
+    says 0; the render rig / CoM reference may differ), the body/drone position is
+        p_body = p_camera_centre - R_world_body @ [0, 0, vert_offset_m].
+    Guarded on != 0.0 so the DEFAULT path is byte-identical (line skipped). Applied identically at BOTH
+    +L lever sites (gate_pose_to_world_position, gate_relative_inplane_fix). Does NOT touch +L.
+
+    Reads ``frames.BORESIGHT`` LIVE (module attr, NOT a ``from frames import BORESIGHT`` snapshot) so it
+    is genuinely "the ONE correction instance every consumer reads" (frames.py): a P3 source-edit or a
+    runtime swap of ``frames.BORESIGHT`` is seen here, mirroring R_camera_from_body() reading frames'
+    own global. At the all-zero default this is byte-identical either way (the guard is False)."""
+    if frames.BORESIGHT.vert_offset_m != 0.0:
+        return position_ned - np.asarray(R_world_body, dtype=np.float64) @ np.array(
+            [0.0, 0.0, frames.BORESIGHT.vert_offset_m])
+    return position_ned
 
 
 def gate_pose_to_world_position(
@@ -84,7 +103,7 @@ def gate_pose_to_world_position(
     """
     R_world_camera = np.asarray(R_world_body, dtype=np.float64) @ R_camera_from_body().T
     lever = R_world_camera @ np.asarray(gate_pose.t_cam_gate, dtype=np.float64)  # gate rel. drone, world NED
-    position_ned = gate.position_ned - lever
+    position_ned = _apply_camera_vert_offset(gate.position_ned - lever, R_world_body)
     if gate_pose.covariance is not None:
         sigma_tt = np.asarray(gate_pose.covariance, dtype=np.float64)[:3, :3]
         # Inflate the (optimistic) analytic PnP translation cov before propagating -- see
@@ -160,7 +179,7 @@ def gate_relative_inplane_fix(
     is the single swappable calibration constant (Track-3 may recalibrate)."""
     R_world_camera = np.asarray(R_world_body, dtype=np.float64) @ R_camera_from_body().T
     lever = R_world_camera @ np.asarray(gate_pose.t_cam_gate, dtype=np.float64)   # +L, gate rel. drone
-    z_ned = gate.position_ned - lever
+    z_ned = _apply_camera_vert_offset(gate.position_ned - lever, R_world_body)
     r = float(np.linalg.norm(lever))
     sig_ip = max(inplane_sigma, range_growth_a1 * r)   # flat 0.265 in-band; a1*r law beyond ~10 m
     var_along = along_sigma ** 2

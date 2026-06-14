@@ -1,0 +1,53 @@
+====================================================================================
+DUAL-FORM BORESIGHT ROUND-TRIP  (angular vs metric)  -- real src/racer chain
+====================================================================================
+
+(0) UNIFIED CORRECTION ALL-ZERO == BYTE-IDENTICAL
+------------------------------------------------------------------------------------
+  mount_corrected(0,0) == F.R_camera_from_body()  np.array_equal : True
+  lever(vert_offset=0) == unpatched +L lever      np.array_equal : True
+
+(A) ANGULAR injected (camera pitched up +0.56deg, render-only): vbias ~ range, angle FLAT
+------------------------------------------------------------------------------------
+    range_m   gate_vert(m)   angle=atan(-v/r)(deg)   corrected_vert(m)
+      8.0      -0.0782         +0.5600          -0.00000
+     12.0      -0.1173         +0.5600          -0.00001
+     15.0      -0.1466         +0.5600          -0.00001
+     22.0      -0.2150         +0.5600          -0.00001
+     30.0      -0.2932         +0.5600          -0.00001
+  ANGLE spread over 8-30 m = +0.5600 .. +0.5600 deg  (std 0.0000) -> RANGE-FLAT angle == angular signature
+  metric vbias spread       = -0.2932 .. -0.0782 m  -> grows with range
+
+(B) METRIC injected (camera optical centre 0.215 m offset, body +Z down): vbias FLAT, angle ~ 1/r
+------------------------------------------------------------------------------------
+    range_m   gate_vert(m)   angle=atan(-v/r)(deg)   corrected_vert(m)
+      8.0      -0.2150         +1.5395          +0.00000
+     12.0      -0.2150         +1.0264          +0.00000
+     15.0      -0.2150         +0.8212          +0.00000
+     22.0      -0.2150         +0.5599          +0.00000
+     30.0      -0.2150         +0.4106          +0.00000
+  metric vbias spread       = -0.2150 .. -0.2150 m  (std 0.00000) -> RANGE-FLAT vbias == metric signature
+  ANGLE spread over 8-30 m  = +0.4106 .. +1.5395 deg  -> angle ~ 1/range (NOT flat)
+  metric estimator recovers offset: measured @22m = -0.2150 m vs injected -0.2150 m
+
+(C) DEGENERACY @ single range / DISCRIMINATION at two ranges
+------------------------------------------------------------------------------------
+  @22 m:  angular vbias = -0.2150 m   metric vbias = -0.2150 m   (|diff| = 0.00002 m -> SAME)
+  ranges (18,22) m: angular vbias ratio v2/v1 = 1.222  vs metric = 1.000  -> separation 22.2%   (r2/r1 = 1.222)
+  ranges (15,30) m: angular vbias ratio v2/v1 = 2.000  vs metric = 1.000  -> separation 100.0%   (r2/r1 = 2.000)
+  ranges (10,40) m: angular vbias ratio v2/v1 = 4.000  vs metric = 1.000  -> separation 300.0%   (r2/r1 = 4.000)
+
+(D) ROLL boresight: decode-matched round-trip < 1 mm; head-on vert ~ 0 (bearing-driven)
+------------------------------------------------------------------------------------
+  max |err| render@roll / decode@roll over 9 poses = 8.870e-09 m -> roll composes & inverts
+    az_deg   head-on-vert(decode@0)(m)   (roll vertical signature is bearing-coupled)
+    -20.0         -0.0981
+    -10.0         -0.0494
+     +0.0         +0.0007
+    +10.0         +0.0508
+    +20.0         +0.0994
+
+====================================================================================
+VERDICT: dual-form is byte-identical at zero; angular vbias ~ range (angle flat), metric vbias
+flat (angle ~ 1/r); identical at 22 m; >=2 separated ranges discriminate. Each form's estimator
+recovers its injected value and the unified decode correction drives the residual to ~0.

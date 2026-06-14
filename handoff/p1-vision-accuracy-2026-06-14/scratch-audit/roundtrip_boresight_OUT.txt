@@ -1,0 +1,85 @@
+==============================================================================
+SANITY: parametric mount(20) == frames.R_camera_from_body()  : True
+        R_world_from_body(0,0,0) == I                         : True
+        eps_vert arithmetic  atan(0.215/22) deg               : 0.5599 | 0.56deg @ fy=320 -> 3.128 px
+
+==============================================================================
+(A) ROUND-TRIP @ ZERO BORESIGHT  (render@20, decode@20)  -- expect < 1mm
+------------------------------------------------------------------------------
+  max |recovered - truth| over 60 poses (8-33m, az+-20, el-5..10) = 1.480e-08 m
+  VERDICT(A): chain internally consistent at 0deg boresight   = True
+
+==============================================================================
+(B) +delta RENDER-ONLY camera-pitch boresight, decode@20  -- head-on level, 22 m
+------------------------------------------------------------------------------
+  delta_deg   gate_vert(down,m)  gate_right(m)  gate_along(m)  depth_err(m)
+    -1.00        +0.3840         -0.0000       +0.0034      -0.0000
+    -0.56        +0.2150         -0.0000       +0.0011      +0.0000
+    -0.25        +0.0960         +0.0000       +0.0002      +0.0000
+    +0.00        -0.0000         +0.0000       +0.0000      -0.0000
+    +0.25        -0.0960         -0.0000       +0.0002      -0.0000
+    +0.56        -0.2150         +0.0000       +0.0011      -0.0000
+    +1.00        -0.3840         +0.0000       +0.0034      -0.0000
+  d(gate_vert)/d(delta) @22m = -0.3840 m/deg   (geometry r*pi/180 = +0.3840)
+  gate_vert @ delta=+0.56deg = -0.2150 m   (field eps_vert ~ -0.215 m)
+
+  RANGE BEHAVIOUR @ delta=+0.56deg (head-on level): metric vbias ~ range, ANGLE flat
+    range_m   gate_vert(m)   vbias/range(deg)   depth_err(m)
+      8.0      -0.0782        +0.5600         -0.0000
+     15.0      -0.1466        +0.5600         -0.0000
+     22.0      -0.2150        +0.5600         -0.0000
+     33.0      -0.3225        +0.5600         -0.0000
+     45.0      -0.4398        +0.5600         -0.0000
+
+  BEARING SWEEP @ delta=+0.56deg (drone level yaw=0, gate az swept, 22 m):
+    az_deg   gate_vert(m)   gate_right(m)   depth_err(m)
+    -28.0     -0.1899        +0.0004        -0.0000
+    -20.0     -0.2021        +0.0003        -0.0000
+    -12.0     -0.2103        +0.0002        -0.0000
+     -6.0     -0.2138        +0.0001        +0.0000
+     +0.0     -0.2150        +0.0000        -0.0000
+     +6.0     -0.2138        -0.0001        -0.0000
+    +12.0     -0.2103        -0.0002        +0.0000
+    +20.0     -0.2021        -0.0003        -0.0000
+    +28.0     -0.1899        -0.0004        +0.0000
+  |gate_vert| range over az+-28 = 0.1899..0.2150 m (11.7% bearing-dependent; a world-map offset would be FLAT)
+  corr(gate_vert , |az|)      = +0.966  (level drone: signed-az corr = -0.000, symmetric)
+  max |depth_err| over sweep  = 0.00000 m  (depth-free: boresight does not bias depth)
+
+  ROLLED-drone bearing sweep @ delta=+0.56deg (roll = 0.6*az, gate az swept, 22 m):
+    az_deg   roll_deg   gate_vert(m)   gate_right(m)
+    -28.0    -16.8      -0.1819        -0.0617
+    -20.0    -12.0      -0.1977        -0.0444
+    -12.0     -7.2      -0.2087        -0.0267
+     -6.0     -3.6      -0.2134        -0.0134
+     +0.0     +0.0      -0.2150        +0.0000
+     +6.0     +3.6      -0.2134        +0.0134
+    +12.0     +7.2      -0.2087        +0.0267
+    +20.0    +12.0      -0.1977        +0.0444
+    +28.0    +16.8      -0.1819        +0.0617
+  corr(gate_vert , signed az) [rolled] = +0.000   (field bearing corr ~ +0.44)
+  [290/300 valid mixed poses] mean|depth_err| = 0.00000 m, max 0.00000 m  ->  vertical bias is depth-decoupled
+
+==============================================================================
+(C) ALTERNATE MECHANISMS @22m head-on level: are they indistinguishable from a mount tilt?
+------------------------------------------------------------------------------
+  constant corner offset dv = +3.128 px  -> gate_vert = -0.1907 m
+  constant corner offset dv = -3.128 px  -> gate_vert = +0.1883 m
+  decode principal pt cy = 176.872 (nominal 180)  -> gate_vert = -0.1907 m
+  decode principal pt cy = 183.128 (nominal 180)  -> gate_vert = +0.1883 m
+  half-pixel cy seam (0.5 px)                   -> gate_vert = -0.0310 m (~14% of 0.215 -> a 180-vs-179.5 mismatch cannot alone explain eps_vert)
+  NOTE: pixel/cy mechanism gives ~0.188 m vs mount 0.215 m at +0.56deg-equivalent
+        -> same sign & order, ~10-15% smaller; observationally the SAME vertical perception bias.
+
+==============================================================================
+INTERPRETATION
+------------------------------------------------------------------------------
+  * (A) exact round-trip => K (fy=320, cy=180) projection + the +L localization lever
+    are exact inverses; no code-internal vertical bias exists at matched mount.
+  * (B) a +0.56deg render-vs-decode mount mismatch reproduces ~-0.215 m gate-vertical at
+    22 m, scales with range at constant angle, leaves depth unbiased (depth-free), and is
+    bearing-coupled -- the field eps_vert signature.
+  * (C) a constant ~3.13 px vertical corner offset OR a 3.13 px cy shift yields the SAME
+    world signature -> a code-side pixel/cy/y-flip offset is OBSERVATIONALLY IDENTICAL to a
+    physical mount tilt. The Task-1 grep finds NO such code offset (single K, single mount,
+    no y-flip, detector convention == auto-label projector) => eps_vert is PHYSICAL.

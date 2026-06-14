@@ -1,0 +1,66 @@
+========================================================================================
+#16  LEVEL-HOVER VERTICAL REGRESSION  (metric estimator + angular-vs-metric discriminator)
+========================================================================================
+
+0. CHAIN fix-z noise vs range (level head-on, decode@0, 0.7 px corner noise, n=120):
+    range_m   per-frame sigma_mv(m)   std-of-mean(120)(m)
+     10.0        0.0143               0.00130
+     14.0        0.0163               0.00149
+     18.0        0.0190               0.00174
+     22.0        0.0220               0.00201
+     26.0        0.0251               0.00229
+     30.0        0.0284               0.00259
+  -> per-MEAN sigma_mv (median over ranges, 120 frames) ~ 0.00187 m (grows with range = lever arm)
+
+1a. NOISELESS control (sigma_px=0, OLS): biases vanish -> 1b's residual bias is PnP noise bias
+  [PURE ANGULAR (eps=0.56deg, voff=0)   ] intercept = -0.00000 m (inj +0.000)   pitch = +0.5600 deg (inj +0.560)
+  [PURE METRIC  (eps=0, voff=-0.215 m)  ] intercept = -0.21500 m (inj -0.215)   pitch = -0.0000 deg (inj +0.000)
+  [MIXED        (eps=0.30deg, voff=-0.10)] intercept = -0.10000 m (inj -0.100)   pitch = +0.3000 deg (inj +0.300)
+
+1b. REGRESSION on the REAL chain (6 ranges 10-30 m, 0.7 px, 120 frames each, WLS):
+
+  [PURE ANGULAR (eps=0.56deg, voff=0)   ]
+    intercept (METRIC voff)  = -0.0126 +- 0.0020 m     (injected +0.0000 m)
+    slope                    = -0.00916 +- 0.00011      -> pitch = +0.5250 deg (injected +0.5600)
+    classify (3-sigma + physical floor 0.05 m / 0.05 deg): ANGULAR
+
+  [PURE METRIC  (eps=0, voff=-0.215 m)  ]
+    intercept (METRIC voff)  = -0.2226 +- 0.0020 m     (injected -0.2150 m)
+    slope                    = +0.00038 +- 0.00011      -> pitch = -0.0220 deg (injected +0.0000)
+    classify (3-sigma + physical floor 0.05 m / 0.05 deg): METRIC
+
+  [MIXED        (eps=0.30deg, voff=-0.10)]
+    intercept (METRIC voff)  = -0.1102 +- 0.0020 m     (injected -0.1000 m)
+    slope                    = -0.00474 +- 0.00011      -> pitch = +0.2714 deg (injected +0.3000)
+    classify (3-sigma + physical floor 0.05 m / 0.05 deg): MIXED
+
+2. IDENTIFIABILITY -- minimum range spread to separate slope (angular) from intercept (metric)
+----------------------------------------------------------------------------------------
+  Two-range lock test at (r1,r2), per-mean noise sigma_mv: slope_sd = sigma_mv*sqrt(2)/(r2-r1).
+  The eps_vert angular signal is slope = -tan(0.56deg) = -0.00977. Detect at 3-sigma => 
+  (r2-r1) > 3*sqrt(2)*sigma_mv/|slope|.
+    sigma_mv = 0.005 m  ->  min (r2-r1) =   2.2 m
+    sigma_mv = 0.010 m  ->  min (r2-r1) =   4.3 m
+    sigma_mv = 0.020 m  ->  min (r2-r1) =   8.7 m
+    sigma_mv = 0.030 m  ->  min (r2-r1) =  13.0 m
+  At the MEASURED sigma_mv ~ 0.0019 m (120 frames): min (r2-r1) = 0.8 m
+
+  Discrimination at candidate gate-0/1 standoff pairs (inject eps=0.56deg, chain-measured):
+    (r1,r2) m    slope_est +- sd        slope/sd     verdict
+    (  18,  22)   -0.00877 +- 0.00063      14.0     CLEAN (>3)
+    (  12,  22)   -0.00917 +- 0.00022      42.6     CLEAN (>3)
+    (  10,  28)   -0.00940 +- 0.00015      63.1     CLEAN (>3)
+    (  10,  30)   -0.00919 +- 0.00014      64.8     CLEAN (>3)
+
+3. SINGLE-RANGE DEGENERACY (the escape-hatch): 1 equation, 2 unknowns -> intercept/slope confounded
+----------------------------------------------------------------------------------------
+  @22 m only: m_v = -0.2133 m. Consistent with BOTH (intercept=-0.2133,slope=0) METRIC
+  AND (intercept=0, slope=-0.00969 -> pitch +0.555deg) ANGULAR.
+  => A single range CANNOT discriminate. P3's gate-0/1 test MUST supply >=2 WELL-SEPARATED ranges;
+     if its two ranges are too close (e.g. 18/22 m), the >=2-range test pins MAGNITUDE but the
+     FORM stays degenerate -- elevate the range spread to load-bearing (report UP).
+
+========================================================================================
+VERDICT: WLS m_v ~ intercept + slope*r recovers the metric (intercept) and angular (slope=-tan eps)
+terms and classifies the form. Discrimination needs range SPREAD; at the measured sigma_mv a >= ~10-15
+m separation gives a clean (>3-sigma) split, while 18/22 m is marginal/degenerate.
