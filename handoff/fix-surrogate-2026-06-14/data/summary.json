@@ -1,0 +1,24 @@
+{
+  "n_records": 1821,
+  "n_candidates": 10926,
+  "missing_pose": 0,
+  "funnel": {
+    "frames": 1821,
+    "detected": 1644,
+    "associated": 417,
+    "offered": 127,
+    "accepted": 126
+  },
+  "coverage": {
+    "frames": 1821,
+    "any_gate_in_image": 605
+  },
+  "accept_rate": 0.06919275123558484,
+  "in_fov_any_frac": 0.3322350356946733,
+  "n_fix_rows": 417,
+  "crab_deg_p50": 66.02077547788414,
+  "crab_deg_p90": 72.28154855316477,
+  "crab_deg_mean_signed": 62.99424878327993,
+  "p_accept_given_in_image": 0.08882521489971347,
+  "n_in_image_cand": 1396
+}

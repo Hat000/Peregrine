@@ -1,0 +1,129 @@
+{
+  "accept_cv": [
+    {
+      "held": "cr1b",
+      "n_te": 224,
+      "auc": 0.8529093662124162,
+      "rate_actual": 0.10267857142857142,
+      "rate_pred": 0.09302444878166885,
+      "bandpass_peak_emp": 0.875,
+      "bandpass_peak_pred": 0.813109020608047
+    },
+    {
+      "held": "std1",
+      "n_te": 225,
+      "auc": 0.86,
+      "rate_actual": 0.1111111111111111,
+      "rate_pred": 0.08961450062343573,
+      "bandpass_peak_emp": 0.8695652173913043,
+      "bandpass_peak_pred": 0.8116641944378246
+    },
+    {
+      "held": "std2",
+      "n_te": 234,
+      "auc": 0.8523509174311926,
+      "rate_actual": 0.06837606837606838,
+      "rate_pred": 0.08993293631073879,
+      "bandpass_peak_emp": 0.7272727272727273,
+      "bandpass_peak_pred": 0.8364365044300942
+    },
+    {
+      "held": "std3",
+      "n_te": 229,
+      "auc": 0.8576007326007326,
+      "rate_actual": 0.09170305676855896,
+      "rate_pred": 0.08892454782924358,
+      "bandpass_peak_emp": 0.782608695652174,
+      "bandpass_peak_pred": 0.8303454084003646
+    },
+    {
+      "held": "std4",
+      "n_te": 241,
+      "auc": 0.8610819327731093,
+      "rate_actual": 0.07053941908713693,
+      "rate_pred": 0.08890747176645232,
+      "bandpass_peak_emp": 0.8095238095238095,
+      "bandpass_peak_pred": 0.8289472652143705
+    },
+    {
+      "held": "std5",
+      "n_te": 243,
+      "auc": 0.8895516248457425,
+      "rate_actual": 0.09053497942386832,
+      "rate_pred": 0.08276846271370952,
+      "bandpass_peak_emp": 0.8636363636363636,
+      "bandpass_peak_pred": 0.8061383208258953
+    }
+  ],
+  "sigma_cv": [
+    {
+      "held": "cr1b",
+      "n_te": 24,
+      "lat_floor_std_te": 0.12272862901286985,
+      "depth_floor_std_te": 0.7577440982024686,
+      "lat_floor_std_tr": 0.09889519200415466,
+      "depth_floor_std_tr": 0.8622000931581069,
+      "lat_floor_mad_te": 0.05454993779286657,
+      "depth_floor_mad_te": 0.48532074776858336
+    },
+    {
+      "held": "std1",
+      "n_te": 23,
+      "lat_floor_std_te": 0.11137067699571272,
+      "depth_floor_std_te": 0.8446477251509098,
+      "lat_floor_std_tr": 0.10150178862661638,
+      "depth_floor_std_tr": 0.8540424269925453,
+      "lat_floor_mad_te": 0.09683339945959976,
+      "depth_floor_mad_te": 0.864838768741924
+    },
+    {
+      "held": "std2",
+      "n_te": 16,
+      "lat_floor_std_te": 0.09417044871261325,
+      "depth_floor_std_te": 0.9458976197978833,
+      "lat_floor_std_tr": 0.10482021294326503,
+      "depth_floor_std_tr": 0.8369364448514612,
+      "lat_floor_mad_te": 0.09216349837096145,
+      "depth_floor_mad_te": 0.7751973401188329
+    },
+    {
+      "held": "std3",
+      "n_te": 19,
+      "lat_floor_std_te": 0.09021380578000947,
+      "depth_floor_std_te": 0.950320516882308,
+      "lat_floor_std_tr": 0.10629959270236618,
+      "depth_floor_std_tr": 0.8324937580942487,
+      "lat_floor_mad_te": 0.07371643055013938,
+      "depth_floor_mad_te": 0.7545907462302127
+    },
+    {
+      "held": "std4",
+      "n_te": 17,
+      "lat_floor_std_te": 0.06633052687584072,
+      "depth_floor_std_te": 0.8039450532690163,
+      "lat_floor_std_tr": 0.1093531089663813,
+      "depth_floor_std_tr": 0.8577759870767315,
+      "lat_floor_mad_te": 0.06307741348846617,
+      "depth_floor_mad_te": 0.6975785101312566
+    },
+    {
+      "held": "std5",
+      "n_te": 20,
+      "lat_floor_std_te": 0.1040833792238247,
+      "depth_floor_std_te": 0.7520115188813089,
+      "lat_floor_std_tr": 0.10452763397435158,
+      "depth_floor_std_tr": 0.8680484612926076,
+      "lat_floor_mad_te": 0.06849413201172462,
+      "depth_floor_mad_te": 0.7970493867140703
+    }
+  ],
+  "measure_note": "sigma_*_heldout_* are STD (comparable to the std calibration floor ~0.104); lat_floor_mad_te in sigma_cv is the robust MAD measure (~0.075, lower by construction -- NOT a held-out failure).",
+  "accept_mean_auc": 0.8622490956438655,
+  "accept_max_rate_err": 0.021556867934670404,
+  "bandpass_peak_heldout_mae": 0.0589356651253366,
+  "sigma_lat_floor_heldout_std_mean": 0.09814957776681178,
+  "sigma_lat_floor_heldout_std_spread": 0.01782039641051199,
+  "sigma_lat_floor_heldout_mad_mean": 0.07480580194562632,
+  "sigma_depth_floor_heldout_std_mean": 0.8424277553639824,
+  "sigma_depth_floor_heldout_std_spread": 0.08080751313083914
+}

@@ -1,0 +1,16 @@
+# Heavy regenerable derived data (rebuild with build_dataset.py). Keep summary.json + models/.
+data/cand_frames.json
+data/cand_frames.npz
+data/geom_frames.json
+data/geom_frames.npz
+data/fix_errors.json
+
+# Adversarial agent scratch (probe scripts + intermediate dumps). Keep only VERDICTS.json.
+adversarial/*.py
+adversarial/competition_artifact*.json
+adversarial/crab_independence.json
+adversarial/overfit_kfold.out.json
+adversarial/overfit_kfold.summary.json
+adversarial/range_extrapolation.json
+adversarial/range_extrapolation.summary.json
+_smoke.py

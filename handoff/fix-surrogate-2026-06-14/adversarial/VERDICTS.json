@@ -1,0 +1,35 @@
+{
+  "workflow": "fix-surrogate-adversarial (wf_3e921197-9fa)",
+  "agents": 4,
+  "summary": "2 pass, 2 concern; concerns are calibration CAVEATS (not errors), all addressed in the module/report.",
+  "verdicts": [
+    {
+      "check": "overfit_kfold",
+      "verdict": "concern",
+      "headline": "No genuine overfit (pmax 0.84+-0.014 generalizes; pure-noise null control consistent with ONE shared distribution); but floors rest on only ~16-24 clean rows/flight -> +-15-18% sampling CI.",
+      "key_numbers": "ACCEPT band-pass LOFO peak-MAE mean 0.059 max 0.109; KFOLD k1/k3=0.137/0.156 are held-out binomial noise (n=35, 33/35=0.94 vs 0.83). SIGMA lateral full 0.1045 LOFO-std 0.098 spread/floor 0.54; depth 0.852 LOFO 0.842. Per-flight lateral STD 0.066-0.123 over n=16-24 = chi-square SE band.",
+      "action_taken": "Added bootstrap CI68 + per-flight n to sigma.json; relabeled cv.json STD (~0.10, comparable to target) vs MAD (~0.075, robust cross-check). Report states the floors as CIs, not exact points."
+    },
+    {
+      "check": "range_extrapolation",
+      "verdict": "pass",
+      "headline": "Band-pass decays cleanly outside support (6e-6 @ 40 m, 8e-14 @ 60 m); no sigma axis unphysical; lateral a1 dormant (knee 37.8 m, reaches 5 m only at ~1810 m).",
+      "key_numbers": "p(accept) 14m=0.085, 30m=0.113, 40m=5.9e-6; 99% of accept mass in [13.4,30.9] m; real accepts span 4.87-33.17 m so edges are data-faithful; sigma_lat 0.152@55m/0.553@200m; no axis <0 or >5 m at 8/15/24/30/40/55/100 m.",
+      "action_taken": "Added explicit valid-range guard [9,35] m to the module (defensive tail-zeroing that preserves the calibrated 10-32 m edges). Report notes flat depth law under-reports far-range depth uncertainty (harmless, gated)."
+    },
+    {
+      "check": "crab_independence",
+      "verdict": "concern",
+      "headline": "P(accept|active-in-image)=0.098 is a RANGE-DILUTED lower bound (its set's median range is 6.2 m, band-pass-rejected); in the offered 18-28 m band accept-given-in-image is ~0.82 (~8x).",
+      "key_numbers": "cand in-image n=1396 flat 0.089; range-controlled 18-28 m (n=135) TRUE accept 0.822. Within-band centring adds little: held-out AUC rng-only 0.850 vs +bearing 0.856 (+0.005). In-band accept consistent across 6 flights 0.727-0.875. x8.5 reward-gain claim already uses the band-pass PEAK 0.842, not 0.098.",
+      "action_taken": "Documented crab_to_fix_rate.accept_rate as a relative slope / range-marginal lower bound; added accept_density_in_window (=band-pass peak 0.84) as the reward-relevant density. The x8.5 pointing gain stands."
+    },
+    {
+      "check": "competition_artifact",
+      "verdict": "pass",
+      "headline": "The 0.835 peak is a trustworthy per-gate accept; the single-lock-per-frame premise is REFUTED, and one-gate-per-frame de-bias leaves the peak bit-identical (0.8346 vs 0.8346).",
+      "key_numbers": "accepted_to_k ~= offered_to_k (126/127 offered->accepted); accepts land on non-active gates 105 vs 21 active (no winner-take-one lock); peak stable per-flight 0.727-0.913; P(accept|in_image)=0.089 is DEFLATED by far-range mass (range band-pass), not by lock bias.",
+      "action_taken": "Corrected the mechanism wording in the module/report: accept is in-image -> offered (association + depth-sanity + range-cap) gated, NOT competition among in-image gates."
+    }
+  ]
+}

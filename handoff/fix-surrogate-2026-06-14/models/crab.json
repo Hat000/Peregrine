@@ -1,0 +1,120 @@
+{
+  "crab_inc7_deg": 66.02077547788414,
+  "sign": 1.0,
+  "p_accept_active_in_image": 0.09844559585492228,
+  "sep_gate_at_measured_crab": 0.10598572213069742,
+  "pixel_in_fov_active": 0.10598572213069742,
+  "any_gate_coverage": 0.3322350356946733,
+  "any_gate_accept_rate": 0.06919275123558484,
+  "crab_grid": [
+    0,
+    5,
+    10,
+    15,
+    20,
+    25,
+    30,
+    35,
+    40,
+    45,
+    50,
+    55,
+    60,
+    65,
+    70
+  ],
+  "table": [
+    {
+      "crab_deg": 0.0,
+      "active_in_fov": 0.14442613948380012,
+      "accept_rate": 0.01421811735850882
+    },
+    {
+      "crab_deg": 5.0,
+      "active_in_fov": 0.14442613948380012,
+      "accept_rate": 0.01421811735850882
+    },
+    {
+      "crab_deg": 10.0,
+      "active_in_fov": 0.14442613948380012,
+      "accept_rate": 0.01421811735850882
+    },
+    {
+      "crab_deg": 15.0,
+      "active_in_fov": 0.14442613948380012,
+      "accept_rate": 0.01421811735850882
+    },
+    {
+      "crab_deg": 20.0,
+      "active_in_fov": 0.14387699066447007,
+      "accept_rate": 0.014164056075776846
+    },
+    {
+      "crab_deg": 25.0,
+      "active_in_fov": 0.14332784184514002,
+      "accept_rate": 0.014109994793044874
+    },
+    {
+      "crab_deg": 30.0,
+      "active_in_fov": 0.14277869302581,
+      "accept_rate": 0.014055933510312903
+    },
+    {
+      "crab_deg": 35.0,
+      "active_in_fov": 0.14222954420647996,
+      "accept_rate": 0.014001872227580928
+    },
+    {
+      "crab_deg": 40.0,
+      "active_in_fov": 0.1400329489291598,
+      "accept_rate": 0.013785627096653038
+    },
+    {
+      "crab_deg": 45.0,
+      "active_in_fov": 0.13618890719384955,
+      "accept_rate": 0.01340719811752923
+    },
+    {
+      "crab_deg": 50.0,
+      "active_in_fov": 0.13179571663920922,
+      "accept_rate": 0.012974707855673447
+    },
+    {
+      "crab_deg": 55.0,
+      "active_in_fov": 0.12191103789126853,
+      "accept_rate": 0.012001604766497939
+    },
+    {
+      "crab_deg": 60.0,
+      "active_in_fov": 0.09829763866007687,
+      "accept_rate": 0.009676969609023112
+    },
+    {
+      "crab_deg": 65.0,
+      "active_in_fov": 0.06479956068094453,
+      "accept_rate": 0.006379231362372778
+    },
+    {
+      "crab_deg": 70.0,
+      "active_in_fov": 0.014277869302580999,
+      "accept_rate": 0.00140559335103129
+    }
+  ],
+  "best_crab_deg": 0.0,
+  "best_active_in_fov": 0.14442613948380012,
+  "best_accept_rate": 0.01421811735850882,
+  "inc7_active_in_fov": 0.057660626029654036,
+  "inc7_accept_to_active": 0.005676434686857133,
+  "elevation_diag": {
+    "n_offered_band": 142,
+    "az_ok_at_crab0": 1.0,
+    "el_ok": 0.09859154929577464,
+    "both_ok_at_crab0": 0.09859154929577464,
+    "abs_el_p50": 44.59125203479775,
+    "abs_el_p90": 46.281761853601495,
+    "vfov_half_deg": 29.36,
+    "current_accept_in_window": 0.09859154929577464,
+    "pointing_ceiling_accept_in_window": 0.8419703950411151,
+    "pointing_gain": 8.539985435417025
+  }
+}
