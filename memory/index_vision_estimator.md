@@ -207,11 +207,17 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 
 ### Residual caveat + airtight lock test
 - "GT crosses near map centre" evidence is mildly SELF-FULFILLING on the vertical axis (inc7/calibration laps aim at map centre); depth-free + bearing + resurvey lines break it to case (b) but not airtightly.
-- **AIRTIGHT LOCK (morning, ShadowPC):** a STATIC, head-on, LEVEL vision fix at g2 & g4 (bearing ≈ 0) isolates boresight ε from any map term. Expect δ_map_vert ≈ 0, small head-on ε. Alternatively: bearing-resolve the ShadowPC-local data/runs/*_l3atspeed_* via shadow_gate4.py.
+- **AIRTIGHT LOCK (morning, ShadowPC):** a STATIC, head-on, LEVEL vision fix at g2 & g4 (bearing ≈ 0) isolates boresight ε from any map term. Expect δ_map_vert ≈ 0, small head-on ε. Alternatively: bearing-resolve the ShadowPC-local data/runs/*_l3atspeed_* via shadow_gate4.py. [🆕 SUPERSEDED 2026-06-14 → gate-0/1 CTBR head-on, ≥2 ranges (boresight common-mode → transfers to g4); Fengyou GO. See §P3 OFFLINE RANGE-RESOLVE.]
 
 ### 🚩 Two stale map-offset citations — CORRECTED
 1. **"gate-3 crosses 1.46 m above (map) center"** = BOTTOM-vs-OPENING reference-frame confusion; true miss is **0.017 m**. NOT evidence of a map vertical offset. Do NOT cite as case-(a)/map-offset support.
 2. **piece-F "+0.3 m registration_D"** = ε − δ_map MISLABELLED as registration; its own GT-transit resurvey σ=0.03 m contradicts it. NOT a real map offset. Do NOT cite as case-(a)/map-offset support.
+
+## P3 OFFLINE RANGE-RESOLVE = INCONCLUSIVE; LIVE HEAD-ON FIX AUTHORIZED (2026-06-14; gate-0/1 CTBR, Fengyou GO; SUPERSEDES the g2/g4 lock-test framing)
+
+- **P3 independent discriminator** (rel_vert vs true_range over L3 shadow_gate{2,4}_rows.json; map offset ⇒ constant metres slope≈0, a 0.56° boresight ⇒ constant angle slope≈−0.0098 m/m): all-accepted pooled (N=315, 4.5–25.9 m) slope **+0.001 m/m CI[−0.007,+0.009]** (flat/map-like, marginally excludes the boresight slope); clean 4-corner subset (N=172, 18.6–25.2 m) slope **−0.043** → non-physical 2.4° + 0.71 m intercept = a **23–25 m PnP/3-corner band artifact**, non-monotonic; **ZERO accepted fixes <30° bearing** at g2 AND g4 (inc7 66° crab → oblique-only) → no head-on data to resolve ε(bearing→0).
+- **Does NOT refute the DIRECT δ_map≈0 (d7c592e):** over the ~20–26 m gate-4 band a 0.56° boresight moves rel_vert only ~0.06 m (below scatter) → the slope test is UNDERPOWERED there; the pooled 'flat' mildly tensions case-(b) toward map/CLOSE but is PnP/3-corner-confounded. The −0.215 m is PINNED; its δ_map(CLOSE)-vs-ε_vert(OPEN) split is NOT determinable offline. **Margin verdict pivots on it.**
+- 🚩 **AUTHORIZED LIVE ARBITER (Fengyou GO, 2026-06-14):** STATIC, level, HEAD-ON (bearing≈0) vision fix at **gate-0/1 via the proven CTBR bridge, ≥2 ranges.** Reveals the bias FUNCTIONAL FORM (ε∝range ⇒ angular boresight → calibrate the angle; ε flat-in-metres ⇒ constant offset → calibrate a metric term) + magnitude + sign → pins P1's calibration. Boresight is **COMMON-MODE across gates** → a gate-0/1 measurement transfers to gate-4. **SUPERSEDES the prior "static head-on at g2/g4" framing** (the g2/g4 ANGLE position-hold is untested/higher-risk). Conservative case-(b)/OPEN posture HELD meanwhile — P1 builds boresight-cal + ESKF regardless. Artifacts: handoff/p3-simops-empirical-2026-06-14/ (boresight_bearing_resolve.py, boresight_resolve_all.json), committed for review.
 
 ## MARGIN-CLOSURE-ENVELOPE DONE (2026-06-14; branch claude/charming-jemison-b111c5, commit 7654e99, pushed, NOT merged; handoff/margin-closure-envelope-2026-06-14/REPORT.md)
 
