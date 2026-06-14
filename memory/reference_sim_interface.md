@@ -36,7 +36,7 @@ The sim REPURPOSES `ENCAPSULATED_DATA` (discriminator = `data[0]`):
 ## Spec ↔ sample discrepancies (don't re-litigate)
 - Spec §4.3 lists only 6 messages; the build sends ~11 + custom. Sample wins.
 - Spec §4.4 command rate **<100 Hz** but the sample loops setpoints at **250 Hz** — confirm the real accepted rate. (Our probes stream ≤20 Hz, safe.)
-- Spec §3.8 "VFoV=90°" is the HFoV; true VFoV≈58.7° (frames.py handles it).
+- Spec §3.8 "VFoV=90°" is the HFoV; true VFoV≈58.7° (frames.py handles it). Full §3.8 camera spec (reviewed 2026-06-14): camera tilt = **20° UP from body +X (MAV_FRAME_BODY_NED), SPEC-EXACT, NO tolerance, mount FIXED**; camera origin = body origin (zero translational offset, no lever arm); pinhole, no distortion; 640×360; [cx,cy]=[320,180]; [fx,fy]=[320,320] (square pixels); vision stream 30 Hz JPEG UDP:5600; HIGHRES_IMU + ATTITUDE + TIMESYNC; body↔IMU = identity; physics 120 Hz, command <100 Hz. 🚩 **VFoV=90° is MISLABELED — it is HFoV. True VFoV≈58.7° (fy=320, H=360). ALWAYS use fy=320 for vertical; never literal 90° VFoV. Audit render-prediction AND PnP for fy=320 consistency.**
 - §3.3/README say no absolute/global position — but LOCAL_POSITION_NED+ODOMETRY (local NED from arm point) ARE sent. Reconciles (local ≠ global).
 
 ## FIRST CONTACT 2026-06-02 — SUCCEEDED (ShadowPC). Source: `handoff/shadowpc-firstcontact-2026-06-02/HANDOFF.md`

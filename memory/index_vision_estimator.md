@@ -31,7 +31,7 @@ Mid-level index for the estimator race-speed verdict, VISION-PKG2 specs, gate ma
 **ELEVATION CO-BINDS — decrab is NECESSARY but NOT SUFFICIENT.**
 - After de-crabbing (yaw — translationally ~free), the active gate is in horizontal FoV **100%** but vertical FoV only **~10%** (|el| ~45° vs VFoV 29° at +20° mount). Centering the gate through its 18–28 m window = **×8.5 in-window fix-density gain** (accept_density: 0.099 → 0.84).
 - This PROMOTES elevation from a flagged "second-order" concern to a **co-binding axis**, refining the earlier "decrab ≈ free solves pointing" framing. Elevation couples to PITCH = the accel knob (harder axis than yaw).
-- **MOUNT-UPTILT (+20° currently) = candidate CHEAP knob** to absorb the elevation gap, vs expensive policy pitch-modulation. A mount-uptilt → fix-density SWEEP using fix_surrogate is teed up as top inc8/pointing analysis — splits the gap into free(mount) vs must-train(pitch). **GATED on organizer Q: is the mount changeable for competition?** (Fengyou's call; not yet run.)
+- 🚩 **MOUNT-UPTILT LEVER DEAD — SPEC §3.8 CONFIRMS MOUNT IS FIXED AT 20° EXACTLY (no tolerance, no range).** The camera origin is at the body origin (zero translational offset / no lever arm). Therefore the "mount-uptilt sweep / cheap mount knob" (banked from FIX-SURROGATE finding 2026-06-14) is OFF THE TABLE. The elevation half of camera-pointing (gate out of the 58.7° VFoV at race pitch) MUST be solved by the POLICY (inc8 pitch/pointing — pitch-coupled axis), NOT by hardware tilt.
 - crab→fix-rate map is a callable + table; its accept_rate is a range-MARGINAL LOWER BOUND — use accept_density_in_window for the real in-window number.
 - **Inc8 camera-pointing reward spec: 2-AXIS (azimuth + elevation)**, not azimuth only.
 
@@ -132,8 +132,13 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 - 30 Hz = inherited default (DiffAero racing.yaml). Binds ONLY at ≥30 m/s × last-fix ≤10 m; fixes to 15 m → NOT bottleneck.
 - 🚩 GATING MEASUREMENT queued (SHADOWPC-VISION-CAL).
 
-## Spec facts
-- VFoV≈58.7° (spec's "90°" = HFoV; camera tilts up).
+## Spec facts (§3.8 camera — REVIEWED 2026-06-14)
+- **Camera tilt = 20° UP from body +X (MAV_FRAME_BODY_NED). SPEC-EXACT — stated ONCE, NO tolerance/range. Mount is FIXED; mount-uptilt lever is DEAD.**
+- **Zero translational offset** — camera origin = body origin (no lever arm).
+- Pinhole, NO lens distortion. Resolution 640×360. [cx,cy]=[320,180] (dead-centre, no principal-point offset). [fx,fy]=[320,320] (square pixels).
+- Vision stream: 30 Hz, 640×360 JPEG, UDP port 5600. Sensors: HIGHRES_IMU, ATTITUDE, TIMESYNC. Body↔IMU = identity. Physics 120 Hz, command <100 Hz.
+- 🚩 **VFoV=90° IN SPEC IS MISLABELED — IT IS HFoV. TRUE VFoV≈58.7° (±29.35°); HFoV=90.0° exactly.** Derivation: fy=320, H=360 → 2·atan(180/320)=58.7°; fx=320, W=640 → 2·atan(320/320)=90.0°. ALWAYS decode vertical from fy=320 — NEVER from a literal 90° VFoV. Audit that render-prediction AND PnP both use fy=320.
+- **Boresight ε_vert ≈ 0.56° reconciled with spec:** 20° is spec-EXACT, so the 0.56° boresight is NOT a wrong mount angle — it is a CONVENTION/PROJECTION seam (spec explicitly offloads the body→camera→image-library frame rotation) and/or fy/VFoV mishandling. Code-side and CALIBRATABLE (0.56° ≈ 3.1 px vertical). NEXT ACTION: vision-extrinsics audit (body→cam→image rotation + fy=320 consistency).
 - ~100 TOPS onboard. Obstacles exist but don't map monocularly.
 
 ## Parallel onboard systems
@@ -169,7 +174,7 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 - **L3 FORMER HYPOTHESIS (case a — REFUTED by δ_map discriminator):** −0.215 vertical = track_map MAP offset δ_map → +L CANCELS → close. REFUTED: δ_map_vert ≈ 0 (max 0.077 m across 6 gates) → rel_vert −0.215 m = ε_vert (perception/attitude sighting bias) → +L does NOT cancel → margin stays OPEN. L3's own rel in-plane p90 = 0.492 m (NOT 0.197 m claimed under case-a) → does NOT close at any r. See §δ_MAP VERTICAL DISCRIMINATOR for full analysis.
 - **σ (gate-4 specific):** lateral 0.19 m / vertical 0.10 m (< modeled 0.265 m); along-track +0.40 loose. NOTE: gate-4 σ_lat 0.19 is ABOVE the pooled headline 0.10 — use gate-4 value for gate-4 margin; the "σ=0.10" pooled figure was pooled across all gates.
 - **Relinnov gate:** accepts 100% of offered gate-4 fixes (d2 p90 0.94 ≪ 13.82) — NOT the limiter.
-- **BINDING LIMIT = FIX-RATE 1.4% of frames at gate-4** (gate-4 is worst case; pooled ~7%): detector 92%; gate-4-in-FoV 42%; crab p50 66°; at >60° crab (51% of frames) gate-4-in-FoV 5% / 0 fixes; ALL 81 fixes from the crab-30–45° gate-3-approach window. Root cause = camera POINTING **2-AXIS** (azimuth + ELEVATION co-bind — see §2-AXIS CAMERA-POINTING FINDING; addressable via inc8 2-axis gate-in-FoV reward + mount-uptilt sweep).
+- **BINDING LIMIT = FIX-RATE 1.4% of frames at gate-4** (gate-4 is worst case; pooled ~7%): detector 92%; gate-4-in-FoV 42%; crab p50 66°; at >60° crab (51% of frames) gate-4-in-FoV 5% / 0 fixes; ALL 81 fixes from the crab-30–45° gate-3-approach window. Root cause = camera POINTING **2-AXIS** (azimuth + ELEVATION co-bind — see §2-AXIS CAMERA-POINTING FINDING; mount FIXED → elevation fix-rate is POLICY-only via inc8 2-axis gate-in-FoV reward).
 - **Depth blow-up:** clean fixes only in the ~20–22 m band; gate-3 @ 31.8 m showed +2.05 m along-track depth blow-up (beyond 32 m cap) — consistent with the a1·r >24 m extrapolation warning.
 - 🚩 **FOOTGUN: COMMON-MODE-ACROSS-GATES ≠ PROOF OF +L CANCELLATION.** Identical vertical offset at multiple gates is consistent with BOTH (a) track_map representation offset [+L CANCELS → close] AND (b) detector/camera-EXTRINSIC sighting bias [+L does NOT cancel → fails] — one camera sees every gate, so extrinsic bias is also common-mode. Only the DIRECT δ_map pin distinguishes them. **The discriminator chose (b).**
 
