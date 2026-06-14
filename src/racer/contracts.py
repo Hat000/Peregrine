@@ -237,6 +237,12 @@ class NavState:
     angular_rate_body: np.ndarray = _vec(3)
     pos_vel_covariance: np.ndarray | None = None       # (6,6) [pos(3), vel(3)]
     time_since_vision_update_s: float = float("inf")    # how long since the last vision fix
+    # Calibrated gate-frame position 1-sigma (C2 estimator chain, BLUEPRINT §1.6): the KF position
+    # covariance projected into the last-fix gate plane. Feeds the FUTURE inc8 confidence channel
+    # (obs[17:18] = clip(sigma_ref/sigma_hat)); BUILT now, UNCONSUMED by the inc7 17-dim obs. ``inf``
+    # until the first accepted gate-relative fix (no gate frame -> no projection). [C2-ESTIMATOR-CHAIN]
+    nav_inplane_sigma: float = float("inf")             # m, in-plane (gate-plane) 1-sigma
+    nav_along_sigma: float = float("inf")               # m, along-track (gate-normal) 1-sigma
 
 
 # ---------------------------------------------------------------------------
