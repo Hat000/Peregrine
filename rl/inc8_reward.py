@@ -1,0 +1,135 @@
+"""rl/inc8_reward.py -- the inc8 reward DELTAS over the inc7 spine (torch-pure, laptop-testable).
+
+The inc8 env (rl/peregrine_racing_inc8.py) keeps the ENTIRE inc7 reward/termination contract frozen
+(R2 passage, T1/T2/T3 terminals, R3 time, R4 60-deg tilt cone, R5 dact, R6 rate, R7 corner, T4
+finish-time) and adds only these case-C deployability terms. All are pure functions of state/event
+tensors so they unit-test on the laptop without diffaero; the env calls them under no_grad and the
+GT-anchor reads TRUTH (the actor sees the noisy KF obs -- the asymmetric-critic anti-damping setup).
+
+SHARED SPINE (all arms):
+  R1'  arc-length progress over Gamma   rw_progress * (s_curr - s_prev)        [replaces R1-to-centre]
+  GT   estimator-error anchor          -rw_estimerr * |KF_pos - truth|_inplane  [FLAT, truth-seen]
+  CS   confidence/staleness shaping    +rw_conf_shape * anneal * (c_in - age)  [dense, ANNEALED late]
+ARM-SPECIFIC R5' (the COWORK-3 2-axis terminal-lock perception reward; default A):
+  A  r_perc = rw_perc * w_term(d) * v(alpha,beta) * max(ds, 0)   (terminal-locked, 2-axis quartic)
+  B  same with w_term == 1                                       (FLAT weight)
+  C  r_perc == 0                                                 (implicit-only)
+
+R5' SHAPE (perception-reward.md / SWIFT-Geles exp(-delta^4) generalised to Qin alpha/beta):
+  gate centre in camera frame [X,Y,Z] = t_cam (the surrogate geometry already computes it)
+  alpha = atan2(X, Z) (deg), beta = atan2(Y, sqrt(X^2+Z^2)) (deg)
+  v(alpha,beta) = exp[ -((alpha/sigma_a)^4 + (beta/sigma_b)^4) ]   sigma_a~45, sigma_b~29.5 (FoV half-angles)
+  w_term(d) = w0 + (1-w0) * clip((d_acq - d)/(d_acq - d_lock), 0, 1)   d_lock~5 m (full lock), d_acq~inter-gate
+  progress-gating * max(ds, 0): payable only while advancing along Gamma (kills the slow-to-look loiter).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+try:
+    import torch
+    from torch import Tensor
+except Exception:                       # pragma: no cover
+    torch = None
+    Tensor = "Tensor"                   # type: ignore
+
+
+@dataclass
+class Inc8RewardWeights:
+    """inc8 reward-delta weights (cfg-overridable as ``+env.rw_<field>=...``; the inc7 RewardWeights
+    are untouched). rw_perc ~ 5% of rw_progress (SWIFT/Geles/Song); GT-anchor is the primary
+    estimator-error lever (flat); confidence-shaping is small + annealed."""
+    progress: float = 10.0          # R1' arc-length progress along Gamma (== inc7 rw_progress)
+    estimerr: float = 2.0           # GT in-plane estimator-error anchor (flat, truth-seen)
+    conf_shape: float = 0.05        # confidence/staleness dense-shaping (annealed late)
+    perc: float = 0.5               # R5' perception weight (~5% of progress)
+    # R5' shape
+    perc_sigma_a_deg: float = 45.0  # azimuth visibility scale (~H half-FoV)
+    perc_sigma_b_deg: float = 29.5  # elevation visibility scale (~V half-FoV)
+    perc_d_lock_m: float = 5.0      # full terminal lock inside this range (w_term -> 1)
+    perc_d_acq_m: float = 24.0      # acquire by ~inter-gate spacing (w_term -> w0 beyond)
+    perc_w0: float = 0.15           # terminal-weight floor (acquire early, lock late)
+    # confidence-shaping anneal (in CONTROL STEPS; the env tracks a global step counter)
+    conf_anneal_warmup_steps: float = 0.0
+    conf_anneal_ramp_steps: float = 1.0
+
+
+def arc_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float) -> Tensor:
+    """R1': rw_progress * (s_curr - s_prev) -- arc-length advanced along Gamma this step (m). Closes
+    the corner-cut failure mode M-2 by construction (you only earn reward for advancing along a line
+    that already clears the gate). Can be negative (the drone backed up)."""
+    return rw_progress * (s_curr - s_prev)
+
+
+def gt_estimerr_anchor(err_inplane_m: Tensor, rw_estimerr: float) -> Tensor:
+    """GT anchor: -rw_estimerr * |KF_pos - truth|_inplane (gate-frame). Reward sees TRUTH; the actor
+    sees the noisy KF obs. FLAT weight, no proximity schedule -- the truth-seeing critic (get_state
+    36-dim) is what makes calibrated caution emerge WITHOUT a hand-coded damping term."""
+    return -rw_estimerr * err_inplane_m
+
+
+def confidence_anneal(global_step: float, w: Inc8RewardWeights) -> float:
+    """Linear ramp in [0,1] over control steps: 0 until warmup, then ramps to 1 over ramp_steps. Lets
+    the base racing task settle before the dense confidence shaping turns on (avoids the early
+    slow-to-look local optimum; perception-reward.md 2(b))."""
+    x = (global_step - w.conf_anneal_warmup_steps) / max(w.conf_anneal_ramp_steps, 1.0)
+    return float(min(max(x, 0.0), 1.0))
+
+
+def confidence_shaping_reward(triple: Tensor, rw_conf_shape: float, anneal: float) -> Tensor:
+    """CS: rw_conf_shape * anneal * (c_inplane - age_norm) from obs[17:20]. Rewards keeping the
+    in-plane confidence high + the fix fresh -- achievable ONLY by pointing the camera (-> fixes ->
+    low KF sigma), so it is aligned with the GT anchor, not a damping term. Small + annealed late."""
+    c_inplane, age_norm = triple[..., 0], triple[..., 2]
+    return rw_conf_shape * anneal * (c_inplane - age_norm)
+
+
+def visibility_2axis(t_cam: Tensor, sigma_a_deg: float, sigma_b_deg: float) -> Tensor:
+    """Separable quartic visibility v(alpha,beta) = exp[-((alpha/sa)^4 + (beta/sb)^4)] in [0,1] -- the
+    SWIFT/Geles exp(-delta^4) shape generalised to Qin's independent azimuth/elevation pair (so the
+    narrower vertical FoV + the 20-deg pitch coupling are penalised more tightly than azimuth). Flat
+    plateau while the gate is comfortably in frame, sharp cliff near either edge (zero gradient when
+    centred -> nothing to chatter against)."""
+    tx, ty, tz = t_cam[..., 0], t_cam[..., 1], t_cam[..., 2]
+    deg = 180.0 / torch.pi
+    alpha = torch.atan2(tx, tz) * deg
+    beta = torch.atan2(ty, torch.sqrt(tx * tx + tz * tz)) * deg
+    return torch.exp(-((alpha / sigma_a_deg) ** 4 + (beta / sigma_b_deg) ** 4))
+
+
+def terminal_weight(range_m: Tensor, d_lock_m: float, d_acq_m: float, w0: float) -> Tensor:
+    """w_term(d) = w0 + (1-w0)*clip((d_acq - d)/(d_acq - d_lock), 0, 1): the Azhari lambda(d) ramp --
+    relaxed far (w0, don't wreck the racing line during transitions), full lock (1.0) inside d_lock."""
+    ramp = torch.clamp((d_acq_m - range_m) / max(d_acq_m - d_lock_m, 1e-6), 0.0, 1.0)
+    return w0 + (1.0 - w0) * ramp
+
+
+def perception_reward(t_cam: Tensor, range_m: Tensor, delta_s: Tensor, in_image: Tensor,
+                      arm: str, w: Inc8RewardWeights) -> Tensor:
+    """R5' = rw_perc * w_term(d) * v(alpha,beta) * max(delta_s, 0). arm 'A' terminal-locked, 'B' flat
+    weight (w_term==1), 'C' off (0). Progress-gated by max(delta_s,0) (anti-loiter). Gated to in-image
+    so an out-of-frame gate (where v is meaningless / behind the camera) pays nothing."""
+    arm = arm.upper()
+    if arm == "C":
+        return torch.zeros_like(range_m)
+    v = visibility_2axis(t_cam, w.perc_sigma_a_deg, w.perc_sigma_b_deg)
+    wt = (terminal_weight(range_m, w.perc_d_lock_m, w.perc_d_acq_m, w.perc_w0)
+          if arm == "A" else torch.ones_like(range_m))
+    gate = in_image.to(v.dtype)
+    return w.perc * wt * v * torch.clamp(delta_s, min=0.0) * gate
+
+
+def bsr3_update(spin_clock: Tensor, omega_realized: Tensor, dt: float,
+                rate_abort: float, time_abort: float):
+    """BSR3 spin-margin gate (MANDATORY before the inc8 ladder). Gates the REALIZED body rate
+    (self._w), NOT the command: a legitimate ~11 rad/s super-rate TRANSIENT does not abort because it
+    is not SUSTAINED past ``time_abort`` (3.0 s). Per env: accumulate dt while |omega| > rate_abort,
+    reset to 0 otherwise; abort when the sustained clock exceeds time_abort. ``rate_abort <= 0``
+    disables it (byte-identical inc7). Returns (new_clock, abort_mask)."""
+    if rate_abort <= 0.0:
+        return spin_clock, torch.zeros_like(spin_clock, dtype=torch.bool)
+    mag = torch.linalg.norm(omega_realized, dim=-1)
+    over = mag > rate_abort
+    new_clock = torch.where(over, spin_clock + dt, torch.zeros_like(spin_clock))
+    abort = new_clock > time_abort
+    return new_clock, abort
