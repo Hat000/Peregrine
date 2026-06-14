@@ -45,7 +45,6 @@ the FROZEN d5 contract (sigma_ref/sigma_hat ratios + staleness clock).
 """
 from __future__ import annotations
 
-import dataclasses
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import sys
