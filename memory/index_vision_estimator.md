@@ -145,7 +145,19 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 - `tests/test_confirmed_p4_c05.py` expanded 5→10 tests.
 - 🚩 **DEPLOY CONSTRAINT (current stack VQ1-only):** three loud guards now ship — `_assert_vq1_constants_consistent` (import-time, half-migrated constants), `_assert_live_course_is_vq1` (deploy-time, aborts if any gate yaw ≠ π before RL loop starts), `assert_gate_map_allpi` (public). **The current deployable stack fail-loud-aborts on any non-π/VQ2 course until gate-relative path is wired + `gate_map` passed.** Correct fail-loud behavior; removed by the gate-relative rebuild. → [[index-control-sim]]
 
-## P0-CASEC-FOUNDATION DONE (2026-06-13; branch pending merge; 692→700 green, 0 regressions)
+## C2-ESTIMATOR-CHAIN DONE & MERGED (2026-06-14; merge commit 05ed750; feature 2d85d7e; 700→723 green, 0 regressions)
+- **RewindKF (`kf_rewind.py`):** productionized OOSM. `update_position_at` rewinds to capture-time + replays buffered IMU exactly. horizon=0.5 s with `assert_horizon_gt(L)` guarding the horizon≤L "drop 100% of fixes" trap. t_fix≥now = bit-identical to bare update. Full live OOSM TIMESYNC-blocked → predict-forward fallback ships first.
+- **`localization.gate_relative_inplane_fix`:** core +L fix. Anisotropic gate-plane cov: in-plane from law `max(σ_ref, a1·r)` (NOT additive — additive double-counts off validated c1 0.139; law & c1 agree ~10 m). Along-track loose + explicit floor. `GATE_REL_INPLANE_SIGMA = 0.265` = the SINGLE swappable constant. a1=0.026 extrapolates badly >24 m (in-band for the ~12 m gate-4 window).
+- **Navigator relinnov gate:** d2_rel ≤ χ²(2,.999)=13.82, applied AFTER the kept absolute fix; a rejected relative fix leaves absolute estimate intact.
+- **estimator_obs:** thin seam reusing canonical build_obs; bit-exact 17-dim, +L; pos_g/vel_g from estimate, attitude from wire; NO obs[17:20].
+- **state_estimator/contracts:** NavState `nav_inplane_sigma` / `nav_along_sigma` cov export (built, UNCONSUMED by inc7).
+- **Gating:** `use_rewind_kf` + `use_gate_relative`, BOTH OFF by default → VQ1/case-A BYTE-IDENTICAL (cannot regress inc7). Case-C only.
+- **G3 result:** rel E_bias −0.000 / RMS 0.131 / p90 0.197; abs +0.176/0.283, submap +0.174/0.223 (neg controls FAIL). rel p90 0.197 > 0.155 @ r=0.38 → CANNOT-SETTLE-OFFLINE survives → escape-hatch L3, by design.
+- 🚩 **d2 spec e_pred sign = TYPO** — C2 used STANDARD-innovation form `nu_ip = B@(z_rel − x_KF)`; +L pinned by G1 (identity ≤1e-5, −L control breaks ~24 m). Consistent with banked "+L is correct in code" footgun.
+- 🚩 **OPEN follow-up (do NOT lose):** G3 ran at σ_ref=0.265 (design value), but Track-3 MEASURED σ=0.10. The 0.265 floor dominates the gate-4 band → offline verdict is PESSIMISTIC. Re-run G3 with `GATE_REL_INPLANE_SIGMA=0.10` for the OPERATIONAL margin verdict (plan = L3 either way; only the honesty of the offline number changes). G3 also has NO fix-RATE sweep → fold into the POC (camera-pointing is the binding lever).
+- simops-mastery Track-3 tooling ON ORIGIN (commit 1b54cb8) → prior "ShadowPC-only, needs push" caveat CLOSED.
+
+## P0-CASEC-FOUNDATION DONE (2026-06-13; merged to main; 692→700 green, 0 regressions)
 - **P0-a:** `_initialize` now gates position/velocity seed on `config.use_given_position` / `use_given_velocity` flags (mirroring per-tick guards at :315/:320). True case-C seeds origin @ pos_std=5.0 (P[0,0]=25) even with LOCAL_POSITION_NED broadcasting. This closed the leak that made every case-C test secretly case-A.
 - **P0-b:** `time_since_vision_update_s` measured on IMU master clock (delta_epoch learned once recv-paired, re-learned on reset()), plus predict-forward fallback (`reconcile_vision_clock=False`, `vision_latency_const_s`). delta_epoch=0 on same-clock data → back-compat exact. **OOSM capture-time rewind DEFERRED to C2** — implemented at navigator STAMPING level only; LinearKF has no `update_position_at`. tsv-observable effect identical.
 - **P0-c:** case-C cold-velocity = KF pos/vel coupling; already exported via `NavState.velocity_ned` + `pos_vel_covariance[3:6,3:6]`. Confirmed + guard-tested; no behavior change.
