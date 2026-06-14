@@ -1,0 +1,74 @@
+{
+  "gate2": {
+    "label": "GATE-2",
+    "n": 234,
+    "slope": 0.0012574738323547774,
+    "slope_ci": [
+      -0.007067741045638229,
+      0.009937112844643313
+    ],
+    "intercept": -0.23581203386085384,
+    "intercept_ci": [
+      -0.4183700690496269,
+      -0.05949582333669909
+    ],
+    "pearson_r": 0.019017430064038564,
+    "theta_from_slope_deg": -0.07204790546706542,
+    "map_consistent": true,
+    "boresight_consistent": false,
+    "mean_vert": -0.21148314487048653,
+    "sd_vert": 0.3153467659012353,
+    "mean_cross": -0.03078131937012991,
+    "rng_min": 4.465,
+    "rng_p50": 20.1595,
+    "rng_max": 25.949
+  },
+  "gate4": {
+    "label": "GATE-4",
+    "n": 81,
+    "slope": 0.0063875416886651345,
+    "slope_ci": [
+      -0.0203247238076319,
+      0.03223864942844268
+    ],
+    "intercept": -0.3572891626453189,
+    "intercept_ci": [
+      -0.9430567327463014,
+      0.24465096194495986
+    ],
+    "pearson_r": 0.06636111123282584,
+    "theta_from_slope_deg": -0.3659742029453415,
+    "map_consistent": true,
+    "boresight_consistent": true,
+    "mean_vert": -0.21474927725781165,
+    "sd_vert": 0.10014139458656007,
+    "mean_cross": -0.04018316276683656,
+    "rng_min": 20.075,
+    "rng_p50": 22.29,
+    "rng_max": 24.038
+  },
+  "pool": {
+    "label": "GATE-2+GATE-4 POOLED (max range leverage)",
+    "n": 315,
+    "slope": 0.0011227999219157144,
+    "slope_ci": [
+      -0.00671350808131546,
+      0.009026954422528955
+    ],
+    "intercept": -0.23490318402960414,
+    "intercept_ci": [
+      -0.4063509705349271,
+      -0.06338363203213271
+    ],
+    "pearson_r": 0.01763361888199371,
+    "theta_from_slope_deg": -0.06433166972952196,
+    "map_consistent": true,
+    "boresight_consistent": false,
+    "mean_vert": -0.21232300748437014,
+    "sd_vert": 0.2765015713066093,
+    "mean_cross": -0.03319893624356876,
+    "rng_min": 4.465,
+    "rng_p50": 21.39,
+    "rng_max": 25.949
+  }
+}
