@@ -10,13 +10,13 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 ---
 
 ## 🔼 FOLD-NOW (F)
-- **#3** vision-extrinsics audit (fy=320 in render-prediction AND PnP; body→cam→image rotation seam) → **P1 active, #1 deliverable**.
+- **#3** ✅ **DONE (P1, a1620b3, 2026-06-14):** bake site = frames.R_camera_from_body; NO code bug (round-trip 1.48e-8 m; fy=320/cy=180 consistent render+PnP). The 0.56° = render-vs-decode convention constant. (Closed.)
 - **#4** surrogate σ vs L3 gate-4 σ reconciliation (lat .104/.19, vert .282/.10 axis-for-axis) → fold into **P3** at-speed recording BEFORE locking the margin σ.
 - **#5** bearing-resolve ShadowPC `data/runs/*_l3atspeed_*` via shadow_gate4.py → **P3** boresight-lock alternative.
 - **#6 / #28** 30 Hz gating + per-gate last-accepted-fix distance from L3 → **P3** at-speed recording (feeds speed-ceiling analytic + #43).
 - **#13** ONNX/TensorRT export of detector v2 + in-loop latency benchmark → **NEW dispatch**; CLOSES the ≤50 ms LATENCY axis if eval=GPU (COWORK-1). Export laptop-doable now; on-target benchmark folds into P3.
-- **#15** Bayesian-IoU pitch+roll extrinsic calibration → **P1** boresight method (COWORK-2 corroborates).
-- **#16** level-hover vertical regression (isolate +0.3 m optical-centre-vs-CoM) → **P1/P3** boresight isolation.
+- **#15** ✅ **VALIDATED + IN USE (P1, 2026-06-14):** MonoRace IoU-BO recovers pitch+roll 0.000° noiseless / ≤0.008° @0.5 px = the boresight ANGULAR-form estimator. (Closed.)
+- **#16** ✅ **VALIDATED + IN USE (P1, 2026-06-14):** level-hover WLS splits intercept(metric) vs slope(angular) = the ANGULAR/METRIC/MIXED form classifier. (Closed.)
 - **#22** sim regression-suite promotion (8 scripts handoff/ultracode-substrate-audit → tests/; resolve test_confirmed_cr4_03 slug-collision) → one-off hygiene (prevents silent regressions).
 - **#23** CR1-01 + P1-C06 yaw-active capture rider → fold into **P2** inc8 fresh-reset live batch (closes abs-yaw wire sign + obs yaw seam in one capture).
 - **#25** ShadowPC simops tooling push to main → **P3 #3** (partly on origin 1b54cb8; verify complete).
