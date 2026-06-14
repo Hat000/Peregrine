@@ -30,7 +30,7 @@ inc4 (RETIRED) → inc5 (RETIRED) → inc6 (fallback, bridge live-confirmed) →
 - Speed gap = TILT ENVELOPE, not architecture.
 - 4.27/4.55 s bounds **FALSIFIED** (linear-plant fiction; real v_max ~39 m/s v² drag wall).
 - Honest corrected-aero bound ~4.6–4.7 s; contact-valid = 4.43 s (gate-4 +0.046 m margin — razor-thin).
-- Gap decomposition: 35.3 s (VQ1) → 9.76 s (inc7) → 6.89 s (cone tax, OPEN — biggest lever) → ~4.72 s (honest bound).
+- Gap decomposition: 35.3 s (VQ1) → 9.76 s (inc7) → 6.89 s (cone tax) → ~4.72 s. [🆕 SUPERSEDED 2026-06-14: the ~4.72 s is the INVERTED/rate-infeasible TOGT bound; UPRIGHT-feasible ≈ 8 s, gate-4 ~30 m/s — see §DOCTRINE REVISION.]
 - `rl/reference_line_vq1.json` drag-infeasible + 170° inverted → must be REBUILT. `rl/reference_line.py` loader valid.
 
 ## STYLE ENVELOPE COST + cone relaxation ladder
@@ -81,6 +81,20 @@ Spine (SWIFT Nature'23 / Geles RSS'24): keep the DOMINANT potential-based gate-p
 - Routing: azimuth→yaw (free → emergent crab reduction); elevation→pitch GENTLE (fights accel axis; 20° tilt partly offsets → keep σβ generous). λp≈5% of progress; **asymmetric PRIVILEGED critic** (critic sees true α/β/gate pose; actor discovers fix-timing). Anneal λp from 0; CAPS + yaw/pitch-RATE penalties for chatter.
 - **Ablation:** A0 none → A1 1-axis → A2 2-axis → A3 +terminal → A4 +progress-gate; orthogonal critic on/off + λp∈{2,5,10}%. Metrics: lap-time(true), terminal-window fix-rate, worst-gate fix-rate, rate-RMS; watch a phase-transition cliff (Pan).
 - Honesty: progress-gating not in any drone paper (A4 validates); terminal-vs-uniform unproven on localization (A3 generates evidence — we have fix-rate instrumentation nobody published); SWIFT λ-values not public. LATENCY (COWORK-1): VQ eval = desktop GPU → don't over-engineer for CPU latency.
+
+## DOCTRINE REVISION — UPRIGHT-FEASIBLE LAP ≈ 8 s, NOT 4.7 s (2026-06-14; P2 Worker #2, RATIFIED; p2-inc8-refline merged 5a4afa6)
+🚩 **The banked ~4.6–4.7 s / 4.72 s "honest corrected-aero bound" was the FULL-ATTITUDE/TOGT optimum — RATE-INFEASIBLE.** It needs sustained INVERTED descent (median tilt ~100°; tilt>90° over ~50% of the course) AND yaw-rate ~13 rad/s > the plant's ~11 rad/s ceiling. The honest **UPRIGHT, rate+collective-feasible lap ≈ 7.9–8.5 s** (emitted Γ = **8.455 s @ 75° cone**; collective 0.91≤1.0, rate 5.4≤11, v 28.9<39, 0% inverted).
+- **Cause:** MEASURED quad-drag ~7× linear at 30 m/s → upright racing tops **~27–30 m/s** (level @30 m/s already needs ~78° tilt; faster upright → >90° = inverted). The banked **"39 m/s drag wall" was the INVERTED full-thrust case**, not upright. Two independent checks agree (T/W 3.765 + measured drag → ~27–30 m/s upright).
+- **Supersedes:** the gap-decomposition "→ ~4.72 s honest bound" (inverted fiction) and "cone-tax = biggest lever" (the prize is ~9.76→~8 s ≈ 18%, smaller than banked). Honesty trajectory: 4.27/4.55 (linear) → 4.6–4.7 (inverted/TOGT) → **~8 s upright-feasible**.
+- 🚩 **NET POSITIVE for margin closure:** binding gate-4 speed = **~30 m/s, NOT 37–55** → fix-rate/bias/latency/terminal-lock conditions ALL relax; the σ-gate's 37 m/s targets were over-pessimistic on the speed axis.
+- 🚩 **REFRAME inc8's value:** given Q2 (no pose on wire → self-localize REQUIRED), inc8's headline value = **CASE-C DEPLOYABILITY** (camera-pointing + estimator-robust policy that flies on self-localization without crashing), NOT a big speed jump. ~8 s upright = realistic racing ceiling; the win is flying it at all on the real eval.
+- R1' arc-length reward UNAFFECTED (uses Γ geometry only, identical across speed profiles). Γ on main: rl/reference_line_inc8.json + rl/build_reference_line.py (vq1 json untouched).
+
+## INC8 ESTIMATOR-EMUL ESCAPE-HATCH = 🟢 GREEN ×2 + REWARD SPINE A RATIFIED (2026-06-14; P2 Worker #1; p2-inc8-rl merged 5a4afa6; suite 762 green)
+- **GREEN ×2** (two independent builds, consistent non-identical numbers → real, not a single-impl artifact): the 20-dim obs contract carries the camera-pointing signal honestly. Frame-seam identity ≤1e-6 / 250 states (+L correct); pointing→fix-rate monotone (~8.6× in-window gain; term-lock 0.91→0.00); KF in-plane error −59% with fix density (monotone), NEES 0.971 (calibrated); obs[17:20] non-degenerate. Escape NOT fired → torch train-env port (Deliverable 2) UNBLOCKED.
+- **DISCRIMINATES:** inc7 on emulated obs is non-robust (collides @gate-0; S_stable 0.571 vs 5/5 perfect-pose) = the why of inc8.
+- 🚩 **REWARD SPINE = EXPLICIT (arm A), RATIFIED:** emergent pointing gradient is WEAK on a clean/slow course (trusted-IMU + truth-gate → no-fix coast ~0.30 m ≈ biased-fix floor @19 m/s) → implicit-only (arm C) UNDER-produces pointing → the EXPLICIT 2-axis terminal-lock term (A, COWORK-3 shape) is LOAD-BEARING. Commander-ratified training portfolio: **A ≥5 seeds / B 3 / C 1-seed falsifier.** Final reward FREEZE = Fengyou's, post-portfolio + post-σ-recal.
+- 🚩 **SELECTION GATE — no crowning a winner until BOTH:** (1) **P3 L3 at-speed σ recalibration + at-speed coast pin** — gate-4 in-plane is **VERTICAL-σ-DOMINATED (σ_vert 0.28 ≫ σ_lat 0.10)**, cold@bias0 p90 0.392 / bias-ON 0.457, both over budget = CANNOT-SETTLE reproduced; (2) the revised ~30 m/s upright / ~8 s ceiling. The vertical-σ dominance reinforces P1's vertical-boresight fix as the binding axis.
 
 ## Topic file pointers
 - [[project-rl-increment-history]] — checkpoint lineage inc1→inc7, stage history S1.1→S17, inc7 job IDs, md5s/commits, NaN/sidecar/OOB bug histories, §INC7-LIVE-CONFIRMED, §Phase-0(b).

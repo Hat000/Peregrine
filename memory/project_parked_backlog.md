@@ -23,7 +23,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 - **#36** inc8 reward design (lean banked, NOT frozen) → **P2** prepares ablations; **Fengyou owns freeze**.
 - **#37** estimator-emulation obs wrapper + v* (gate-4 approach-speed) instrument → **P2 HARD PREREQ** (selection on obs_from_truth crowns a fiction).
 - **#39** scipy-SLSQP toy MPCC probe (measures real tracking-k for the decomposed-architecture ceiling) → optional cheap one-off, P2-adjacent.
-- **#40** corrected-aero min-snap + coupled-TOPP reference-line rebuild (replaces drag-infeasible reference_line_vq1.json) → **P2** inc8 R1' arc-length DEPENDENCY; proto in handoff/ultracode-planning-togt-s2.
+- **#40** ✅ **DONE (P2 W#2, merged 5a4afa6, 2026-06-14):** rl/reference_line_inc8.json + build_reference_line.py — dead-centre, orientation-fixed, drag-feasible UPRIGHT, R1'-ready. (Closed.)
 - **#55** BSR3 spin-gate (spin_rate_abort→9–10, spin_time_abort→3.0 s) → **P2** prereq before ANY inc8 run.
 - **#60** organizer Qs (6 open: Q①④⑤ + Q-A/B/C/D) → **COWORK-1** attacks; keep ONE weekly nudge.
 - **#62** ✅ **RESOLVED (2026-06-14):** Adroit acceptable-use PERMITTED with rules — Fengyou provided the Princeton RC AUP; banked in reference_adroit_princeton.md §Acceptable-Use Policy + MEMORY.md footgun. (Closed.)
@@ -71,6 +71,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 - **#68** TVM / NVIDIA TAO INT8 edge-deploy toolchain — [Sept+ physical round].
 - **#69** Adroit deploy-key git clone (replace /scratch file copy) — [Adroit sessions grow].
 - **#70** VIO escalation (VINS-Fusion / OpenVINS) — [attitude biased/missing OR blind-segment drift too large].
+- **#71** min-snap vs natural-cubic descent-overshoot trim on the inc8 reference line — [if descent overshoot is shown to hurt; minor] (P2 W#2, 2026-06-14).
 
 ## ⛔ DEAD / SUPERSEDED (D) — do not re-litigate
 - **#1** G3 re-run at σ=0.10 — SUPERSEDED by margin-closure-envelope (already re-derived at σ=0.10, 7654e99).
