@@ -208,6 +208,47 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 1. **"gate-3 crosses 1.46 m above (map) center"** = BOTTOM-vs-OPENING reference-frame confusion; true miss is **0.017 m**. NOT evidence of a map vertical offset. Do NOT cite as case-(a)/map-offset support.
 2. **piece-F "+0.3 m registration_D"** = ε − δ_map MISLABELLED as registration; its own GT-transit resurvey σ=0.03 m contradicts it. NOT a real map offset. Do NOT cite as case-(a)/map-offset support.
 
+## MARGIN-CLOSURE-ENVELOPE DONE (2026-06-14; branch claude/charming-jemison-b111c5, commit 7654e99, pushed, NOT merged; handoff/margin-closure-envelope-2026-06-14/REPORT.md)
+
+**268-cell sweep (fix-rate × attitude-bias × speed × latency), nmc=5000 bootstrap CIs, 0 errors, 4-lens adversarial pass.**
+
+### Core verdict
+**σ=0.10 relocates the blocker from σ → FIX-RATE. CANNOT-SETTLE-OFFLINE SURVIVES** (consistent with the δ_map refutation). The old σ=0.265 modeled value made closure impossible everywhere; σ=0.10 (measured) makes closure POSSIBLE — but only if fix-rate AND bias AND latency all clear their thresholds simultaneously.
+
+- **At the MEASURED operating point (cold case-C, σ=0.10, bias≈0, fix-rate=0.07, 37 m/s):** r=0.30 is OPEN — p99 0.297 [CI 0.288, 0.304] vs MARGIN 0.235 (CI sits ENTIRELY over the wall — not noise).
+- **At modeled σ=0.265:** closure envelope is EMPTY everywhere.
+- **σ=0.10 fix-rate 0.07 fails at every bias and speed.** r=0.30 closure needs fix-rate ≥ 0.15–0.25 (CI-clean: fr=0.15 → p99 0.196 [0.190, 0.203]).
+
+### Closure envelope (r=0.30)
+Closes IFF **ALL** of:
+1. **fix-rate ≥ ~0.25** (≥ 0.35 at v=55 m/s)
+2. **attitude bias ≤ ~0.6°** (in-plane-conservative)
+3. **GPU latency ≤ ~50 ms** (CPU-115 ms breaks the v=55 cells; RewindKF handles OOSM but CPU strands post-plane fixes)
+4. **TERMINAL GATE-LOCK: camera held through ≥ 60% of the final approach** — pooled mean fix-rate is NOT sufficient
+
+r=0.38 stress: fr ≥ ~0.5, bias ≤ ~0.3–0.6°. Speed-gate: at fr≥0.25, r=0.30 holds across the whole 25→55 m/s ladder.
+
+### 4-lens adversarial pass (majority adjudication)
+1. **LATENCY = real third axis.** CPU-115 ms breaks the v=55 cells; stranding post-plane fixes is correct physics, not a bug.
+2. **CLUSTERING = STRONGEST LENS.** Terminal fix-DROUGHTS break closure at any mean rate. Global-burst models diverged ~8–12 m (upper bounds); the terminal-drought model is the defensible boundary. **Closure needs TERMINAL gate-lock, NOT just a high pooled mean.**
+3. **IN-PLANE BIAS confirmed** (boundary tightens ~one step; operating verdict unchanged).
+4. **FIX-RATE optimism:** the 0.07 bottleneck is CAMERA COVERAGE, not χ² (gate-4 band 94/95 accepted once associated); even fr=0.10 leaves r=0.30 OPEN.
+
+### L3 ShadowPC target — 3 conditions needed for race-the-cap
+1. Gate-4-band fix-rate ≥ ~0.25 WITH TERMINAL VISIBILITY (camera holds gate through final ~5 m) = load-bearing inc8 camera-pointing item.
+2. Effective attitude bias ≤ ~0.6° (KF open-loop vs GT vel LOCAL_POSITION_NED).
+3. Vision latency ≤ ~50 ms (GPU-class).
+
+### Operational call
+**Race-the-cap is gated on CAMERA POINTING (terminal gate-lock), NOT σ.** Do NOT spend on per-fix precision — spend on TERMINAL GATE-LOCK / fix density. A naive fix-difference velocity channel is HARMFUL at sparse fix-rate (corroborates the already-banked velocity-channel REFUTED → P2 insurance).
+
+### 🚩 3-Way overnight convergence (2026-06-14)
+All three overnight sessions (L3 shadow, δ_map discriminator, margin-closure-envelope) agree: CANNOT-SETTLE-OFFLINE SURVIVES, and the path to CLOSE is now fully quantified:
+- σ NOT the blocker (0.10 < modeled 0.265); body radius NOT the blocker (central r=0.30).
+- **Dominant lever = FIX-RATE via camera pointing: need ≥ ~0.25 with TERMINAL gate-lock; measured 0.07 pooled / 1.4% @ gate-4.**
+- **Bias axis:** ceiling ≤ ~0.6°; δ_map pins ε_vert at 0.56° — nearly EXHAUSTS the budget alone → boresight calibration / ESKF attitude-bias estimation REQUIRED, not optional.
+- **Latency axis:** ≤ ~50 ms GPU-class (CPU-115 ms breaks the high-speed cells).
+
 ## C2-ESTIMATOR-CHAIN DONE & MERGED (2026-06-14; merge commit 05ed750; feature 2d85d7e; 700→723 green, 0 regressions)
 - **RewindKF (`kf_rewind.py`):** productionized OOSM. `update_position_at` rewinds to capture-time + replays buffered IMU exactly. horizon=0.5 s with `assert_horizon_gt(L)` guarding the horizon≤L "drop 100% of fixes" trap. t_fix≥now = bit-identical to bare update. Full live OOSM TIMESYNC-blocked → predict-forward fallback ships first.
 - **`localization.gate_relative_inplane_fix`:** core +L fix. Anisotropic gate-plane cov: in-plane from law `max(σ_ref, a1·r)` (NOT additive — additive double-counts off validated c1 0.139; law & c1 agree ~10 m). Along-track loose + explicit floor. `GATE_REL_INPLANE_SIGMA = 0.265` = the SINGLE swappable constant. a1=0.026 extrapolates badly >24 m (in-band for the ~12 m gate-4 window).
