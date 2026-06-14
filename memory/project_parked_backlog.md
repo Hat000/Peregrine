@@ -11,7 +11,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 
 ## 🔼 FOLD-NOW (F)
 - **#3** ✅ **DONE (P1, a1620b3, 2026-06-14):** bake site = frames.R_camera_from_body; NO code bug (round-trip 1.48e-8 m; fy=320/cy=180 consistent render+PnP). The 0.56° = render-vs-decode convention constant. (Closed.)
-- **#4** surrogate σ vs L3 gate-4 σ reconciliation (lat .104/.19, vert .282/.10 axis-for-axis) → fold into **P3** at-speed recording BEFORE locking the margin σ.
+- **#4** ⏳ **INHERITED by overall commander (2026-06-14):** surrogate σ vs L3 gate-4 σ reconciliation (surrogate pooled σ_vert 0.28 vs L3 gate-4 0.10). P3 confirmed the L3 at-speed recording is DONE → this is ANALYSIS, folded into the boresight-closure + margin-re-run pathway. Full 37 m/s recording TODO (gated on the held inc8 envelope-relaxed policy).
 - **#5** bearing-resolve ShadowPC `data/runs/*_l3atspeed_*` via shadow_gate4.py → **P3** boresight-lock alternative.
 - **#6 / #28** 30 Hz gating + per-gate last-accepted-fix distance from L3 → **P3** at-speed recording (feeds speed-ceiling analytic + #43).
 - **#13** ONNX/TensorRT export of detector v2 + in-loop latency benchmark → **NEW dispatch**; CLOSES the ≤50 ms LATENCY axis if eval=GPU (COWORK-1). Export laptop-doable now; on-target benchmark folds into P3.
