@@ -20,6 +20,7 @@
 - **BANKING (rev 4 — thin-index structure):** workers end with **MEMORY-DELTA** (≤10 lines); commander triages; sonnet banking agent banks IN BATCHES. **Route detail to the topic file + its domain sub-index; touch MEMORY.md ONLY for NOW / footgun / directive changes.** Agents `git add` ONLY their own paths (never `-A`). Mirror `memory/` ↔ `~/.claude`.
 - **PROMPT-EMISSION:** re-emit COMPLETE worker prompts, never splices. Every prompt carries SESSION + MODEL(version) + EFFORT + canary + MEMORY-DELTA requirement + escape hatch + report path.
 - **User directives:** speed > gate-in-view; tune offline / fly to verify; re-derive every verdict from data; bounded actuation, user owns GUI/risk; offline processing legal; SLURM only on Adroit; concurrent laptop sessions use separate worktrees.
+- 🚩 **ANTI-FORGET (2026-06-14):** review **[[project-parked-backlog]]** at session start + whenever a trigger fires (POC unfreeze · COWORK-1 answers · Adroit contact · fresh recording). Sub-commanders/workers surface NEW parked items UP in their MEMORY-DELTA; the commander files them in the register — NEVER re-scatter parked items back into topic files.
 
 ## Cross-cutting footguns — forget = disaster
 - 🚩 **GATE CONTACT = INVALID RUN** (zero-contact is THE validity rule).
@@ -39,3 +40,4 @@
 - 👁️ **[[index-vision-estimator]]** — estimator race-speed verdict + gate-relative, VISION-PKG2, detector pipeline, case-C readiness, estimator robustness, advisor-triage.
 - 🎮 **[[index-control-sim]]** — CTBR control/sysid, deploy recipe + true conventions, sim interface (wire spec), sim ops (unattended mechanics), autonomy-hardening.
 - 📋 **[[index-strategy-meta]]** — master plan (SSOT), competition materials + rules, hardware, prior-art, tooling eval, walking-skeleton + feedback.
+- 📂 **[[project-parked-backlog]]** — STANDING register of 70 banked-but-parked threads, triaged F/T/D with revive-triggers. **REVIEW each session + when any trigger fires** (COWORK-1 organizer answers = cluster key un-gating 8 threads).
