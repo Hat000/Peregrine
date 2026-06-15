@@ -6,6 +6,8 @@ Mid-level index for competition rules, VQ1/VQ2 mechanics, Track-A strategy, user
 - Submission = Python stack, run unattended, **FULLY AUTONOMOUS** (§7: human interaction = DQ). Unlimited attempts, May→~mid/late July.
 - **Adroit summer access CONFIRMED.**
 - 🚩 **GATE CONTACT = INVALID RUN** (zero-contact is THE validity rule).
+- 🚨 **TIME-LOCK FOOTGUN (2026-06-15, CLARIFY before serious testing):** FAQ "once all gates are passed, the run time is LOCKED" — UNKNOWN whether (a) local-test completion locks an official time + (b) best-of-unlimited vs first/latest-completion-locks ("locked" may CONTRADICT "unlimited attempts fastest-valid"). HARD RULE until clarified: NEVER accidentally complete a clean run — dev/test STOPS BEFORE the final gate or in a confirmed non-submitting sandbox. Detail + the map/position/interface FAQ intel → [[reference-competition-materials]] §FAQ INTEL.
+- 🚩 **Interface CONSISTENT across both VQ rounds + COURSE DOWNLOADABLE offline (FAQ 2026-06-15):** map KNOWN offline (no SLAM); position almost-certainly NOT streamed live (vision self-loc = case-C confirmed); test the official VQ1 wire ONCE → holds for VQ2. → [[reference-competition-materials]]
 
 ## Track-A strategy + MVP
 - **Track A = VQ1 floor + VQ2 baseline.** MVP = min-snap line + slow VALID finish > fast invalid.
