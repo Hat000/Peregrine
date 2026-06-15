@@ -1,0 +1,56 @@
+{
+  "name": "appearance_broad",
+  "description": "VQ2 generalization driver: gate COLOUR as a nuisance axis (full-wheel hue, no orange-red prior -- the real A2RL x DCL gate is a purple solid frame), dark-arena lighting with coloured spotlights, HDRI environments, mixed indoor backgrounds, plus ~20% embedded hard negatives. Kills the gambling-red overfit so the detector keys on gate GEOMETRY for the Round-2 3D-scanned appearance gap.",
+  "negative_fraction": 0.2,
+  "viewpoint": {
+    "range_min_m": 2.0,
+    "range_max_m": 30.0,
+    "range_skew": 1.8,
+    "lateral_sigma_m": 1.4,
+    "vertical_sigma_m": 1.0,
+    "yaw_jitter_rad": 0.35,
+    "pitch_jitter_rad": 0.3,
+    "roll_jitter_rad": 0.4
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.85,
+    "lighting_p": 0.5,
+    "brightness_p": 0.6,
+    "geometric_p": 0.2
+  },
+  "appearance": {
+    "use_vq1_red": false,
+    "gate_hue_jitter": 0.5,
+    "gate_sat_range": [0.2, 1.0],
+    "gate_val_range": [0.35, 1.0],
+    "gate_metallic_range": [0.0, 0.5],
+    "gate_roughness_range": [0.2, 0.9],
+    "gate_emission_prob": 0.1,
+    "lighting_mode": "auto",
+    "ambient_strength_range": [0.08, 1.5],
+    "n_spotlights_range": [1, 3],
+    "spotlight_energy_range": [200.0, 3000.0],
+    "colored_light_prob": 0.4,
+    "sun_elevation_range_deg": [10.0, 85.0],
+    "sun_intensity_range": [0.8, 6.0],
+    "color_temp_range_k": [4000.0, 8000.0],
+    "use_hdri": true,
+    "hdri_dir": null,
+    "background_mode": "mixed",
+    "clutter_max": 8,
+    "floor_wall_texture_prob": 0.7,
+    "exposure_range": [-0.8, 0.8],
+    "gamma_range": [0.85, 1.15],
+    "sensor_noise_prob": 0.4
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 96,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": true,
+    "motion_blur_shutter": 0.5,
+    "use_glare": true
+  }
+}

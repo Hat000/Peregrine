@@ -1,0 +1,47 @@
+{
+  "name": "terminal_approach",
+  "description": "The terminal gate-lock regime: 2-8 m, the outer boundary leaving frame, lower corners pushed out by the +20 deg uptilt -> 3-corner clips. The margin-critical band where camera pointing must hold the gate (inc8 terminal lock).",
+  "viewpoint": {
+    "range_min_m": 2.0,
+    "range_max_m": 8.0,
+    "range_skew": 1.4,
+    "lateral_sigma_m": 0.8,
+    "vertical_sigma_m": 0.6,
+    "yaw_jitter_rad": 0.3,
+    "pitch_jitter_rad": 0.3,
+    "roll_jitter_rad": 0.45,
+    "speed_min_mps": 8.0,
+    "speed_max_mps": 35.0
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.9,
+    "lighting_p": 0.5,
+    "brightness_p": 0.6,
+    "geometric_p": 0.15,
+    "motion_blur_limit": 21
+  },
+  "appearance": {
+    "use_vq1_red": true,
+    "gate_hue_jitter": 0.45,
+    "gate_sat_range": [0.4, 1.0],
+    "gate_val_range": [0.5, 1.0],
+    "sun_elevation_range_deg": [15.0, 80.0],
+    "sun_intensity_range": [1.5, 6.0],
+    "color_temp_range_k": [4500.0, 7500.0],
+    "use_hdri": true,
+    "hdri_dir": null,
+    "background_mode": "mixed",
+    "clutter_max": 6,
+    "floor_wall_texture_prob": 0.6
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 96,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": true,
+    "motion_blur_shutter": 0.6,
+    "use_glare": true
+  }
+}

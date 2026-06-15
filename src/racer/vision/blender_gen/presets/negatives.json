@@ -1,0 +1,40 @@
+{
+  "name": "negatives",
+  "description": "HARD NEGATIVES: on-course camera viewpoints with NO gate -- background, arena structure and confuser props only (empty labels). ~25-30% of the overall mix per the sim-to-real evidence (MonoRace + the YOLOv11 DR study). Teaches the detector not to fire on gate-coloured rectangles / structure.",
+  "negative_fraction": 1.0,
+  "viewpoint": {
+    "range_min_m": 2.0,
+    "range_max_m": 30.0,
+    "range_skew": 1.8,
+    "lateral_sigma_m": 2.0,
+    "vertical_sigma_m": 1.4,
+    "yaw_jitter_rad": 0.5,
+    "pitch_jitter_rad": 0.35,
+    "roll_jitter_rad": 0.5
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.85,
+    "lighting_p": 0.5,
+    "brightness_p": 0.6,
+    "geometric_p": 0.0
+  },
+  "appearance": {
+    "use_vq1_red": false,
+    "gate_hue_jitter": 0.5,
+    "lighting_mode": "dark_arena",
+    "ambient_strength_range": [0.05, 0.8],
+    "background_mode": "mixed",
+    "clutter_max": 12,
+    "floor_wall_texture_prob": 0.8
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 64,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": true,
+    "motion_blur_shutter": 0.5,
+    "use_glare": true
+  }
+}
