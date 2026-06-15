@@ -43,6 +43,7 @@ metadata:
   + poll the output file. **PowerShell→native-exe quoting mangles double-quoted args that contain spaces**
   (e.g. `-o "%N %G"`, `grep -o "a b"`) → ship complex/multiline commands as a **base64'd script file**
   (`echo <b64> | base64 -d > f`) and run that, instead of inlining.
+- 🚩 **FILE TRANSFER = `adroit.py upload <local> <full-remote-FILE-path>`** (native paramiko SFTP `sftp.put` — mkdir -p + `%` progress; remote arg is the full FILE path, NOT the dir). The `x`/`serve` daemon is **EXEC-ONLY** (no SFTP channel) → file transfer cannot go through it; `upload` opens its OWN session (key passphrase getpass + ONE Duo) but does NOT disturb a running `serve` daemon. Run in **PowerShell** via the connector venv (`.\.venv\Scripts\python.exe adroit.py upload …`) — Git Bash mangles the `/scratch/...` remote arg. 🚩 **RAW `scp`/Windows-OpenSSH FAILS on this path** — `Corrupted MAC on input / message authentication code incorrect` (the campus VPN corrupts the default-negotiated MAC). The connector PINS `hmac-sha2-256` (the MAC Adroit+VPN handle; adroit.py connect() L125-132) so its `upload` works where scp dies → **NEVER scp, always `adroit.py upload`.** `pull_file.py` is the download counterpart. (2026-06-14, inc8 re-smoke tarball upload.)
 
 Related: [[project-ai-grand-prix]], [[project-hardware-constraint]], [[project-phase2-rl-vision-decisions]]
 
