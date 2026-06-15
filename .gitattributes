@@ -1,7 +1,10 @@
 # Line-ending policy. core.autocrlf=true on Windows would CRLF-ify files on checkout;
 # the TOGT C++ YAML parser reads '0.05\r' as garbage (segfaults), and bash scripts break
 # under CRLF -- force LF where it matters (laptop-togt-bound-2026-06-10).
+# *.sbatch added 2026-06-14: rl/peregrine_inc8_smoke.sbatch reached Adroit as CRLF and `sbatch`
+# rejected it (had to be hand-fixed on the cluster); force LF so it never recurs.
 *.sh text eol=lf
+*.sbatch text eol=lf
 scripts/togt/** text eol=lf
 handoff/laptop-togt-bound-2026-06-10/cases/** text eol=lf
 rl/reference_line_vq1.json text eol=lf

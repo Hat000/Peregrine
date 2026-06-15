@@ -152,6 +152,58 @@ def _run_with_lifelines(self):
 
 TrainRunner.run = _run_with_lifelines
 
+
+# ---------------------------------------------------------------------------------------------
+# Cosmetic ONNX-export RC guard (memory:434 / project_phase2_rl_vision_decisions.md:434).
+#
+# diffaero's runner.close() runs, as its LAST step, an ONNX export of the trained policy
+# (close() -> agent.export() -> PolicyExporter.export() -> torch.onnx.export()). The committed
+# cfg/dynamics/quad.yaml ships action_frame="body" (body-frame CTBR rates -- intentional; see
+# rl/diffaero_dynamics.py), but diffaero's utils/exporter.py post_process only implements
+# "local"/"world" and RAISES `ValueError: Unknown action frame: body` when torch.onnx.export
+# re-traces through it. The checkpoint save AND the TorchScript/.pt2 export both SUCCEED first;
+# only this trailing ONNX re-trace raises -- poisoning the process exit code (RC=1) AFTER a fully
+# successful train + checkpoint (observed: inc8 GPU smoke job 3273374, 300/300 updates, no NaN).
+#
+# We keep the diffaero clone PRISTINE and guard ONLY this one export failure here in the wrapper,
+# mirroring the existing monkeypatch-lifeline pattern: a SUCCESSFUL train MUST exit 0. The guard
+# is deliberately NARROW -- it re-raises anything that is not unambiguously the action-frame
+# ONNX-export ValueError (matched on BOTH the unique diffaero message AND an export/onnx call-site
+# in the traceback). A real failure (NaN-abort, a construction/shape error, an emergency-save
+# failure, any other close()-time error) therefore still propagates a non-zero RC.
+# ---------------------------------------------------------------------------------------------
+
+def _is_onnx_action_frame_export_error(exc: BaseException) -> bool:
+    """True ONLY for diffaero's `ValueError: Unknown action frame: <frame>` raised on the trailing
+    ONNX export. Requires BOTH the unique message and an export/onnx frame in the traceback, so an
+    unrelated ValueError (or a real training failure) can never be swallowed."""
+    if not isinstance(exc, ValueError):
+        return False
+    if "action frame" not in str(exc).lower():
+        return False
+    tb_text = "".join(traceback.format_tb(exc.__traceback__)).lower()
+    return any(marker in tb_text for marker in ("onnx", "export", "exporter"))
+
+
+_orig_close = TrainRunner.close
+
+
+def _close_guarding_onnx_export(self, *a, **k):
+    try:
+        return _orig_close(self, *a, **k)
+    except Exception as exc:  # noqa: BLE001 -- re-raised below unless it is the known cosmetic crash
+        if _is_onnx_action_frame_export_error(exc):
+            print('[onnx-guard] diffaero\'s trailing ONNX export does not support '
+                  'action_frame="body" (ValueError: %s). Train + checkpoint + TorchScript/.pt2 '
+                  'export already SUCCEEDED; treating this cosmetic export-only failure as '
+                  'non-fatal so a successful run exits 0. '
+                  '(memory:434 / project_phase2_rl_vision_decisions.md:434)' % exc)
+            return None
+        raise
+
+
+TrainRunner.close = _close_guarding_onnx_export
+
 from diffaero.script.train import main  # noqa: E402  (must follow the registrations above)
 
 if __name__ == "__main__":

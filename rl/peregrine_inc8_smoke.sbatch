@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=00:45:00
+#SBATCH --time=02:30:00
 #SBATCH --output=/scratch/network/fl3689/peregrine_inc8_smoke.out
 #
 # inc8 GPU SMOKE (P2 INC8-RL Worker #3, Deliverable 2). 1 seed, arm A, short budget. Acceptance:
@@ -33,8 +33,14 @@ cd /scratch/network/fl3689/diffaero
 
 SEED=${SEED:-0}
 NENVS=${NENVS:-2048}
-NUPD=${NUPD:-300}
+# Re-smoke budget = 1000 updates (was 300). 300 was PRE-COMPETENCE: basic course-following hadn't
+# established, so the camera-pointing term had nothing to shape and util/signal were not yet
+# representative. 1000 lets course-following emerge (so pointing has something to shape) AND dilutes
+# the one-time export/startup cost into a representative GPU-util reading -- while staying well short
+# of an L0 run (6000). Keep NENVS=2048 (a real GPU-saturation reading), SEED=0, arm A, precheck.
+NUPD=${NUPD:-1000}
 TRAIN=/scratch/network/fl3689/peregrine_repo/rl/peregrine_train_inc8.py
+TBTRACE=/scratch/network/fl3689/peregrine_repo/rl/inc8_tb_trace.py
 # inc7-class measured-plant DR (map-ON) + contact-true geometry (doctrine band) + BSR3 + arm A.
 COMMON=(
   env=racing env.name=peregrine_racing_inc8 +env.inc8=true +env.r5_arm=A
@@ -71,12 +77,24 @@ echo "=== GPU utilization summary (must be HIGH -- saturation check) ==="
 awk -F, 'NR>1 && $2 ~ /%/ {gsub(/ %/,"",$2); s+=$2; n++; if($2+0>mx)mx=$2} END{if(n)printf "mean_util=%.1f%%  max_util=%.0f%%  samples=%d\n", s/n, mx, n}' \
   /scratch/network/fl3689/peregrine_inc8_gpu_util.log
 
-echo "=== inc8 SIGNAL TRACE (pointing emerges + reward rising): pull from the run log ==="
-RUN=$(ls -dt /scratch/network/fl3689/diffaero/outputs/train/*/inc8_smoke_A_seed${SEED}* 2>/dev/null | head -1)
+echo "=== inc8 SIGNAL TRACE (pointing emerges + reward rising): read from TensorBoard ==="
+# diffaero/hydra writes each run to outputs/train/<date>/<time>/ ; the runname appears only in the
+# DECORATED TB logdir <date>/<time>/quad__<env>__<algo>__<model>__<runname>__<idx>/ (NOT as a
+# top-level dir -- the old `*/inc8_smoke_A_seed0*` glob matched nothing). Resolve the run dir by the
+# decorated logdir for THIS smoke; fall back to the newest run dir (the smoke follows the precheck,
+# so newest == smoke). Either way we hand the whole run-dir tree to the recursive TB/sidecar readers.
+TRAINOUT=/scratch/network/fl3689/diffaero/outputs/train
+RUNDECOR=$(ls -dt ${TRAINOUT}/*/*/*inc8_smoke_A_seed${SEED}__* 2>/dev/null | head -1)
+if [ -n "$RUNDECOR" ]; then
+  RUN=$(dirname "$RUNDECOR")
+else
+  RUN=$(ls -dt ${TRAINOUT}/*/*/ 2>/dev/null | head -1); RUN=${RUN%/}
+fi
 echo "RUN=$RUN"
-# the env logs these into loss_components every log_freq updates (stdout + tensorboard):
-grep -hoE "inc8_(pointing_rate|terminal_pointing|fix_rate|c_inplane)[^ ]*|total_reward[^ ]*" \
-  /scratch/network/fl3689/peregrine_inc8_smoke.out | tail -60
+# inc8 signal metrics are TensorBoard-only (env_loss/inc8_*, env_loss/total_reward, agent_loss/*);
+# they never reach stdout, so we parse the TB event file (event_accumulator is in the diffaero env --
+# NO download needed on the compute node). Prints the TRAJECTORY every ~100 updates, not just endpoints.
+python ${TBTRACE} "$RUN" --stride-updates 100
 echo "INC8_SMOKE_DONE"
 echo "=== checkpoint sidecar (S7: obs_dim must be 20, inc8=true, r5_arm=A) ==="
 find "$RUN" -name actor.json -exec cat {} \; 2>/dev/null | head -3
