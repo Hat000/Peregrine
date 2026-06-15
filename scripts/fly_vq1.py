@@ -170,7 +170,10 @@ def _build_planner(args) -> ReactivePlanner:
     if args.faithful:
         from twin_tune import FAITHFUL_TUNED_PLANNER
 
-        return ReactivePlanner(yaw_mode="course", **FAITHFUL_TUNED_PLANNER)
+        params = dict(FAITHFUL_TUNED_PLANNER)
+        if getattr(args, "faithful_cruise", None) is not None:
+            params["cruise_speed"] = args.faithful_cruise  # at-speed sweep: dial planner cruise
+        return ReactivePlanner(yaw_mode="course", **params)
     return ReactivePlanner(cruise_speed=args.cruise, lookahead_m=args.lookahead, yaw_mode=args.yaw_mode)
 
 
@@ -188,6 +191,8 @@ def _build_controller(args) -> Controller:
             overrides["alt_thrust_lo"] = args.alt_thrust_lo
         if args.alt_thrust_hi is not None:
             overrides["alt_thrust_hi"] = args.alt_thrust_hi
+        if getattr(args, "faithful_max_speed", None) is not None:
+            overrides["max_speed"] = args.faithful_max_speed  # at-speed sweep: dial velocity cap
         return make_controller(signs=_FAITHFUL_SIGNS, **overrides)
     alt_lo = args.alt_thrust_lo if args.alt_thrust_lo is not None else 0.18
     alt_hi = args.alt_thrust_hi if args.alt_thrust_hi is not None else 0.36
@@ -251,6 +256,8 @@ def main() -> int:
                     help="saved gate map fallback (live TRACK_INFO is preferred if seen)")
     ap.add_argument("--mode", choices=list(_MODE), default="position")
     ap.add_argument("--cruise", type=float, default=2.5, help="planner cruise speed m/s (bounded; start slow)")
+    ap.add_argument("--faithful-cruise", type=float, default=None, help="at-speed sweep: override the FAITHFUL planner cruise_speed (keeps faithful gains; default 8.0)")
+    ap.add_argument("--faithful-max-speed", type=float, default=None, help="at-speed sweep: override the FAITHFUL controller max_speed velocity cap (default 6.0)")
     ap.add_argument("--lookahead", type=float, default=2.0, help="carrot distance beyond the gate (m)")
     ap.add_argument("--yaw-mode", choices=("carrot", "course"), default="carrot", help="planner yaw: 'course' holds the nose down the gate axis (drift-insensitive; for decoupled CTBR); 'carrot' faces the line-of-sight")
     ap.add_argument("--gate-corner-to-center", action="store_true", help="map position is the gate's bottom-left CORNER -> offset to the opening centre (+w/2 right, -h/2 up)")

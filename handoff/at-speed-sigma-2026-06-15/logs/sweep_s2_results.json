@@ -1,0 +1,74 @@
+[
+  {
+    "ok": true,
+    "exit_code": 0,
+    "speed": 20.0,
+    "label": "atspd_s2_s20_p1",
+    "lap_num": 1,
+    "recording": "data\\runs\\20260615_165148_atspd_s2_s20_p1",
+    "last_col": 0,
+    "final_state": "FINISHED",
+    "gate_index": "6 / 6",
+    "contact": false
+  },
+  {
+    "ok": true,
+    "exit_code": 0,
+    "speed": 20.0,
+    "label": "atspd_s2_s20_p2",
+    "lap_num": 2,
+    "recording": "data\\runs\\20260615_165252_atspd_s2_s20_p2",
+    "last_col": 0,
+    "final_state": "FINISHED",
+    "gate_index": "6 / 6",
+    "contact": false
+  },
+  {
+    "ok": true,
+    "exit_code": 0,
+    "speed": 20.0,
+    "label": "atspd_s2_s20_p3",
+    "lap_num": 3,
+    "recording": "data\\runs\\20260615_165356_atspd_s2_s20_p3",
+    "last_col": 0,
+    "final_state": "FINISHED",
+    "gate_index": "6 / 6",
+    "contact": false
+  },
+  {
+    "ok": true,
+    "exit_code": 0,
+    "speed": 30.0,
+    "label": "atspd_s2_s30_p1",
+    "lap_num": 4,
+    "recording": "data\\runs\\20260615_165500_atspd_s2_s30_p1",
+    "last_col": 0,
+    "final_state": "FINISHED",
+    "gate_index": "6 / 6",
+    "contact": false
+  },
+  {
+    "ok": true,
+    "exit_code": 0,
+    "speed": 30.0,
+    "label": "atspd_s2_s30_p2",
+    "lap_num": 5,
+    "recording": "data\\runs\\20260615_165604_atspd_s2_s30_p2",
+    "last_col": 0,
+    "final_state": "FINISHED",
+    "gate_index": "6 / 6",
+    "contact": false
+  },
+  {
+    "ok": true,
+    "exit_code": 0,
+    "speed": 30.0,
+    "label": "atspd_s2_s30_p3",
+    "lap_num": 6,
+    "recording": "data\\runs\\20260615_165709_atspd_s2_s30_p3",
+    "last_col": 0,
+    "final_state": "FINISHED",
+    "gate_index": "6 / 6",
+    "contact": false
+  }
+]
