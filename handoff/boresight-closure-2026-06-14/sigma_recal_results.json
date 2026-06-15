@@ -1,0 +1,257 @@
+{
+  "_meta": {
+    "deliverable": "D2 sigma-recal (boresight-closure pathway)",
+    "n_boot": 20000,
+    "seed": 20260614,
+    "engine_uses_single_inplane_sigma": true,
+    "engine_ref": "handoff/margin-closure-envelope-2026-06-14/margin_envelope.py fly_lap L308-312"
+  },
+  "l3_gate4_sigma": {
+    "N": 81,
+    "n_windows": 13,
+    "fixes_per_window": [
+      5,
+      5,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "speed_mps": [
+      17.03,
+      18.756
+    ],
+    "range_m": [
+      20.075,
+      24.038
+    ],
+    "vertical_gateY": {
+      "sd": 0.1008,
+      "mean_bias": -0.2147,
+      "ci90_iid": [
+        0.0836,
+        0.118
+      ],
+      "ci90_cluster": [
+        0.0846,
+        0.1167
+      ],
+      "icc": 0.0,
+      "deff": 1.0,
+      "n_eff": 81.0,
+      "ci_widening_cluster_over_iid": 0.931
+    },
+    "lateral_gateX": {
+      "sd": 0.1914,
+      "mean_bias": -0.0402,
+      "ci90_iid": [
+        0.1615,
+        0.2162
+      ],
+      "ci90_cluster": [
+        0.1663,
+        0.2101
+      ],
+      "icc": 0.0299,
+      "deff": 1.1562,
+      "n_eff": 70.06,
+      "ci_widening_cluster_over_iid": 0.8
+    },
+    "isotropic_equivalent": {
+      "central": 0.1529,
+      "ci90_cluster": [
+        0.1344,
+        0.1677
+      ]
+    },
+    "cluster_note": "the 81 fixes are 13 windows x 5-7 fixes; a within-window-correlated sd UNDER-estimates the true per-fix scatter and the iid CI is too tight. The cluster bootstrap (resample whole windows) and ICC->N_eff give the honest CI."
+  },
+  "decomposition_0p28_vs_0p10": {
+    "a_axis_convention": {
+      "labels_match": true,
+      "note": "surrogate diag order [lateral=gateX, vertical=gateY, depth=gateZ] == shadow rel_cross/rel_vert in the SAME gate.R_world_gate frame -> labels are consistent (NOT a swap).",
+      "surrogate_anisotropy": "vertical(0.28) >> lateral(0.10)",
+      "l3_gate4_anisotropy": "lateral/cross(0.191) > vertical(0.101) -- OPPOSITE",
+      "cause": "gate-4 is a high-crab gate (crab 36-54 deg) -> the yaw/crab-coupled CROSS(X) axis is inflated; this is real geometry, not a labelling bug.",
+      "matched_range_g2_20_24m": {
+        "N": 83,
+        "vert_sd": 0.19208490973537906,
+        "cross_sd": 0.11000241745307335,
+        "anisotropy": "vert>cross (surrogate-like at lower-crab gate)"
+      },
+      "gate4_cross_sd_by_crab": {
+        "low_crab": 0.18086593883428723,
+        "high_crab": 0.1969908653670839,
+        "corr_abs_cross_vs_crab": 0.2534425039414922
+      },
+      "verdict": "AXIS contributes ~0 of the 0.28-vs-0.10 *vertical* gap (labels match). What it DOES explain is the opposite anisotropy: gate-4 moves the noise from vert->lateral via high crab."
+    },
+    "b_pooling": {
+      "surrogate_vertical_floor_pooled_10_26": 0.2815829316354898,
+      "surrogate_vertical_subband_20_26": 0.23469632428199658,
+      "pooling_inflation_ratio_floor_over_subband": 1.1997756355875313,
+      "p3_headon_vert_sd_22_24m": 0.09738116642214623,
+      "l3_gate4_vert_sd_20_24m": 0.10076533454573,
+      "note": "the 0.28 is inflated by the noisier 10-20 m near-band (strong-perspective PnP) + cross-flight pooling. At the gate-4 operating range 20-24 m, two INDEPENDENT datasets agree the per-fix vertical scatter is ~0.10 (P3 0.097, L3 0.101), NOT 0.28.",
+      "verdict": "POOLING (near-band + cross-flight) is the DOMINANT driver of the 0.28-vs-0.10 vertical gap: floor->subband alone is 26% of the inflation; the residual subband->gate4 (0.235->0.10) is range-matching + gate-specificity."
+    },
+    "c_speed": {
+      "surrogate_fit_set": "simops-mastery (6 flights / 125 clean rows), Track-3 at-speed",
+      "l3_gate4_speed_mps": [
+        17.03,
+        18.756
+      ],
+      "p3_headon_speed_mps": [
+        0.0,
+        6.0
+      ],
+      "static_vs_moving_invariance": "P3 22-24 m: static-hover vs moving-approach rel_vert differ by 0.007 m (FORM_RESOLUTION) -> at <=18 m/s the per-fix vertical sd is speed-flat (P3-low-speed 0.097 ~= L3-18m/s 0.10).",
+      "at_speed_caveat": "L3 is ~17-18 m/s (inc7). The BINDING gate-4 is ~30 m/s (doctrine) / older 37 m/s. Motion-blur sigma at 30-37 m/s is UNMEASURED -- a standing caveat, gated on the held inc8 envelope-relaxed policy. Do NOT claim the 0.10 holds at 30+ m/s.",
+      "verdict": "SPEED explains ~0 of the 0.28-vs-0.10 gap in the MEASURED 0-18 m/s range (sd is speed-flat there). It is the OPEN risk ABOVE 18 m/s, not a current contributor to the discrepancy."
+    },
+    "d_boresight_wander": {
+      "surrogate_vertical_bias_band_across_bands": [
+        0.010176363916549747,
+        0.18580637874074757,
+        0.19691964606686113
+      ],
+      "p3_per_session_mean_rel_vert_spread": 0.08891436696819771,
+      "p3_per_session_std_of_means": 0.021157853969907492,
+      "l3_gate4_per_window_std_of_means": 0.03882884813419682,
+      "l3_gate4_within_window_mean_var": 0.010173385194641274,
+      "l3_gate4_between_window_var": 0.00150767944742852,
+      "between_over_total_frac": 0.12907037959524303,
+      "note": "the surrogate vertical bias_band is NON-stationary (0.01->0.186->0.197 across range bands) = a constant epsilon_vert mixing with range -> per-band bias wander folds into the pooled FLOOR as scatter. In the gate-4 windows the between-window mean wander is small (std-of-means 0.039) and most variance is within-window.",
+      "verdict": "BORESIGHT-WANDER is a SECONDARY inflator of the surrogate floor (a few cm: bias_band swings ~0.19 across bands, whose mixing adds scatter when pooled). After the -0.25 m bake, the mean epsilon is removed; the residual *wander* (std-of-means ~0.04 at gate-4) is small and already inside the per-fix sd."
+    },
+    "variance_ladder": {
+      "step0_surrogate_pooled_floor": 0.2815829316354898,
+      "step1_after_drop_near_band_subband_20_26": 0.23469632428199658,
+      "step2_l3_gate4_20_24m": 0.10076533454573,
+      "attribution_var_fraction": {
+        "pooling_near_band": 0.3501335005105253,
+        "range_match_plus_gate_specific": 0.6498664994894747
+      },
+      "interpretation": "of the TOTAL vertical variance removed going 0.28->0.10, ~35% is the near-band pooling (10-20 m) and ~65% is range-matching to 20-24 m + gate-4 specificity. AXIS=0, SPEED=0 (in 0-18 m/s), WANDER=secondary (folded inside the floor)."
+    },
+    "headline": "POOLING dominates: the surrogate 0.28 = pooled STD over 10-26 m (its own 20-26 sub-band is 0.235); at the gate-4 operating range 20-24 m two independent datasets give per-fix vertical sigma ~0.10. AXIS=0 (labels match; gate-4 just moves noise vert->lateral via high crab). SPEED=0 in 0-18 m/s (speed-flat) but UNMEASURED >18 m/s (standing caveat). WANDER=secondary (boresight bias_band mixing folds into the pooled floor)."
+  },
+  "recommendation": {
+    "iso_central": 0.1529,
+    "iso_central_ci90": [
+      0.1344,
+      0.1677
+    ],
+    "iso_conservative": 0.1677,
+    "aniso_central": [
+      0.1914,
+      0.1008
+    ],
+    "aniso_conservative": [
+      0.2101,
+      0.1167
+    ],
+    "rationale": "ENGINE uses ONE in-plane sigma for both axes -> the ISOTROPIC value must be the in-plane-radial-equivalent sqrt((lat^2+vert^2)/2)=0.153, NOT the clean 0.10 vertical (using 0.10 would UNDER-state the miss by ignoring the crab-coupled 0.19 lateral). CENTRAL=0.153; CONSERVATIVE=0.168 (upper cluster-bootstrap CI). The ANISOTROPIC pair [0.191 lat, 0.101 vert] is the honest shape for the engine-prep worker's extended two-sigma engine.",
+    "honesty_flag": "POST-BAKE the VERTICAL axis is clean (sigma_vert 0.10) but the LATERAL axis is 0.19 (crab-coupled at this high-crab gate). The in-plane miss is LATERAL-dominated, NOT vertical-dominated. The bake fixes the vertical BIAS (-0.25 m mean), not the lateral SCATTER. Margin closure now rides on the lateral 0.19 + fix-rate, not the vertical.",
+    "vs_old_modeled": "0.265 (production GATE_REL_INPLANE_SIGMA / SIGMA_MODELED) is CONSERVATIVE vs both the iso-central 0.153 and the iso-conservative 0.168 -> the modeled constant already bounds the L3 gate-4 in-plane scatter.",
+    "at_speed_caveat": "L3 is ~17-18 m/s (inc7). The BINDING gate-4 is ~30 m/s (doctrine) / older 37 m/s. Motion-blur sigma at 30-37 m/s is UNMEASURED -- a standing caveat, gated on the held inc8 envelope-relaxed policy. Do NOT claim the 0.10 holds at 30+ m/s."
+  },
+  "gate4_checkpoint_path": "C:/Users/Fengy/Downloads/Projects/Anduril/.claude/worktrees/jovial-gagarin-65931d/handoff/boresight-closure-2026-06-14/sigma_gate4_l3.json",
+  "margin_sanity_probe": {
+    "_caveat": "SANITY probe only (n_mc=400); the AUTHORITATIVE gate-4 margin re-run is the engine-prep worker job (apply bake + this sigma). COLD case-C, bias_mode=inplane, latency 15 ms.",
+    "margin_at": {
+      "0.30": 0.235,
+      "0.38": 0.155
+    },
+    "cells": [
+      {
+        "sigma": 0.265,
+        "lab": "modeled",
+        "v": 30,
+        "fr": 0.07,
+        "p90": 0.496,
+        "p99": 0.636,
+        "clr30": false,
+        "clr38": false
+      },
+      {
+        "sigma": 0.265,
+        "lab": "modeled",
+        "v": 30,
+        "fr": 0.25,
+        "p90": 0.26,
+        "p99": 0.373,
+        "clr30": false,
+        "clr38": false
+      },
+      {
+        "sigma": 0.265,
+        "lab": "modeled",
+        "v": 30,
+        "fr": 0.5,
+        "p90": 0.2,
+        "p99": 0.282,
+        "clr30": false,
+        "clr38": false
+      },
+      {
+        "sigma": 0.1529,
+        "lab": "iso-central",
+        "v": 30,
+        "fr": 0.07,
+        "p90": 0.291,
+        "p99": 0.41,
+        "clr30": false,
+        "clr38": false
+      },
+      {
+        "sigma": 0.1529,
+        "lab": "iso-central",
+        "v": 30,
+        "fr": 0.25,
+        "p90": 0.177,
+        "p99": 0.264,
+        "clr30": false,
+        "clr38": false
+      },
+      {
+        "sigma": 0.1529,
+        "lab": "iso-central",
+        "v": 30,
+        "fr": 0.5,
+        "p90": 0.127,
+        "p99": 0.186,
+        "clr30": true,
+        "clr38": false
+      },
+      {
+        "sigma": 0.1529,
+        "lab": "iso-central",
+        "v": 37,
+        "fr": 0.5,
+        "p90": 0.126,
+        "p99": 0.177,
+        "clr30": true,
+        "clr38": false
+      },
+      {
+        "sigma": 0.1677,
+        "lab": "iso-conservative",
+        "v": 30,
+        "fr": 0.5,
+        "p90": 0.138,
+        "p99": 0.184,
+        "clr30": true,
+        "clr38": false
+      }
+    ],
+    "finding": "recal iso 0.153 ~HALVES p90/p99 vs modeled 0.265 (real relief), but the COLD design point still does NOT clear r=0.30 at fr<=0.25 -- only at fr>=0.50. CONFIRMS fix-rate is the binding lever, NOT sigma. r=0.38 cold never clears here. Closure rides on TERMINAL fix-rate (camera pointing, P3-validated 67-77%), consistent with the standing CANNOT-SETTLE-at-measured-fix-rate verdict."
+  }
+}
