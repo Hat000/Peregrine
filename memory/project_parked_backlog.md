@@ -69,7 +69,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 - **#66** min-snap geometry rung (rpg_trajectory_generation numpy port) — [VQ2 quality; folds with #40].
 - **#67** async heavyweight detector ~5 Hz full-res → rewind-corrected KF — [Q①/Q⑤] · COWORK-1.
 - **#68** TVM / NVIDIA TAO INT8 edge-deploy toolchain — [Sept+ physical round].
-- **#69** Adroit deploy-key git clone (replace /scratch file copy) — [Adroit sessions grow].
+- **#69** ⏳ **CONFIRMED LIVE (2026-06-14, inc8 GPU smoke):** peregrine_repo on /scratch IS a stale flat copy (no cluster GitHub creds) → refresh needs a `git archive` tarball of the target commit + a manual upload per code change = real iteration friction (one upload per re-smoke/ladder). Workaround works; PROMOTE to deploy-key git clone (replace /scratch file copy) when Adroit iteration cadence justifies — [Adroit sessions grow / next multi-round GPU phase].
 - **#70** VIO escalation (VINS-Fusion / OpenVINS) — [attitude biased/missing OR blind-segment drift too large].
 - **#71** min-snap vs natural-cubic descent-overshoot trim on the inc8 reference line — [if descent overshoot is shown to hurt; minor] (P2 W#2, 2026-06-14).
 
