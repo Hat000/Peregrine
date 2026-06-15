@@ -38,6 +38,7 @@ Mid-level index for competition rules, VQ1/VQ2 mechanics, Track-A strategy, user
 ## Prompt-emission directive
 - When amending any worker prompt, ALWAYS re-emit COMPLETE prompt — never a splice/delta.
 - Every prompt carries SESSION + MODEL(version) + EFFORT + canary + MEMORY-DELTA requirement + escape hatch + report path.
+- 🚩 **EFFORT field is AUTHORITATIVE + the options are `high | extra | max | ultracode` (2026-06-14, Fengyou).** ULTRACODE IS ONE OF THE EFFORT LEVELS, not a separate session type — NEVER say "ultracode session" in prose while the header says high/extra/max (that conflict confused Fengyou on the inc8 harness-fix prompt). Write `ultracode` IN THE EFFORT FIELD ITSELF, and ONLY when the work genuinely needs multi-agent fan-out/adversarial-verify (broad audit, design portfolio like A×5/B×3/C×1, big migration). Small well-scoped fixes (e.g. a 4-item harness fix, one careful edit + trivia) = `high`/`extra`/`max`, NOT ultracode. The structural model "Fengyou pastes each pathway into an ultracode session" applies to BIG pathways; do not auto-ultracode every prompt.
 
 ## Canary protocol (rev 2, 2026-06-14)
 - 🚩 OVERALL COMMANDER persistent session addresses **Fengyou** by name in EVERY message (missing name = context degradation → rotate). **Sub-commanders + workers do NOT need the canary** (Fengyou, 2026-06-14).
