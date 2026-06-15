@@ -86,7 +86,14 @@ def _end_to_end_pos_g_residuals(n=1500, seed=4242):
     return max_plus, max_minus
 
 
-def test_obs_pos_g_is_plus_L_seen_and_minus_L_breaks():
+def test_obs_pos_g_is_plus_L_seen_and_minus_L_breaks(monkeypatch):
+    # This pins the +L SIGN convention (a -L slot is a ~24 m flip), comparing the obs pos_g against the
+    # RAW +L lever R_w2g@(+L_seen). The shipped metric bake (frames.BORESIGHT vert_offset_m=-0.25,
+    # boresight-closure-2026-06-14) adds a ~0.25 m constant to the absolute fix that legitimately
+    # propagates into pos_g but is NOT in the raw +L_seen reference -> zero it so the 1e-5 +L identity
+    # tests the sign/convention (its purpose), not the deployed calibration offset. -L still breaks ~24 m.
+    import racer.frames as _F
+    monkeypatch.setattr(_F, "BORESIGHT", _F.BoresightCorrection())
     max_plus, max_minus = _end_to_end_pos_g_residuals()
     # +L identity: the shipped obs builder's pos_g slot IS R_w2g @ (gate_seen - pos).
     assert max_plus <= _PLUS_L_TOL, (

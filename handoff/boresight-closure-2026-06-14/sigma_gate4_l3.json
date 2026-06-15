@@ -1,0 +1,90 @@
+{
+  "_provenance": {
+    "what": "GATE-4-SPECIFIC per-fix sigma, recalibrated to the L3 at-speed shadow gate-4 rows.",
+    "source_rows": "handoff/boresight-closure-2026-06-14/data/shadow_gate4_rows.json (accepted N=81)",
+    "speed_mps": [
+      17.03,
+      18.756
+    ],
+    "range_m": [
+      20.075,
+      24.038
+    ],
+    "n_windows": 13,
+    "fixes_per_window": [
+      5,
+      5,
+      6,
+      6,
+      6,
+      6,
+      6,
+      6,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "supersedes": "the POOLED simops-mastery sigma.json vertical.floor 0.2816 (pooling-inflated)",
+    "at_speed_caveat": "L3 is ~17-18 m/s (inc7). The BINDING gate-4 is ~30 m/s (doctrine) / older 37 m/s. Motion-blur sigma at 30-37 m/s is UNMEASURED -- a standing caveat, gated on the held inc8 envelope-relaxed policy. Do NOT claim the 0.10 holds at 30+ m/s.",
+    "schema": "matches rl/fix_surrogate.py FixSurrogate.from_checkpoints sigma.json contract"
+  },
+  "n_clean": 81,
+  "lateral": {
+    "label": "lateral_inplane_gateX",
+    "floor": 0.191396,
+    "floor_mad": 0.157377,
+    "a1": 0.0,
+    "bias_band": -0.040183,
+    "floor_ci90_cluster": [
+      0.166279,
+      0.210093
+    ],
+    "floor_ci90_iid": [
+      0.161459,
+      0.216244
+    ],
+    "icc": 0.0299,
+    "deff": 1.1562,
+    "n_eff": 70.06,
+    "note": "crab-coupled (corr |cross| vs crab +0.25) -> the NOISY in-plane axis at this high-crab gate."
+  },
+  "vertical": {
+    "label": "vertical_inplane_gateY",
+    "floor": 0.100765,
+    "floor_mad": 0.099431,
+    "a1": 0.0,
+    "bias_band": -0.214749,
+    "floor_ci90_cluster": [
+      0.084622,
+      0.116681
+    ],
+    "floor_ci90_iid": [
+      0.0836,
+      0.11802
+    ],
+    "icc": 0.0,
+    "deff": 1.0,
+    "n_eff": 81.0,
+    "note": "the BORESIGHT axis. bias_band -0.215 m is epsilon_vert (gate-DOWN) that the -0.25 m bake removes; post-bake the mean->~0 and the per-fix scatter is the clean 0.10."
+  },
+  "depth": {
+    "label": "depth_along",
+    "floor": 0.862255,
+    "floor_mad": 0.7429375650763015,
+    "a1": 0.0,
+    "bias_band": 0.397057,
+    "note": "L3 gate-4 along sd; LOOSE by design (engine ME uses RADIAL_SIGMA 0.5; the absolute fix + IMU own depth)."
+  },
+  "inplane_isotropic_for_margin": {
+    "central": 0.152948,
+    "ci90_cluster": [
+      0.134441,
+      0.167744
+    ],
+    "conservative": 0.167744,
+    "formula": "sqrt((lateral_floor^2 + vertical_floor^2)/2)  -- in-plane-radial-equivalent for the single-sigma ME.fly_lap engine"
+  },
+  "note": "sigma(range)=max(floor,a1*range); a1=0 (range-flat over the 20-24 m gate-4 operating band). GATE-4 SPECIFIC -- do NOT use for other gates (anisotropy is posture/crab-dependent)."
+}

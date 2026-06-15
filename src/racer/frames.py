@@ -45,11 +45,17 @@ class BoresightCorrection:
     vert_offset_m: float = 0.0
 
 
-# The ONE correction instance every consumer reads. Default identity => byte-identical. P3 replaces
-# it post-arbiter, e.g. BORESIGHT = BoresightCorrection(pitch_rad=+0.00977)  (angular, +0.56 deg) OR
-# BORESIGHT = BoresightCorrection(vert_offset_m=-0.215)  (metric) OR both (mixed). The ESKF static
-# hook reads THIS struct (see CALIB_V2_DESIGN.md sec ESKF-COORDINATION; flag UP before changing).
-BORESIGHT = BoresightCorrection()
+# The ONE correction instance every consumer reads. P3 (boresight-closure-2026-06-14, FORM_RESOLUTION.md)
+# RESOLVED eps_vert = METRIC, range-INDEPENDENT, magnitude -0.25 m at the ~22 m operating band, sign
+# gate-DOWN (vision reads the drone ~0.25 m gate-UP of truth). It is BAKED here as a vert_offset_m=-0.25
+# METRIC term in the +L localization lever (NOT a pitch/extrinsic rotation -- angular was REFUTED: rel_vert
+# is FLAT -0.27 over 14-26 m; an angular bias would x1.9). This affects ONLY the case-C self-localization
+# +L path (gate_pose_to_world_position / gate_relative_inplane_fix); the mount R_camera_from_body() is
+# UNTOUCHED (metric is a translation), so inc7/VQ1/case-A (GIVEN pose) stay byte-identical. Empirically
+# pinned: corrected rel_vert -> +0.004 (P3 head-on N=13308) / +0.035 (L3 gate-4 N=81); voff=+0.25 would
+# DOUBLE the bias (sign load-bearing). Validation: handoff/boresight-closure-2026-06-14/bake_validate.py.
+# A ZERO BoresightCorrection() still yields the byte-identical mount + lever (the dual-form invariant).
+BORESIGHT = BoresightCorrection(vert_offset_m=-0.25)
 
 
 # Measured 1-sigma of the chain's attitude-equivalent error (the given attitude as exercised

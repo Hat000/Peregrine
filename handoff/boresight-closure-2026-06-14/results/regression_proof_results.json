@@ -1,0 +1,111 @@
+{
+  "per_lap_identity_ok": true,
+  "distribution_match_ok": true,
+  "published_stack_ok": true,
+  "reproduces_baseline": true,
+  "per_lap": [
+    {
+      "label": "v37 sig0.10 fr0.07 b0 rnd",
+      "n_laps": 80,
+      "max_abs_diff": 4.621303340002214e-15,
+      "bit_identical": true
+    },
+    {
+      "label": "v37 sig0.10 fr0.35 b0.6 rnd",
+      "n_laps": 80,
+      "max_abs_diff": 1.27675647831893e-15,
+      "bit_identical": true
+    },
+    {
+      "label": "v55 sig0.10 fr0.25 b0.9 inp",
+      "n_laps": 80,
+      "max_abs_diff": 4.0939474033052647e-16,
+      "bit_identical": true
+    }
+  ],
+  "distribution": [
+    {
+      "label": "v37 sig0.10 fr0.07 b0 rnd",
+      "nmc": 2000,
+      "me": {
+        "p50": 0.11101253560242141,
+        "p90": 0.20475638148086525,
+        "p99": 0.2907902260165517
+      },
+      "v2": {
+        "p50": 0.11101253560242141,
+        "p90": 0.20475638148086525,
+        "p99": 0.2907902260165517
+      },
+      "abs_diff": {
+        "p50": 0.0,
+        "p90": 0.0,
+        "p99": 0.0
+      },
+      "within_2mm": true
+    },
+    {
+      "label": "v37 sig0.10 fr0.35 b0.6 rnd",
+      "nmc": 2000,
+      "me": {
+        "p50": 0.06345231888135723,
+        "p90": 0.11847592682727448,
+        "p99": 0.1683190594877643
+      },
+      "v2": {
+        "p50": 0.06345231888135723,
+        "p90": 0.11847592682727437,
+        "p99": 0.1683190594877643
+      },
+      "abs_diff": {
+        "p50": 0.0,
+        "p90": 1.1102230246251565e-16,
+        "p99": 0.0
+      },
+      "within_2mm": true
+    }
+  ],
+  "published": [
+    {
+      "label": "MEASURED   sig0.10 b0.0 fr0.07 rnd",
+      "nmc": 4000,
+      "repro_p90": 0.2098902151433201,
+      "repro_p99": 0.29851086426355383,
+      "banked_p90": 0.21,
+      "banked_p99": 0.297,
+      "banked_p90_ci": [
+        0.207,
+        0.213
+      ],
+      "banked_p99_ci": [
+        0.288,
+        0.304
+      ],
+      "d_p90": 0.00010978485667989535,
+      "d_p99": 0.001510864263553846,
+      "p90_in_banked_ci": true,
+      "p99_in_banked_ci": true
+    },
+    {
+      "label": "sig0.10 b0.6 fr0.25 rnd",
+      "nmc": 4000,
+      "repro_p90": 0.1345136064911951,
+      "repro_p99": 0.1822462665542876,
+      "banked_p90": 0.135,
+      "banked_p99": 0.183,
+      "banked_p90_ci": [
+        0.132,
+        0.137
+      ],
+      "banked_p99_ci": [
+        0.18,
+        0.186
+      ],
+      "d_p90": 0.0004863935088049165,
+      "d_p99": 0.0007537334457123901,
+      "p90_in_banked_ci": true,
+      "p99_in_banked_ci": true
+    }
+  ],
+  "wall_s": 240.7
+}

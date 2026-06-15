@@ -80,9 +80,13 @@ def test_inplane_sigma_flat_in_band_grows_beyond_10m():
     np.testing.assert_allclose(np.sqrt(cov_far[1, 1]), GATE_REL_RANGE_GROWTH_A1 * 20.0, rtol=1e-9)
 
 
-def test_z_ned_matches_absolute_fix_position():
+def test_z_ned_matches_absolute_fix_position(monkeypatch):
     # The pseudo-fix world position equals gate.position_ned - L (== the absolute fix); the WIN is the
-    # cov shaping + obs sourcing, not a different z.
+    # cov shaping + obs sourcing, not a different z. Pins the UNBIASED +L lever output, so zero the
+    # shipped metric bake (vert_offset_m=-0.25, boresight-closure-2026-06-14) here -- this tests lever
+    # geometry (z == gate - L), a zero-calibration property, not the deployed calibration offset.
+    import racer.frames as _F
+    monkeypatch.setattr(_F, "BORESIGHT", _F.BoresightCorrection())
     L = np.array([-9.0, 0.3, -0.2])
     z, _ = _fix_for_lever(L)
     np.testing.assert_allclose(z, _GATE_POS - L, atol=1e-9)
