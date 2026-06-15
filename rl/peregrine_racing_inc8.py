@@ -88,6 +88,9 @@ class PeregrineRacingInc8(PeregrineRacing):
             raise ValueError(f"r5_arm must be A|B|C, got {self._r5_arm!r}")
         self._inc8w = _inc8_weights_from_cfg(cfg)
         self._global_step = 0
+        # on-device lifetime non-finite-obs counter: accumulated sync-free in get_observations and
+        # read once per step via the batched loss_components sync (replaces a per-obs-call host sync).
+        self._nonfinite_obs_t = torch.zeros((), device=dev, dtype=torch.long)
 
         # estimator-emulation config (the values that supersede d5 per the prompt / MEMORY NOW).
         self._emul_cfg = IE.EmulConfig(
@@ -171,10 +174,14 @@ class PeregrineRacingInc8(PeregrineRacing):
             self.gate_pos[ar, tg], self.gate_yaw[ar, tg],
             self.gate_rel_pos[ar, nxt], self.gate_yaw_rel[ar, nxt],
             self.last_action[..., 0], triple=triple, virtual_flip=False)
+        # Sync-free NaN lifeline: zero non-finite entries UNCONDITIONALLY (an identity when all-finite,
+        # so numerically and gradient-identical to the old guarded form) and accumulate the count on
+        # device. The old `bool(finite.all())` + `int((~finite).sum())` forced a CUDA synchronise on
+        # EVERY obs call; the count is now read once per step via the batched loss_components sync
+        # (the obs_nonfinite tag and its value are unchanged).
         finite = torch.isfinite(obs)
-        if not bool(finite.all()):
-            self._nonfinite_obs += int((~finite).sum())
-            obs = torch.where(finite, obs, torch.zeros_like(obs))
+        self._nonfinite_obs_t = self._nonfinite_obs_t + (~finite).sum()
+        obs = torch.where(finite, obs, torch.zeros_like(obs))
         return obs if with_grad else obs.detach()
 
     # ---- state (asymmetric critic: TRUTH gate-relative 33 + confidence triple = 36) ------------
@@ -298,22 +305,47 @@ class PeregrineRacingInc8(PeregrineRacing):
         loss = (-reward).detach()
         reward = reward.detach()
         # ---- inc8 diagnostics (the smoke's pointing / fix / estimator-error curves) ----
+        # LOGGING-ONLY (the TB trace): these never feed reward/obs/gradient. Every scalar mean is
+        # STACKED into one tensor and read back with a SINGLE host-sync (.tolist()); the old form
+        # forced ELEVEN+ CUDA synchronises per step (ten .item(), bool(terminal.any()), and the
+        # in_img[terminal] boolean-mask gather), serialising the GPU pipeline and starving util
+        # (~28% on Adroit). Tags and cadence are UNCHANGED. inc8_terminal_pointing is reproduced as
+        # a masked mean -- sum(in_img over terminal envs) / clamp(#terminal, min=1) -- equal to the
+        # old in_img[terminal].mean() (0.0 when no env is terminal: 0/clamp(0,min=1)=0), bar a
+        # possible last-float32-ULP summation-order difference in a logging value.
+        mdt = self._inc8_dtype
         in_img = geom["in_image"].float()
         terminal = (geom["range"] <= R8.Inc8RewardWeights().perc_d_lock_m) & (geom["range"] > 0)
+        term_cnt = terminal.sum()
+        term_pointing = (in_img * terminal.to(in_img.dtype)).sum() / term_cnt.clamp(min=1)
+        metric_vec = torch.stack([
+            self._nonfinite_obs_t.to(mdt),        # obs_nonfinite (lifetime count)
+            accepted.float().mean().to(mdt),      # inc8_fix_rate
+            in_img.mean().to(mdt),                # inc8_pointing_rate
+            term_pointing.to(mdt),                # inc8_terminal_pointing
+            err_ip.mean().to(mdt),                # inc8_estim_err_inplane_m
+            triple[:, 0].mean().to(mdt),          # inc8_c_inplane
+            triple[:, 2].mean().to(mdt),          # inc8_age_norm
+            r1p.mean().to(mdt),                   # inc8_r1p
+            r5.mean().to(mdt),                    # inc8_r5_perc
+            gt.mean().to(mdt),                    # inc8_gt_anchor
+            spin_abort.float().mean().to(mdt),    # inc8_spin_abort_rate
+        ])
+        (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
+         age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
-            "obs_nonfinite": float(self._nonfinite_obs),
-            "inc8_fix_rate": accepted.float().mean().item(),
-            "inc8_pointing_rate": in_img.mean().item(),
-            "inc8_terminal_pointing": (in_img[terminal].mean().item()
-                                       if bool(terminal.any()) else 0.0),
-            "inc8_estim_err_inplane_m": err_ip.mean().item(),
-            "inc8_c_inplane": triple[:, 0].mean().item(),
-            "inc8_age_norm": triple[:, 2].mean().item(),
-            "inc8_r1p": r1p.mean().item(),
-            "inc8_r5_perc": r5.mean().item(),
-            "inc8_gt_anchor": gt.mean().item(),
+            "obs_nonfinite": obs_nonfinite_v,
+            "inc8_fix_rate": fix_rate_v,
+            "inc8_pointing_rate": pointing_v,
+            "inc8_terminal_pointing": term_point_v,
+            "inc8_estim_err_inplane_m": estim_err_v,
+            "inc8_c_inplane": c_inplane_v,
+            "inc8_age_norm": age_norm_v,
+            "inc8_r1p": r1p_v,
+            "inc8_r5_perc": r5_perc_v,
+            "inc8_gt_anchor": gt_anchor_v,
             "inc8_conf_anneal": anneal,
-            "inc8_spin_abort_rate": spin_abort.float().mean().item(),
+            "inc8_spin_abort_rate": spin_rate_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())
