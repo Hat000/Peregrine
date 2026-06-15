@@ -44,7 +44,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 - **#27** hard-coast + map-averaging layer-3 — [mapper built = #64].
 - **#29** full-lap case-C sim at ~37 m/s gate-4 — [inc8 envelope-relaxed policy exists].
 - **#31** adaptive state-based ROI cropping (extends >32 m range) — [case-C co-visibility wall].
-- **#32** heteroscedastic per-corner σ (NLL/RLE detector head) — [next detector retrain = P5].
+- **#32** heteroscedastic per-corner σ (NLL/RLE detector head) — [next detector retrain = P5]. 🟡 **QUEUED: this + #33 (stronger/newer arch) + a better aug recipe = the "detector-recipe improvement" session Fengyou offered (2026-06-14); FIRES once photoreal dataset A lands (tune the recipe ON that data, not before). Per-corner σ feeds weighted-PnP → fix ACCURACY → estimator + emulation-fidelity (see index_rl_training §EMULATION-FIDELITY). Commander to write the prompt when A's data exists.**
 - **#33** YOLO26-pose retrain + A/B — [photoreal v4 = P5].
 - **#34** kpt_conf_thresh 0.5 relaxation — [real confidence distribution measured].
 - **#41** TOGT re-run with mixer coupling — [post-inc8 bound refresh].
