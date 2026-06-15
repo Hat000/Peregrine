@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from racer import frames as _F
 from racer.contracts import Gate, GateObservation, GatePose
 from racer.frames import R_camera_from_body, R_world_from_body
 from racer.localization import (
@@ -10,6 +11,15 @@ from racer.localization import (
 )
 from racer.state_estimator import LinearKF
 from racer.vision.gate_pose import estimate_gate_pose, project_gate_corners
+
+
+@pytest.fixture
+def zero_boresight(monkeypatch):
+    """Zero frames.BORESIGHT for tests that pin the UNBIASED +L lever output (exact drone-position
+    recovery). The shipped frames.BORESIGHT is the metric bake (vert_offset_m=-0.25, boresight-closure
+    -2026-06-14), a +L-lever translation that intentionally shifts the recovered position by ~0.25 m;
+    these tests exercise lever GEOMETRY (a zero-calibration property), not the deployed calibration."""
+    monkeypatch.setattr(_F, "BORESIGHT", _F.BoresightCorrection())
 
 
 def _world_setup():
@@ -35,7 +45,7 @@ def test_gate_normal_is_through_direction():
     np.testing.assert_allclose(gate.normal_ned, [1.0, 0.0, 0.0])  # north = downrange
 
 
-def test_glue_recovers_drone_position_exactly():
+def test_glue_recovers_drone_position_exactly(zero_boresight):
     p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
     gp = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=R_cg, t_cam_gate=t_cg, reproj_error_px=0.0)
     pos, _ = gate_pose_to_world_position(gp, gate, R_wb)
@@ -153,7 +163,7 @@ def test_glue_inflates_covariance_for_attitude_uncertainty():
     assert added == pytest.approx(np.deg2rad(1.0) ** 2 * 2.0 * float(lever @ lever), rel=1e-9)
 
 
-def test_end_to_end_project_pnp_glue_recovers_position():
+def test_end_to_end_project_pnp_glue_recovers_position(zero_boresight):
     # World -> projected corners -> PnP -> glue should round-trip the drone position.
     p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
     corners = project_gate_corners(R_cg, t_cg)
@@ -165,7 +175,7 @@ def test_end_to_end_project_pnp_glue_recovers_position():
     np.testing.assert_allclose(pos, p_drone, atol=1e-4)
 
 
-def test_end_to_end_with_pixel_noise():
+def test_end_to_end_with_pixel_noise(zero_boresight):
     p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
     rng = np.random.default_rng(0)
     corners = project_gate_corners(R_cg, t_cg) + rng.normal(0, 1.0, (4, 2))
@@ -179,7 +189,7 @@ def test_end_to_end_with_pixel_noise():
     assert np.all(np.linalg.eigvalsh(cov) >= -1e-9)      # valid covariance
 
 
-def test_apply_update_moves_kf_toward_truth():
+def test_apply_update_moves_kf_toward_truth(zero_boresight):
     p_drone, R_wb, gate, R_cg, t_cg = _world_setup()
     kf = LinearKF.initialize(np.zeros(3), np.zeros(3), pos_std=3.0, vel_std=1.0)
     before = np.linalg.norm(kf.position - p_drone)

@@ -111,7 +111,14 @@ def _plus_minus_L_residuals(n=1000, seed=4242):
     return max_plus, max_break
 
 
-def test_estimator_sourced_obs_is_plus_L_and_minus_L_breaks():
+def test_estimator_sourced_obs_is_plus_L_and_minus_L_breaks(monkeypatch):
+    # Pins the +L SIGN convention through the estimator wiring (a -L slot is a ~24 m flip), comparing
+    # pos_g against the RAW +L lever R_w2g@(+L_seen). The shipped metric bake (frames.BORESIGHT
+    # vert_offset_m=-0.25, boresight-closure-2026-06-14) adds a ~0.25 m constant to the absolute fix
+    # that propagates into pos_g but is absent from the raw +L_seen reference -> zero it so the 1e-5 +L
+    # identity tests the sign/convention (its purpose), not the deployed calibration. -L still breaks ~24 m.
+    import racer.frames as _F
+    monkeypatch.setattr(_F, "BORESIGHT", _F.BoresightCorrection())
     max_plus, max_break = _plus_minus_L_residuals()
     assert max_plus <= _PLUS_L_TOL, (
         f"estimator-sourced pos_g diverges from R_w2g @ (+L_seen) by {max_plus:.3e} m; +L broken.")

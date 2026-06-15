@@ -169,9 +169,17 @@ _skip = pytest.mark.skipif(not _HAS, reason="frames.BORESIGHT not present until 
 
 
 @_skip
-def test_unified_default_zero_is_byte_identical_mount():
-    assert (F.BORESIGHT.pitch_rad, F.BORESIGHT.roll_rad, F.BORESIGHT.vert_offset_m) == (0.0, 0.0, 0.0)
+def test_unified_default_zero_is_byte_identical_mount(monkeypatch):
+    # INVARIANT (not the shipped default): a ZERO BoresightCorrection -> the mount is bit-identical to
+    # the 20deg-only mount. The SHIPPED frames.BORESIGHT is now the METRIC bake (vert_offset_m=-0.25,
+    # boresight-closure-2026-06-14); that is a +L-lever translation that does NOT touch the mount, so
+    # R_camera_from_body() is byte-identical to 20deg-only REGARDLESS of vert_offset_m. We pin BOTH:
+    #   (a) the structural dual-form invariant under an explicit zero correction, AND
+    #   (b) that the SHIPPED metric bake still leaves the mount byte-identical (metric != mount).
     expected = F._R_CAMERA_FROM_TILTED_BODY @ Rotation.from_euler("Y", -F.CAMERA_PITCH_RAD).as_matrix()
+    assert np.array_equal(F.R_camera_from_body(), expected)      # shipped metric bake: mount untouched
+    monkeypatch.setattr(F, "BORESIGHT", F.BoresightCorrection())  # explicit zero correction
+    assert (F.BORESIGHT.pitch_rad, F.BORESIGHT.roll_rad, F.BORESIGHT.vert_offset_m) == (0.0, 0.0, 0.0)
     assert np.array_equal(F.R_camera_from_body(), expected)      # bit-identical, not just allclose
 
 
@@ -189,7 +197,10 @@ def test_metric_field_shifts_lever_and_preserves_plus_L(monkeypatch):
     corners = project_gate_corners(R_cw @ g.R_world_gate, R_cw @ g.position_ned, g.inner_size_m)
     gp = estimate_gate_pose(GateObservation(0, 0, corners_px=corners, corner_confidence=np.ones(4)),
                             weighted_refine=False)
-    pos0, _ = gate_pose_to_world_position(gp, g, R_wb)            # vert_offset default 0
+    # Baseline at an EXPLICIT zero correction (the shipped frames.BORESIGHT is now the metric bake,
+    # vert_offset_m=-0.25; this test pins the lever MECHANICS, not the deployed calibration).
+    monkeypatch.setattr(F, "BORESIGHT", F.BoresightCorrection())
+    pos0, _ = gate_pose_to_world_position(gp, g, R_wb)            # vert_offset = 0 (explicit)
     monkeypatch.setattr(F, "BORESIGHT", F.BoresightCorrection(vert_offset_m=-0.215))
     pos1, _ = gate_pose_to_world_position(gp, g, R_wb)
     # +L preserved: the ONLY change is the additive metric term -R_wb@[0,0,voff] (direction unchanged)
