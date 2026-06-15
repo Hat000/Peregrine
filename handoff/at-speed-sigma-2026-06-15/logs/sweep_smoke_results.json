@@ -1,0 +1,14 @@
+[
+  {
+    "ok": true,
+    "exit_code": 0,
+    "speed": 8.0,
+    "label": "atspd_smoke_s8_p1",
+    "lap_num": 1,
+    "recording": "data\\runs\\20260615_163609_atspd_smoke_s8_p1",
+    "last_col": 0,
+    "final_state": "FINISHED",
+    "gate_index": "2 / 2",
+    "contact": false
+  }
+]
