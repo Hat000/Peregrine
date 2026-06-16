@@ -64,9 +64,12 @@ def test_accept_bandpass_shape_reproduces_track3():
     peak = max(float(s.accept_prob_in_image(r)) for r in (18, 20, 22, 24, 26))
     assert peak == pytest.approx(0.83, abs=0.06)
     assert float(s.accept_prob_in_image(20.0)) > 0.78
-    # suppressed below 14 m (frontal flips) and above 30 m (range cap)
-    assert float(s.accept_prob_in_image(5.0)) < 0.01
-    assert float(s.accept_prob_in_image(10.0)) < 0.05
+    # rising edge moved to the POINTED accurate floor ~12 m (accept_rlo 16.191->12, paired with the
+    # inc8 reward band-pass perc_r_lo; accept-geometry-2026-06-15). The PEAK is unchanged (Track-3
+    # ceiling ~0.83 above); only the LOWER edge is overridden. Hard-zeroed below the 9 m guard / >35 m.
+    assert float(s.accept_prob_in_image(5.0)) < 0.01           # below the 9 m guard -> 0
+    assert float(s.accept_prob_in_image(12.0)) > 0.3           # at the rlo centre -> ~half peak
+    assert float(s.accept_prob_in_image(10.0)) < 0.2           # still on the rising edge, below peak
     assert float(s.accept_prob_in_image(35.0)) < 0.02
     assert float(s.accept_prob_in_image(50.0)) < 0.01
 

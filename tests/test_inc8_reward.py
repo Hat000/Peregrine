@@ -77,33 +77,43 @@ def test_visibility_elevation_tighter_than_azimuth():
     assert v_el < v_az, (v_el, v_az)
 
 
-def test_terminal_weight_ramp():
-    w0, d_lock, d_acq = 0.15, 5.0, 24.0
-    far = RW.terminal_weight(_t([30.0]), d_lock, d_acq, w0).item()
-    near = RW.terminal_weight(_t([4.0]), d_lock, d_acq, w0).item()
-    mid = RW.terminal_weight(_t([14.5]), d_lock, d_acq, w0).item()        # halfway
-    assert far == pytest.approx(w0)            # relaxed far (acquire)
-    assert near == pytest.approx(1.0)          # full lock inside d_lock
-    assert mid == pytest.approx(w0 + (1 - w0) * 0.5, abs=1e-6)
+def test_terminal_weight_bandpass():
+    """w_term is a BAND-PASS: peak in [r_lo, r_hi], SUPPRESSED to ~w0 BOTH terminal (<r_lo) and far
+    (>r_hi). The two-sided suppression -- especially terminal -- is the fix for convergence run 3273701,
+    where a one-sided low-pass plateau rewarded easy <5 m pointing equally and yielded 0 fixes."""
+    r_lo, r_hi, w_lo, w_hi, w0 = 12.0, 28.0, 1.5, 1.5, 0.05
+    tw = lambda r: RW.terminal_weight(_t([r]), r_lo, r_hi, w_lo, w_hi, w0).item()
+    assert tw(20.0) > 0.9                                 # peak: full weight in the fixable band
+    assert tw(3.0) < 0.12 and tw(40.0) < 0.12            # terminal AND far strongly suppressed
+    assert tw(3.0) == pytest.approx(w0, abs=0.05)        # terminal decays to the floor w0
+    assert tw(3.0) * 5.0 < tw(20.0)                      # THE headline: w_term(3) << w_term(20)
+    assert tw(12.0) == pytest.approx(0.525, abs=0.03)    # lower sigmoid edge ~ half-peak (+w0)
+    assert tw(28.0) == pytest.approx(0.525, abs=0.03)    # upper sigmoid edge ~ half-peak (+w0)
+    assert tw(8.0) < tw(12.0) < tw(16.0)                 # monotone rising through the lower edge
 
 
 # ============================================================ R5' arms
 def test_perception_arms():
     w = RW.Inc8RewardWeights()
-    t_cam = _t([[0.0, 0.0, 4.0]])           # centred, inside d_lock (range 4 m)
-    rng = _t([4.0]); ds = _t([0.5]); in_img = torch.tensor([True])
-    rA = RW.perception_reward(t_cam, rng, ds, in_img, "A", w).item()
-    rB = RW.perception_reward(t_cam, rng, ds, in_img, "B", w).item()
-    rC = RW.perception_reward(t_cam, rng, ds, in_img, "C", w).item()
-    # at full lock (range<d_lock) w_term==1 so A==B; both = rw_perc * 1 * v(=1) * ds
-    assert rA == pytest.approx(w.perc * 1.0 * 1.0 * 0.5)
-    assert rB == pytest.approx(rA)
+    ds = _t([0.5]); in_img = torch.tensor([True])
+    # IN-BAND, centred (range 20 m): arm A w_term ~ peak (~1) so A ~ B; both ~ rw_perc * v(=1) * ds
+    t_band = _t([[0.0, 0.0, 20.0]]); rng_band = _t([20.0])
+    rA = RW.perception_reward(t_band, rng_band, ds, in_img, "A", w).item()
+    rB = RW.perception_reward(t_band, rng_band, ds, in_img, "B", w).item()
+    rC = RW.perception_reward(t_band, rng_band, ds, in_img, "C", w).item()
+    assert rB == pytest.approx(w.perc * 1.0 * 1.0 * 0.5)   # arm B flat: rw_perc * v(=1) * ds
+    assert rA == pytest.approx(rB, rel=0.05)               # in-band, w_term ~ 1 so A ~ B
     assert rC == 0.0
-    # far out, arm A is down-weighted to w0 but arm B stays flat (B > A far away)
-    t_far = _t([[0.0, 0.0, 22.0]]); rng_far = _t([22.0])
+    # TERMINAL (range 4 m): arm A is BAND-PASS-SUPPRESSED (w_term ~ w0) so A << B -- the conv-run fix
+    t_term = _t([[0.0, 0.0, 4.0]]); rng_term = _t([4.0])
+    rA_term = RW.perception_reward(t_term, rng_term, ds, in_img, "A", w).item()
+    rB_term = RW.perception_reward(t_term, rng_term, ds, in_img, "B", w).item()
+    assert rA_term < 0.2 * rB_term                         # terminal pointing NOT rewarded like the band
+    # FAR (range 40 m): arm A also suppressed (upper band edge) so A << B; arm B stays flat
+    t_far = _t([[0.0, 0.0, 40.0]]); rng_far = _t([40.0])
     rA_far = RW.perception_reward(t_far, rng_far, ds, in_img, "A", w).item()
     rB_far = RW.perception_reward(t_far, rng_far, ds, in_img, "B", w).item()
-    assert rA_far < rB_far
+    assert rA_far < 0.2 * rB_far
 
 
 def test_perception_progress_gated_and_in_image():
@@ -113,6 +123,17 @@ def test_perception_progress_gated_and_in_image():
     assert RW.perception_reward(t_cam, rng, _t([-0.3]), torch.tensor([True]), "A", w).item() == 0.0
     # out of image -> zero even if ds>0
     assert RW.perception_reward(t_cam, rng, _t([0.5]), torch.tensor([False]), "A", w).item() == 0.0
+
+
+def test_fix_bonus_reward():
+    """Direct per-ACCEPTED-fix bonus: progress-gated (anti-loiter), exactly zero when disabled, earnable
+    ONLY by a real accepted fix WHILE advancing (delta_s > 0)."""
+    acc = torch.tensor([True, True, False, True])
+    ds = _t([0.5, -0.2, 0.5, 0.0])               # advancing / backing / advancing / holding
+    # disabled (rw_fix_bonus=0) -> exactly the zero term (byte-identical inc8)
+    assert torch.equal(RW.fix_bonus_reward(acc, ds, 0.0), torch.zeros_like(ds))
+    # only env 0 pays: accepted AND advancing; backing/not-accepted/holding -> 0
+    assert torch.allclose(RW.fix_bonus_reward(acc, ds, 1.5), _t([1.5, 0.0, 0.0, 0.0]))
 
 
 # ============================================================ BSR3 spin-gate

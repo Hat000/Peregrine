@@ -27,6 +27,7 @@ COLUMNS = [
     ("total_reward",      ["total_reward"]),
     ("pointing_rate",     ["inc8_pointing_rate", "pointing_rate"]),
     ("terminal_pointing", ["inc8_terminal_pointing", "terminal_pointing"]),
+    ("lockband_pointing", ["inc8_lockband_pointing", "lockband_pointing"]),
     ("fix_rate",          ["inc8_fix_rate", "fix_rate"]),
     ("entropy",           ["entropy_loss", "entropy"]),
     ("value_loss",        ["critic_loss", "value_loss"]),

@@ -299,8 +299,9 @@ class PeregrineRacingInc8(PeregrineRacing):
         cs = R8.confidence_shaping_reward(triple, self._inc8w.conf_shape, anneal)
         r5 = R8.perception_reward(geom["t_cam"], geom["range"], delta_s, geom["in_image"],
                                   self._r5_arm, self._inc8w)
+        fb = R8.fix_bonus_reward(accepted, delta_s, self._inc8w.fix_bonus)
         spin_pen = self.rw_spin * spin_abort.float()
-        reward = reward_frozen + r1p + gt + cs + r5 - spin_pen
+        reward = reward_frozen + r1p + gt + cs + r5 + fb - spin_pen
 
         loss = (-reward).detach()
         reward = reward.detach()
@@ -315,9 +316,19 @@ class PeregrineRacingInc8(PeregrineRacing):
         # possible last-float32-ULP summation-order difference in a logging value.
         mdt = self._inc8_dtype
         in_img = geom["in_image"].float()
-        terminal = (geom["range"] <= R8.Inc8RewardWeights().perc_d_lock_m) & (geom["range"] > 0)
+        # inc8_terminal_pointing: in-image rate in the terminal <=5 m zone -- a FIXED deploy KPI (5.0 is
+        # a literal, decoupled from the reward band-pass params; kept for cross-run continuity with the
+        # pilots). With the band-pass reward this should NOT dominate inc8_lockband_pointing.
+        terminal = (geom["range"] <= 5.0) & (geom["range"] > 0)
         term_cnt = terminal.sum()
         term_pointing = (in_img * terminal.to(in_img.dtype)).sum() / term_cnt.clamp(min=1)
+        # inc8_lockband_pointing: in-image rate over the CONFIGURED fixable band [perc_r_lo, perc_r_hi]
+        # (the band-pass support, ~[12,28] m). Uses self._inc8w (NOT a fresh Inc8RewardWeights()) so it
+        # tracks the configured band. This is the GO signal (camera on-gate where fixes are accepted),
+        # NOT the terminal KPI above. Sync-free masked mean (0.0 when the band is empty: 0/clamp(0,min=1)).
+        lockband = ((geom["range"] >= self._inc8w.perc_r_lo)
+                    & (geom["range"] <= self._inc8w.perc_r_hi))
+        lockband_pointing = (in_img * lockband.to(in_img.dtype)).sum() / lockband.sum().clamp(min=1)
         metric_vec = torch.stack([
             self._nonfinite_obs_t.to(mdt),        # obs_nonfinite (lifetime count)
             accepted.float().mean().to(mdt),      # inc8_fix_rate
@@ -330,9 +341,12 @@ class PeregrineRacingInc8(PeregrineRacing):
             r5.mean().to(mdt),                    # inc8_r5_perc
             gt.mean().to(mdt),                    # inc8_gt_anchor
             spin_abort.float().mean().to(mdt),    # inc8_spin_abort_rate
+            lockband_pointing.to(mdt),            # inc8_lockband_pointing
+            fb.mean().to(mdt),                    # inc8_fix_bonus
         ])
         (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
-         age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v) = metric_vec.tolist()  # ONE sync
+         age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v,
+         lockband_point_v, fix_bonus_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
             "obs_nonfinite": obs_nonfinite_v,
             "inc8_fix_rate": fix_rate_v,
@@ -346,6 +360,8 @@ class PeregrineRacingInc8(PeregrineRacing):
             "inc8_gt_anchor": gt_anchor_v,
             "inc8_conf_anneal": anneal,
             "inc8_spin_abort_rate": spin_rate_v,
+            "inc8_lockband_pointing": lockband_point_v,
+            "inc8_fix_bonus": fix_bonus_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())

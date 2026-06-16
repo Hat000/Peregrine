@@ -168,7 +168,12 @@ class TorchSurrogateParams:
     ``sigma_lateral_floor`` (the DR sigma) and the in-plane biases per env (see ``EmulConfig``)."""
     # A. accept band-pass  p = pmax * sig((r-rlo)/wlo) * sig((rhi-r)/whi), hard-zeroed outside guard
     accept_pmax: float = 0.8419703950411151
-    accept_rlo: float = 16.191103551308505
+    # accept_rlo lowered 16.191 (raw Track-3 fix-density edge) -> 12.0 = the POINTED accurate floor
+    # (accept-geometry-2026-06-15): a camera-POINTING policy obtains accurate fixes down to ~12 m, which
+    # the un-pointing inc7 data that fit 16.191 never exercised. Paired with the inc8 reward band-pass
+    # perc_r_lo=12 so reward and fix-obtainability share a lower edge. (Kept == fix_surrogate.FixSurrogate
+    # by the parity test.)
+    accept_rlo: float = 12.0
     accept_wlo: float = 1.0000000000000007
     accept_rhi: float = 28.137694558909192
     accept_whi: float = 1.0000000000000002

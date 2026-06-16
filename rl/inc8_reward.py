@@ -43,12 +43,23 @@ class Inc8RewardWeights:
     estimerr: float = 2.0           # GT in-plane estimator-error anchor (flat, truth-seen)
     conf_shape: float = 0.05        # confidence/staleness dense-shaping (annealed late)
     perc: float = 0.5               # R5' perception weight (~5% of progress)
+    fix_bonus: float = 0.0          # direct per-ACCEPTED-fix bonus, progress-gated (un-gameable);
+                                    # 0.0 == no term (byte-identical). Earnable ONLY by getting a real
+                                    # fix => pointing in the surrogate accept band; not gameable by
+                                    # terminal pointing or a coasting KF. (iteration-4 fix-driven lever)
     # R5' shape
     perc_sigma_a_deg: float = 45.0  # azimuth visibility scale (~H half-FoV)
     perc_sigma_b_deg: float = 29.5  # elevation visibility scale (~V half-FoV)
-    perc_d_lock_m: float = 5.0      # full terminal lock inside this range (w_term -> 1)
-    perc_d_acq_m: float = 24.0      # acquire by ~inter-gate spacing (w_term -> w0 beyond)
-    perc_w0: float = 0.15           # terminal-weight floor (acquire early, lock late)
+    # R5' terminal-weight is a BAND-PASS in range (mirrors the surrogate accept band-pass): w_term peaks
+    # (->1) in the fixable [r_lo, r_hi] band and is SUPPRESSED to ~w0 BOTH in the easy terminal zone
+    # (<r_lo -- where the prior low-pass plateau let the converged policy point-blank for full reward yet
+    # get 0 fixes; convergence run 3273701) AND far (>r_hi). r_lo == the pointed accurate floor ~12 m
+    # (accept-geometry-2026-06-15) == the surrogate accept_rlo, so reward and fix-obtainability align.
+    perc_r_lo: float = 12.0         # band lower edge (pointed accurate floor; == surrogate accept_rlo)
+    perc_r_hi: float = 28.0         # band upper edge (== surrogate accept_rhi ~28)
+    perc_w_lo: float = 1.5          # lower-edge sigmoid width (m)
+    perc_w_hi: float = 1.5          # upper-edge sigmoid width (m)
+    perc_w0: float = 0.05           # band-pass floor (terminal + far strongly suppressed)
     # confidence-shaping anneal (in CONTROL STEPS; the env tracks a global step counter)
     conf_anneal_warmup_steps: float = 0.0
     conf_anneal_ramp_steps: float = 1.0
@@ -97,11 +108,18 @@ def visibility_2axis(t_cam: Tensor, sigma_a_deg: float, sigma_b_deg: float) -> T
     return torch.exp(-((alpha / sigma_a_deg) ** 4 + (beta / sigma_b_deg) ** 4))
 
 
-def terminal_weight(range_m: Tensor, d_lock_m: float, d_acq_m: float, w0: float) -> Tensor:
-    """w_term(d) = w0 + (1-w0)*clip((d_acq - d)/(d_acq - d_lock), 0, 1): the Azhari lambda(d) ramp --
-    relaxed far (w0, don't wreck the racing line during transitions), full lock (1.0) inside d_lock."""
-    ramp = torch.clamp((d_acq_m - range_m) / max(d_acq_m - d_lock_m, 1e-6), 0.0, 1.0)
-    return w0 + (1.0 - w0) * ramp
+def terminal_weight(range_m: Tensor, r_lo: float, r_hi: float, w_lo: float, w_hi: float,
+                    w0: float) -> Tensor:
+    """BAND-PASS w_term(r) = w0 + (1-w0)*sigmoid((r-r_lo)/w_lo)*sigmoid((r_hi-r)/w_hi): peaks (->1) in
+    the fixable [r_lo, r_hi] band, decays to the floor w0 BOTH near (<r_lo) and far (>r_hi). Mirrors the
+    surrogate accept band-pass so the reward gradient points the camera where fixes are ACCEPTED. The
+    two-sided suppression is the whole point: the prior one-sided low-pass plateau (w_term=1.0 for ALL
+    r <= d_lock) let the CONVERGED policy earn full reward by easy terminal <5 m pointing and get 0 fixes
+    (convergence run 3273701: lockband_pointing=0 all 4000 updates). w_term(3 m) << w_term(20 m)."""
+    z_lo = torch.clamp((range_m - r_lo) / w_lo, -30.0, 30.0)
+    z_hi = torch.clamp((r_hi - range_m) / w_hi, -30.0, 30.0)
+    band = torch.sigmoid(z_lo) * torch.sigmoid(z_hi)
+    return w0 + (1.0 - w0) * band
 
 
 def perception_reward(t_cam: Tensor, range_m: Tensor, delta_s: Tensor, in_image: Tensor,
@@ -113,10 +131,21 @@ def perception_reward(t_cam: Tensor, range_m: Tensor, delta_s: Tensor, in_image:
     if arm == "C":
         return torch.zeros_like(range_m)
     v = visibility_2axis(t_cam, w.perc_sigma_a_deg, w.perc_sigma_b_deg)
-    wt = (terminal_weight(range_m, w.perc_d_lock_m, w.perc_d_acq_m, w.perc_w0)
+    wt = (terminal_weight(range_m, w.perc_r_lo, w.perc_r_hi, w.perc_w_lo, w.perc_w_hi, w.perc_w0)
           if arm == "A" else torch.ones_like(range_m))
     gate = in_image.to(v.dtype)
     return w.perc * wt * v * torch.clamp(delta_s, min=0.0) * gate
+
+
+def fix_bonus_reward(accepted: Tensor, delta_s: Tensor, rw_fix_bonus: float) -> Tensor:
+    """Direct un-gameable bonus per ACCEPTED fix, PROGRESS-GATED by max(delta_s,0)>0 (anti-loiter, like
+    R5'). A fix is obtainable ONLY by pointing the camera in the surrogate accept band (12-28 m), so this
+    rewards the band-pointing OUTCOME (a real fix) rather than the weak/gameable raw-in-image proxy R5'.
+    rw_fix_bonus == 0 -> the zero term (byte-identical inc8). (iteration-4 fix-driven fallback lever.)"""
+    if rw_fix_bonus == 0.0:
+        return torch.zeros_like(delta_s)
+    advancing = (delta_s > 0).to(delta_s.dtype)
+    return rw_fix_bonus * accepted.to(delta_s.dtype) * advancing
 
 
 def bsr3_update(spin_clock: Tensor, omega_realized: Tensor, dt: float,
