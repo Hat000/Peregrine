@@ -54,6 +54,20 @@ PNP_FIX_COV_INFLATION = 2.0   # variance multiplier on the analytic 4-corner PnP
 # catastrophic leak. See handoff/shadowpc-vision-pkg2-2026-06-10.
 FIX_COV_FLOOR_STD = 0.40      # m, added in quadrature to every vision world-fix covariance
 
+# In-plane (lateral/centering) STATE-covariance floor for the case-C KF [parked #74, coast-drift
+# 2026-06-15]. NOT a MEASUREMENT floor (that is FIX_COV_FLOOR_STD above, added to R): this floors the KF's
+# own POSITION covariance P so a dense gate-relative fix stream cannot drive it -> R/N -> 0 -- which would
+# send the Kalman gain -> 0 and make the filter stop trusting fixes / ride the drifting IMU
+# ("centering-blind") exactly when a well-pointed inc8 policy makes fixes densest. A floored R does NOT
+# fix this (repeated floored-R updates still drive P -> R/N -> 0); only a STATE floor keeps the gain
+# alive. Set to the same sigma_b "irreducible systematic centering floor" the obs confidence-reference
+# uses (sigma_ref = 0.05 m, rl.estimator_emul.SIGMA_REF_M) and that the coast-drift sig_p0 (+) sig_b
+# budget assumes: the KF can never honestly claim better than ~0.05 m gate-relative centering because the
+# systematic bias sigma_b survives the boresight bake. Applied in-plane (horizontal) ONLY -- the vertical
+# (world-down) bias is owned by the boresight/ESKF pathway. Consumed via LinearKF.inplane_pos_floor_std,
+# activated only in the case-C path (NavigatorConfig.use_inplane_pos_floor + use_rewind_kf/gate_relative).
+INPLANE_POS_FLOOR_STD = 0.05  # m, KF in-plane position-variance STATE floor (case-C; the sigma_b systematic)
+
 
 def _apply_camera_vert_offset(position_ned: np.ndarray, R_world_body: np.ndarray) -> np.ndarray:
     """METRIC boresight: the +L lever recovers the camera OPTICAL CENTRE world position; if the camera

@@ -123,6 +123,26 @@ def test_relative_innovation_gate_rejects_inplane_flip():
     np.testing.assert_array_equal(nav.kf.x, x_before)            # estimate untouched by the rejected fix
 
 
+def test_casec_activates_inplane_pos_floor_vq1_does_not():
+    # The in-plane STATE-cov floor (parked #74) is ACTIVE only in the case-C estimator chain (rewind /
+    # gate-relative ON); the VQ1 / case-A path keeps the bare filter (floor OFF) so it is byte-identical.
+    nav_casec, _ = _build_nav()
+    nav_casec.update(_ds(0), _frame(0, 0))
+    assert nav_casec.kf.kf.inplane_pos_floor_std == NavigatorConfig().inplane_pos_floor_std  # RewindKF proxy
+    # VQ1 (given pos/vel, no rewind/gate-relative) -> floor OFF
+    gate = _gate_facing_north([9.0, 0.0, -2.5], gate_id=0)
+    nav_vq1 = Navigator(gates=[gate], config=NavigatorConfig())
+    nav_vq1.update(_ds(0, position=_TRUE_POS, velocity=np.zeros(3)))
+    assert nav_vq1.kf.inplane_pos_floor_std == 0.0
+
+
+def test_floor_flag_off_keeps_casec_kf_floor_zero():
+    # The escape hatch / kill switch: use_inplane_pos_floor=False -> the case-C KF runs with no floor.
+    nav, _ = _build_nav(use_inplane_pos_floor=False)
+    nav.update(_ds(0), _frame(0, 0))
+    assert nav.kf.kf.inplane_pos_floor_std == 0.0
+
+
 def test_clean_relative_fix_is_accepted_after_warmup():
     nav, gate = _build_nav()
     _run(nav, n=80)

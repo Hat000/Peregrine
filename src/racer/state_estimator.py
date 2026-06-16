@@ -74,6 +74,21 @@ class LinearKF:
     gravity_ned: np.ndarray = field(default_factory=lambda: GRAVITY_NED.copy())
     process_floor: float = 1e-6        # tiny diagonal to keep Q full-rank
     max_dt_s: float = 0.2              # reject implausibly large predict steps (sim reset/stutter) [red-team]
+    # In-plane (horizontal N-E) POSITION-variance STATE floor [parked #74, coast-drift 2026-06-15]. A
+    # dense gate-relative fix stream drives the position covariance P -> R/N -> ~0 (independent updates
+    # accumulate), so the Kalman gain for new fixes -> 0 and the filter STOPS trusting fixes and rides the
+    # drifting IMU ("centering-blind") exactly when a well-pointed inc8 policy makes fixes densest. This
+    # floors the SMALLEST eigenvalue of the horizontal position block P[:2,:2] to
+    # ``inplane_pos_floor_std**2`` AFTER each update, so the filter can never claim better than
+    # ~sigma_floor gate-relative centering accuracy (it physically can't -- the irreducible systematic
+    # bias sigma_b survives the boresight bake) and the gain stays responsive. DISTINCT from the
+    # MEASUREMENT-cov floor (localization.FIX_COV_FLOOR_STD): repeated floored-R updates still drive
+    # P -> R/N -> 0; only a STATE floor keeps the gain alive. 0.0 = DISABLED -> byte-identical to the bare
+    # filter (the VQ1 / case-A path); the case-C estimator chain sets it ~0.05 m (= sigma_ref,
+    # localization.INPLANE_POS_FLOOR_STD). Floors the in-plane (lateral/centering) horizontal eigenvalue
+    # ONLY: the loose along-track horizontal eigenvalue stays >> floor (untouched), and the vertical
+    # (world-down) + velocity blocks are left as-is (the boresight/ESKF pathway owns the vertical bias).
+    inplane_pos_floor_std: float = 0.0
 
     @classmethod
     def initialize(
@@ -135,6 +150,29 @@ class LinearKF:
         I_KH = np.eye(6) - K @ H
         # Joseph form: stays symmetric + positive-definite under finite precision.
         self.P = I_KH @ self.P @ I_KH.T + K @ R @ K.T
+        self._apply_inplane_pos_floor()
+
+    def _apply_inplane_pos_floor(self) -> None:
+        """Floor the smallest eigenvalue of the horizontal (N-E) position covariance block to
+        ``inplane_pos_floor_std**2`` -- the in-plane STATE floor that keeps the Kalman gain responsive
+        under a dense fix stream (see the field doc; parked #74).
+
+        Eigenvalue (not per-axis diagonal) floor: the binding gate-LATERAL/centering direction is a
+        horizontal axis at the gate's yaw, so only the SMALLEST horizontal eigenvalue (whatever direction
+        it points) is the over-converged one -- this raises exactly it and leaves the larger horizontal
+        eigenvalue (the loose along-track direction, var >> floor) untouched. PSD + symmetry are preserved:
+        raising a principal sub-block's eigenvalues adds a PSD increment ``[[dA,0],[0,0]] (dA >= 0)`` to P.
+        NO-OP -- P bit-unchanged -- when disabled OR when the block already clears the floor, so a
+        non-over-converging filter (VQ1, sparse fixes, the G3 in-band ~0.13 m sigma) is byte-identical."""
+        floor_var = self.inplane_pos_floor_std ** 2
+        if floor_var <= 0.0:
+            return
+        block = 0.5 * (self.P[:2, :2] + self.P[:2, :2].T)   # defensive symmetrize (Joseph keeps it so)
+        w, V = np.linalg.eigh(block)
+        if w[0] >= floor_var:                                # smallest eigenvalue already above the floor
+            return
+        w = np.maximum(w, floor_var)
+        self.P[:2, :2] = (V * w) @ V.T
 
     def update_position(self, position_ned: np.ndarray, covariance: np.ndarray) -> None:
         self.update(np.asarray(position_ned, dtype=np.float64), _H_POS, covariance)

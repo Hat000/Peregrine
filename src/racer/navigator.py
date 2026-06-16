@@ -55,6 +55,7 @@ from racer.localization import (
     GATE_REL_ALONG_SIGMA,
     GATE_REL_INPLANE_SIGMA,
     GATE_REL_RANGE_GROWTH_A1,
+    INPLANE_POS_FLOOR_STD,
     gate_pose_to_world_position,
     gate_relative_inplane_fix,
 )
@@ -253,6 +254,15 @@ class NavigatorConfig:
     gate_rel_range_growth_a1: float = GATE_REL_RANGE_GROWTH_A1
     gate_rel_along_sigma: float = GATE_REL_ALONG_SIGMA
     gate_rel_chi2: float = GATE_REL_CHI2_2_999               # chi2(2, 0.999) in-plane gate
+    # In-plane STATE-covariance floor on the KF [parked #74, coast-drift 2026-06-15]. DISTINCT from the
+    # MEASUREMENT floor (fix_cov_floor_std): a dense gate-relative fix stream drives P -> R/N -> 0 so the
+    # Kalman gain -> 0 and the filter rides the drifting IMU ("centering-blind") exactly when a
+    # well-pointed inc8 policy makes fixes densest. The state floor keeps P (and thus the gain) responsive.
+    # ACTIVE only in the case-C estimator chain (use_rewind_kf OR use_gate_relative); the VQ1 / case-A
+    # path keeps floor=0 -> bare-filter byte-identical. Strictly-more-honest -- it only RAISES an
+    # over-converged in-plane covariance toward the true systematic floor sigma_b (never lowers P).
+    use_inplane_pos_floor: bool = True
+    inplane_pos_floor_std: float = INPLANE_POS_FLOOR_STD     # m, sigma_b systematic centering floor (= sigma_ref)
 
 
 @dataclass
@@ -327,7 +337,17 @@ class Navigator:
         pos = np.asarray(ds.position_ned, dtype=np.float64) if use_pos else np.zeros(3)
         vel = np.asarray(ds.velocity_ned, dtype=np.float64) if use_vel else None
         pos_std = self.config.given_pos_std if use_pos else 5.0
-        kf = LinearKF.initialize(pos, vel, pos_std=pos_std, vel_std=1.0)
+        # In-plane STATE-cov floor (parked #74): ACTIVE only in the case-C estimator chain (rewind/gate-
+        # relative). VQ1 / case-A (both OFF) keep floor_std=0.0 -> LinearKF default -> bare-filter
+        # byte-identical (the C2 gated-off invariant). See NavigatorConfig.use_inplane_pos_floor.
+        floor_std = (
+            self.config.inplane_pos_floor_std
+            if self.config.use_inplane_pos_floor
+            and (self.config.use_rewind_kf or self.config.use_gate_relative)
+            else 0.0
+        )
+        kf = LinearKF.initialize(pos, vel, pos_std=pos_std, vel_std=1.0,
+                                 inplane_pos_floor_std=floor_std)
         # C2 (case C): wrap in the RewindKF OOSM buffer so vision fixes apply at capture time. The
         # horizon MUST be strictly > the predict-forward latency L (else 100% of fixes drop -> diverge);
         # assert it loudly at init. The VQ1 / case-A path keeps the bare LinearKF (byte-identical).
