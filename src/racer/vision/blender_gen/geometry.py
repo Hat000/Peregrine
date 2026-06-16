@@ -64,10 +64,11 @@ class GateRender:
     R_cam_gate: np.ndarray        # (3,3) gate-frame -> camera optical
     t_cam_gate: np.ndarray        # (3,) gate-opening centre in camera optical (m)
     keypoints_px: np.ndarray      # (4,2) inner-square corners, canonical order
-    outer_px: np.ndarray          # (4,2) outer-square corners (bbox source)
+    outer_px: np.ndarray          # (4,2) outer-square corners (bbox source + outer keypoints 4..7)
     bbox_xywh: np.ndarray         # (4,) [x,y,w,h] clipped to frame
-    visibility: np.ndarray        # (4,) V_VIS / V_OCC / V_OFF
+    visibility: np.ndarray        # (4,) V_VIS / V_OCC / V_OFF  (INNER keypoints 0..3)
     visible: bool                 # usable label: >= 3 corners visible AND centre in frame
+    outer_visibility: np.ndarray = None  # (4,) V_VIS / V_OFF for the OUTER keypoints (4..7); in-frame
 
     @property
     def range_m(self) -> float:
@@ -139,10 +140,11 @@ def _build_gate_render(gate: Gate, R_cam_gate: np.ndarray, t_cam_gate: np.ndarra
     except ValueError:
         return None
     vis = _corner_visibility(inner_px, None)
+    vis_outer = _corner_visibility(outer_px, None)        # outer keypoints: in-frame V_VIS / V_OFF
     return GateRender(
         gate_id=int(gate.gate_id), R_cam_gate=R_cam_gate, t_cam_gate=t_cam_gate,
         keypoints_px=inner_px, outer_px=outer_px, bbox_xywh=_bbox(outer_px),
-        visibility=vis, visible=False,
+        visibility=vis, visible=False, outer_visibility=vis_outer,
     )
 
 

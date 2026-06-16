@@ -21,8 +21,8 @@ import bpy_extras.object_utils
 import mathutils
 import numpy as np
 
-from .. import contract
-from ..intrinsics import BlenderCameraParams, blender_camera_params
+from . import contract
+from .intrinsics import BlenderCameraParams, blender_camera_params
 
 # Sensible clip planes for the gate envelope (RANGE_MIN/MAX = 2..30 m); generous so nothing in the
 # scene (gates, lights, background props) is ever clipped. clip_start > 0 is required by Blender.

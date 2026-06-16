@@ -33,6 +33,7 @@ from .contract import (
 from .augment import augment_frame
 from .geometry import FrameSpec, GateRender, ViewpointConfig, sample_frames, sample_negative_frames
 from .labels import frame_label_rows
+from .masks import gate_ring_mask
 
 
 class RenderBackend(Protocol):
@@ -109,12 +110,15 @@ class GenStats:
 
 def _write_split(
     out: Path, split: str, n: int, preset: ScenarioPreset, backend: RenderBackend,
-    seed: int, image_ext: str, track_path: str | None,
+    seed: int, image_ext: str, track_path: str | None, emit_masks: bool = False,
 ) -> GenStats:
     img_dir = out / "images" / split
     lbl_dir = out / "labels" / split
     img_dir.mkdir(parents=True, exist_ok=True)
     lbl_dir.mkdir(parents=True, exist_ok=True)
+    mask_dir = out / "masks" / split
+    if emit_masks:
+        mask_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     n_neg = int(round(n * float(preset.negative_fraction)))
     n_pos = n - n_neg
@@ -126,11 +130,14 @@ def _write_split(
             break
         image = backend.render(fs, preset, rng)
         image, gates = augment_frame(image, fs.gates, preset.augment, rng)
-        rows = frame_label_rows([g for g in gates if g.visible])
+        labeled = [g for g in gates if g.visible]
+        rows = frame_label_rows(labeled)
         if not rows:
             continue
         cv2.imwrite(str(img_dir / f"{made:06d}.{image_ext}"), image)
         (lbl_dir / f"{made:06d}.txt").write_text("\n".join(rows) + "\n")
+        if emit_masks:    # instance mask from the SAME post-augment labelled gates
+            cv2.imwrite(str(mask_dir / f"{made:06d}.png"), gate_ring_mask(labeled))
         made += 1
         n_labels += len(rows)
         n_gates += len(rows)
@@ -143,6 +150,8 @@ def _write_split(
         image, _ = augment_frame(image, [], preset.augment, rng)
         cv2.imwrite(str(img_dir / f"{made:06d}.{image_ext}"), image)
         (lbl_dir / f"{made:06d}.txt").write_text("")        # empty => background/negative
+        if emit_masks:    # all-zero mask: no gate pixels in a negative
+            cv2.imwrite(str(mask_dir / f"{made:06d}.png"), gate_ring_mask([]))
         made += 1
         n_negatives += 1
     return GenStats(n_images=made, n_labels=n_labels, n_gates=n_gates, n_negatives=n_negatives)
@@ -158,15 +167,19 @@ def generate_dataset(
     seed: int = 0,
     image_ext: str = "png",
     track_path: str | None = None,
+    emit_masks: bool = False,
 ) -> Path:
     """Generate a YOLO-pose dataset with ``backend`` (default ProceduralBackend). Returns the
     data.yaml path. The Blender entrypoint passes a ``BlenderBackend``; everything else (geometry,
     augment, labels, layout) is shared, so a procedural run and a Cycles run differ ONLY in pixels.
+
+    ``emit_masks`` also writes a per-frame gate-ring instance mask to ``<out>/masks/{split}/*.png``
+    (see :mod:`racer.vision.blender_gen.masks`) -- the banked segmentation hedge alongside keypoints.
     """
     backend = backend or ProceduralBackend()
     out = Path(out_dir)
-    train = _write_split(out, "train", n_train, preset, backend, seed, image_ext, track_path)
-    _write_split(out, "val", n_val, preset, backend, seed + 10_000, image_ext, track_path)
+    train = _write_split(out, "train", n_train, preset, backend, seed, image_ext, track_path, emit_masks)
+    _write_split(out, "val", n_val, preset, backend, seed + 10_000, image_ext, track_path, emit_masks)
     yaml_path = out / "data.yaml"
     yaml_path.write_text(DATA_YAML.format(path=str(out.resolve())))
     return yaml_path

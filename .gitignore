@@ -52,3 +52,27 @@ Academic/
 handoff/shadowpc-refit-dataset-2026-06-12/extracted/
 # ultracode agent throwaway; reports + named prototypes are kept, scratch is not
 handoff/**/scratch/
+
+# VQ2 Blender pilot datasets (large, local to ShadowPC — regenerate via RUN_GUIDE.md)
+handoff/vq2-blender-render-2026-06-15/pilot/
+handoff/vq2-blender-render-2026-06-15/cyc_probe/
+handoff/vq2-blender-render-2026-06-15/smoke/
+handoff/_probe_*.py
+
+# derived overlay scratch (curated copies live in samples/)
+handoff/vq2-blender-render-2026-06-15/cyc_overlay/
+handoff/vq2-blender-render-2026-06-15/smoke_overlay/
+handoff/vq2-blender-render-2026-06-15/pilot_render.log
+
+# CC0 asset library (large, local; regenerate via assets.fetch_all / RUN_GUIDE)
+assets_vq2/
+# photoreal prototype + validation scratch (curated copies live in preview/ + samples/)
+handoff/vq2-blender-render-2026-06-15/proto/
+handoff/vq2-blender-render-2026-06-15/prod_validate*/
+handoff/vq2-blender-render-2026-06-15/verify/
+handoff/_*.py
+handoff/vq2-blender-render-2026-06-15/sets/
+handoff/vq2-blender-render-2026-06-15/throughput*/
+handoff/vq2-blender-render-2026-06-15/*_overlay/
+handoff/vq2-blender-render-2026-06-15/sets_overlay_*/
+handoff/vq2-blender-render-2026-06-15/validate8kp*/

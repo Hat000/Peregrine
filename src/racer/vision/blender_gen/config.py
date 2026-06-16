@@ -41,6 +41,14 @@ class AppearanceConfig:
     use_hdri: bool = False
     hdri_dir: str | None = None            # folder of .hdr/.exr env maps (ShadowPC-local); None -> sky
 
+    # --- photoreal real-asset dressing (Blender backend; see bpy_photoreal + assets) -------------
+    photoreal: bool = False                # True -> HDRI world + PBR floor + real props/people (the
+    #                                        validated 2026-06-15 look); False -> legacy procedural sky/walls
+    assets_dir: str | None = None          # root of the CC0 asset set (default: <repo>/assets_vq2)
+    gate_emission_range: tuple = (0.25, 0.5)   # small always-on gate glow (vivid, not washed out)
+    prop_count_range: tuple = (8, 14)      # real photoscanned props scattered OFF the gate corridor
+    people_count_range: tuple = (2, 5)     # procedural clothing-tinted mannequin people
+
     # Lighting MODE (the dominant realism lever; see the VQ2 plan, axis B). The real A2RL x DCL
     # venue is a DARK indoor arena with bright, often coloured spotlights + high dynamic range --
     # NOT uniform daylight. 'dark_arena' = low ambient + N hard spotlights; 'daylight' = the sun

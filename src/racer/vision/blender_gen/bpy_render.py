@@ -106,31 +106,44 @@ def _build_glare_compositor(scene, glare_type: str = "FOG_GLOW") -> None:
     ``glare_type`` / ``mix`` / ``threshold`` / ``quality`` controls are node-properties in 4.2
     but several became input sockets in the 5.x rewrite, so we set them through a helper that
     tries the attribute then the named input socket and stays silent on a miss.
+
+    The OUTPUT node differs by line: 4.2 ends the tree on ``CompositorNodeComposite``; Blender 5.x
+    REMOVED that node (``CompositorNodeComposite undefined``) -- a compositor node-GROUP ends on a
+    ``NodeGroupOutput`` instead. We try Composite, then fall back to the group output. Glare/bloom is
+    a non-load-bearing nicety (it never touches geometry or labels), so the ENTIRE build is wrapped:
+    any failure on an unexpected build degrades to "no glare" (compositing left off) rather than
+    aborting the render -- as the module contract above promises.
     """
-    tree = _ensure_compositor_tree(scene)
-    if tree is None:
-        return
-    nodes, links = tree.nodes, tree.links  # verified: NodeTree.nodes (Nodes), NodeTree.links
-
-    rlayers = _find_or_new(nodes, "CompositorNodeRLayers")
-    composite = _find_or_new(nodes, "CompositorNodeComposite")
-    glare = nodes.new("CompositorNodeGlare")  # verified: Nodes.new(type) wants the bl_idname
-    glare.location = (300.0, 0.0)
-
-    _set_glare_param(glare, "glare_type", glare_type)  # 'FOG_GLOW'|'GHOSTS'|'STREAKS'|'BLOOM'
-    _set_glare_param(glare, "mix", 0.0)        # 0 = balanced glare+image
-    _set_glare_param(glare, "threshold", 1.0)  # only pixels brighter than 1.0 bloom
-    _set_glare_param(glare, "quality", "MEDIUM")
-
-    # Render Layers[Image] -> Glare[in 0] -> Composite[in 0]. Use index 0 sockets: the image
-    # socket is first on all three nodes in every supported version. NodeLinks.new is verified
-    # as new(input, output) in the RST, but the working idiom (and what every Blender template
-    # uses) passes the FROM-output socket first and the TO-input socket second -- as below.
     try:
-        links.new(rlayers.outputs[0], glare.inputs[0])   # verified: NodeLinks.new (output, input)
-        links.new(glare.outputs[0], composite.inputs[0])
+        tree = _ensure_compositor_tree(scene)
+        if tree is None:
+            return
+        nodes, links = tree.nodes, tree.links  # verified: NodeTree.nodes (Nodes), NodeTree.links
+
+        rlayers = _find_or_new(nodes, "CompositorNodeRLayers")
+        # Output node: Composite (<=4.x) or, on 5.x where it is undefined, the group output.
+        out_node = _find_or_new(nodes, "CompositorNodeComposite") or _find_or_new(nodes, "NodeGroupOutput")
+        glare = nodes.new("CompositorNodeGlare")  # verified: Nodes.new(type) wants the bl_idname
+        glare.location = (300.0, 0.0)
+
+        _set_glare_param(glare, "glare_type", glare_type)  # 'FOG_GLOW'|'GHOSTS'|'STREAKS'|'BLOOM'
+        _set_glare_param(glare, "mix", 0.0)        # 0 = balanced glare+image
+        _set_glare_param(glare, "threshold", 1.0)  # only pixels brighter than 1.0 bloom
+        _set_glare_param(glare, "quality", "MEDIUM")
+
+        # Render Layers[Image] -> Glare[in 0] -> output[in 0]. Use index 0 sockets: the image socket
+        # is first on RLayers/Glare; on a NodeGroupOutput the first input is created on first link.
+        if out_node is not None and rlayers is not None and glare is not None:
+            links.new(rlayers.outputs[0], glare.inputs[0])   # verified: NodeLinks.new (output, input)
+            if out_node.inputs:
+                links.new(glare.outputs[0], out_node.inputs[0])
     except Exception:
-        pass  # a degenerate node set (no sockets) must not kill the job
+        # Unsupported compositor layout on this build: turn compositing back off so the render runs
+        # clean (no bloom) instead of failing. Bloom is cosmetic; labels/geometry are unaffected.
+        try:
+            scene.render.use_compositing = False
+        except Exception:
+            pass
 
 
 def _ensure_compositor_tree(scene):
@@ -163,11 +176,16 @@ def _ensure_compositor_tree(scene):
 
 
 def _find_or_new(nodes, bl_idname: str):
-    """Reuse an existing node of ``bl_idname`` (e.g. the default RLayers/Composite) or add one."""
+    """Reuse an existing node of ``bl_idname`` (e.g. the default RLayers/Composite) or add one.
+    Returns None if the type is undefined on this build (e.g. CompositorNodeComposite was removed in
+    5.x) so the caller can fall back to an alternative output node instead of crashing."""
     for n in nodes:
         if n.bl_idname == bl_idname:
             return n
-    return nodes.new(bl_idname)
+    try:
+        return nodes.new(bl_idname)
+    except (RuntimeError, ValueError):
+        return None
 
 
 def _set_glare_param(node, name: str, value) -> None:
@@ -188,6 +206,29 @@ def _set_glare_param(node, name: str, value) -> None:
 
 
 # --- public API (signatures FROZEN; the composition backend depends on them) ------------------
+def _resolve_engine(scene, requested: str) -> str:
+    """Map a requested render-engine id onto one the RUNNING Blender actually exposes.
+
+    The EEVEE engine id moved across releases: Blender 4.2 used ``BLENDER_EEVEE_NEXT``; 4.3+/5.x
+    renamed it back to ``BLENDER_EEVEE`` (the enum on 5.1 is CYCLES / BLENDER_EEVEE / BLENDER_WORKBENCH,
+    with NO _NEXT). A preset or the ``--eevee`` shortcut may carry either spelling, so we look up the
+    live ``scene.render.engine`` enum and, if the requested id is absent but is an EEVEE variant, swap
+    to whichever EEVEE id this build offers. CYCLES (stable across versions) and a genuinely unknown
+    engine pass through unchanged (the unknown one then fails loudly -- correct).
+    """
+    try:
+        valid = {it.identifier for it in scene.render.bl_rna.properties["engine"].enum_items}
+    except Exception:
+        return requested
+    if requested in valid:
+        return requested
+    if "EEVEE" in requested.upper():
+        for cand in ("BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"):
+            if cand in valid:
+                return cand
+    return requested
+
+
 def configure_render(scene, render_cfg: RenderConfig, appearance: AppearanceConfig, motion=None) -> None:
     """Apply engine + samples + GPU + denoise + exposure/gamma + motion blur + glare to ``scene``.
 
@@ -198,10 +239,11 @@ def configure_render(scene, render_cfg: RenderConfig, appearance: AppearanceConf
     """
     rng = motion if isinstance(motion, np.random.Generator) else np.random.default_rng()
 
-    scene.render.engine = render_cfg.engine  # verified: RenderSettings.engine ('CYCLES'/'BLENDER_EEVEE_NEXT')
+    engine = _resolve_engine(scene, render_cfg.engine)  # tolerate EEVEE_NEXT<->EEVEE id drift across versions
+    scene.render.engine = engine  # verified: RenderSettings.engine ('CYCLES'/'BLENDER_EEVEE[_NEXT]')
     scene.render.film_transparent = bool(render_cfg.film_transparent)  # verified: RenderSettings.film_transparent
 
-    if render_cfg.engine == "CYCLES":
+    if engine == "CYCLES":
         cy = scene.cycles  # CyclesRenderSettings (cycles addon)
         cy.samples = int(render_cfg.samples)         # path-trace samples per pixel
         cy.use_denoising = bool(render_cfg.use_denoise)
@@ -227,7 +269,7 @@ def configure_render(scene, render_cfg: RenderConfig, appearance: AppearanceConf
         scene.render.motion_blur_position = "CENTER"  # verified: RenderSettings.motion_blur_position
     except Exception:
         pass
-    if render_cfg.engine != "CYCLES" and render_cfg.motion_blur:
+    if engine != "CYCLES" and render_cfg.motion_blur:
         try:
             scene.eevee.motion_blur_steps = 4  # verified: SceneEEVEE.motion_blur_steps (>1 => real streak)
         except Exception:

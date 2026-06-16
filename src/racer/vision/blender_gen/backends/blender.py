@@ -57,6 +57,24 @@ class BlenderBackend:
             pass
         self._frame_objects: list = []
 
+        # Photoreal path: HDRI + PBR floor + real props/people (the validated look). Active only when
+        # the preset asks for it AND the CC0 asset library is on disk; otherwise the legacy procedural
+        # sky/walls path runs. Never affects gate poses / labels -- only pixels + raycast visibility.
+        self._pr_mod = None
+        self._lib = None
+        self._prop_cache = None
+        if getattr(preset.appearance, "photoreal", False):
+            from .. import assets, bpy_photoreal
+            self._pr_mod = bpy_photoreal
+            self._lib = assets.AssetLibrary(preset.appearance.assets_dir)
+            if not self._lib.available():
+                print("[vq2] WARNING: photoreal=True but no HDRIs found under "
+                      f"{self._lib.root} -- falling back to the procedural look. Run assets.fetch_all.")
+                self._pr_mod = None
+            else:
+                # import every prop glTF ONCE; per-frame spawns duplicate (shared mesh) -- cheap
+                self._prop_cache = bpy_photoreal.PropCache(self.scene, self._lib.prop_gltfs())
+
     # -- intrinsics self-check (the ShadowPC <=1 px gate) --------------------------------
     def intrinsics_error_px(self) -> float:
         return float(self._cam_mod.projection_max_error_px(self.scene, self.cam))
@@ -78,6 +96,57 @@ class BlenderBackend:
 
     # -- the RenderBackend protocol ------------------------------------------------------
     def render(self, frame: FrameSpec, preset: ScenarioPreset, rng: np.random.Generator) -> np.ndarray:
+        if self._pr_mod is not None:
+            return self._render_photoreal(frame, preset, rng)
+        return self._render_legacy(frame, preset, rng)
+
+    # -- photoreal path: HDRI world + PBR floor + real props/people (validated 2026-06-15) ---------
+    def _render_photoreal(self, frame: FrameSpec, preset: ScenarioPreset,
+                          rng: np.random.Generator) -> np.ndarray:
+        ap, rc = preset.appearance, preset.render
+        PR = self._pr_mod
+
+        # 1. HDRI environment (image-based lighting + photographic background, optical-frame oriented)
+        hdris = self._lib.hdris()
+        PR.setup_hdri_world(self.scene, rng, hdris[int(rng.integers(len(hdris)))],
+                            strength=float(rng.uniform(0.7, 1.3)))
+
+        # 2. PBR floor a good way BELOW the gates (so gates float in the air, ground visible below)
+        floor_y = PR.floor_below_gates(frame, rng)
+        texsets = self._lib.floor_texsets()
+        texset = texsets[int(rng.integers(len(texsets)))] if texsets else {}
+        self._frame_objects.append(PR.add_floor(self.scene, floor_y, texset, rng))
+
+        # 3. solid vivid gate(s) at their exact optical poses (labels unchanged)
+        gate_mat = PR.solid_gate_material(rng, ap)
+        for gr in frame.gates:
+            self._frame_objects.append(
+                self._scene_mod.instance_gate(self.template, gr.R_cam_gate, gr.t_cam_gate, gate_mat))
+
+        # 4. real props + mannequin people, scattered OFF the gate corridor (sides/background).
+        #    Props are spawned as duplicates of the once-imported cache (shared mesh data -> fast).
+        n_prop = int(rng.integers(int(ap.prop_count_range[0]), int(ap.prop_count_range[1]) + 1)) \
+            if self._prop_cache.available() else 0
+        for _ in range(n_prop):
+            x, z = PR._side_xz(rng)
+            self._frame_objects += self._prop_cache.spawn(x, z, floor_y, rng)
+        n_ppl = int(rng.integers(int(ap.people_count_range[0]), int(ap.people_count_range[1]) + 1))
+        for _ in range(n_ppl):
+            x, z = PR._side_xz(rng)
+            self._frame_objects += PR.add_person(self.scene, x, z, floor_y, rng)
+
+        # 5. honest labels: downgrade any gate corner a prop/person actually blocks (raycast)
+        PR.occlude_blocked_keypoints(self.scene, frame)
+
+        # 6. clean render (NO in-render motion blur / glare; AgX + exposure variety)
+        PR.configure_clean_render(self.scene, rng, rc, ap)
+        image = self._render_mod.render_to_bgr(self.scene)
+        self._purge_frame_objects()
+        return np.ascontiguousarray(image)
+
+    # -- legacy procedural path (no assets) --------------------------------------------------------
+    def _render_legacy(self, frame: FrameSpec, preset: ScenarioPreset,
+                       rng: np.random.Generator) -> np.ndarray:
         ap, rc = preset.appearance, preset.render
 
         # 1. world + lighting + background (fresh randomization per frame)

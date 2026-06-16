@@ -110,6 +110,12 @@ def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray) -> GateRend
             vis[c] = V_OFF
         elif vis[c] == V_OFF:                                            # warped back in-frame
             vis[c] = V_VIS
+    # outer keypoints (4..7): in-frame V_VIS / V_OFF on the warped outer corners
+    vis_outer = (gr.outer_visibility.copy() if gr.outer_visibility is not None
+                 else np.full(4, V_VIS, dtype=int))
+    for c in range(4):
+        x, y = float(outer[c, 0]), float(outer[c, 1])
+        vis_outer[c] = V_VIS if (0.0 <= x <= IMAGE_WIDTH - 1 and 0.0 <= y <= IMAGE_HEIGHT - 1) else V_OFF
     x0, y0 = outer.min(axis=0)
     x1, y1 = outer.max(axis=0)
     x0, y0 = max(0.0, float(x0)), max(0.0, float(y0))
@@ -121,7 +127,7 @@ def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray) -> GateRend
     return GateRender(
         gate_id=gr.gate_id, R_cam_gate=gr.R_cam_gate, t_cam_gate=gr.t_cam_gate,
         keypoints_px=np.asarray(inner, dtype=float), outer_px=np.asarray(outer, dtype=float),
-        bbox_xywh=bbox, visibility=vis, visible=visible,
+        bbox_xywh=bbox, visibility=vis, visible=visible, outer_visibility=vis_outer,
     )
 
 

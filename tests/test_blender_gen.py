@@ -137,6 +137,24 @@ def test_label_roundtrips_through_pnp():
     assert _rotation_geodesic(gp.R_cam_gate, R) < 5e-3
 
 
+def test_label_emits_8_keypoints_inner_then_outer():
+    # The VQ2 row carries 8 keypoints: inner 0..3 (== PnP corners) then outer 4..7 (gate frame).
+    R = Rotation.from_euler("y", 0.2).as_matrix()
+    t = np.array([0.3, -0.1, 8.0])
+    inner = project_gate_corners(R, t, GATE_INNER_SIZE_M)
+    outer = project_gate_corners(R, t, contract.GATE_OUTER_SIZE_M)
+    gr = GateRender(gate_id=0, R_cam_gate=R, t_cam_gate=t, keypoints_px=inner, outer_px=outer,
+                    bbox_xywh=np.array([0.0, 0.0, 640.0, 360.0]),
+                    visibility=np.array([2, 2, 2, 2]), visible=True)
+    f = gate_render_to_row(gr).split()
+    assert len(f) == 29                                                  # 5 + 8*(x y v)
+    kp = np.array([[float(f[5 + 3 * i]) * contract.IMAGE_WIDTH,
+                    float(f[6 + 3 * i]) * contract.IMAGE_HEIGHT] for i in range(8)])
+    np.testing.assert_allclose(kp[0:4], inner, atol=0.2)                 # inner keypoints
+    np.testing.assert_allclose(kp[4:8], outer, atol=0.2)                 # outer keypoints
+    assert outer[:, 0].max() - outer[:, 0].min() > inner[:, 0].max() - inner[:, 0].min()
+
+
 # --------------------------------------------------------- albumentations aug
 def test_albumentations_keypoint_alignment():
     # Apply a KNOWN geometric translate through the same KeypointParams config and assert the
@@ -295,14 +313,14 @@ def test_generate_dataset_procedural_end_to_end(tmp_path):
                                  n_train=8, n_val=2, seed=0)
     assert yaml_path.exists()
     txt = yaml_path.read_text()
-    assert "kpt_shape: [4, 3]" in txt and "flip_idx: [1, 0, 3, 2]" in txt
+    assert "kpt_shape: [8, 3]" in txt and "flip_idx: [1, 0, 3, 2, 5, 4, 7, 6]" in txt
     imgs = sorted((tmp_path / "images" / "train").glob("*.png"))
     lbls = sorted((tmp_path / "labels" / "train").glob("*.txt"))
     assert len(imgs) == 8 and len(lbls) == 8
     assert len(list((tmp_path / "images" / "val").glob("*.png"))) == 2
     for lbl in lbls:
         for line in lbl.read_text().splitlines():
-            assert len(line.split()) == 17
+            assert len(line.split()) == 29          # class + cx cy w h + 8*(x y v)
             assert line.split()[0] == "0"
 
 
@@ -340,13 +358,50 @@ def test_generate_dataset_with_negatives(tmp_path):
     assert len(empties) == 6 and len(positives) == 6
     for p in positives:
         for line in p.read_text().splitlines():
-            assert len(line.split()) == 17
+            assert len(line.split()) == 29
 
 
 def test_all_presets_including_negatives_validate():
     assert "negatives" in available_presets()
     for n in available_presets():
         load_preset(n)                                          # raises on any schema violation
+
+
+def test_gate_ring_mask_is_annulus_under_keypoints():
+    # The mask carves the inner opening: keypoint-centre pixel is background, a point on the ring
+    # (between inner and outer edge) is gate. Built directly from a known GateRender.
+    from racer.vision.blender_gen.masks import gate_ring_mask
+    R = np.eye(3)
+    t = np.array([0.0, 0.0, 6.0])
+    inner = project_gate_corners(R, t, GATE_INNER_SIZE_M)
+    outer = project_gate_corners(R, t, contract.GATE_OUTER_SIZE_M)
+    gr = GateRender(gate_id=0, R_cam_gate=R, t_cam_gate=t, keypoints_px=inner, outer_px=outer,
+                    bbox_xywh=np.array([0.0, 0.0, 640.0, 360.0]),
+                    visibility=np.array([2, 2, 2, 2]), visible=True)
+    m = gate_ring_mask([gr])
+    assert m.shape == (contract.IMAGE_HEIGHT, contract.IMAGE_WIDTH) and m.dtype == np.uint8
+    cen = inner.mean(axis=0).round().astype(int)
+    assert m[cen[1], cen[0]] == 0                                         # opening is background
+    # midpoint between an inner and the matching outer corner lies on the ring
+    mid = ((inner[0] + outer[0]) / 2).round().astype(int)
+    assert m[mid[1], mid[0]] > 0                                          # ring is gate
+    assert set(np.unique(m).tolist()) <= {0, 1}                           # one gate -> {0,1}
+
+
+def test_generate_dataset_emits_masks(tmp_path):
+    preset = load_preset("vq1_faithful")
+    generate_dataset(tmp_path, preset, ProceduralBackend(), n_train=6, n_val=2, seed=0,
+                     emit_masks=True)
+    import cv2
+    masks = sorted((tmp_path / "masks" / "train").glob("*.png"))
+    imgs = sorted((tmp_path / "images" / "train").glob("*.png"))
+    assert len(masks) == len(imgs) == 6                                   # one mask per image
+    nonzero = 0
+    for mp in masks:
+        m = cv2.imread(str(mp), cv2.IMREAD_UNCHANGED)
+        assert m.shape == (contract.IMAGE_HEIGHT, contract.IMAGE_WIDTH)
+        nonzero += int((m > 0).any())
+    assert nonzero == 6                                                   # every positive frame has gate pixels
 
 
 def test_generate_dataset_determinism(tmp_path):

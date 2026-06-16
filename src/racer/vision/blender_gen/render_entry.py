@@ -17,6 +17,7 @@ BLENDER's Python -- install them into it once (see RUN_GUIDE.md) or point Blende
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,15 @@ from pathlib import Path
 _SRC = Path(__file__).resolve().parents[3]          # .../src
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
+
+# Blender ships its OWN Python and launches it in ISOLATED mode (sys.flags.isolated == 1), which
+# STRIPS PYTHONPATH from sys.path and disables user-site -- so pip-installed deps (cv2 / scipy /
+# albumentations) are invisible even though numpy ships with Blender. os.environ['PYTHONPATH'] is
+# still readable, so we re-honour it here: point PYTHONPATH at the dir holding those packages
+# before launching (see RUN_GUIDE.md). No machine-specific path lives in the code.
+for _extra in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+    if _extra and _extra not in sys.path:
+        sys.path.append(_extra)
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -41,6 +51,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--eevee", action="store_true", help="shortcut for --engine BLENDER_EEVEE_NEXT")
     ap.add_argument("--max-intrinsics-err-px", type=float, default=1.0,
                     help="abort if the Blender camera disagrees with K by more than this")
+    ap.add_argument("--masks", action="store_true",
+                    help="also emit per-frame gate-ring instance masks to masks/<split>/*.png")
+    ap.add_argument("--no-augment", action="store_true",
+                    help="render CLEAN base frames (disable the in-line albumentations pass) -- use when "
+                         "the augmentation will be applied later as an offline multiplier")
     return ap.parse_args(argv)
 
 
@@ -61,6 +76,8 @@ def main() -> int:
         render_over["samples"] = args.samples
     if render_over:
         preset = replace(preset, render=replace(preset.render, **render_over))
+    if args.no_augment:
+        preset = replace(preset, augment=replace(preset.augment, enable=False))
 
     print(f"[vq2] preset={preset.name} engine={preset.render.engine} samples={preset.render.samples} "
           f"-> {args.out}  (train={args.n_train} val={args.n_val})")
@@ -76,7 +93,7 @@ def main() -> int:
     yaml_path = generate_dataset(
         args.out, preset, backend,
         n_train=args.n_train, n_val=args.n_val, seed=args.seed,
-        image_ext=args.image_ext, track_path=args.track,
+        image_ext=args.image_ext, track_path=args.track, emit_masks=args.masks,
     )
     print(f"[vq2] done. data.yaml -> {yaml_path}")
     return 0
