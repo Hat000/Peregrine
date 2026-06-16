@@ -127,3 +127,64 @@ def test_centering_ramps_up_near_gate():
     assert r[0] < r[1] < r[2] <= 0                            # more negative (bigger penalty) near gate
     assert abs(r[1].item()) == pytest.approx(0.5 * 0.2, abs=1e-6)   # sigmoid(0)=0.5 at r_near
     assert r[2].abs() < 0.05 * 0.2 * 1.0 + 1e-9               # far -> negligible
+
+
+# ===================================================== look-at gain-warmup (knob #2; 2/3-collapse fix)
+def test_warmup_factor_zero_is_no_ramp():
+    """warmup_updates <= 0 -> 1.0 at EVERY update (the OFF default == the no-warmup path)."""
+    for u in (0, 1, 5, 100, 10_000):
+        assert RW.lookat_warmup_factor(u, 0) == 1.0
+        assert RW.lookat_warmup_factor(u, -3) == 1.0          # <=0 guard, not just ==0
+
+
+def test_warmup_factor_ramps_0_to_1_then_holds():
+    """factor = clip(update/N, 0, 1): ~0 at update 0, ==1 at update>=N, linear (monotone) between."""
+    N = 10
+    assert RW.lookat_warmup_factor(0, N) == 0.0               # ~0 at update 0
+    assert RW.lookat_warmup_factor(5, N) == pytest.approx(0.5)
+    assert RW.lookat_warmup_factor(N, N) == 1.0               # ==1 at update N
+    assert RW.lookat_warmup_factor(N + 7, N) == 1.0           # HOLDS at 1 past N
+    seq = [RW.lookat_warmup_factor(u, N) for u in range(0, 2 * N + 1)]
+    assert all(b >= a for a, b in zip(seq, seq[1:]))          # monotone non-decreasing
+    assert all(0.0 <= f <= 1.0 for f in seq)                  # bounded [0,1]
+
+
+def test_warmup_factor_sign_preserved_on_negative_gain():
+    """The validated gain is NEGATIVE (g_yaw=-3.0). The factor is a non-negative magnitude scalar, so the
+    EFFECTIVE gain keeps the sign and never exceeds the target magnitude -- it can never flip to +."""
+    g = -3.0
+    for u in range(0, 25):
+        f = RW.lookat_warmup_factor(u, 10)
+        g_eff = g * f
+        assert g_eff <= 0.0                                  # never flips positive
+        assert abs(g_eff) <= abs(g) + 1e-12                  # never overshoots the target magnitude
+
+
+def test_warmup_zero_reproduces_no_warmup_correction_exactly():
+    """warmup OFF => g * factor == g (factor==1.0) => the correction tensor is bit-identical."""
+    t = torch.tensor(np.random.default_rng(0).uniform(-8, 8, (200, 3)), dtype=DT)
+    t[..., 2] = t[..., 2].abs() + 3.0                        # gate in front
+    r_bc = RW.r_body_from_camera(dtype=DT)
+    flip = torch.tensor(RW._FLIP_FRD_FLU, dtype=DT)
+    g_yaw, g_pitch = -3.0, -1.5
+    base = RW.lookat_correction(t, g_yaw, g_pitch, r_bc, flip)
+    f = RW.lookat_warmup_factor(7, 0)                        # any update, warmup OFF -> 1.0
+    warmed = RW.lookat_correction(t, g_yaw * f, g_pitch * f, r_bc, flip)
+    assert torch.equal(base, warmed)                         # byte-identical, not just close
+
+
+def test_warmup_scales_correction_linearly_same_direction():
+    """lookat_correction is linear in the gains, so warming scales the correction by the factor (same
+    direction, just weaker): factor 0 -> exactly zero; factor 0.5 -> half; factor 1 -> full."""
+    t = torch.tensor([[3.0, 2.0, 12.0], [-5.0, 1.0, 20.0]], dtype=DT)
+    r_bc = RW.r_body_from_camera(dtype=DT)
+    flip = torch.tensor(RW._FLIP_FRD_FLU, dtype=DT)
+    g_yaw, g_pitch = -3.0, -2.0
+    full = RW.lookat_correction(t, g_yaw, g_pitch, r_bc, flip)
+    f0 = RW.lookat_warmup_factor(0, 10)                      # 0.0
+    f_half = RW.lookat_warmup_factor(5, 10)                  # 0.5
+    c0 = RW.lookat_correction(t, g_yaw * f0, g_pitch * f0, r_bc, flip)
+    c_half = RW.lookat_correction(t, g_yaw * f_half, g_pitch * f_half, r_bc, flip)
+    assert torch.count_nonzero(c0) == 0                      # update 0 -> zero correction (gentle start)
+    assert torch.allclose(c_half, 0.5 * full, atol=1e-12)    # half-strength == 0.5 x full (same direction)
+    assert torch.all(c_half * full >= 0)                     # same sign everywhere (never opposes)

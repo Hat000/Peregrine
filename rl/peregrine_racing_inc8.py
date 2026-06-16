@@ -124,6 +124,12 @@ class PeregrineRacingInc8(PeregrineRacing):
         self._lookat_g_pitch = float(getattr(cfg, "lookat_g_pitch", 0.0))
         self._lookat_r_lo = float(getattr(cfg, "lookat_r_lo", 8.0))
         self._lookat_r_hi = float(getattr(cfg, "lookat_r_hi", 30.0))
+        # gain-warmup (default 0 == OFF == no ramp == byte-identical): ramp the look-at gain MAGNITUDE
+        # 0->target over the first lookat_warmup_updates PPO updates, then hold. The launcher advances
+        # self._ppo_update once per PPO update (rl/peregrine_train_inc8.py). Damps the fresh-policy
+        # value_loss spike / entropy collapse from a full-strength correction (the 2/3-seed early-collapse).
+        self._lookat_warmup_updates = int(getattr(cfg, "lookat_warmup_updates", 0))
+        self._ppo_update = 0
         self._lookat_on = (self._lookat_g_yaw != 0.0) or (self._lookat_g_pitch != 0.0)
         self._r_bc = R8.r_body_from_camera(dev, self._inc8_dtype)
         self._flip_rate = torch.tensor(R8._FLIP_FRD_FLU, device=dev, dtype=self._inc8_dtype)
@@ -227,7 +233,11 @@ class PeregrineRacingInc8(PeregrineRacing):
         if self._lookat_on and getattr(self._emu, "_last_geom", None) is not None:
             with torch.no_grad():
                 g0 = self._emu._last_geom
-                dlook = R8.lookat_correction(g0["t_cam"], self._lookat_g_yaw, self._lookat_g_pitch,
+                # gain-warmup: scale the gain MAGNITUDE by a 0->1 factor over the first
+                # lookat_warmup_updates PPO updates (sign preserved; wf == 1.0 when warmup OFF, so
+                # g * wf == g => byte-identical to the no-warmup path).
+                wf = R8.lookat_warmup_factor(self._ppo_update, self._lookat_warmup_updates)
+                dlook = R8.lookat_correction(g0["t_cam"], self._lookat_g_yaw * wf, self._lookat_g_pitch * wf,
                                              self._r_bc, self._flip_rate)
                 band = ((g0["range"] >= self._lookat_r_lo) & (g0["range"] <= self._lookat_r_hi)
                         & (g0["t_cam"][..., 2] > 0)).to(dlook.dtype).unsqueeze(-1)
@@ -370,6 +380,13 @@ class PeregrineRacingInc8(PeregrineRacing):
         _look_band = ((geom["range"] >= self._lookat_r_lo) & (geom["range"] <= self._lookat_r_hi)
                       & (_tcam[..., 2] > 0))
         band_az_abs = (_az_deg.abs() * _look_band.to(mdt)).sum() / _look_band.sum().clamp(min=1)
+        # ELEVATION analog of band_az over the SAME look-band (LOGGING-ONLY -- no reward/obs/action).
+        # band_el = mean |atan2(Y, Z)| (camera Y = down): diagnoses whether the residual estimator error
+        # is VERTICAL (the gate-4 sigma_vert-dominated axis the 20deg mount struggles with) AND is the
+        # empirical sign-check the S2 g_pitch primitive needs (the analytical YAW sign was WRONG -> band_az
+        # caught it -> do NOT trust the analytical pitch sign either; band_el is how it gets verified).
+        _el_deg = torch.atan2(_tcam[..., 1], _tcam[..., 2].clamp(min=1e-6)) * (180.0 / torch.pi)
+        band_el_abs = (_el_deg.abs() * _look_band.to(mdt)).sum() / _look_band.sum().clamp(min=1)
         metric_vec = torch.stack([
             self._nonfinite_obs_t.to(mdt),        # obs_nonfinite (lifetime count)
             accepted.float().mean().to(mdt),      # inc8_fix_rate
@@ -386,10 +403,11 @@ class PeregrineRacingInc8(PeregrineRacing):
             fb.mean().to(mdt),                    # inc8_fix_bonus
             cr.mean().to(mdt),                    # inc8_centering
             band_az_abs.to(mdt),                  # inc8_band_az_abs_deg (look-at sign/efficacy)
+            band_el_abs.to(mdt),                  # inc8_band_el_abs_deg (vertical residual / S2 sign-check)
         ])
         (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
          age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v,
-         lockband_point_v, fix_bonus_v, centering_v, band_az_v) = metric_vec.tolist()  # ONE sync
+         lockband_point_v, fix_bonus_v, centering_v, band_az_v, band_el_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
             "obs_nonfinite": obs_nonfinite_v,
             "inc8_fix_rate": fix_rate_v,
@@ -407,6 +425,7 @@ class PeregrineRacingInc8(PeregrineRacing):
             "inc8_fix_bonus": fix_bonus_v,
             "inc8_centering": centering_v,
             "inc8_band_az_abs_deg": band_az_v,
+            "inc8_band_el_abs_deg": band_el_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())

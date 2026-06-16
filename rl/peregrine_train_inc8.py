@@ -36,6 +36,7 @@ from diffaero.utils.runner import TrainRunner
 from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
 from peregrine_racing_inc8 import PeregrineRacingInc8
+from inc8_critic_width import maybe_widen_critic
 
 # torch backend (DR-aware, differentiable mirror; parity-proven to the numpy plant). Same rationale
 # as peregrine_train_racing.py: the numpy backend ignores the per-env DR tensors.
@@ -53,6 +54,10 @@ class GuardedPPO(PPO):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # CRITIC-WIDTH A/B (capacity for PPO stability): rebuild ONLY the critic value-net wider when
+        # +algo.critic_hidden_dim=[...] is set; unset -> no-op (byte-identical). Done BEFORE the nan-guard
+        # wraps self.optim.step, so the re-bound guard wraps the (possibly rebuilt) optimizer.
+        maybe_widen_critic(self, kwargs.get("cfg", args[0] if args else None))
         self.nan_skipped = 0
         orig_step = self.optim.step
 
@@ -115,6 +120,11 @@ def _run_with_lifelines(self):
     counter = {"i": 0}
 
     def step_with_periodic_save(*a, **k):
+        # LOOK-AT GAIN-WARMUP: expose the 0-based PPO update index to the env BEFORE the rollout so it can
+        # ramp the look-at gain over the first lookat_warmup_updates updates. No-op when warmup is OFF
+        # (the env's factor is forced to 1.0 and ignores this) and skipped for non-inc8 envs (no attr).
+        if env is not None and hasattr(env, "_ppo_update"):
+            env._ppo_update = counter["i"]
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:

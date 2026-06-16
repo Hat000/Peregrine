@@ -30,6 +30,7 @@ COLUMNS = [
     ("lockband_pointing", ["inc8_lockband_pointing", "lockband_pointing"]),
     ("fix_rate",          ["inc8_fix_rate", "fix_rate"]),
     ("band_az_abs_deg",   ["inc8_band_az_abs_deg", "band_az_abs_deg"]),   # look-at sign/efficacy (S0)
+    ("band_el_abs_deg",   ["inc8_band_el_abs_deg", "band_el_abs_deg"]),   # vertical residual / S2 sign (g_pitch)
     ("estim_err_ip_m",    ["inc8_estim_err_inplane_m", "estim_err_inplane_m"]),  # sigma_p0 proxy (S1)
     ("centering",         ["inc8_centering", "centering"]),               # dense centering reward (S1)
     ("entropy",           ["entropy_loss", "entropy"]),

@@ -194,6 +194,21 @@ def lookat_correction(t_cam: Tensor, g_yaw: float, g_pitch: float, r_bc: Tensor,
     return w_frd * flip                                                              # -> FLU action conv
 
 
+def lookat_warmup_factor(update_idx: int, warmup_updates: int) -> float:
+    """Linear gain-warmup MULTIPLIER in [0, 1] for the look-at primitive (the 2/3-seed early-collapse
+    fix). The full-strength correction slamming a fresh policy is what spikes value_loss / collapses
+    entropy at steps ~100/800; ramping the gain in over the first ``warmup_updates`` PPO updates lets
+    the policy settle first. factor = clip(update_idx / warmup_updates, 0, 1), then HOLDS at 1.0.
+
+    🚩 MAGNITUDE-ONLY: this is a non-negative scalar multiplied onto the CONFIGURED gain (the validated
+    g_yaw = -3.0); it can never flip the sign (factor >= 0) and never exceeds the target (factor <= 1).
+    ``warmup_updates <= 0`` -> 1.0 at EVERY update == the no-warmup path exactly (byte-identical, since
+    g * 1.0 == g for any finite gain). Pure float math (no torch) so it is import-safe everywhere."""
+    if warmup_updates <= 0:
+        return 1.0
+    return min(max(update_idx / float(warmup_updates), 0.0), 1.0)
+
+
 def centering_reward(err_inplane_m: Tensor, range_m: Tensor, rw_centering: float,
                      r_near: float, w_near: float) -> Tensor:
     """Dense terminal-sigma_p0 reward: -rw * sigmoid((r_near - range)/w) * err_inplane. Ramps the GT
