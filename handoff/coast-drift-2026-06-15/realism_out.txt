@@ -1,0 +1,28 @@
+==================================================================================
+R1. CENTERING-BIAS x GATE-DIFFICULTY (v30 r12 sg_lat0.15 fr0.6 bias0.3 tau0.10)
+    sigma_b = per-approach gate-relative lateral centering 1-sigma (the VIO-immune binding term)
+   sig_b miss_std    p90    p99  p99cihi  closes B>= (CI-honest)
+    0.00   0.0088  0.085  0.094    0.096         0.1         0.1
+    0.02   0.0085  0.085  0.093    0.094         0.1         0.1
+    0.04   0.0087  0.085  0.094    0.094         0.1         0.1
+    0.06   0.0084  0.085  0.094    0.096         0.1         0.1
+    0.08   0.0087  0.084  0.094    0.094         0.1         0.1
+    0.10   0.0086  0.085  0.092    0.094         0.1         0.1
+    0.15   0.0085  0.084  0.094    0.095         0.1         0.1
+
+   closure grid (p99<B):  B = 0.100  0.120  0.140  0.160  0.180  0.200  0.235  0.250  0.300
+   sig_b=0.00    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   sig_b=0.02    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   sig_b=0.04    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   sig_b=0.06    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   sig_b=0.08    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   sig_b=0.10    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   sig_b=0.15    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+==================================================================================
+R2. SPEED x CENTERING at fixed gates  (r_floor=12, sg_lat0.15 fr0.6 bias0.3 tau0.10)
+     v  sig_b t_coast    p99 clr B0.235 clr B0.155 clr B0.120
+    22   0.04   0.545  0.080       True       True       True
+    22   0.08   0.545  0.079       True       True       True
+    30   0.04   0.400  0.094       True       True       True
+    30   0.08   0.400  0.094       True       True       True
+    37   0.04   0.324  0.088       True       True       True

@@ -1,0 +1,25 @@
+==============================================================================
+P1. GATE-DIFFICULTY SWEEP — closure vs in-plane budget B (v=30, r_floor=12)
+  pointed-clean     : p90=0.080 p99=0.088(cihi 0.088) sig_p0=0.001 sig_v0=0.013 -> closes B>= 0.1 (CI-honest 0.1)
+  pointed-realistic : p90=0.085 p99=0.093(cihi 0.094) sig_p0=0.001 sig_v0=0.016 -> closes B>= 0.1 (CI-honest 0.1)
+  degraded          : p90=0.094 p99=0.103(cihi 0.104) sig_p0=0.002 sig_v0=0.023 -> closes B>= 0.12 (CI-honest 0.12)
+   closure grid (p99<B): B = 0.100  0.120  0.140  0.160  0.180  0.200  0.235  0.250  0.300
+   pointed-clean        Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   pointed-realistic    Y      Y      Y      Y      Y      Y      Y      Y      Y  
+   degraded             n      Y      Y      Y      Y      Y      Y      Y      Y  
+==============================================================================
+P2. VIO-TRIGGER BACK-SOLVE (v=30, r_floor=12, t_coast=0.404)
+  ACHIEVED (IMU-only, realistic): sig_p0(centering)=0.0010  sig_v0(velocity)=0.0157  det-offset(artifact)=-0.0561
+  centering-only terminal lateral sigma = 0.0094  (VIO-IMMUNE: gate-relative)
+  velocity-only terminal lateral sigma  = 0.0113  = sig_v0*t_coast (VIO-ADDRESSABLE)
+
+  B(budget)  IMU p99 closes? cen-floor p99 VIO need D_lat(1sig)  VINS drift/12m
+      0.100    0.093    True         0.079                0.016           0.13%
+      0.120    0.093    True         0.079                0.025           0.21%
+      0.140    0.093    True         0.079                0.034           0.28%
+      0.160    0.093    True         0.079                0.043           0.36%
+      0.180    0.093    True         0.079                0.052           0.43%
+      0.200    0.093    True         0.079                0.060           0.50%
+      0.235    0.093    True         0.079                0.076           0.63%
+==============================================================================
+DONE in 312.6s -> extra_results.json

@@ -1,0 +1,180 @@
+{
+ "gate_difficulty": {
+  "pointed-clean": {
+   "p50": 0.0716362449795027,
+   "p90": 0.0798018403490304,
+   "p99": 0.0875634674320789,
+   "p99_cihi": 0.08845401516521269,
+   "sig_p0": 0.0008274349872042957,
+   "sig_v0": 0.012804577397985385,
+   "Bmin_close": 0.1,
+   "Bmin_close_cihonest": 0.1,
+   "closeB": {
+    "0.100": true,
+    "0.120": true,
+    "0.140": true,
+    "0.160": true,
+    "0.180": true,
+    "0.200": true,
+    "0.235": true,
+    "0.250": true,
+    "0.300": true
+   },
+   "closeB_ci": {
+    "0.100": true,
+    "0.120": true,
+    "0.140": true,
+    "0.160": true,
+    "0.180": true,
+    "0.200": true,
+    "0.235": true,
+    "0.250": true,
+    "0.300": true
+   }
+  },
+  "pointed-realistic": {
+   "p50": 0.07150511883726948,
+   "p90": 0.08477111323188878,
+   "p99": 0.09340048876645847,
+   "p99_cihi": 0.09379670689705821,
+   "sig_p0": 0.001021407377922075,
+   "sig_v0": 0.015692397785824645,
+   "Bmin_close": 0.1,
+   "Bmin_close_cihonest": 0.1,
+   "closeB": {
+    "0.100": true,
+    "0.120": true,
+    "0.140": true,
+    "0.160": true,
+    "0.180": true,
+    "0.200": true,
+    "0.235": true,
+    "0.250": true,
+    "0.300": true
+   },
+   "closeB_ci": {
+    "0.100": true,
+    "0.120": true,
+    "0.140": true,
+    "0.160": true,
+    "0.180": true,
+    "0.200": true,
+    "0.235": true,
+    "0.250": true,
+    "0.300": true
+   }
+  },
+  "degraded": {
+   "p50": 0.07397607293692374,
+   "p90": 0.0936905495221776,
+   "p99": 0.10256269252955268,
+   "p99_cihi": 0.1044964799182605,
+   "sig_p0": 0.001506218821264949,
+   "sig_v0": 0.02287184640728147,
+   "Bmin_close": 0.12,
+   "Bmin_close_cihonest": 0.12,
+   "closeB": {
+    "0.100": false,
+    "0.120": true,
+    "0.140": true,
+    "0.160": true,
+    "0.180": true,
+    "0.200": true,
+    "0.235": true,
+    "0.250": true,
+    "0.300": true
+   },
+   "closeB_ci": {
+    "0.100": false,
+    "0.120": true,
+    "0.140": true,
+    "0.160": true,
+    "0.180": true,
+    "0.200": true,
+    "0.235": true,
+    "0.250": true,
+    "0.300": true
+   }
+  }
+ },
+ "vio_backsolve": {
+  "t_coast": 0.4,
+  "sig_p0": 0.001021407377922075,
+  "sig_v0": 0.015692397785824645,
+  "det_offset": -0.056145868034969924,
+  "centering_terminal_lat": 0.009433466744296404,
+  "centering_terminal_vert": 0.008421759792756398,
+  "velocity_terminal_lat": 0.011316449125161474,
+  "imu_p99": 0.09340048876645847,
+  "rows": [
+   {
+    "B": 0.1,
+    "imu_p99": 0.09340048876645847,
+    "closes_imu": true,
+    "cen_floor_p99": 0.0786409329522486,
+    "centering_feasible": true,
+    "D_lat_need": 0.016,
+    "vins_drift_pct_12m": 0.13333333333333333
+   },
+   {
+    "B": 0.12,
+    "imu_p99": 0.09340048876645847,
+    "closes_imu": true,
+    "cen_floor_p99": 0.0786409329522486,
+    "centering_feasible": true,
+    "D_lat_need": 0.025,
+    "vins_drift_pct_12m": 0.20833333333333334
+   },
+   {
+    "B": 0.14,
+    "imu_p99": 0.09340048876645847,
+    "closes_imu": true,
+    "cen_floor_p99": 0.0786409329522486,
+    "centering_feasible": true,
+    "D_lat_need": 0.034,
+    "vins_drift_pct_12m": 0.2833333333333333
+   },
+   {
+    "B": 0.16,
+    "imu_p99": 0.09340048876645847,
+    "closes_imu": true,
+    "cen_floor_p99": 0.0786409329522486,
+    "centering_feasible": true,
+    "D_lat_need": 0.043000000000000003,
+    "vins_drift_pct_12m": 0.3583333333333334
+   },
+   {
+    "B": 0.18,
+    "imu_p99": 0.09340048876645847,
+    "closes_imu": true,
+    "cen_floor_p99": 0.0786409329522486,
+    "centering_feasible": true,
+    "D_lat_need": 0.052000000000000005,
+    "vins_drift_pct_12m": 0.4333333333333334
+   },
+   {
+    "B": 0.2,
+    "imu_p99": 0.09340048876645847,
+    "closes_imu": true,
+    "cen_floor_p99": 0.0786409329522486,
+    "centering_feasible": true,
+    "D_lat_need": 0.06,
+    "vins_drift_pct_12m": 0.5
+   },
+   {
+    "B": 0.235,
+    "imu_p99": 0.09340048876645847,
+    "closes_imu": true,
+    "cen_floor_p99": 0.0786409329522486,
+    "centering_feasible": true,
+    "D_lat_need": 0.076,
+    "vins_drift_pct_12m": 0.6333333333333333
+   }
+  ]
+ },
+ "meta": {
+  "seed": 20260615,
+  "t_coast": 0.4,
+  "wall_s": 312.6
+ }
+}
