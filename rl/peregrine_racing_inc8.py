@@ -115,6 +115,20 @@ class PeregrineRacingInc8(PeregrineRacing):
         self._refline = BatchedReferenceLine.load(_REFLINE_JSON, dev, self._inc8_dtype)
         self._spin_clock = torch.zeros(self.n_envs, device=dev, dtype=self._inc8_dtype)
 
+        # ---- active-perception LOOK-AT primitive (architecture pivot S0; default OFF) ----
+        # Composes a camera->gate body-rate correction onto the policy CTBR action, range-gated to the
+        # approach band. g_yaw == g_pitch == 0 => no interception (byte-identical inc7/inc8). The R is the
+        # frames-canonical 20deg mount (baked, pinned by tests/test_inc8_lookat.py); the action-rate
+        # FLU<->FRD flip matches diffaero_dynamics _FLIP. S0 = yaw-only (g_pitch=0, the cheap heading DoF).
+        self._lookat_g_yaw = float(getattr(cfg, "lookat_g_yaw", 0.0))
+        self._lookat_g_pitch = float(getattr(cfg, "lookat_g_pitch", 0.0))
+        self._lookat_r_lo = float(getattr(cfg, "lookat_r_lo", 8.0))
+        self._lookat_r_hi = float(getattr(cfg, "lookat_r_hi", 30.0))
+        self._lookat_on = (self._lookat_g_yaw != 0.0) or (self._lookat_g_pitch != 0.0)
+        self._r_bc = R8.r_body_from_camera(dev, self._inc8_dtype)
+        self._flip_rate = torch.tensor(R8._FLIP_FRD_FLU, device=dev, dtype=self._inc8_dtype)
+        self._act_hi = self._act_lo + self._act_span
+
         # obs/critic dims: 17->20, 33->36. Deploy/load gates on the checkpoint sidecar obs-dim.
         self.obs_dim = 20
         # init the emulator at the current (hover/placeholder) truth for all envs; the runner's
@@ -203,6 +217,23 @@ class PeregrineRacingInc8(PeregrineRacing):
         prev_pos = self._p.clone()
         prev_vel = self._v.clone()
         prev_q = self._q.clone()
+        # ---- active-perception LOOK-AT primitive: add a camera->gate body-rate correction to the CTBR
+        # action BEFORE the dynamics, gated to the approach band (range in [r_lo,r_hi], gate in front).
+        # The COMPOSED action is what's executed AND what a_norm taxes (R5/R6) and last_action stores --
+        # the realised command. action.clone() so the trainer's policy-action tensor (PPO ratio) is
+        # untouched: the primitive is part of the ENV transition (residual-action shaping). OFF or no
+        # prior geom -> pass through unchanged (byte-identical). Uses last step's gate-in-camera geom
+        # (current pre-step state; 1-step stale only just after a reset, where range is out of band).
+        if self._lookat_on and getattr(self._emu, "_last_geom", None) is not None:
+            with torch.no_grad():
+                g0 = self._emu._last_geom
+                dlook = R8.lookat_correction(g0["t_cam"], self._lookat_g_yaw, self._lookat_g_pitch,
+                                             self._r_bc, self._flip_rate)
+                band = ((g0["range"] >= self._lookat_r_lo) & (g0["range"] <= self._lookat_r_hi)
+                        & (g0["t_cam"][..., 2] > 0)).to(dlook.dtype).unsqueeze(-1)
+                action = action.clone()
+                action[..., 1:4] = action[..., 1:4] + band * dlook
+                action = torch.clamp(action, self._act_lo, self._act_hi)
         self.dynamics.step(action)
         curr_pos = self._p
         tg = self.target_gates.long()
@@ -300,8 +331,10 @@ class PeregrineRacingInc8(PeregrineRacing):
         r5 = R8.perception_reward(geom["t_cam"], geom["range"], delta_s, geom["in_image"],
                                   self._r5_arm, self._inc8w)
         fb = R8.fix_bonus_reward(accepted, delta_s, self._inc8w.fix_bonus)
+        cr = R8.centering_reward(err_ip, geom["range"], self._inc8w.centering,
+                                 self._inc8w.centering_r_near, self._inc8w.centering_w)
         spin_pen = self.rw_spin * spin_abort.float()
-        reward = reward_frozen + r1p + gt + cs + r5 + fb - spin_pen
+        reward = reward_frozen + r1p + gt + cs + r5 + fb + cr - spin_pen
 
         loss = (-reward).detach()
         reward = reward.detach()
@@ -329,6 +362,14 @@ class PeregrineRacingInc8(PeregrineRacing):
         lockband = ((geom["range"] >= self._inc8w.perc_r_lo)
                     & (geom["range"] <= self._inc8w.perc_r_hi))
         lockband_pointing = (in_img * lockband.to(in_img.dtype)).sum() / lockband.sum().clamp(min=1)
+        # look-at efficacy / SIGN check: mean |azimuth| of the gate in the look-at band. With the yaw
+        # primitive ON + correct sign this DROPS (gate held near az=0); a wrong FLU/FRD flip makes it
+        # RISE -- a cheap first-few-hundred-step confirm before committing to a long run.
+        _tcam = geom["t_cam"]
+        _az_deg = torch.atan2(_tcam[..., 0], _tcam[..., 2].clamp(min=1e-6)) * (180.0 / torch.pi)
+        _look_band = ((geom["range"] >= self._lookat_r_lo) & (geom["range"] <= self._lookat_r_hi)
+                      & (_tcam[..., 2] > 0))
+        band_az_abs = (_az_deg.abs() * _look_band.to(mdt)).sum() / _look_band.sum().clamp(min=1)
         metric_vec = torch.stack([
             self._nonfinite_obs_t.to(mdt),        # obs_nonfinite (lifetime count)
             accepted.float().mean().to(mdt),      # inc8_fix_rate
@@ -343,10 +384,12 @@ class PeregrineRacingInc8(PeregrineRacing):
             spin_abort.float().mean().to(mdt),    # inc8_spin_abort_rate
             lockband_pointing.to(mdt),            # inc8_lockband_pointing
             fb.mean().to(mdt),                    # inc8_fix_bonus
+            cr.mean().to(mdt),                    # inc8_centering
+            band_az_abs.to(mdt),                  # inc8_band_az_abs_deg (look-at sign/efficacy)
         ])
         (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
          age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v,
-         lockband_point_v, fix_bonus_v) = metric_vec.tolist()  # ONE sync
+         lockband_point_v, fix_bonus_v, centering_v, band_az_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
             "obs_nonfinite": obs_nonfinite_v,
             "inc8_fix_rate": fix_rate_v,
@@ -362,6 +405,8 @@ class PeregrineRacingInc8(PeregrineRacing):
             "inc8_spin_abort_rate": spin_rate_v,
             "inc8_lockband_pointing": lockband_point_v,
             "inc8_fix_bonus": fix_bonus_v,
+            "inc8_centering": centering_v,
+            "inc8_band_az_abs_deg": band_az_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())

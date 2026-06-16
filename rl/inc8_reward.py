@@ -63,6 +63,13 @@ class Inc8RewardWeights:
     # confidence-shaping anneal (in CONTROL STEPS; the env tracks a global step counter)
     conf_anneal_warmup_steps: float = 0.0
     conf_anneal_ramp_steps: float = 1.0
+    # dense terminal-sigma_p0 CENTERING reward (architecture pivot S1): a RANGE-WEIGHTED GT in-plane
+    # estimator-error penalty that ramps UP near the gate crossing (range->0), where err_ip == the
+    # terminal centering miss sigma_p0. The flat gt_estimerr_anchor is coast-satisfied; this one is not
+    # (low near-gate err_ip needs an accurate band fix => pointing). centering=0 => zero term (OFF).
+    centering: float = 0.0          # rw for the dense terminal-centering penalty (0 == off)
+    centering_r_near: float = 8.0   # range (m) where the near-weight crosses 0.5 (peaks at crossing)
+    centering_w: float = 3.0        # near-weight sigmoid width (m)
 
 
 def arc_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float) -> Tensor:
@@ -146,6 +153,57 @@ def fix_bonus_reward(accepted: Tensor, delta_s: Tensor, rw_fix_bonus: float) -> 
         return torch.zeros_like(delta_s)
     advancing = (delta_s > 0).to(delta_s.dtype)
     return rw_fix_bonus * accepted.to(delta_s.dtype) * advancing
+
+
+# ===== active-perception LOOK-AT primitive (architecture pivot S0) ============================
+# After 4 weight-tuning NO-GOs (pointing->fix is sparse + all-or-nothing; PPO can't discover it from a
+# non-pointing start), we ENGINEER the geometric pointing direction instead of learning it. The primitive
+# adds a body-rate correction that rotates the camera optical axis toward the gate; the policy still
+# learns the racing line (and, later, a gain). g_yaw == g_pitch == 0 -> the zero correction (OFF).
+#
+# Camera optical (OpenCV: X-right, Y-down, Z-fwd), body FRD (X-fwd, Y-right, Z-down), +20deg mount about
+# body-Y (src/racer/frames.py). The DiffAero ACTION rates are FLU (rl/diffaero_dynamics.py:184,
+# rate_frd = U[1:4]*diag(1,-1,-1)) -- so a FRD correction maps to the action convention via the SAME flip.
+_FLIP_FRD_FLU = (1.0, -1.0, -1.0)       # body-rate FRD<->FLU (involutory; == diffaero _FLIP)
+_SIN20, _COS20 = 0.34202014332566871, 0.93969262078590843   # sin/cos(CAMERA_PITCH_RAD == 20 deg)
+
+
+def r_body_from_camera(device=None, dtype=None) -> Tensor:
+    """Constant R_body_from_camera (v_body = R @ v_cam) == frames.R_camera_from_body().T for the default
+    (zero pitch/roll) boresight = the pure 20deg mount. BAKED (not a torch reimpl of the rotation -- the
+    documented sin-sign-flip trap) and PINNED to canonical numpy frames by tests/test_inc8_lookat.py."""
+    return torch.tensor([[0.0,    _SIN20,  _COS20],
+                         [1.0,    0.0,     0.0],
+                         [0.0,    _COS20, -_SIN20]], device=device, dtype=dtype)
+
+
+def lookat_correction(t_cam: Tensor, g_yaw: float, g_pitch: float, r_bc: Tensor,
+                      flip: Tensor) -> Tensor:
+    """Body-rate correction (rad/s, in the FLU ACTION convention) that rotates the camera optical axis
+    toward the gate (active perception). Convention-robust: omega_cam = K*(zhat_cam x uhat) componentwise
+    = [-g_pitch*uy, g_yaw*ux, 0] (uhat = t_cam/|t_cam|), so it ALWAYS reduces |alpha|/|beta| (verified
+    numerically). Mapped FRD via r_bc then FLU via flip. g_pitch=0 => S0 yaw-only (the cheap heading DoF:
+    null the gate azimuth, leave elevation to the racing line). g_yaw=g_pitch=0 => zero (byte-identical)."""
+    if g_yaw == 0.0 and g_pitch == 0.0:
+        return torch.zeros_like(t_cam)
+    norm = torch.linalg.norm(t_cam, dim=-1, keepdim=True).clamp(min=1e-6)
+    u = t_cam / norm
+    ux, uy = u[..., 0], u[..., 1]
+    w_cam = torch.stack([-g_pitch * uy, g_yaw * ux, torch.zeros_like(ux)], dim=-1)   # camera frame
+    w_frd = w_cam @ r_bc.transpose(-1, -2)                                            # FRD body rate
+    return w_frd * flip                                                              # -> FLU action conv
+
+
+def centering_reward(err_inplane_m: Tensor, range_m: Tensor, rw_centering: float,
+                     r_near: float, w_near: float) -> Tensor:
+    """Dense terminal-sigma_p0 reward: -rw * sigmoid((r_near - range)/w) * err_inplane. Ramps the GT
+    in-plane estimator-error penalty UP near the crossing (range->0), where err_inplane == the terminal
+    centering miss sigma_p0. Dense + GT-anchored (reads truth -> not a gameable proxy); not coast-
+    satisfiable without a band fix. rw_centering == 0 -> the zero term (byte-identical inc8)."""
+    if rw_centering == 0.0:
+        return torch.zeros_like(err_inplane_m)
+    near = torch.sigmoid((r_near - range_m) / max(w_near, 1e-6))
+    return -rw_centering * near * err_inplane_m
 
 
 def bsr3_update(spin_clock: Tensor, omega_realized: Tensor, dt: float,
