@@ -37,6 +37,7 @@ from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
 from peregrine_racing_inc8 import PeregrineRacingInc8
 from inc8_critic_width import maybe_widen_critic
+from inc8_warmstart import maybe_warmstart
 
 # torch backend (DR-aware, differentiable mirror; parity-proven to the numpy plant). Same rationale
 # as peregrine_train_racing.py: the numpy backend ignores the per-env DR tensors.
@@ -142,6 +143,16 @@ def _run_with_lifelines(self):
         return out
 
     agent.step = step_with_periodic_save
+
+    # WARM-START (P2 INC8-RL, 2026-06-17): when +init_from=<ckpt dir> is set, load actor+critic from
+    # that converged checkpoint into the freshly-built agent and CONTINUE (weights-only; optimizer +
+    # rollout buffer stay fresh), and force the look-at gain-warmup to 0 (the loaded policy already
+    # points at full gain). UNSET => no-op, BYTE-IDENTICAL to the fresh-init trainer (the call returns
+    # None on its first statement, touching no agent/env/cfg/RNG state). See rl/inc8_warmstart.py.
+    warmstart_from = maybe_warmstart(agent, env, cfg)
+    if warmstart_from is not None:
+        print(f"[lifeline] CONTINUING training from warm-started weights: {warmstart_from}")
+
     try:
         _orig_run(self)
         if getattr(agent, "nan_skipped", 0):
