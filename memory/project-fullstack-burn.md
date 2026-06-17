@@ -9,6 +9,12 @@ metadata:
 
 **Source:** survey workflow `wjsevwxfx` (8 agents, 45 candidates, 6 dims) + adversarial critic, 2026-06-17. **Commander-adopted WITH the critic's PIVOT.** Trigger: weekly credit reset (~15h out from 2026-06-17), then a 2-day full-burn window.
 
+## STATUS (pre-reset, 2026-06-17)
+- **Pre-reset substrate = DONE** (the cheap, no-data half of the pivot): `scripts/diagnose_session.py` — the auto-judge; R_y(π) mirror canary now an always-on ATTENTION gate — MERGED `c07e886`. `scripts/green_gate.py` — merge-safety gate: stack-guard (torch must import or RED, else the +L test importorskips away = deceptive green) + 3 load-bearing invariants (OFF==inc7 AST, +L sign asserted-RAN, VQ1 import guard) + test-count sentinel **baseline 933** + diff-scoped pytest via merge-base — MERGED. The L-effort replay rig + TB adjudicator stay DEFERRED until the spike proves the loop (per the pivot).
+- **RL lane:** warm-start running on Adroit (job 3276071, fine-tuning the S2-seed2 ckpt); result reads against the VQ2 wire.
+- **Data staging (partial):** inc8-best (S2-seed2) + inc7 checkpoints LOCAL + verified. 🚩 **The spike's gate = STILL PENDING:** #2 a frames-bearing recording + #4 the VQ2 detector `best.pt` — BOTH ShadowPC-resident (the 8 in-repo `handoff/shadowpc-postfix-dataset-*/extracted/` bundles are OBS-ONLY: `debug_obs.jsonl`+`meta.json`, no frames). Delivered by the ShadowPC artifact-push prompt (GitHub-Releases pipe).
+- 🚩 **BURN OPS (earned this session):** (1) agent worktrees (`isolation:worktree`) come **STALE-BASED** — 3× (warm-start/diagnose/green-gate, all cut from old bases missing recent merges) → ALWAYS `git diff --stat main..<branch>` before merging; selective-checkout ONLY the agent's new/intended files; a naive merge reverts intervening work; prefer ADDITIVE agent tasks. (2) `*.pth` was NOT gitignored (only `*.pt`) → FIXED `3738193` (binaries were one `git add -A` from bloating the 636MB .git). (3) burn box needs `pyserial` or `pymavlink` tlog-grade degrades to the `meta.json` fallback (loses per-gate granularity). (4) `MSYS_NO_PATHCONV=1` for Adroit `/scratch` pulls (Git Bash rewrites the path).
+
 ## Center of gravity (the thesis)
 The deployed VQ2 racer IS **inc7-policy ⊕ C2 gate-relative estimator ⊕ VQ2 8-kpt detector** stacked — and those three have **NEVER run in one closed loop.** The burn's one job: close + harden that loop offline at compute speed, before the judged wire.
 
