@@ -36,6 +36,8 @@ demo/
 
 # ML artifacts
 *.pt
+*.pth
+rl/checkpoints/*.json
 runs/
 # stale staging copy of stage1_inc7_actor.pth (no sidecar); canonical = stage1_inc7_actor.pth
 rl/checkpoints/inc7_staging/
