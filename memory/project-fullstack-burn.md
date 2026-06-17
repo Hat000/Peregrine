@@ -48,7 +48,7 @@ Build case-C deploy PLUMBING (pays either way) but do NOT pre-commit appo/case-C
 - appo / case-C A1-A3 verdict committed now (gated on the VQ2 wire — directive).
 
 ## Prompts in flight (fit-check)
-- **Warm-start build** (sent) = the RL lane; correctly gated on VQ2 (rank-8 + cut-list confirm: hold appo; warm-start-from-S2seed2 is the cheap RL next-step IF VQ2 un-gates).
+- **Warm-start build** (BUILT + merged 11cb840; OFF byte-identical, 871 tests; NOT launched) = the RL lane; correctly gated on VQ2 (rank-8 + cut-list confirm: hold appo; warm-start-from-S2seed2 is the cheap RL next-step IF VQ2 un-gates).
 - **ShadowPC sim-ID** (sent) = PLANT-layer twin fidelity (diffaero plant vs official sim dynamics). Complementary to the burn's ESTIMATOR-layer twin fidelity (emul KF vs real chain). Both wanted, different layers.
 
 ## Memory corrections surfaced by the survey
