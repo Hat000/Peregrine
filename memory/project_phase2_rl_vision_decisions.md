@@ -1151,7 +1151,7 @@ The key discriminator that falsified the obs-seam hypothesis: run `crab_twin_rol
 
 ### S20 spec pointer
 
-See [[rl-increment-history]] §CRAB-DIAG for full S20 spec (refit collective/drag in 12–18 m/s × tilt-35–90 bin + ±12% DR + ≥3-seed + V100 gate → inc7). Predicted outcome: standing start clears gate 3, posture unchanged.
+See [[project-rl-increment-history]] §CRAB-DIAG for full S20 spec (refit collective/drag in 12–18 m/s × tilt-35–90 bin + ±12% DR + ≥3-seed + V100 gate → inc7). Predicted outcome: standing start clears gate 3, posture unchanged.
 
 **⚠️ Supersession (TRAINING-DOCTRINE 2026-06-12):** "S20 refit → inc7" framing REVISED — the climb-bin residual is real but the PRIMARY barrier is the geometry fiction (see §TRAINING-DOCTRINE). S20 refit folds into inc7 if ready but is NOT the launch blocker. Inc7 spec replaces the "S20+inc7" pipeline here.
 
