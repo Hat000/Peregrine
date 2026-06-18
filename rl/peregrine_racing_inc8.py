@@ -343,8 +343,21 @@ class PeregrineRacingInc8(PeregrineRacing):
         fb = R8.fix_bonus_reward(accepted, delta_s, self._inc8w.fix_bonus)
         cr = R8.centering_reward(err_ip, geom["range"], self._inc8w.centering,
                                  self._inc8w.centering_r_near, self._inc8w.centering_w)
+        # THROUGH-APPROACH CENTERING (recenter re-train 2026-06-17): restore inc7 R1-to-centre's LATERAL
+        # pull, decoupled from forward progress so it composes with arc-Γ (the lineage never flew a lap:
+        # arc-Γ rewards along-track motion only -> no restoring force when the drone drifts off the gate-
+        # centre line -> misses gate-0). Reuse rel_prev/rel_curr (the crossing-classification gate-frame
+        # positions for ALL gates) gathered at the POST-ADVANCE gate tg_new; in-plane distance to its
+        # centre line = hypot(y, z) (gate plane x=0, centre line y=z=0). Delta form, same gate for prev+
+        # curr (no spike at passage). through_centering=0 -> the EXACT zero term (byte-identical inc8;
+        # the cheap extra gather/hypot draw no RNG and add 0.0 to reward -- cf. fb/cr default-0 terms).
+        prev_rel_t = rel_prev[ar, tg_new]
+        curr_rel_t = rel_curr[ar, tg_new]
+        prev_ip = torch.sqrt(prev_rel_t[..., 1] ** 2 + prev_rel_t[..., 2] ** 2)
+        curr_ip = torch.sqrt(curr_rel_t[..., 1] ** 2 + curr_rel_t[..., 2] ** 2)
+        tc = R8.through_centering_reward(prev_ip, curr_ip, self._inc8w.through_centering)
         spin_pen = self.rw_spin * spin_abort.float()
-        reward = reward_frozen + r1p + gt + cs + r5 + fb + cr - spin_pen
+        reward = reward_frozen + r1p + gt + cs + r5 + fb + cr + tc - spin_pen
 
         loss = (-reward).detach()
         reward = reward.detach()
@@ -404,10 +417,12 @@ class PeregrineRacingInc8(PeregrineRacing):
             cr.mean().to(mdt),                    # inc8_centering
             band_az_abs.to(mdt),                  # inc8_band_az_abs_deg (look-at sign/efficacy)
             band_el_abs.to(mdt),                  # inc8_band_el_abs_deg (vertical residual / S2 sign-check)
+            tc.mean().to(mdt),                    # inc8_through_centering (lateral restoring reward)
         ])
         (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
          age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v,
-         lockband_point_v, fix_bonus_v, centering_v, band_az_v, band_el_v) = metric_vec.tolist()  # ONE sync
+         lockband_point_v, fix_bonus_v, centering_v, band_az_v, band_el_v,
+         through_centering_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
             "obs_nonfinite": obs_nonfinite_v,
             "inc8_fix_rate": fix_rate_v,
@@ -426,6 +441,7 @@ class PeregrineRacingInc8(PeregrineRacing):
             "inc8_centering": centering_v,
             "inc8_band_az_abs_deg": band_az_v,
             "inc8_band_el_abs_deg": band_el_v,
+            "inc8_through_centering": through_centering_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())

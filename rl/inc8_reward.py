@@ -70,6 +70,15 @@ class Inc8RewardWeights:
     centering: float = 0.0          # rw for the dense terminal-centering penalty (0 == off)
     centering_r_near: float = 8.0   # range (m) where the near-weight crosses 0.5 (peaks at crossing)
     centering_w: float = 3.0        # near-weight sigmoid width (m)
+    # THROUGH-APPROACH CENTERING (recenter re-train 2026-06-17): restores inc7's R1-to-centre LATERAL
+    # pull, decoupled from forward progress so it composes with arc-Γ. The inc8 lineage NEVER flew a lap
+    # (in-training success_rate ≡ 0, all seeds, dies at gate-0): arc-Γ progress (R1') rewards ALONG-track
+    # motion only, so the policy has NO restoring force when it drifts OFF the gate-centre line through the
+    # approach -> it misses gate-0. This re-adds a pull toward the CURRENT target gate's centre line across
+    # the WHOLE approach (gate-frame in-plane y,z distance, delta form). It is ORTHOGONAL to R1' (cross-
+    # track vs along-track), the existing NEAR-gate centering (estimator-error, σ_p0) and the look-at
+    # primitive (camera, not flight path), so it composes with all of them. 0 -> the zero term (byte-id).
+    through_centering: float = 0.0  # rw for the through-approach lateral centering pull (0 == off)
 
 
 def arc_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float) -> Tensor:
@@ -219,6 +228,26 @@ def centering_reward(err_inplane_m: Tensor, range_m: Tensor, rw_centering: float
         return torch.zeros_like(err_inplane_m)
     near = torch.sigmoid((r_near - range_m) / max(w_near, 1e-6))
     return -rw_centering * near * err_inplane_m
+
+
+def through_centering_reward(prev_inplane_m: Tensor, curr_inplane_m: Tensor,
+                             rw_through_centering: float) -> Tensor:
+    """THROUGH-APPROACH CENTERING (restores inc7 R1-to-centre's LATERAL pull, decoupled from forward
+    progress so it composes with arc-Γ). DELTA-form potential shaping on the IN-PLANE (cross-track)
+    distance to the CURRENT target gate's centre line: rw * (prev_inplane - curr_inplane). In the gate
+    frame the plane is x=0 and the centre line is y=z=0, so ``inplane = hypot(y, z)`` is the lateral+
+    vertical offset from the line the drone must thread. POSITIVE when the drone moves TOWARD the line,
+    NEGATIVE when it drifts off -- EVERY step of the approach (NOT near-gate-only), supplying the lateral
+    restoring force arc-Γ lacks (R1' = arc-length progress rewards along-track motion only; nothing
+    penalises drifting off the line -> the inc8 lineage missed gate-0 with success_rate ≡ 0). Telescoping
+    POTENTIAL form (like inc7 R1-to-centre) -> a dense gradient toward the centre line WITHOUT permanently
+    penalising a necessary off-centre excursion, and it sums to ~0 over a closed approach so it cannot
+    dominate the racing objective. The caller measures both prev/curr against the SAME (post-advance)
+    target gate so passage adds no spike (mirrors inc7 R1-to-centre's no-spike-at-passage convention).
+    rw_through_centering == 0 -> the EXACT zero term (byte-identical inc8; cf. fix_bonus/centering)."""
+    if rw_through_centering == 0.0:
+        return torch.zeros_like(prev_inplane_m)
+    return rw_through_centering * (prev_inplane_m - curr_inplane_m)
 
 
 def bsr3_update(spin_clock: Tensor, omega_realized: Tensor, dt: float,

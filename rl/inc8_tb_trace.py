@@ -25,6 +25,12 @@ import sys
 # inc8_terminal_pointing.
 COLUMNS = [
     ("total_reward",      ["total_reward"]),
+    # COURSE-COMPLETION is the PRIMARY GO metric (recenter re-train 2026-06-17): the inc8 lineage
+    # optimised a PROXY (pointing) but never flew a lap (success_rate ≡ 0). These two columns make the
+    # objective visible from step 0; success_rate ~0 by ~step 800-1000 => the restore did NOT recover
+    # flight (see the FLIGHTCHECK summary line below + the recenter sbatch early-stop gate).
+    ("success_rate",      ["success_rate"]),
+    ("n_passed_gates",    ["n_passed_gates"]),
     ("pointing_rate",     ["inc8_pointing_rate", "pointing_rate"]),
     ("terminal_pointing", ["inc8_terminal_pointing", "terminal_pointing"]),
     ("lockband_pointing", ["inc8_lockband_pointing", "lockband_pointing"]),
@@ -155,6 +161,18 @@ def main(argv):
                 v = _value_at(series[tag], step)
                 cells.append("%18s" % ("%.5f" % v if v is not None else "-"))
         print("  ".join(cells))
+
+    # FLIGHTCHECK: machine-greppable course-completion summary (recenter re-train early-stop gate). The
+    # recenter sbatch greps this after the FIRST seed to decide whether to burn the remaining seeds: if the
+    # restore did NOT recover flight (success_rate stays ~0, no gates passed), STOP rather than burn 2 more.
+    by_label = dict(resolved)
+    def _series_max(tag):
+        return max(series[tag].values()) if (tag and series.get(tag)) else float("nan")
+    sr_max = _series_max(by_label.get("success_rate"))
+    npg_max = _series_max(by_label.get("n_passed_gates"))
+    print("\n[inc8-tb-trace] FLIGHTCHECK success_rate_max=%.5f n_passed_gates_max=%.5f "
+          "(course-completion is the PRIMARY GO; ~0 => restore did NOT recover flight)"
+          % (sr_max, npg_max))
     return 0
 
 

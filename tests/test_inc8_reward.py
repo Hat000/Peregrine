@@ -136,6 +136,42 @@ def test_fix_bonus_reward():
     assert torch.allclose(RW.fix_bonus_reward(acc, ds, 1.5), _t([1.5, 0.0, 0.0, 0.0]))
 
 
+# ============================================================ through-approach centering
+def test_through_centering_disabled_is_exact_zero():
+    """rw_through_centering == 0 -> the EXACT zero term (byte-identical inc8). This is the OFF byte-
+    identity proof at the reward level: the env always adds this term (like fb/cr), so it MUST contribute
+    exactly zeros when disabled. torch.equal (not allclose) -- bit-exact, no +/-eps."""
+    prev_ip = _t([3.0, 1.0, 0.5, 0.0])
+    curr_ip = _t([2.0, 1.5, 0.0, 2.0])
+    assert torch.equal(RW.through_centering_reward(prev_ip, curr_ip, 0.0),
+                       torch.zeros_like(prev_ip))
+
+
+def test_through_centering_sign_and_shape():
+    """Delta form rw * (prev_inplane - curr_inplane): POSITIVE when the drone moves TOWARD the gate-
+    centre line (curr_ip < prev_ip), NEGATIVE when it drifts off, ZERO when it holds its offset. Linear
+    in the weight. This is the lateral restoring force arc-Γ (along-track only) lacks."""
+    prev_ip = _t([3.0, 1.0, 2.0])     # toward / away / hold
+    curr_ip = _t([2.0, 1.5, 2.0])
+    r = RW.through_centering_reward(prev_ip, curr_ip, 10.0)
+    assert torch.allclose(r, _t([10.0, -5.0, 0.0]))     # +closing, -drift, 0 hold
+    # linear in the weight
+    assert torch.allclose(RW.through_centering_reward(prev_ip, curr_ip, 4.0),
+                          0.4 * r)
+
+
+def test_through_centering_inplane_distance_semantics():
+    """The 'inplane' arg is the gate-frame hypot(y, z) (the offset from the y=z=0 centre line); the
+    reward rewards SHRINKING it. Sanity: a drone on the centre line (inplane 0) that drifts to 0.5 m is
+    penalised; one that recentres from 0.5 m to 0 m is rewarded by the same magnitude (telescoping)."""
+    on_line, off_line = _t([0.0]), _t([0.5])
+    drift = RW.through_centering_reward(on_line, off_line, 10.0)        # 0 -> 0.5: drift off
+    recenter = RW.through_centering_reward(off_line, on_line, 10.0)     # 0.5 -> 0: recentre
+    assert drift.item() == pytest.approx(-5.0)
+    assert recenter.item() == pytest.approx(5.0)
+    assert drift.item() == pytest.approx(-recenter.item())             # potential/telescoping symmetry
+
+
 # ============================================================ BSR3 spin-gate
 def test_bsr3_disabled_is_noop():
     clock = torch.zeros(4, dtype=DT)
