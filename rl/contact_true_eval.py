@@ -41,10 +41,39 @@ from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams, PlantState,
                             MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED,
                             step as plant_step)
 from fly_rl import (GateMap, N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST,
-                    _TRAIN_DT, _gate_rotmat_w2g, load_actor, make_gate_map, policy_step)
+                    _TRAIN_DT, _gate_rotmat_w2g, load_actor, make_gate_map, policy_step,
+                    _ACT_MIN, _ACT_MAX)
 from offline_rollout import (slab_frame_hit_np, _HALF_OPEN, _HALF_OUTER,
                               _RATE_SIGN_LIVE, obs_from_truth, _quat_from_rpy)
 from estimator_emul import actor_obs_dim
+
+# ---- inc8 active-perception LOOK-AT primitive (eval-faithfulness port, 2026-06-18) -----------
+# Training (peregrine_racing_inc8.step) composes a camera->gate body-rate correction onto the CTBR
+# action BEFORE the dynamics, gated to the approach band. The eval must apply the SAME composition or
+# the 20-dim inc8 policy's EXECUTED control is wrong -> it dies at gate-0 (worker-disambiguated: inc7,
+# no look-at, flies this harness 3/3; the omission is inc8-specific). We REUSE the pinned, tested
+# primitive (rl/inc8_reward.lookat_correction + the baked r_body_from_camera 20deg matrix -- NOT a
+# reimpl; pinned by tests/test_inc8_lookat). The correction is built in the FLU ACTION convention
+# (exactly as training adds it to action[...,1:4]); the eval carries rates as FRD (policy_step output),
+# so we map FRD->FLU (involutory _FLIP), add band*dlook, clamp to the action bounds, map back to FRD.
+import torch as _torch  # noqa: E402
+from inc8_reward import (lookat_correction as _lookat_correction,   # noqa: E402
+                         r_body_from_camera as _r_body_from_camera, _FLIP_FRD_FLU as _FLIP_FRD_FLU)
+_LOOKAT_R_BC = _r_body_from_camera(None, _torch.float64)             # baked R_body_from_camera (20deg)
+_LOOKAT_FLIP = _torch.tensor(_FLIP_FRD_FLU, dtype=_torch.float64)    # FRD<->FLU body-rate flip (1,-1,-1)
+# Trained look-at config for the rc1 recenter seeds (peregrine_inc8_recenter.sbatch COMMON/RC_OVERRIDES):
+LOOKAT_G_YAW_DEFAULT = -3.0     # empirical S0 yaw sign
+LOOKAT_G_PITCH_DEFAULT = 3.0    # empirical S2 pitch sign (opposite)
+LOOKAT_R_LO_DEFAULT = 8.0
+LOOKAT_R_HI_DEFAULT = 30.0
+
+
+def _lookat_dlook_flu(t_cam_np: np.ndarray, g_yaw: float, g_pitch: float) -> np.ndarray:
+    """FLU action-convention body-rate correction (rad/s) for one (3,) camera-frame gate vector.
+    Thin numpy wrapper over the pinned torch lookat_correction (warmup factor wf == 1 post-training)."""
+    t = _torch.as_tensor(np.asarray(t_cam_np, dtype=np.float64), dtype=_torch.float64)
+    d = _lookat_correction(t, float(g_yaw), float(g_pitch), _LOOKAT_R_BC, _LOOKAT_FLIP)
+    return d.cpu().numpy()
 
 # ---------------------------------------------------------------------------
 # Contact-true geometry constants (verbatim from test_contact_geometry.py inc7 doctrine)
@@ -230,6 +259,11 @@ def run_episode(
     obs_dim: int = 17,
     emul_seed: int = 0,
     emul_passive: bool = False,
+    lookat: bool | None = None,
+    lookat_g_yaw: float = LOOKAT_G_YAW_DEFAULT,
+    lookat_g_pitch: float = LOOKAT_G_PITCH_DEFAULT,
+    lookat_r_lo: float = LOOKAT_R_LO_DEFAULT,
+    lookat_r_hi: float = LOOKAT_R_HI_DEFAULT,
 ) -> tuple[EpisodeResult, np.ndarray | None]:
     """Run one closed-loop episode and score with contact-true geometry.
 
@@ -289,6 +323,12 @@ def run_episode(
                                      gate_pos_zup=gate_pos_zup, gate_yaw=gate_yaw)
         emulator.reset(start_state, gate, emul_rng)
 
+    # inc8-only look-at gate: compose the camera-pointing correction iff flying the ACTIVE estimator-
+    # emul obs at the 20-dim inc8 width. The passive-observer (truth-obs) path and the 17-dim inc7
+    # contract get NO look-at -> inc7 stays byte-identical (it already flies this harness).
+    apply_lookat = (lookat if lookat is not None
+                    else (estim_emul and (not emul_passive) and obs_dim >= 20))
+
     for k in range(n_steps):
         if estim_emul:
             if k > 0:
@@ -305,6 +345,19 @@ def run_episode(
         else:
             obs = obs_from_truth(st, gate, last_normed, virtual_flip, gate_map=gate_map)
         rate_frd, _coll, last_normed = policy_step(actor, obs, 0.0, virtual_flip)
+        # ---- inc8 LOOK-AT composition (faithful to peregrine_racing_inc8.step:233-246) ----
+        # Add the camera->gate body-rate correction to the realised CTBR command, gated to the
+        # approach band (range in [r_lo,r_hi] & gate in front, t_cam_z>0). Composed in the FLU action
+        # convention training uses (action[...,1:4]); rate_frd is real FRD, so map FRD->FLU, add, clamp
+        # to the action bounds, map back. wf==1 post-training (warmup complete). No geom (k==0 / no
+        # prior) -> pass through unchanged, exactly as training.
+        if apply_lookat and emulator is not None and emulator._last_geom is not None:
+            g0 = emulator._last_geom
+            if (lookat_r_lo <= g0.range_m <= lookat_r_hi) and (float(g0.t_cam[2]) > 0.0):
+                dlook = _lookat_dlook_flu(g0.t_cam, lookat_g_yaw, lookat_g_pitch)   # FLU action rate
+                flu = rate_frd * _FLIP                              # real FRD -> real FLU
+                flu = np.clip(flu + dlook, _ACT_MIN[1:4], _ACT_MAX[1:4])
+                rate_frd = flu * _FLIP                              # real FLU -> real FRD
         collective = last_normed * _HOVER_THRUST   # un-clipped, exactly training
         action = np.concatenate([rate_frd, [collective]])
 

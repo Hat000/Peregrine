@@ -84,13 +84,24 @@ def _pct(a: np.ndarray, q: float) -> float:
 
 
 def evaluate(ckpt: str, n_episodes: int, estim_emul: bool, obs_dim: int,
-             plant: str, base_seed: int, max_time: float) -> dict:
+             plant: str, base_seed: int, max_time: float,
+             start: str = "simstart", lookat: str = "auto") -> dict:
     actor = load_actor(ckpt)
     obs_dim = obs_dim if obs_dim > 0 else actor_obs_dim(actor)
     params = _build_plant_params(plant)
 
     if not estim_emul:
         n_episodes = 1  # deterministic without DR -> a single crossing; sigma is undefined
+
+    # look-at composition mode (faithfulness port 2026-06-18). 'auto' = run_episode default (full
+    # 2-axis); 'off' = no look-at; 'yaw' = yaw-only (the faithful axis -- the pitch correction does
+    # not compose through the eval's legacy-alias plant; see REPORT). Passed to run_episode per kwargs.
+    lookat_kw: dict = {}
+    if lookat == "off":
+        lookat_kw = {"lookat": False}
+    elif lookat == "yaw":
+        lookat_kw = {"lookat": True, "lookat_g_pitch": 0.0}
+    # 'auto' -> {} (run_episode auto-enables full look-at for estim_emul & obs_dim>=20)
 
     lat: list[float] = []
     vert: list[float] = []
@@ -99,15 +110,16 @@ def evaluate(ckpt: str, n_episodes: int, estim_emul: bool, obs_dim: int,
     locks: list[float] = []
     fixrates: list[float] = []
 
-    st0, tgt0, vflip = _build_start("simstart", 0)
+    st0, tgt0, vflip = _build_start(start, 0)
     dt = _TRAIN_DT
     for i in range(n_episodes):
         st, tgt = st0, tgt0
         result, pos_traj = run_episode(
             actor, st, tgt, vflip, params,
             body_radius=BODY_RADIUS_NOM, frame_depth=FRAME_DEPTH_NOM,
-            max_time=max_time, start_label="simstart", record_pos=True,
+            max_time=max_time, start_label=start, record_pos=True,
             estim_emul=estim_emul, obs_dim=obs_dim, emul_seed=base_seed + i,
+            **lookat_kw,
         )
         if result.success:
             finished += 1
@@ -180,6 +192,13 @@ def main() -> int:
     ap.add_argument("--base-seed", type=int, default=0, help="emul_seed = base-seed + episode index")
     ap.add_argument("--max-time", type=float, default=40.0)
     ap.add_argument("--sigma-target", type=float, default=0.08)
+    ap.add_argument("--start", default="simstart", choices=["simstart", "trainreset", "racestart"],
+                    help="start pose. 'simstart' = deploy nose-first spawn (the policy is NOT trained on "
+                         "it -> inc8 does not fly it); 'trainreset' = training-native gate-relative spawn "
+                         "(the faithful start -> inc8 flies + reaches gate-4).")
+    ap.add_argument("--lookat", default="auto", choices=["auto", "off", "yaw"],
+                    help="look-at composition: auto=full 2-axis (pitch breaks the eval plant), off=none, "
+                         "yaw=yaw-only (the faithful axis).")
     args = ap.parse_args()
 
     ckpt = args.ckpt
@@ -191,11 +210,12 @@ def main() -> int:
               "sigma_p0 is undefined (single crossing). Pass --estim-emul for the GO gate.")
 
     m = evaluate(ckpt, args.n_episodes, args.estim_emul, args.obs_dim,
-                 args.plant, args.base_seed, args.max_time)
+                 args.plant, args.base_seed, args.max_time, args.start, args.lookat)
 
     print(f"\n{'='*78}")
     print(f"inc8 GT-ANCHORED sigma_p0  ckpt={m['ckpt']}  obs_dim={m['obs_dim']}  "
-          f"estim_emul={'ON' if m['estim_emul'] else 'OFF'}  plant={args.plant}")
+          f"estim_emul={'ON' if m['estim_emul'] else 'OFF'}  plant={args.plant}  "
+          f"start={args.start}  lookat={args.lookat}")
     print(f"{'='*78}")
     print(f"  episodes={m['n_episodes']}  reached_g4={m['n_reached_g4']} "
           f"(reach_rate={m['reach_rate']:.2f})  finished={m['n_finished']}")

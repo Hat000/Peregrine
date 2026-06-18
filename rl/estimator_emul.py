@@ -210,6 +210,9 @@ class EstimatorEmulator:
         self._t_since_fix: float = 0.0
         self._sigma_lat_ep: float = float("nan")
         self._bias_ep: float = float("nan")
+        # last computed gate geometry (GateGeometry) to the current target -- the look-at primitive
+        # source, mirroring the torch emulator's ``_last_geom`` (inc8_estimator_emul). Set in step().
+        self._last_geom = None
         self.trace = _Trace()
 
     # ---- episode lifecycle --------------------------------------------------
@@ -239,6 +242,7 @@ class EstimatorEmulator:
             attitude_noise_std=0.0,          # IMU+attitude trusted-with-noise (case-C)
         )
         self._t_since_fix = 1e3              # no fix yet -> age_norm == 1 (cold/stale)
+        self._last_geom = None
         self.trace = _Trace()
 
     def seed_truth(self, st) -> None:
@@ -274,6 +278,7 @@ class EstimatorEmulator:
         gate = self.gates[target_gate]
         R_cur = _R_from_quat(np.asarray(st_cur.quat, dtype=np.float64))
         geom = FS.geometry(np.asarray(st_cur.pos, dtype=np.float64), R_cur, gate)
+        self._last_geom = geom               # look-at primitive source (t_cam / range_m to target)
         fix = self._surrogate_ep.sample_fix(geom, rng, include_bias=True)
         accepted = fix is not None
         if accepted:
