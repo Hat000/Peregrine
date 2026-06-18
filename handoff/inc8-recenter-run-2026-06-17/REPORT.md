@@ -20,7 +20,20 @@ NOT fire; the gate PASSED and the job proceeded to seeds 1 & 2.
 - σ_p0 (terminal centring miss) is now MEANINGFUL for the first time (laps complete) — measure offline via
   contact_true_eval on the seed checkpoints.
 
-Seeds 1 & 2 in progress (~44 min each); final per-seed table appended on INC8_RECENTER_DONE.
+**ALL 3 SEEDS FLEW (RC=0 each, `INC8_RECENTER_DONE`) — tightly clustered, lineage-wide gap fixed:**
+
+| seed | success_rate_max | n_passed_gates_max | verdict |
+|------|------------------|--------------------|---------|
+| 0 | 0.538 | 3.03 | FLEW |
+| 1 | 0.513 | 2.98 | FLEW (RC=0) |
+| 2 | 0.504 | 2.96 | FLEW (RC=0) |
+
+3/3 fly, success_rate ~0.50–0.54, n_passed ~2.96–3.03 — the recovery is reproducible across seeds, not a
+seed-0 fluke. The lineage-wide policy-gap (success_rate≡0 across ALL prior runs incl. S2-seed2 parent +
+warm-start) is RESOLVED by the through-centering restore.
+
+**GPU util:** mean ~24–28% (sampler CSV parse slightly garbled but clearly low) — the 2048-env PPO did not
+saturate the GPU (rollout/CPU-bound), but ran fine at ~41 min/seed, ~2 h total. Not zero → AUP-safe.
 
 ---
 
@@ -94,6 +107,38 @@ End-of-run (step 3990): success_rate 0.521, n_passed_gates 2.91.
   (the sbatch supports `RW_TC=<w>` via --export; e.g. try 6.0 and 14.0 to bracket). Not a blocker — flight
   is recovered, which was the GO.
 
-## 5. MEMORY-DELTA
+## 5. MEMORY-DELTA (text only — do NOT commit memory/)
 
-(filled at end)
+```
+inc8 RECENTER RUN (job 3276449, RUNTAG=rc1, adroit-h11g3, 2026-06-18): 🟢 FIRST FLYING inc8 — the
+lineage-wide policy-gap (success_rate≡0 across ALL prior runs incl. S2-seed2 parent + warm-start) is FIXED.
+- ALL 3 FRESH seeds FLEW (RC=0): success_rate_max 0.538/0.513/0.504, n_passed_gates_max 3.03/2.98/2.96.
+  Tight cluster = reproducible, not a fluke. FLIGHTCHECK auto-gate PASSED on seed 0; ran all 3.
+- The ONLY change vs the non-flying S0 baseline = +env.rw_through_centering=10.0 (restored R1-to-centre
+  cross-track lateral pull, ORTHOGONAL to arc-Γ). Single-variable → dropped through-approach centering WAS
+  the root cause. rw_centering stayed OFF (S3-cliff driver; layer later). look-at on, warmup=200, signs
+  ++yaw=-3.0 ++pitch=3.0.
+- Pointing RETAINED but rebalanced DOWN (terminal_pointing~0.057, lockband~0.017, pointing_rate~0.03,
+  fix~0.006 — all >0 but << the old pointing-optimized non-flying lineage's 0.46/0.17-0.23). Intended: budget
+  now goes to flying the course, not pointing a resetting drone. band_az~37-58 band_el~66-79 (loose lock).
+- σ_p0 NOW MEASURABLE for the first time (laps complete) → next = offline contact_true_eval on the seed
+  checkpoints for the physical terminal-centring miss (TB estim_err_ip~0.17 = estimator RMS floor, NOT σ_p0).
+- success_rate plateaus ~0.5 / n_passed ~3.0 of full course = HEADROOM → RW_TC sweep is the follow-up
+  (sbatch supports RW_TC=<w> via --export; bracket 6.0/14.0). Not a blocker — flight = the GO, achieved.
+- FOOTGUN: inc8_tb_trace.py does NOT surface a through_centering column (traced 'centering'=inc8_centering=
+  the OFF near-gate rw_centering term=0.000); restore confirmed indirectly (clean precheck + single-var FLEW).
+  Add a tb tag for a direct trace (nicety). GPU util low ~24-28% (rollout-bound), ~41min/seed.
+- OPS: 4 fix files md5-verified to /scratch peregrine_repo/rl via serve daemon. #76 recurred — wedged
+  port-8765 listener (stale token → 'unauthorized'); fix = kill ALL stale serve PIDs + rm .daemon.json +
+  fresh serve (one Duo). Checkpoints in diffaero/outputs/train/inc8_recenter_seed{0,1,2}_rc1.
+```
+
+## 6. NEXT (suggested)
+
+1. **σ_p0 eval** — offline `contact_true_eval.py` on `inc8_recenter_seed{0,1,2}_rc1` checkpoints (the physical
+   terminal-centring miss; now meaningful since laps complete). Gate-4 closure needs σ_p0_lat ≲ 0.08 m.
+2. **RW_TC sweep** — `--export=ALL,RW_TC=6.0,RUNTAG=rc_w6` and `RW_TC=14.0` to push success_rate past ~0.5
+   and bracket over/under-centering (the partial completion suggests headroom).
+3. Optional: add an `inc8_through_centering` tag to `inc8_tb_trace.py` for a direct restore trace.
+4. Checkpoints staged on Adroit `/scratch/.../outputs/train/inc8_recenter_seed*_rc1/` — pull a flying actor
+   for the POC / vertical-slice if promoting.
