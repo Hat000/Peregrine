@@ -432,11 +432,15 @@ class _LNBlock(nn.Module):
 
 
 class _ActorMean(nn.Module):
-    """17 -> 256 -> 128 -> 4 MLP with LN blocks (cfg/network/mlp.yaml hidden_dim)."""
-    def __init__(self):
+    """obs_dim -> 256 -> 128 -> 4 MLP with LN blocks (cfg/network/mlp.yaml hidden_dim).
+
+    obs_dim defaults to 17 (the inc7 contract); inc8 checkpoints carry obs_dim=20
+    (the d5 confidence triple [17:20]). load_actor infers the width from the
+    checkpoint's first layer so a 20-dim inc8 actor loads without a hand-set width."""
+    def __init__(self, obs_dim: int = 17):
         super().__init__()
         self.head = nn.Sequential(
-            _LNBlock(17, 256),
+            _LNBlock(obs_dim, 256),
             _LNBlock(256, 128),
             nn.Linear(128, 4),
         )
@@ -479,7 +483,12 @@ def load_actor(path: str) -> nn.Module:
     _apply_checkpoint_sidecar(path)
     d = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(d, dict) and "actor_mean" in d:
-        actor = _ActorMean()
+        # Infer the obs width from the checkpoint's first layer (17 inc7 / 20 inc8): the
+        # head.0.linear.weight columns ARE the obs dim, so a 20-dim inc8 actor loads
+        # without a hand-set width and without trusting the sidecar.
+        _w0 = d["actor_mean"].get("head.0.linear.weight")
+        _obs_dim = int(_w0.shape[1]) if _w0 is not None else 17
+        actor = _ActorMean(_obs_dim)
         miss  = actor.load_state_dict(d["actor_mean"], strict=True)
         if miss.missing_keys or miss.unexpected_keys:
             raise RuntimeError(f"state_dict mismatch: missing={miss.missing_keys} "
