@@ -45,7 +45,12 @@ cd /scratch/network/fl3689/diffaero
 
 EVAL=/scratch/network/fl3689/peregrine_repo/rl/inc8_sigmap0_torch_eval.py
 SEEDS=${SEEDS:-0 1 2}
-CKPT_SUB=${CKPT_SUB:-periodic}     # checkpoint subdir saved by the trainer lifeline (periodic|best|emergency)
+CKPT_SUB=${CKPT_SUB:-best}         # checkpoint subdir (best|periodic|emergency). DEFAULT = 'best' = the runner's
+                                   # high-water-SUCCESS checkpoint = the policy that DEFINES "rc1 flies" (success
+                                   # ~0.50-0.54). NOT 'periodic' (the last save_freq snapshot): PPO success is
+                                   # non-monotonic, so periodic can be a DIFFERENT/weaker policy => a different
+                                   # sigma_p0, and the actor.pth guard below would NOT flag it (launch-audit
+                                   # 2026-06-18). Set CKPT_SUB=periodic only to cross-check the final snapshot.
 NENVS=${NENVS:-256}
 HORIZONS=${HORIZONS:-2.5}          # eval runs horizons*max_time/dt steps, accepting EVERY gate-4 crossing
 STANDFRAC=${STANDFRAC:-1.0}        # 1.0 = every reset targets gate-0 (full course == numpy trainreset regime)
@@ -104,9 +109,13 @@ echo "INC8_SIGMAP0_TORCH_DONE"
 
 # =====================================================================================================
 # LAUNCH (from the Adroit LOGIN node, after the PRE-SYNC above):
+#   # 0) CONFIRM the flying checkpoint exists (need best/ with actor.pth+critic.pth for each seed):
+#   ls -d /scratch/network/fl3689/diffaero/outputs/train/inc8_recenter_seed*_rc1*/best 2>/dev/null
+#   #    (if a seed has no best/, report which subdirs DO exist before falling back to CKPT_SUB=periodic)
+#   # 1) the run -- defaults to CKPT_SUB=best (the policy that defines "rc1 flies"):
 #   sbatch /scratch/network/fl3689/peregrine_repo/rl/inc8_sigmap0_torch.sbatch
-#   # single seed / different checkpoint subdir / include plant DR:
-#   sbatch --export=ALL,SEEDS=0,CKPT_SUB=best,EXTRA="--dynamics-dr" \
+#   # single seed / cross-check the FINAL snapshot instead of best / include plant DR:
+#   sbatch --export=ALL,SEEDS=0,CKPT_SUB=periodic,EXTRA="--dynamics-dr" \
 #     /scratch/network/fl3689/peregrine_repo/rl/inc8_sigmap0_torch.sbatch
 # READ: the yaw cross-check FIRST (does the torch instrument reproduce ~0.18? if not, the 2-axis number
 # is suspect -- report the discrepancy). Then the 2-axis sigma_p0_lat vs the 0.08 GO rule.
