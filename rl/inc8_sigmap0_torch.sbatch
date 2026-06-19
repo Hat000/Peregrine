@@ -70,8 +70,14 @@ for SEED in ${SEEDS}; do
   RUNNAME=inc8_recenter_seed${SEED}_rc1
   RUNDIR=/scratch/network/fl3689/diffaero/outputs/train/${RUNNAME}
   # the trainer may write a runname-decorated subdir; resolve it (the recenter sbatch does the same).
+  # FIX 2026-06-19 (sigmap0-adroit): for the rc1 recenter runs the decorated subdir holds ONLY the
+  # tfevents file -- best/ + periodic/ + checkpoints/ + .hydra all live at RUNDIR. The original
+  # `RUN=${RUNDECOR:-$RUNDIR}` then pointed CKPT at <decorated>/best (nonexistent) -> all 3 seeds
+  # skipped (job ran 2 s, 0 crossings). So accept the decorated subdir ONLY if it actually contains
+  # ${CKPT_SUB}/actor.pth; otherwise fall back to RUNDIR. Robust to BOTH layouts; find_run_root still
+  # resolves .hydra/config.yaml by walking up from RUNDIR/best.
   RUNDECOR=$(ls -dt ${RUNDIR}/*${RUNNAME}__* 2>/dev/null | head -1)
-  RUN=${RUNDECOR:-$RUNDIR}
+  if [ -n "${RUNDECOR}" ] && [ -f "${RUNDECOR}/${CKPT_SUB}/actor.pth" ]; then RUN=${RUNDECOR}; else RUN=${RUNDIR}; fi
   CKPT=${RUN}/${CKPT_SUB}
   echo ""
   echo "===== seed ${SEED}: ckpt=${CKPT} ====="
