@@ -1,0 +1,16 @@
+[load_actor] sidecar stage1_inc7_actor.json: action bounds -> thrust [0.000,3.765] rates +-3.14 rad/s
+
+==============================================================================
+inc8 GT-ANCHORED sigma_p0  ckpt=stage1_inc7_actor.pth  obs_dim=17  estim_emul=ON  plant=mixer  start=trainreset  lookat=auto
+==============================================================================
+  episodes=50  reached_g4=5 (reach_rate=0.10)  finished=0
+  -- GT-anchored TERMINAL CENTERING at the gate-4 plane (TRUE trajectory) --
+  LATERAL  sigma_p0_lat = 0.2234 m   bias = -0.0025 m   |miss| p90 = 0.2650  p99 = 0.2671
+  VERTICAL sigma_p0_vert= 0.2577 m   bias = -0.1122 m   |miss| p90 = 0.3427  p99 = 0.3650
+  in-plane (combined) |miss| p90 = 0.4335  p99 = 0.4524
+  -- pointing retention (inc8 lever) --
+  terminal_gate_lock(mean) = 0.012   g4_band_fix_rate(mean) = 0.000
+  >> GO RULE (sigma_p0_lat<=0.08): NO-GO (sigma_p0_lat=0.223>0.08 ; lat_p99=0.267>0.24)
+  >> PROVISIONAL: emul obs, not real detector->PnP->KF (#37). Crown only after the real-detector spike.
+
+SIGMA_P0_SUMMARY ckpt=stage1_inc7_actor.pth obs_dim=17 estim_emul=ON n_ep=50 reach=5/50 sigma_p0_lat=0.2234 lat_p90=0.2650 lat_p99=0.2671 sigma_p0_vert=0.2577 term_lock=0.012 fixrate=0.000

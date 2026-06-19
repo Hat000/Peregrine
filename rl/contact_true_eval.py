@@ -40,7 +40,7 @@ from racer.rl_plant import (ALPHA_MAX_RPS2_MEASURED, PlantParams, PlantState,
                             MIXER_IDLE_MEASURED, MIXER_KAPPA_ERR_MEASURED,
                             MIXER_KAPPA_HOLD_MEASURED, MIXER_ZETA_YAW_MEASURED,
                             step as plant_step)
-from fly_rl import (GateMap, N_GATES, _FLIP, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST,
+from fly_rl import (GateMap, N_GATES, _FLIP, _ACT_FLU_TO_FRD, _GATE_POS_ZUP, _R_W2G, _HOVER_THRUST,
                     _TRAIN_DT, _gate_rotmat_w2g, load_actor, make_gate_map, policy_step,
                     _ACT_MIN, _ACT_MAX)
 from offline_rollout import (slab_frame_hit_np, _HALF_OPEN, _HALF_OUTER,
@@ -54,8 +54,15 @@ from estimator_emul import actor_obs_dim
 # no look-at, flies this harness 3/3; the omission is inc8-specific). We REUSE the pinned, tested
 # primitive (rl/inc8_reward.lookat_correction + the baked r_body_from_camera 20deg matrix -- NOT a
 # reimpl; pinned by tests/test_inc8_lookat). The correction is built in the FLU ACTION convention
-# (exactly as training adds it to action[...,1:4]); the eval carries rates as FRD (policy_step output),
-# so we map FRD->FLU (involutory _FLIP), add band*dlook, clamp to the action bounds, map back to FRD.
+# (exactly as training adds it to action[...,1:4]); the eval carries rates as FRD (policy_step output).
+# 🚩 BODY-Y/YAW FIX (2026-06-18): policy_step encodes the policy's FLU rates via the LIVE wire map
+# _ACT_FLU_TO_FRD=[1,-1,1] (the eval plant runs the live rate_sign _RATE_SIGN_LIVE=[1,1,1], NOT the
+# trained-world [1,1,-1]). To recover the FLU action we INVERT THE SAME WIRE MAP, add band*dlook, clamp,
+# then re-apply it -- NOT the training FLU<->FRD adapter _FLIP=[1,-1,-1]. _FLIP and _ACT_FLU_TO_FRD agree
+# on roll/pitch but differ on YAW, so the old _FLIP reconstruction landed the look-at's yaw realized rate
+# with a FLIPPED sign vs training (matched-state trace handoff/inc8-eval-pitch-2026-06-18/: pitch was
+# already bit-identical; yaw diverged ~0.06-0.10 rad/s; _ACT_FLU_TO_FRD zeroes ALL axes). Both maps are
+# involutory, so with dlook==0 (look-at OFF / out-of-band) rate_frd is unchanged -> inc7 byte-identical.
 import torch as _torch  # noqa: E402
 from inc8_reward import (lookat_correction as _lookat_correction,   # noqa: E402
                          r_body_from_camera as _r_body_from_camera, _FLIP_FRD_FLU as _FLIP_FRD_FLU)
@@ -355,9 +362,9 @@ def run_episode(
             g0 = emulator._last_geom
             if (lookat_r_lo <= g0.range_m <= lookat_r_hi) and (float(g0.t_cam[2]) > 0.0):
                 dlook = _lookat_dlook_flu(g0.t_cam, lookat_g_yaw, lookat_g_pitch)   # FLU action rate
-                flu = rate_frd * _FLIP                              # real FRD -> real FLU
+                flu = rate_frd * _ACT_FLU_TO_FRD                    # FRD -> FLU (invert policy_step wire map)
                 flu = np.clip(flu + dlook, _ACT_MIN[1:4], _ACT_MAX[1:4])
-                rate_frd = flu * _FLIP                              # real FLU -> real FRD
+                rate_frd = flu * _ACT_FLU_TO_FRD                    # FLU -> FRD (re-apply wire map)
         collective = last_normed * _HOVER_THRUST   # un-clipped, exactly training
         action = np.concatenate([rate_frd, [collective]])
 

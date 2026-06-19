@@ -93,9 +93,14 @@ def evaluate(ckpt: str, n_episodes: int, estim_emul: bool, obs_dim: int,
     if not estim_emul:
         n_episodes = 1  # deterministic without DR -> a single crossing; sigma is undefined
 
-    # look-at composition mode (faithfulness port 2026-06-18). 'auto' = run_episode default (full
-    # 2-axis); 'off' = no look-at; 'yaw' = yaw-only (the faithful axis -- the pitch correction does
-    # not compose through the eval's legacy-alias plant; see REPORT). Passed to run_episode per kwargs.
+    # look-at composition mode. 'auto' = run_episode default (full 2-axis); 'off' = no look-at;
+    # 'yaw' = yaw-only. 🚩 (2026-06-18 inc8-eval-pitch) The injection is now FAITHFUL on all axes (the
+    # yaw-axis reconstruction-map bug -- _FLIP vs _ACT_FLU_TO_FRD -- is fixed in contact_true_eval;
+    # the PITCH injection was always bit-faithful, trace-proven). But 2-axis (--lookat auto) still does
+    # NOT fly on the estimator-emulated obs (0/200 all rc1 seeds): the aggressive g_pitch=3 look-at +
+    # the eval/train obs-fidelity gap (#37) destabilize the policy (monotonic in g_pitch; dies with
+    # velocity too, not just the rest-launch). So 2-axis σ_p0 is currently UNMEASURABLE; 'yaw' is the
+    # best-available FAITHFUL probe (pessimistic -- no elevation pointing => fix-rate≈0). See REPORT.
     lookat_kw: dict = {}
     if lookat == "off":
         lookat_kw = {"lookat": False}
@@ -197,8 +202,9 @@ def main() -> int:
                          "it -> inc8 does not fly it); 'trainreset' = training-native gate-relative spawn "
                          "(the faithful start -> inc8 flies + reaches gate-4).")
     ap.add_argument("--lookat", default="auto", choices=["auto", "off", "yaw"],
-                    help="look-at composition: auto=full 2-axis (pitch breaks the eval plant), off=none, "
-                         "yaw=yaw-only (the faithful axis).")
+                    help="look-at composition: auto=full 2-axis (injection faithful, but doesn't fly on "
+                         "emul obs -- #37 obs-fidelity gap), off=none, yaw=yaw-only (best-available "
+                         "faithful probe).")
     args = ap.parse_args()
 
     ckpt = args.ckpt
