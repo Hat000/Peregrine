@@ -54,25 +54,59 @@ def main(argv=None) -> int:
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--patience", type=int, default=20)
     ap.add_argument("--imgsz", type=int, default=640)
-    ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--batch", type=int, default=16)   # champion = 16 (F-REPRO-1); 32 silently changes the run
     ap.add_argument("--device", default="0")
     ap.add_argument("--project", default="runs")
     ap.add_argument("--name", default="vq2_pose_8kp")
+    ap.add_argument("--seed", type=int, default=0)     # deterministic; ultralytics default is also 0
+    ap.add_argument("--save-period", type=int, default=10, help="snapshot every N epochs (good-fix peak is narrow)")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from <project>/<name>/weights/last.pt (ShadowPC closeout survival)")
     ap.add_argument("--no-sensor-aug", action="store_true", help="disable the AlbumentationsX hook")
+    ap.add_argument("--precision-loss", action="store_true",
+                    help="LEVER 2: tighter inner-4 OKS sigma + area-un-normalized kpt term")
+    ap.add_argument("--inner-sigma-scale", type=float, default=0.5, help="inner-4 sigma multiplier (<1 tighter)")
+    ap.add_argument("--l1-weight", type=float, default=0.05, help="area-un-normalized distance term weight")
     args = ap.parse_args(argv)
 
+    import pathlib
     from ultralytics import YOLO
-    model = YOLO(args.model)
 
-    train_kwargs = dict(
-        data=args.data, epochs=args.epochs, patience=args.patience, imgsz=args.imgsz,
-        batch=args.batch, device=args.device, workers=8, plots=True,
-        project=args.project, name=args.name, exist_ok=True, **BUILTIN_AUG,
-    )
-    if not args.no_sensor_aug:
-        train_kwargs["augmentations"] = sensor_transforms()   # photometric/sensor layer (ultralytics>=8.3)
+    if args.precision_loss:   # LEVER 2: monkeypatch v8PoseLoss BEFORE train() (no effect on other runs)
+        import sys as _sys
+        _sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+        from vq2_precision_loss import apply_precision_loss_patch
+        apply_precision_loss_patch(args.inner_sigma_scale, args.l1_weight)
 
-    results = model.train(**train_kwargs)
+    run_dir = pathlib.Path(args.project) / args.name
+    last_pt = run_dir / "weights" / "last.pt"
+    done_marker = run_dir / "VQ2_DONE"
+    # re-pass the AlbumentationsX hook on BOTH fresh and resume (it is a runtime object, never
+    # serialized into args.yaml -- a resume without it would silently drop the load-bearing sensor aug).
+    aug = None if args.no_sensor_aug else sensor_transforms()
+
+    if args.resume and last_pt.exists():
+        model = YOLO(str(last_pt))
+        resume_kwargs = dict(resume=True)
+        if aug is not None:
+            resume_kwargs["augmentations"] = aug
+        results = model.train(**resume_kwargs)
+    else:
+        model = YOLO(args.model)
+        train_kwargs = dict(
+            data=args.data, epochs=args.epochs, patience=args.patience, imgsz=args.imgsz,
+            batch=args.batch, device=args.device, workers=8, plots=True, seed=args.seed,
+            save_period=args.save_period,   # periodic snapshots -> select deploy ckpt by GOOD-FIX, not mAP
+            project=args.project, name=args.name, exist_ok=True, **BUILTIN_AUG,
+        )
+        if aug is not None:
+            train_kwargs["augmentations"] = aug   # photometric/sensor layer (ultralytics>=8.3)
+        results = model.train(**train_kwargs)
+
+    # NOTE: pass an ABSOLUTE --project so save_dir == <project>/<name> (ultralytics prefixes a
+    # RELATIVE project with runs/<task>/, which would desync this run_dir from the real save_dir).
+    done_marker.parent.mkdir(parents=True, exist_ok=True)
+    done_marker.write_text("done\n")   # sentinel: lets the supervisor / agent-watchdog know to stop resuming
     print("VQ2_TRAIN_DONE", getattr(results, "save_dir", "?"))
     return 0
 

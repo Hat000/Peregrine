@@ -45,18 +45,27 @@ def build(root: Path, val_frac: float, seed: int) -> dict:
     sets = [p for p in sorted(root.iterdir()) if (p / "images" / "train").is_dir()] if root.is_dir() else []
     if not sets:
         raise SystemExit(f"no sets with images/train under {root}")
-    rng = random.Random(seed)
     train, val = [], []
     per_set = {}
     for s in sets:
         imgs = _images(s)
-        rng.shuffle(imgs)
+        # PER-SET RNG keyed by the set name: each set's train/val membership depends ONLY on its own
+        # name+seed, so adding/removing/renaming OTHER sets can never reshuffle THIS set's split.
+        # (Was a single shared random.Random(seed) consumed in sorted() order -- a set sorting
+        # alphabetically before an existing set silently changed that set's split, degrading the model
+        # with zero errors. See handoff/vq2-stack-audit-2026-06-18/repro_bugA_split.py for the proof.
+        # NOTE: this changes splits vs the old shared-RNG output, so do NOT regenerate a frozen split
+        # with it -- the champion's exact 1800/200 split is preserved in train_base2000.txt.)
+        random.Random(f"{seed}:{s.name}").shuffle(imgs)
         n_val = int(round(len(imgs) * val_frac))
         val += imgs[:n_val]
         train += imgs[n_val:]
         per_set[s.name] = {"total": len(imgs), "val": n_val, "train": len(imgs) - n_val}
-    rng.shuffle(train)
-    rng.shuffle(val)
+    # Cosmetic only: shuffle the MERGED order (membership is already fixed per-set above) so mixed-set
+    # batches aren't grouped by set. Uses one seed-stable RNG; does not affect which images are val.
+    order_rng = random.Random(seed)
+    order_rng.shuffle(train)
+    order_rng.shuffle(val)
     # ABSOLUTE, OS-native image paths. ultralytics resolves .txt entries against the CWD (not the
     # data.yaml `path`), and img2label_paths swaps os.sep+'images'+os.sep -> labels; absolute native
     # paths resolve unambiguously on any CWD/OS. The script runs WHERE the data lives (cluster sbatch

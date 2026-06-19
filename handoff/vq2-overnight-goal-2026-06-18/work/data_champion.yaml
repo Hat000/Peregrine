@@ -1,0 +1,11 @@
+# RECONSTRUCTED Round-1 champion training data = the EXACT 3587/399 from train.txt.prepoison.bak with the
+# 4 quarantined sets (lr1, hv1, hv2, hv3) repointed into _quarantine_nonphotoreal/. This is the champion's
+# real recipe data -- NOT data_base2000 (which is only allhue+vq1red = 1800, a subset that never reproduces
+# the 80% precision). Used for the CORRECTED sanity gate + as the true baseline for lever experiments.
+path: C:/Users/Shadow/Peregrine-vq2data/handoff/vq2-blender-render-2026-06-15/sets
+train: C:/Users/Shadow/Peregrine/handoff/vq2-overnight-goal-2026-06-18/work/champion_train.txt
+val: C:/Users/Shadow/Peregrine/handoff/vq2-overnight-goal-2026-06-18/work/champion_val.txt
+names:
+  0: gate
+kpt_shape: [8, 3]
+flip_idx: [1, 0, 3, 2, 5, 4, 7, 6]
