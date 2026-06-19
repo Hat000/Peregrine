@@ -21,7 +21,7 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 - **#23** CR1-01 + P1-C06 yaw-active capture rider → fold into **P2** inc8 fresh-reset live batch (closes abs-yaw wire sign + obs yaw seam in one capture).
 - **#25** ShadowPC simops tooling push to main → **P3 #3** (partly on origin 1b54cb8; verify complete).
 - **#36** inc8 reward design (lean banked, NOT frozen) → **P2** prepares ablations; **Fengyou owns freeze**.
-- **#37** estimator-emulation obs wrapper + v* (gate-4 approach-speed) instrument → **P2 HARD PREREQ** (selection on obs_from_truth crowns a fiction).
+- **#37** ✅ **RESOLVED (system-id, 2026-06-18, bc182f9):** the emul obs wrapper is REGISTERED byte-faithful (numpy `EstimatorEmulator` ↔ torch `BatchedEstimatorEmulator` ≤9.5e-7, no condition blow-up) → the 0/200 numpy-grader gap is a POLICY-GAP, answer = **MEASURE-IN-TORCH**; the v* gate-4-approach-speed instrument = the σ_p0 torch eval (built, launch-audited GREEN, Adroit-pending). NOTE: emul↔emul fidelity ✓; emul-vs-REAL (YOLO/PnP) still pends the real-detector spike + POC. (Closed; full record handoff/system-id-2026-06-18/REPORT.md on main.)
 - **#39** scipy-SLSQP toy MPCC probe (measures real tracking-k for the decomposed-architecture ceiling) → optional cheap one-off, P2-adjacent.
 - **#40** ✅ **DONE (P2 W#2, merged 5a4afa6, 2026-06-14):** rl/reference_line_inc8.json + build_reference_line.py — dead-centre, orientation-fixed, drag-feasible UPRIGHT, R1'-ready. (Closed.)
 - **#55** BSR3 spin-gate (spin_rate_abort→9–10, spin_time_abort→3.0 s) → **P2** prereq before ANY inc8 run.
