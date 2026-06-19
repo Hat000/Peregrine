@@ -8,11 +8,12 @@ Registers the deploy obs builder (src/racer/estimator_obs.py) against the traine
      build_obs over random pose/vel/attitude/gate/thrust. obs[0:17] delta == 0.0 exactly. This is the
      inc7 (obs_dim 17) contract -- it must stay byte-identical.
 
-  R2 (the obs[17:20] GAP): there is NO production obs[17:20]/confidence-triple builder in src/racer.
-     The deploy confidence triple builder (`deploy_confidence_triple`) lives ONLY in
-     rl/spike_vertical_slice.py (a spike), NOT promoted into src/racer/estimator_obs.py. estimator_obs's
-     public surface is 17-dim only. This test PINS the gap so that when a production builder IS added
-     (promoting deploy_confidence_triple into src/racer), this guard fires and forces a contract review.
+  R2 (the obs[17:20] gap CLOSED -- present + faithful): the production confidence-triple builder is NOW
+     promoted into src/racer/estimator_obs.py (`confidence_triple` / `confidence_triple_from_sigmas` /
+     `estimator_obs20`). This test asserts it is PRESENT and BYTE-FAITHFUL: driven on the same gate-frame
+     covariance + fix clock as the trained encoder (EstimatorEmulator.confidence_channel) it agrees to
+     <= 1e-6 (float32-exact). [GAP CLOSED 2026-06-19; the full sweep + edge cases live in
+     tests/test_deploy_obs20.py -- this is the system-id registration counterpart.]
 
   R3 (the sigma sqrt(2) FOOTGUN -- INTENTIONAL, do NOT reconcile): the navigator's NavState export
      nav_inplane_sigma = sqrt(P_E + P_D) is sqrt(2)x the emulator/spike in-plane sigma_hat
@@ -41,7 +42,12 @@ if str(_RL) not in sys.path:
 
 from fly_rl import _GATE_POS_ZUP, _GATE_YAW_ZUP, build_obs, make_gate_map  # noqa: E402
 from racer.contracts import DroneState, NavState  # noqa: E402
-from racer.estimator_obs import estimator_obs, estimator_state_for_obs  # noqa: E402
+from racer.estimator_obs import (  # noqa: E402
+    confidence_triple,
+    estimator_obs,
+    estimator_obs20,
+    estimator_state_for_obs,
+)
 
 _SRC_RACER = Path(__file__).resolve().parents[1] / "src" / "racer"
 _LEVEL_Q = np.array([1.0, 0.0, 0.0, 0.0])
@@ -83,35 +89,62 @@ def test_r1_inc7_deploy_equals_trained_byte_identical():
     assert max_abs == 0.0, f"deploy 17-dim diverged from trained by {max_abs:.3e} (must be 0.0)"
 
 
-def test_r2_no_production_obs1720_builder_gap():
-    """R2: REGISTER the GAP -- no production obs[17:20]/confidence-triple BUILDER exists in src/racer.
+def _emul_triple_for(P, t_since_fix, target_gate=0):
+    """The trained obs[17:20] for a controlled gate-frame KF cov + fix clock: the encoder the inc8 actor
+    was actually selected on (EstimatorEmulator.confidence_channel, VQ1 all-pi gate frame)."""
+    from estimator_emul import EstimatorEmulator, EmulConfig
+    emu = EstimatorEmulator(EmulConfig())
 
-    The deploy 17-dim seam (estimator_obs) deliberately does NOT append the d5 confidence triple; the
-    only deploy builder (`deploy_confidence_triple`) lives in rl/spike_vertical_slice.py (a spike). This
-    pins the absence so promoting a production builder into src/racer trips this guard -> contract review.
+    class _S:
+        pos = np.zeros(3)
+        vel = np.zeros(3)
 
-    Implementation: scan src/racer for any callable obs[17:20] producer. References inside COMMENTS/
-    docstrings (estimator_obs/contracts describe the FUTURE channel) are not builders -> excluded by
-    requiring the token to appear as an actual `def ...triple`/`def confidence_channel` definition."""
+    emu.reset(_S(), target_gate, np.random.default_rng(0))
+    emu.kf.P[:3, :3] = np.asarray(P, dtype=np.float64)
+    emu._t_since_fix = float(t_since_fix)
+    return np.asarray(emu.confidence_channel(target_gate), dtype=np.float64), emu.gates[target_gate].R_world_gate
+
+
+def test_r2_production_obs1720_builder_present_and_faithful():
+    """R2 (GAP CLOSED): a production obs[17:20]/confidence-triple BUILDER now exists in src/racer and is
+    byte-faithful to the trained encoder.
+
+    (a) PRESENT: estimator_obs exposes the confidence-triple builders + the 20-dim assembler.
+    (b) FAITHFUL: production `confidence_triple` (NavState contract) == the trained
+        EstimatorEmulator.confidence_channel on the SAME gate-frame cov + fix clock, to <= 1e-6
+        (float32-exact) -- with the sqrt(2) reconciliation applied in the builder (R3 stays the
+        un-reconciled wire pin). Drives both on identical inputs, isolating the obs[17:20] layer."""
     import racer.estimator_obs as eo
     public = {n for n in dir(eo) if not n.startswith("_")}
-    # estimator_obs's only obs builders are the two 17-dim seam fns -- no 20-dim/triple producer.
-    assert "deploy_confidence_triple" not in public, (
-        "GAP CLOSED: a deploy_confidence_triple was promoted into src/racer.estimator_obs -- "
-        "update the obs[17:20] contract registration (this guard intentionally pinned its ABSENCE).")
-    assert "confidence_channel" not in public
+    for name in ("confidence_triple", "confidence_triple_from_sigmas", "estimator_obs20", "estimator_obs_auto"):
+        assert name in public, f"production obs[17:20] builder '{name}' missing from src/racer.estimator_obs"
 
-    # No DEFINITION of a confidence-triple builder anywhere under src/racer (comments are allowed).
-    triple_defs = []
-    for p in _SRC_RACER.rglob("*.py"):
-        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
-            s = line.lstrip()
-            if s.startswith("def ") and (
-                    "deploy_confidence_triple" in s or "confidence_channel" in s or "confidence_triple" in s):
-                triple_defs.append(f"{p.name}: {s.strip()}")
-    assert triple_defs == [], (
-        "GAP CLOSED: a production obs[17:20] builder DEF appeared in src/racer "
-        f"({triple_defs}); register the new production confidence-triple contract.")
+    # the 20-dim assembler runs end-to-end and is 17-dim ++ triple
+    gm = make_gate_map(_GATE_POS_ZUP, _GATE_YAW_ZUP)
+    _ds0 = _ds([1.0, 2.0, -3.0], [0.5, 0.0, 0.0])
+    _nav0 = NavState(sim_time_ns=0, position_ned=np.array([1.0, 2.0, -3.0]),
+                     velocity_ned=np.array([0.5, 0.0, 0.0]),
+                     nav_inplane_sigma=0.07, nav_along_sigma=0.08, time_since_vision_update_s=0.03)
+    _o20 = estimator_obs20(_ds0, _nav0, 0, 0.4, gate_map=gm)
+    assert _o20.shape == (20,) and _o20.dtype == np.float32
+    np.testing.assert_array_equal(_o20[:17], estimator_obs(_ds0, _nav0, 0, 0.4, gate_map=gm))
+
+    rng = np.random.default_rng(619)
+    worst = 0.0
+    for scale in (0.02, 0.07, 0.2):
+        for _ in range(40):
+            A = rng.normal(0.0, scale, (3, 3))
+            P = A @ A.T + np.eye(3) * 1e-9                       # SPD world-NED position cov
+            t = float(rng.uniform(0.0, 0.25))
+            emul_triple, Rwg = _emul_triple_for(P, t)
+            P_gate = Rwg.T @ P @ Rwg
+            nav_ip = float(np.sqrt(max(P_gate[0, 0] + P_gate[1, 1], 0.0)))   # navigator export (sum-sqrt)
+            nav_al = float(np.sqrt(max(P_gate[2, 2], 0.0)))
+            nav = NavState(sim_time_ns=0, nav_inplane_sigma=nav_ip, nav_along_sigma=nav_al,
+                           time_since_vision_update_s=t)
+            prod = confidence_triple(nav).astype(np.float64)
+            worst = max(worst, float(np.max(np.abs(prod - emul_triple))))
+    assert worst <= 1e-6, f"production confidence_triple diverged from the trained encoder by {worst:.3e}"
 
 
 def test_r3_navstate_sigma_is_sqrt2_times_emul_hat_intentional():
