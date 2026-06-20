@@ -83,9 +83,47 @@ verify (NOT `upload`, which re-prompts the passphrase). All login-node cmds are 
 | 3278165 | ds_gp1p0_h15 | 1.0 | 1.5→0.05 | pending | — | — | — |
 | 3278166 | ds_gp1p5_h06 | 1.5 | 0.6→0.03 | pending | — | — | — |
 
-MONITORING (via `x`): (1) ~step1000 stochastic FLIGHTCHECK (early kill non-flyers); (2) anneal tail
-(~upd3000+) DETERMINISTIC snapshot probe `python rl/inc8_sigmap0_torch_eval.py --ckpt <RUNDIR>/snapshots/upd03000 --lookat auto --n-envs 128 --horizons 1.0` (reach>0 = mean flying); (3) on completion
-`rl/inc8_select_ckpt.sbatch RUNDIR=<run>` → full σ_p0. Then Batch 2: best config → seeds 1,2 (≥3-seed GO).
+All 3 completed (~50 min each on A100 — the 8h was the SLURM *limit*). All **FLEW stochastically**
+(success_rate_max 0.65/0.66/0.65, beating rc1's 0.50–0.54); 25 dense snapshots each; precheck RC=0.
+
+## ⭐ HEADLINE — Objective A ACHIEVED, Objective B MEASURED = NO-GO (deterministic selection, seed0)
+**Objective A — first deterministically-flyable 2-axis inc8 policy:** gp1.0 snapshot `upd01700` reaches
+gate-4 at **det reach_rate 0.467** under test=True (rc1 = **0.000** at gp1.0 — it could not). The
+noise-anneal/std-cap lever closes the "un-measurable" gap.
+
+**Objective B — measured 2-axis gate-4 σ_p0 (gp1.0, the deliverable):**
+| snapshot | det reach | σ_p0_lat | lat_p99 | σ_p0_vert | fix_rate | verdict |
+|---|---|---|---|---|---|---|
+| upd1700 | **0.467** | 0.1999 | 0.403 | 0.204 | **0.000** | NO-GO |
+| upd1900 | 0.420 | 0.1731 | 0.386 | 0.199 | **0.000** | NO-GO |
+| upd1800 | 0.320 | **0.1550** | 0.368 | 0.186 | **0.000** | NO-GO |
+gp1.5 (cap0.6): only weakly det-flyable (best upd1900 reach **0.129**, σ_p0 0.139, fix_rate 0); final
+upd4000 reach 0. **2-axis σ_p0_lat ≈ 0.15–0.20 m = NO-GO vs 0.08** (lat_p99 0.37–0.40 vs 0.24).
+
+**ROOT of the NO-GO = `fix_rate=0.000` at EVERY deterministically-flyable gain (gp1.0 AND gp1.5).** The
+look-at at gains that fly on the mean is too weak to seat a single fix → σ_p0 stays at the no-fix baseline
+(≈ rc1's yaw-only 0.198). Fix-seating needs band_el≈20° (gp≈3 in the rc1 sweep), which does not fly
+deterministically. **The deterministic-stability problem is SOLVED; the binding wall is now fix-seating-vs-flight.**
+
+**Lever-1 refinement:** det reach is BEST at the std-cap hold phase (upd1700, std=0.6) and DEGRADES through
+the anneal (upd4000 reach 0.044). ⇒ the std CEILING (killing rc1's exp(2)=7.39 saturation) is the
+flight-stability win; the aggressive anneal→0.03 is unnecessary/slightly harmful. Selection-on-det-reach
+correctly picks the hold-phase snapshot.
+
+## Batch 2 (LIVE) — fix-seating frontier test (airtight the negative)
+3278212 gp2.0 / 3278213 gp3.0 (std cap 0.6, seed0): does ANY fix-seating gain fly deterministically with
+the noise-anneal? rc1 crashed at gp≥1; these TRAIN at the gain with the std cap. If both reach≈0 ⇒ the
+negative is well-supported (look-at magnitude needed for fixes is incompatible with a stable det mean ⇒
+next lever = near-field-gate estimator / perception, not RL). If one flies + fix_rate>0 ⇒ a possible GO.
 
 ## MEMORY-DELTA
-_(pending final result)_
+1. **NOISE-ANNEAL/std-cap lever WORKS — first deterministically-flyable 2-axis inc8** (gp1.0 det reach
+   **0.467**, rc1 was 0.000). Root cause of rc1 found+fixed: 2 action channels saturated at std=exp(2)=7.39
+   (entropy bonus, no ceiling) → mean unflyable; clamping actor_logstd to a ceiling fixes it.
+2. **Measured 2-axis gate-4 σ_p0 = 0.15–0.20 m = NO-GO vs 0.08** (lat_p99 0.37–0.40; σ_vert ~0.20). The
+   un-measurable gap is CLOSED — but the verdict is NO-GO.
+3. **Root of NO-GO: fix_rate=0 at every det-flyable gain (gp1.0/1.5).** Look-at too weak to seat fixes
+   where it flies; fix-seating gain (gp≈3) does not fly. (Batch 2 gp2/3 in flight to airtight this.)
+4. **Lever-1 refinement: the std CEILING is the flight win; anneal→0.03 DEGRADES det reach** (best at
+   hold std=0.6). Select on det reach, not the stochastic high-water "best".
+5. Branch `inc8-deterministic-retrain`, green_gate GREEN (1077 passed). Checkpoints via artifact-pipe.
