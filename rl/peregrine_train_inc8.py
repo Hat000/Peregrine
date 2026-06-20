@@ -38,6 +38,8 @@ from peregrine_racing import PeregrineRacing
 from peregrine_racing_inc8 import PeregrineRacingInc8
 from inc8_critic_width import maybe_widen_critic
 from inc8_warmstart import maybe_warmstart
+from inc8_noise_anneal import resolve_noise_anneal, apply_noise_schedule
+from inc8_snapshots import resolve_snapshots, maybe_write_snapshot
 
 # torch backend (DR-aware, differentiable mirror; parity-proven to the numpy plant). Same rationale
 # as peregrine_train_racing.py: the numpy backend ignores the per-env DR tensors.
@@ -117,6 +119,17 @@ def _run_with_lifelines(self):
 
     agent.save = save_with_sidecar
 
+    # NOISE-ANNEAL (deterministic-stability re-train) + dense SNAPSHOT retention: both resolve to None
+    # when their gating keys are unset -> byte-identical inc8 (pure getattr, no torch, no state touched).
+    # See rl/inc8_noise_anneal.py (collapse exploration noise onto the mean so test=True flies) and
+    # rl/inc8_snapshots.py (retain a ladder of checkpoints for deterministic post-hoc selection).
+    noise_sched = resolve_noise_anneal(cfg)
+    snap_cfg = resolve_snapshots(cfg)
+    if noise_sched is not None:
+        print(f"[noise-anneal] ON: {noise_sched}")
+    if snap_cfg is not None:
+        print(f"[snapshot] ON: {snap_cfg}")
+
     orig_step = agent.step
     counter = {"i": 0}
 
@@ -126,8 +139,19 @@ def _run_with_lifelines(self):
         # (the env's factor is forced to 1.0 and ignores this) and skipped for non-inc8 envs (no attr).
         if env is not None and hasattr(env, "_ppo_update"):
             env._ppo_update = counter["i"]
+        # NOISE-ANNEAL: clamp actor_logstd to the scheduled std ceiling + set entropy_weight BEFORE the
+        # rollout, so THIS update's sampled actions obey the ceiling (collapsing the rollout onto the mean
+        # over the back half of training). OFF -> noise_sched is None -> skipped (byte-identical).
+        if noise_sched is not None:
+            nv = apply_noise_schedule(agent, counter["i"], noise_sched)
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[noise-anneal] update {counter['i']}: std_ceil={nv['std_ceil']:.4f} "
+                      f"entropy_weight={nv['entropy_weight']:.5f} (progress={nv['progress']:.2f})")
         out = orig_step(*a, **k)
         counter["i"] += 1
+        # SNAPSHOT: dense numbered checkpoint for deterministic post-hoc selection. OFF -> skipped.
+        if snap_cfg is not None:
+            maybe_write_snapshot(agent, logger, counter["i"], snap_cfg)
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
             if _weights_finite(agent):
                 pdir = os.path.join(logger.logdir, "periodic")
