@@ -110,11 +110,32 @@ the anneal (upd4000 reach 0.044). ⇒ the std CEILING (killing rc1's exp(2)=7.39
 flight-stability win; the aggressive anneal→0.03 is unnecessary/slightly harmful. Selection-on-det-reach
 correctly picks the hold-phase snapshot.
 
-## Batch 2 (LIVE) — fix-seating frontier test (airtight the negative)
-3278212 gp2.0 / 3278213 gp3.0 (std cap 0.6, seed0): does ANY fix-seating gain fly deterministically with
-the noise-anneal? rc1 crashed at gp≥1; these TRAIN at the gain with the std cap. If both reach≈0 ⇒ the
-negative is well-supported (look-at magnitude needed for fixes is incompatible with a stable det mean ⇒
-next lever = near-field-gate estimator / perception, not RL). If one flies + fix_rate>0 ⇒ a possible GO.
+## Batch 2 — fix-seating frontier test = AIRTIGHT NEGATIVE (jobs 3278250/51 selection, seed0)
+gp2.0 and gp3.0 were TRAINED with the std cap, then deterministically selected at their OWN gains:
+**both = deterministic reach_rate 0.000 across ALL 25 snapshots (NO-DATA).** The mean does not fly at the
+fix-seating gains, even with the noise-anneal.
+
+## FULL BRACKET (seed0, deterministic reach @ trained gain) — the wall, quantified
+| g_pitch | det reach_rate | σ_p0_lat | fix_rate | flies on mean? | seats fixes? |
+|---|---|---|---|---|---|
+| 1.0 | **0.467** | 0.16–0.20 | 0.000 | ✅ | ❌ |
+| 1.5 | 0.129 | 0.139 | 0.000 | ~ | ❌ |
+| 2.0 | 0.000 | — | — | ❌ | ❌ |
+| 3.0 | 0.000 | — | — | ❌ | ❌ |
+Deterministic flyability falls monotonically with g_pitch; fix-seating needs band_el≈20° ⇒ g_pitch≈3
+(rc1 sweep). **The two are MUTUALLY EXCLUSIVE** — the gain that flies on the mean is too weak to fix; the
+gain that could fix does not fly. This is the goal's "well-supported negative" across a 5-run bracket.
+
+## CONCLUSION
+- ✅ **Deterministic-stability problem SOLVED** (the lever works): first deterministically-flyable 2-axis
+  inc8 (gp1.0 det reach 0.467; rc1 = 0.000). Root cause (rc1's saturated actor_logstd) found + fixed.
+- ❌ **Gate-4 NOT closed by the look-at bet: 2-axis σ_p0_lat 0.16–0.20 m = NO-GO**, because fix_rate=0 at
+  every deterministically-flyable gain. Definitive across the bracket.
+- 🚩 **RECOMMENDED NEXT LEVER (not more look-at RL):** the NEAR-FIELD-GATE ESTIMATOR (lower the ~12 m PnP
+  floor so a fix seats at a gain that flies), or a reward/architecture reconsideration of fix-seating.
+
+REMAINING (optional firming, BLOCKED on serve-daemon restart): seeds 1,2 of gp1.0 to confirm objective A
+reproduces (N=3). Does NOT change the gate-4 verdict (the negative does not depend on A's reproducibility).
 
 ## MEMORY-DELTA
 1. **NOISE-ANNEAL/std-cap lever WORKS — first deterministically-flyable 2-axis inc8** (gp1.0 det reach
@@ -122,8 +143,12 @@ next lever = near-field-gate estimator / perception, not RL). If one flies + fix
    (entropy bonus, no ceiling) → mean unflyable; clamping actor_logstd to a ceiling fixes it.
 2. **Measured 2-axis gate-4 σ_p0 = 0.15–0.20 m = NO-GO vs 0.08** (lat_p99 0.37–0.40; σ_vert ~0.20). The
    un-measurable gap is CLOSED — but the verdict is NO-GO.
-3. **Root of NO-GO: fix_rate=0 at every det-flyable gain (gp1.0/1.5).** Look-at too weak to seat fixes
-   where it flies; fix-seating gain (gp≈3) does not fly. (Batch 2 gp2/3 in flight to airtight this.)
-4. **Lever-1 refinement: the std CEILING is the flight win; anneal→0.03 DEGRADES det reach** (best at
+3. **AIRTIGHT NEGATIVE (5-run g_pitch bracket, seed0): det reach 0.47(gp1.0)→0.13(gp1.5)→0.00(gp2.0)
+   →0.00(gp3.0), all fix_rate=0.** Deterministic flight and fix-seating (needs gp≈3) are MUTUALLY
+   EXCLUSIVE ⇒ the look-at magnitude needed for fixes is incompatible with a stable deterministic mean.
+4. ⇒ **NEXT LEVER = near-field-gate estimator** (lower the ~12 m PnP floor so a fix seats at a flyable
+   gain) or a reward/architecture reconsideration of fix-seating — NOT more look-at-gain RL.
+5. **Lever-1 refinement: the std CEILING is the flight win; anneal→0.03 DEGRADES det reach** (best at
    hold std=0.6). Select on det reach, not the stochastic high-water "best".
-5. Branch `inc8-deterministic-retrain`, green_gate GREEN (1077 passed). Checkpoints via artifact-pipe.
+6. Caveat: Objective A single-seed (seed1/2 optional firming — does NOT change the gate-4 verdict).
+   Branch `inc8-deterministic-retrain`, green_gate GREEN (1077 passed). Provisional on #37 emul fidelity.
