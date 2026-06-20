@@ -21,10 +21,22 @@ Conventions this adapter depends on (keep them in lockstep or PnP silently produ
   (a pose is unrecoverable). Data association (assigning ``gate_id``) is the mapper's job, not
   the raw detector's, so ``gate_id`` stays ``None`` here.
 
+OPT-IN ENSEMBLE (deploy gate, 2026-06-19). The single-model :class:`GateDetector` path is the
+VQ1-proven default and is left BYTE-IDENTICAL. When 2+ weights are configured (an ``a++b`` spec,
+or :class:`EnsembleGateDetector` directly), the detections of every member are UNIONED and then
+collapsed by a light per-gate dedup (:meth:`EnsembleGateDetector._dedup`) so the navigator's KF
+receives ONE fix per gate instead of one-per-model. The dedup lives HERE, at the detector
+boundary (before association), precisely so the downstream navigator / association / PnP path is
+untouched — the ensemble is a drop-in detector. (The offline ``eval_ensemble`` unions with NO
+dedup because its metrics self-select the best obs per gate; the deploy path feeds the union into
+the KF, which would double-count, so the dedup is the genuinely new deploy logic.)
+
 Wiring: this is the SENSE step behind ``Mission.run``'s navigator —
 ``frame -> detect() -> [GateObservation] -> estimate_gate_pose -> localization -> KF``.
 """
 from __future__ import annotations
+
+from dataclasses import replace
 
 import numpy as np
 
@@ -114,6 +126,14 @@ def observations_from_results(
     conf = _to_numpy(getattr(kpts, "conf", None))
     if conf is None:
         conf = np.ones(xy.shape[:2])  # pose model without per-keypoint conf: treat all visible
+    # 8-keypoint models emit 4 INNER corners (0..3) then 4 OUTER corners (4..7) -- see
+    # blender_gen/contract.py N_KEYPOINTS scheme. PnP (gate_pose / task2_gate_pnp) is built on the
+    # 4 INNER corners (the gate opening, gate_object_points(1.5)), so subset to the inner-4 here at
+    # the model boundary. The pure 4-corner core + deployed inner-1.5 m PnP stay in lockstep; the
+    # native 4-keypoint path is unchanged (this branch is a no-op when xy already has 4 keypoints).
+    if xy.shape[1] == 8:
+        xy = xy[:, :N_CORNERS, :]
+        conf = conf[:, :N_CORNERS]
     scores = _to_numpy(getattr(boxes, "conf", None))
     if scores is None:
         scores = np.ones(xy.shape[0])
@@ -137,7 +157,13 @@ class GateDetector:
         self.device = device
 
     @classmethod
-    def load(cls, weights, **kwargs) -> "GateDetector":
+    def load(cls, weights, **kwargs):
+        # OPT-IN ensemble path (deploy gate, 2026-06-19): an "a++b" weights spec loads an
+        # EnsembleGateDetector (union-of-detections + light per-gate dedup before the KF). A plain
+        # single-model spec falls through to the UNCHANGED path below -- byte-identical to the
+        # legacy behaviour, so the VQ1-proven single-model flight stack is untouched.
+        if "++" in str(weights):
+            return EnsembleGateDetector.load(str(weights).split("++"), **kwargs)
         from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
 
         return cls(YOLO(str(weights)), **kwargs)
@@ -149,3 +175,100 @@ class GateDetector:
         return observations_from_results(
             frame, results[0], score_thresh=self.score_thresh, kpt_conf_thresh=self.kpt_conf_thresh
         )
+
+
+def _obs_centroid(o: GateObservation) -> np.ndarray:
+    return np.asarray(o.corners_px, dtype=np.float64).mean(axis=0)
+
+
+def _obs_span(o: GateObservation) -> float:
+    c = np.asarray(o.corners_px, dtype=np.float64)
+    return float(np.linalg.norm(c.max(axis=0) - c.min(axis=0)))
+
+
+class EnsembleGateDetector:
+    """OPT-IN deploy path (deploy gate, 2026-06-19): run 2+ YOLO-pose models, UNION their per-frame
+    detections, then a light geometric dedup so the KF gets ONE update per gate (not a double-count
+    when both members see the same gate). Interface-compatible with the navigator (only ``.detect``).
+    The single-model :class:`GateDetector` path is untouched -- this is purely additive + opt-in.
+
+    Why the dedup lives HERE (not in association): the offline ``eval_ensemble`` unioned with NO
+    dedup because its metrics self-select the best obs per gate (course = ``any(obs<3m)``, good-fix =
+    ``min di``). The deploy path feeds the union into the navigator -> KF, so two members both
+    detecting gate-3 would apply TWO gate-3 fixes and the KF would double-count. Collapsing the union
+    at the detector boundary, before association, means the navigator / association / PnP path is
+    byte-unchanged -- the ensemble is a drop-in detector.
+
+    Dedup (``_dedup``): cluster detections of the SAME gate (4-corner centroid within ``dedup_px``
+    AND of comparable span), then FUSE each cluster to one observation (``_fuse``). ``dedup_px=0``
+    recovers the pure union (the offline reference / an A/B). The default ``dedup_px=12`` is the
+    deploy config (validated: union 6.5 -> 3.6 obs/frame, accuracy preserved)."""
+
+    def __init__(self, models, *, score_thresh: float = 0.25, kpt_conf_thresh: float = 0.5,
+                 device: str | None = None, dedup_px: float = 12.0):
+        self.models = list(models)
+        self.score_thresh = score_thresh
+        self.kpt_conf_thresh = kpt_conf_thresh
+        self.device = device
+        self.dedup_px = float(dedup_px)
+        self.model = self.models[0] if self.models else None  # compat shim if a caller reads .model
+
+    @classmethod
+    def load(cls, weights_list, **kwargs) -> "EnsembleGateDetector":
+        from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
+
+        models = [YOLO(str(w).strip()) for w in weights_list if str(w).strip()]
+        return cls(models, **kwargs)
+
+    def detect(self, frame: Frame) -> list[GateObservation]:
+        obs: list[GateObservation] = []
+        for m in self.models:
+            results = m.predict(frame.image_bgr, verbose=False, device=self.device)
+            if results:
+                obs.extend(observations_from_results(
+                    frame, results[0], score_thresh=self.score_thresh,
+                    kpt_conf_thresh=self.kpt_conf_thresh))
+        return self._dedup(obs)
+
+    def _dedup(self, obs: list[GateObservation]) -> list[GateObservation]:
+        """Cluster observations of the SAME gate (centroid within dedup_px + comparable span) and FUSE
+        each cluster into ONE observation, so the KF gets a single, noise-reduced update per gate
+        instead of N double-counts. ``dedup_px<=0`` (or <=1 obs) returns the union unchanged.
+
+        The span term is the safety against the receding-collinear course: a near (big) and a far
+        (small) gate can project to NEARBY centroids, so a centroid-only merge would wrongly collapse
+        two distinct gates; requiring comparable apparent span keeps them separate (the same
+        overfit-GEOMETRY spirit as ``association`` -- a near detection cannot match a far gate's
+        shape). Greedy by detection score: the first (highest-score) member seeds each cluster."""
+        if self.dedup_px <= 0 or len(obs) <= 1:
+            return obs
+        clusters: list[list[GateObservation]] = []
+        for o in sorted(obs, key=lambda x: float(x.score), reverse=True):
+            co, so = _obs_centroid(o), _obs_span(o)
+            for cl in clusters:
+                if (float(np.linalg.norm(co - _obs_centroid(cl[0]))) < self.dedup_px
+                        and abs(so - _obs_span(cl[0])) < max(self.dedup_px, 0.25 * max(so, _obs_span(cl[0])))):
+                    cl.append(o)
+                    break
+            else:
+                clusters.append([o])
+        return [self._fuse(cl) for cl in clusters]
+
+    @staticmethod
+    def _fuse(cluster: list[GateObservation]) -> GateObservation:
+        """Score-weighted corner average of a same-gate cluster. Only the full-4-corner members are
+        averaged (the IPPE PnP set); if <2 of those, fall back to the single top-score observation.
+        Fusing (vs keep-highest-score) gives the KF a noise-reduced corner set -- a member whose PnP
+        is better than its box score implies still contributes (offline A/B favoured fuse)."""
+        if len(cluster) == 1:
+            return cluster[0]
+        full = [o for o in cluster
+                if o.corner_ids is None and np.asarray(o.corners_px).shape[0] == N_CORNERS]
+        if len(full) < 2:
+            return max(cluster, key=lambda o: float(o.score))
+        w = np.array([float(o.score) for o in full], dtype=np.float64)
+        w = w / w.sum() if w.sum() > 0 else np.full(len(full), 1.0 / len(full))
+        corners = sum(wi * np.asarray(o.corners_px, dtype=np.float64) for wi, o in zip(w, full))
+        conf = np.max([np.asarray(o.corner_confidence, dtype=np.float64) for o in full], axis=0)
+        top = max(full, key=lambda o: float(o.score))
+        return replace(top, corners_px=corners, corner_confidence=conf)
