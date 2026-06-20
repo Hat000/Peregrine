@@ -2,7 +2,8 @@
 
 WHY THIS EXISTS (and why it is NOT rl/inc8_sigmap0_eval.py).
 The inc8 GO gate is the PHYSICAL terminal-centering spread at the binding gate-4 plane:
-``sigma_p0_lat <= ~0.08 m`` (miss p99 ~= 3*sigma_p0). The companion numpy tool
+``sigma_p0_lat <= ~0.15 m`` (miss p99 ~= 3*sigma_p0; 🚩 BAR CORRECTED 2026-06-19 -- the old 0.08 was a
+margin_envelope.py DOUBLE-COUNT of the drone; real gate clearance ~0.45). The companion numpy tool
 ``rl/inc8_sigmap0_eval.py`` flies the policy on the NUMPY plant (contact_true_eval.run_episode) +
 the numpy estimator emulator. The first FLYING inc8 policy ("rc1", the recenter re-train job
 3276449) flies the full 2-axis camera-pointing primitive IN TRAINING (torch), but DIES 0/200 on
@@ -44,7 +45,7 @@ residual at the gate-4 crossing is small (sub-threshold, within the 0.04 cross-c
 cross-check DISAGREES with 0.1768 by more than the band, the spawn jitter (and #37 obs fidelity) are
 the first suspects -- report it, do not silently trust the 2-axis number (the prompt's escape hatch).
 
-GO RULE.  sigma_p0_lat <= 0.08 m AND |lateral miss| p99 (~3*sigma_p0) <= ~0.24 m, on a sufficient
+GO RULE (CORRECTED 2026-06-19; the old 0.08/0.24 DOUBLE-COUNTED the drone -- real clearance 0.75 gate-half - drone r ~= 0.45).  sigma_p0_lat <= ~0.15 m AND |lateral miss| p99 (~3*sigma_p0) <= ~0.45 m, on a sufficient
 ensemble of gate-4 crossings (a low reach-rate / tiny ensemble is itself a NO-GO/NO-DATA signal).
 
 WHERE THIS RUNS.  The torch env subclasses diffaero's env and uses our torch plant; it needs the
@@ -220,7 +221,7 @@ class _Sigmap0Env(PeregrineRacingInc8):
         }
 
 
-def _go_verdict(m: dict, sigma_target: float = 0.08, min_n: int = MIN_ENSEMBLE_DEFAULT) -> tuple[str, str]:
+def _go_verdict(m: dict, sigma_target: float = 0.15, min_n: int = MIN_ENSEMBLE_DEFAULT) -> tuple[str, str]:   # 0.15 = corrected bar (was 0.08 double-count)
     """The numpy tool's GO rule (sigma_p0_lat <= target AND lat_p99 <= 3*target), with a NO-DATA guard
     for an empty / too-small ensemble. Returns (token, human_string)."""
     n, s, p99 = m["n_reached_g4"], m["sigma_p0_lat"], m["lat_abs_p99"]
@@ -289,7 +290,7 @@ def main() -> int:
                     help="enable per-episode PLANT DR too (default OFF: isolate the estimator-DR spread, "
                          "matching the numpy tool's nominal-plant cross-check)")
     ap.add_argument("--seed", type=int, default=0, help="torch seed (spawn + estimator DR reproducibility)")
-    ap.add_argument("--sigma-target", type=float, default=0.08)
+    ap.add_argument("--sigma-target", type=float, default=0.15)   # corrected bar (was 0.08 double-count, 2026-06-19)
     ap.add_argument("--min-ensemble", type=int, default=MIN_ENSEMBLE_DEFAULT,
                     help="minimum gate-4 crossings before a GO/NO-GO verdict is issued (else NO-DATA)")
     ap.add_argument("--device", default="cuda:0")

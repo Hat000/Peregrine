@@ -2,7 +2,9 @@
 
 WHY THIS EXISTS (and why it is NOT contact_true_eval --estim-emul).
 The inc8 GO gate is the PHYSICAL terminal-centering spread at the binding gate-4 plane:
-``sigma_p0_lat <= ~0.08 m`` (miss p99 ~= 3*sigma_p0). contact_true_eval's --estim-emul path reports
+``sigma_p0_lat <= ~0.15 m`` (miss p99 ~= 3*sigma_p0; 🚩 BAR CORRECTED 2026-06-19 -- the old 0.08 was a
+margin_envelope.py DOUBLE-COUNT of the drone; the real gate clearance is 0.75 gate-half - drone r ~= 0.45).
+contact_true_eval's --estim-emul path reports
 ``g4_inplane_p90/p99`` from ``EstimatorEmulator.gate4_inplane_error_series()``, which is
 ``inplane_err = |KF_pos - truth_pos|`` in the gate frame -- the ESTIMATOR error (estim_err), floored
 at the ~0.115-0.13 gate-relative KF RMS REGARDLESS of policy. That is the wrong quantity for the GO
@@ -24,7 +26,7 @@ U[0,0.19], IMU/accept noise) -- so it is only meaningful with ``--estim-emul`` O
 (each a fresh ``emul_seed``). With the emul OFF the simstart episode is deterministic (sigma_p0 == 0,
 a single perfect-obs crossing) -- the tool warns and reports that single offset as a reference only.
 
-GO RULE.  sigma_p0_lat <= 0.08 m AND |lateral miss| p99 ~= 3*sigma_p0 <= ~0.24 m, evaluated on the
+GO RULE (CORRECTED 2026-06-19).  sigma_p0_lat <= ~0.15 m AND |lateral miss| p99 ~= 3*sigma_p0 <= ~0.45 m (the real gate clearance), evaluated on the
 episodes that REACH gate-4 (a low reach-rate is itself a NO-GO signal and is reported).
 
 PROVISIONAL.  The obs the policy flies on here comes from the estimator EMUL (fix_surrogate -> LinearKF),
@@ -171,7 +173,7 @@ def evaluate(ckpt: str, n_episodes: int, estim_emul: bool, obs_dim: int,
     }
 
 
-def _go_verdict(m: dict, sigma_target: float = 0.08) -> str:
+def _go_verdict(m: dict, sigma_target: float = 0.15) -> str:   # 0.15 = corrected bar (was 0.08 double-count)
     s = m["sigma_p0_lat"]
     p99 = m["lat_abs_p99"]
     if np.isnan(s):
@@ -196,7 +198,7 @@ def main() -> int:
     ap.add_argument("--plant", default="mixer", choices=["map", "flat", "aero", "mixer"])
     ap.add_argument("--base-seed", type=int, default=0, help="emul_seed = base-seed + episode index")
     ap.add_argument("--max-time", type=float, default=40.0)
-    ap.add_argument("--sigma-target", type=float, default=0.08)
+    ap.add_argument("--sigma-target", type=float, default=0.15)   # corrected bar (was 0.08 double-count, 2026-06-19)
     ap.add_argument("--start", default="simstart", choices=["simstart", "trainreset", "racestart"],
                     help="start pose. 'simstart' = deploy nose-first spawn (the policy is NOT trained on "
                          "it -> inc8 does not fly it); 'trainreset' = training-native gate-relative spawn "
