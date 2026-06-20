@@ -96,7 +96,7 @@ jpeg_receiver ─► detector ─► gate_pose(IPPE) ─┐
 mavlink pump ─► DroneState ──┐                ├─► state_estimator(ESKF) ─► {EXPLORE reactive | RACE planner} ─► controller ─► mavlink send
                              └────────────────┘            ▲                                          (SET_ATTITUDE_TARGET CTBR | SET_POSITION_TARGET)
                                                gate map + cached line          → through the sim's "Stabilized Controller"
-OFFLINE (Adroit/Azure): logged runs → auto-label + train detector (supervised) + system-ID the plant + generate/optimize the line. (RL = Track B, parked.)
+OFFLINE (Adroit/Azure): logged runs → auto-label + train detector (supervised) + system-ID the plant + generate/optimize the line. (RL = Track B [⚠️ UN-PARKED 2026-06: VQ1 PASSED → RL is now the LIVE Phase-2 path — the inc8 case-C self-localizing racer; see C1 + [[index-rl-training]] §inc8-2026-06-19].)
 ```
 
 ## Components — status (✅ built ⬜ designed 🔲 missing-infra)
@@ -154,7 +154,7 @@ OFFLINE (Adroit/Azure): logged runs → auto-label + train detector (supervised)
 ---
 
 ## Key rationale (why the plan is what it is)
-- **Track A (model-based) primary; RL parked.** SWIFT's ablation: time-optimal-trajectory + MPC gives the best times under good state but collapses under domain shift; RL wins only via robustness to that shift. We race INSIDE the sim (no sim-to-real gap) ⇒ model-based sits exactly where it's proven. RL trigger = sim state too noisy to fix AND cheap throughput.
+- **Track A (model-based) primary; RL parked.** [⚠️ SUPERSEDED 2026-06: VQ1 PASSED → the firm sequencing fired; RL is now the LIVE Phase-2 path (the inc8 case-C racer), per C1. The RL trigger below ("sim state too noisy to fix") IS the case — the real eval streams NO position → self-localization noise is exactly what inc8 makes the policy robust to; model-based Track A no longer "races inside the sim with no gap." See [[index-rl-training]].] SWIFT's ablation: time-optimal-trajectory + MPC gives the best times under good state but collapses under domain shift; RL wins only via robustness to that shift. We race INSIDE the sim (no sim-to-real gap) ⇒ model-based sits exactly where it's proven. RL trigger = sim state too noisy to fix AND cheap throughput.
 - **MVP backbone = min-snap line + conservative reactive completion + SE(3)/simple tracker** — zero offline solver, zero extra rollouts, always-in-pocket. MPCC/CPC/Bayesian-tuning are speed UPGRADES, never dependencies for a valid finish.
 - **Planner ladder:** min-snap (Mellinger; time-scaling α = single speed/safety knob) → CPC (Foehn; true time-optimal, offline upper-bound, plan at a TWR margin ~3.3/4.0 for control authority) → MPCC (Romero; tracks any C¹ path → near-time-optimal in ~2 ms, closed-loop; dynamic Gaussian contour-weights at gates guarantee passage; beats CPC+MPC and a pilot in real flight). Speed tuner = Bayesian-opt over per-gate time allocations (sample-efficient; survives a small attempt budget).
 - **Control = CTBR via SET_ATTITUDE_TARGET; the plant we model = the sim's black-box Stabilized Controller + airframe** (1st/2nd-order + delay + saturation). Keystone first-contact measurement = `innerloop_step` (phase lag + saturation). Model-mismatch pipeline: noise-free system-ID from command-replay logs (determinism) → build the line on that model → close the residual gap with Bayesian-opt / empirical residuals.
@@ -167,7 +167,7 @@ OFFLINE (Adroit/Azure): logged runs → auto-label + train detector (supervised)
 ## Rejected / parked (don't re-litigate)
 - Perception-aware FOV *constraints* (PAMPC) — speed > keeping gate in view; perception is a soft reward at most. Active yaw / multi-gate lookahead = optional niceties, never at a speed cost.
 - CMA-ES as the primary line-finder — demoted (at most a tuning aid); Bayesian-opt over time-allocations is the chosen speed tuner.
-- Surrogate sim + deep RL (Track B) — parked; trigger above. Isaac-Lab vs MuJoCo-MJX framework choice and L4CasADi learned-dynamics MPC are moot while parked.
+- Surrogate sim + deep RL (Track B) — parked; trigger above. [⚠️ UN-PARKED 2026-06: the trigger FIRED — VQ1 passed and RL is now the active Phase-2 line (inc8, on DiffAero not Isaac/MuJoCo). See C1 + [[index-rl-training]].] Isaac-Lab vs MuJoCo-MJX framework choice and L4CasADi learned-dynamics MPC are moot while parked.
 - Open-loop trajectory replay — brittle, and there's no position telemetry to replay against.
 - Heavy global VIO/SLAM (ORB-SLAM / D3L-SLAM) — unneeded on a known course with given IMU/attitude.
 - Template-matching detector for VQ2 — too brittle across angle/scale/photoreal clutter; use a small fine-tuned CNN.
