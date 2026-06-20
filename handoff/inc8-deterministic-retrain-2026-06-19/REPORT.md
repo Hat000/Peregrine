@@ -60,8 +60,27 @@ kill, monitored mid-run via the deterministic snapshot probe (scancel non-flyers
 **Batch 2** (informed): best deterministic config → seeds 1,2 (the ≥3-seed GO) + push g_pitch; then
 `inc8_select_ckpt` + the full σ_p0 GO/NO-GO.
 
-## Results
-_(pending — Batch 1 launching)_
+## Adroit pipeline — PROVEN (smoke job 3278163, NUPD=3)
+End-to-end on the real diffaero/Adroit stack: `PRECHECK_RC=0`; noise-anneal engaged with exact scheduled
+values (update0/1 std_ceil=0.60 entropy=0.010 hold; update2 std_ceil=0.221 entropy=0.0067 anneal) — the
+`actor_logstd` clamp ran on the real agent, no error; snapshots `upd00001/2/3` written; only "error" the
+known-cosmetic onnx-guard (exit 0); no NaN/traceback. Files synced byte-exact (CR-stripped LF) + sha-verified.
+
+## Autonomy / ops
+Driving Adroit via the adroit-connector `serve` daemon (`adroit.py x "<cmd>"`, port 8765) — alive; needs
+Fengyou's Duo only on an SSH-session drop (daemon self-heals on next `x`). File sync = base64 write + sha
+verify (NOT `upload`, which re-prompts the passphrase). All login-node cmds are short/AUP-safe; compute on SLURM only.
+
+## Results — Batch 1 (LIVE, launched 2026-06-19 ~20:45 ET; ~8h each)
+| job | RUNTAG | g_pitch | std_hold→floor | precheck | stoch. flightcheck | det. reach (snap probe) | σ_p0 |
+|---|---|---|---|---|---|---|---|
+| 3278164 | ds_gp1p0_h06 | 1.0 | 0.6→0.03 | pending | — | — | — |
+| 3278165 | ds_gp1p0_h15 | 1.0 | 1.5→0.05 | pending | — | — | — |
+| 3278166 | ds_gp1p5_h06 | 1.5 | 0.6→0.03 | pending | — | — | — |
+
+MONITORING (via `x`): (1) ~step1000 stochastic FLIGHTCHECK (early kill non-flyers); (2) anneal tail
+(~upd3000+) DETERMINISTIC snapshot probe `python rl/inc8_sigmap0_torch_eval.py --ckpt <RUNDIR>/snapshots/upd03000 --lookat auto --n-envs 128 --horizons 1.0` (reach>0 = mean flying); (3) on completion
+`rl/inc8_select_ckpt.sbatch RUNDIR=<run>` → full σ_p0. Then Batch 2: best config → seeds 1,2 (≥3-seed GO).
 
 ## MEMORY-DELTA
 _(pending final result)_
