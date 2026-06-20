@@ -66,6 +66,11 @@ values (update0/1 std_ceil=0.60 entropy=0.010 hold; update2 std_ceil=0.221 entro
 `actor_logstd` clamp ran on the real agent, no error; snapshots `upd00001/2/3` written; only "error" the
 known-cosmetic onnx-guard (exit 0); no NaN/traceback. Files synced byte-exact (CR-stripped LF) + sha-verified.
 
+## Merge safety — GREEN
+`scripts/green_gate.py --full` on the branch: all 3 load-bearing invariants GREEN (OFF==inc7 AST parity,
++L sign-faithfulness, VQ1 import guard), test-count sentinel **1077 ≥ 933**, **full suite 1077 passed**
+(4:53). My changes are additive + gated (trainer only; env/obs/fly_rl untouched) ⇒ safe to report up.
+
 ## Autonomy / ops
 Driving Adroit via the adroit-connector `serve` daemon (`adroit.py x "<cmd>"`, port 8765) — alive; needs
 Fengyou's Duo only on an SSH-session drop (daemon self-heals on next `x`). File sync = base64 write + sha
