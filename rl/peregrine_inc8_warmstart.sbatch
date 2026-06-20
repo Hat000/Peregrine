@@ -44,9 +44,10 @@
 #      GT-anchored PHYSICAL miss sigma_p0, via rl/contact_true_eval.py on the warm-started checkpoint
 #      (read the TRUE in-plane miss / true err_ip / contact_true geometry), NOT the TB
 #      inc8_estim_err_inplane_m. estim_err is FLOORED at the estimator's gate-relative RMS ~0.115-0.13
-#      REGARDLESS of policy (S2 seed-2 plateaued there WITH perfect pointing), so "estim_err <= 0.08" is
-#      geometrically unachievable and is NOT the gate. The honest objective is the physical centering
-#      miss sigma_p0 <~ 0.08 m (gate-4 closure, r=0.30). The TB inc8_centering trace shows the reward is
+#      REGARDLESS of policy (S2 seed-2 plateaued there WITH perfect pointing), so the estim_err target is
+#      NOT the gate (estim_err is the wrong metric -- crown on physical centering, not estimator RMS). The
+#      honest objective is the physical centering miss sigma_p0 <~ 0.15 m (gate-4 closure; CORRECTED
+#      2026-06-19 -- the old 0.08 DOUBLE-COUNTED the drone, see MEMORY.md:8). The TB inc8_centering trace shows the reward is
 #      FIRING; contact_true_eval shows whether the drone is actually CENTERED. Crown on the latter.
 #
 # ADROIT AUP (Princeton RC SUSPENDS accounts): compute on SLURM only (this batch); compute nodes have

@@ -24,8 +24,8 @@ WHAT IT CHECKS (in order; first RED stops with a clear reason):
        c. VQ1 import-time guard      rl/fly_rl.py::_assert_vq1_constants_consistent (runs at import)
      The +L test is additionally asserted to have actually RUN (not skipped) -- the importorskip trap.
 
-  2. TEST-COUNT SENTINEL. ``pytest --collect-only`` count must be >= a baseline (default 933,
-     the honest full-stack count; the long-quoted "723" was stale per the burn survey). Catches
+  2. TEST-COUNT SENTINEL. ``pytest --collect-only`` count must be >= a baseline (default 1091,
+     the honest full-stack count measured 2026-06-20; 723/884/933/947 are stale lineage). Catches
      silent test loss (a deleted module, a broken collection) that a passing subset would hide.
 
   3. DIFF-SCOPED PYTEST. Files changed vs ``main`` (merge-base) are mapped to the test modules
@@ -62,9 +62,11 @@ INV_OFF_IDENTITY = "tests/test_inc8_off_identity.py"
 INV_OBS_SIGN = "tests/test_obs_sign_faithfulness.py"
 INV_OBS_SIGN_NODE = "tests/test_obs_sign_faithfulness.py::test_obs_pos_g_is_plus_L_seen_and_minus_L_breaks"
 
-# Honest full-stack collection count (measured 2026-06-17 in .venv on main with diagnose + warm-start
-# merged). 723 was stale (burn survey); 884 was a stale-base worker measurement. Override with --baseline.
-DEFAULT_BASELINE = 933
+# Honest full-stack collection count (measured 2026-06-20 in .venv on main, cleanup-audit re-confirm:
+# `pytest --collect-only -q` = 1091). Lineage (history, do NOT restore): 723 stale burn-survey;
+# 884 stale-base worker; 933 was the 2026-06-17 count; 947 was a stale MEMORY quote; 1077 in fe31d62
+# was a runtime PASS-count, NOT a collect count. Override with --baseline.
+DEFAULT_BASELINE = 1091
 
 # Paths whose changes never need pytest (docs/notes/state) -- but the invariants still ALWAYS run.
 # NOTE: data formats that CODE loads (e.g. rl/reference_line_inc8.json, a fixture) are deliberately

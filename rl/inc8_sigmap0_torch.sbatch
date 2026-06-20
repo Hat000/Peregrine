@@ -15,7 +15,8 @@
 #       (laptop-reproduced 2026-06-18 on rc1 seed0, start=trainreset: 0.1768 m, reach 133/200). If the
 #       torch instrument agrees here, its 2-axis number is trustworthy.
 #   (2) 2-axis (auto) -- THE DELIVERABLE: full look-at (g_yaw=-3, g_pitch=3), GT-anchored sigma_p0_lat
-#       vs the GO rule (sigma_p0_lat <= 0.08 AND lat_p99 <= 0.24).
+#       vs the GO rule (sigma_p0_lat <= 0.15 AND lat_p99 <= 0.45; CORRECTED 2026-06-19 -- the old
+#       0.08/0.24 DOUBLE-COUNTED the drone; real clearance = 0.75 gate-half - drone r ~= 0.45).
 # SANITY (deliverable 1) is folded into (2): a reach_rate>0 + success_rate>0 on --lookat auto under
 # DETERMINISTIC inference IS the "rc1 flies 2-axis deterministically" precheck. If reach==0 on auto,
 # that is the escape-hatch finding (training success was a stochastic-action artifact) -> REPORT it.
@@ -124,5 +125,6 @@ echo "INC8_SIGMAP0_TORCH_DONE"
 #   sbatch --export=ALL,SEEDS=0,CKPT_SUB=periodic,EXTRA="--dynamics-dr" \
 #     /scratch/network/fl3689/peregrine_repo/rl/inc8_sigmap0_torch.sbatch
 # READ: the yaw cross-check FIRST (does the torch instrument reproduce ~0.18? if not, the 2-axis number
-# is suspect -- report the discrepancy). Then the 2-axis sigma_p0_lat vs the 0.08 GO rule.
+# is suspect -- report the discrepancy). Then the 2-axis sigma_p0_lat vs the 0.15 GO rule (corrected
+# 2026-06-19; the old 0.08 was a double-count -- see the eval docstring + MEMORY.md:8).
 # =====================================================================================================
