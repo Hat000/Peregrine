@@ -1,3 +1,16 @@
+# ============================================================================
+# 🚩 SUPERSEDED 2026-06-19 (Fengyou caught a real error) -- DO NOT REUSE margin_at()/W_EFF.
+# W_EFF = 0.75 - 0.215 - r DOUBLE-COUNTS THE DRONE: 0.215 (chassis half-diagonal)
+# AND r (the contact-halo crash radius) are BOTH the drone, subtracted twice
+# (MARGIN = 0.235 @ r=0.30 -> the false 0.08 bar = 0.235/3). The SIM is correct:
+# pass = offset < 0.75 - r -> real gate clearance ~0.37-0.47 m; the real centering
+# bar is sigma_p0_lat ~0.15 m (p99 ~0.45). Measured 0.15-0.20 = MARGINAL-PASSING,
+# NOT NO-GO. Kept as the worked example / active engine (cited BY NAME in the
+# correction): the 4-D sweep machinery is reusable, but the W_EFF/MARGIN value and
+# ANY 0.08-derived verdict are WRONG. The "near-field-estimator pivot" this fed is
+# RETRACTED -- RL stays the tool. See MEMORY.md:8 + project_rl_increment_history.md
+# §inc8-2026-06-19.
+# ============================================================================
 """MARGIN-CLOSURE-ENVELOPE -- gate-4 contact margin re-derived at the MEASURED vision quality.
 
 The headline CANNOT-SETTLE-OFFLINE was computed at the PESSIMISTIC modeled lateral sigma=0.265 m AND

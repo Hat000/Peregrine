@@ -476,7 +476,7 @@ own clean, unit-tested geometry (gate plane + 1.5 m opening + frame thickness). 
   reference; 54-combo gain sweep finds nothing faster) — the gap is STRUCTURAL ⇒ whichever S2 wins must close
   it (MPCC / RL-as-tracker / monolithic RL with progress reward over the shipped reference line).** (Mapping is PERCEPTION — conservative lap +
   detector→PnP→KF — NOT an RL task, and only needed if VQ2 hides the map; open organizer question.)
-- **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic: privileged critic sees
+- **Stage 2**: layer the MEASURED perception-noise model (asymmetric actor-critic [⚠️ DESIGN INTENT, NOT the active path — under `algo=ppo` the inc8 critic is SYMMETRIC obs-20; the privileged/asymmetric critic needs `algo=appo` + AsymmetricPPO + env state_dim=36, NEVER built; see [[index-rl-training]] §inc8-2026-06-19]: privileged critic sees
   truth, actor sees noisy perception-state) + eval the policy driven by REAL YOLO→PnP→KF with **given-pose
   OFF** in VQ1 sim ← the right home for the user's "test the control policy with real YOLO vision."
   **Use the VISION-PKG2 model (2026-06-10) for the twin injection — leak 0.53% of solved, acceptance
@@ -1621,7 +1621,7 @@ All under `handoff/ultracode-estimator-racespeed-2026-06-13/`: `a1_sim.py` / `a1
 - σ_ref ≈ 0.05 m (reference scale). Encoding = **bounded ratio, NOT raw σ in metres** (raw σ has no natural scale → explodes PPO obs-normalizer).
 
 ### Critic
-- `get_state`: 33 → **36** dims (same 3-dim gate-relative ground-truth state appended for critic).
+- `get_state`: 33 → **36** dims (same 3-dim gate-relative ground-truth state appended for critic). [⚠️ get_state DESIGN only — value IF built via `algo=appo`; NOT consumed under the active `algo=ppo` path, where the critic is SYMMETRIC obs-20 (== inc7). The "36-dim asymmetric critic" was the ROOT-CAUSE of the seed collapse: the stabilizer was never connected. → [[index-rl-training]] §inc8-2026-06-19.]
 
 ### Estimator binding interface requirement
 - `σ_hat` = **CALIBRATED gate-frame KF covariance (NEES ≈ 3)** supplied by RewindKF. Calibration is the binding interface requirement on the estimator side. Un-calibrated σ will mis-weight the confidence channels.
@@ -1695,7 +1695,7 @@ Every cone-relaxation rung worsens gate-4 margin/σ ratio → **re-verify gate-r
 🚩 **Obs slot = R_w2g @ (+L) = (gate_pos − pos), NOT −L.** d1/d2 spec text says "estimator delivers −L" — WRONG = 24 m flip. d1's "0.0 unification proof" was a tautology. G1 MUST run the end-to-end +L identity (4.8e-7) AND −L negative control (must BREAK at 24 m). d1_obs_spec.md / d2_estimator_chain_spec.md −L text = KNOWN-WRONG.
 
 ### 6-component pipeline (build-ready)
-- **C1 — Gate-relative obs (20-dim FROZEN).** [0:17] unchanged byte-identical. [17–19] bounded confidence triple (c_inplane, c_along, age_norm; σ_ref=0.05 m, τ_stale=0.10 s). pos_g from SEEN gate +L (map bias drops out EXACTLY). Critic 33→36.
+- **C1 — Gate-relative obs (20-dim FROZEN).** [0:17] unchanged byte-identical. [17–19] bounded confidence triple (c_inplane, c_along, age_norm; σ_ref=0.05 m, τ_stale=0.10 s). pos_g from SEEN gate +L (map bias drops out EXACTLY). Critic 33→36 [⚠️ get_state DESIGN only — NOT consumed under `algo=ppo`; the active critic is SYMMETRIC obs-20, see §inc8-2026-06-19].
 - **C2 — Case-C estimator chain.** Detector→PnP→associate (unchanged) → gate-relative in-plane fix (+L_seen, anisotropic cov in-plane σ=0.265 m, NO 0.40 m floor in-plane) → RewindKF OOSM (horizon 0.5 s, STRICTLY > L) → calibrated P → confidence triple. AUGMENTS absolute KF. Required relative-innovation outlier gate χ²(2,0.999)=13.82 (reproj alone passes 93% of depth-flips). 3 P0 bugs fixed: (a) `_initialize` seed guarded on `config.use_given_position` (navigator.py:255–271); (b) TIMESYNC `delta_epoch` reconciliation to IMU clock (navigator.py:426); (c) velocity = KF pos/vel coupling (no new vision-vel surface).
 - **C3 — Margin closure (load-bearing empirical).** CANNOT-SETTLE-OFFLINE → escape hatch L3.
 - **C4 — Velocity acquisition.** Position-fix-differencing IS the KF. Vision-velocity = REFUTED P2 insurance.

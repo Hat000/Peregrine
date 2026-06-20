@@ -1,5 +1,7 @@
 # inc8 Deterministic-Stability Re-train — σ_p0 measurable (inc8-deterministic-retrain, 2026-06-19)
 
+> 🚩 **SUPERSEDED 2026-06-19 (511e85c) — READ THIS FIRST.** This report's headline verdict is OVERTURNED. The σ_p0 ≲0.08 "closure bar" it judges against was a `margin_envelope.py` DOUBLE-COUNT of the drone (chassis 0.215 AND contact-halo r subtracted twice; 0.08 = 0.235/3). The REAL bar is **σ_p0_lat ≲0.15 (p99 ≲0.45)**, so the measured σ_p0 **0.15–0.20 is MARGINAL-PASSING (sim success ~0.65), NOT the NO-GO stated below.** Gate-4 is a REACH/PASS-RATE problem (the gate sits OFF the racing line; clearance is the SAME as every gate), not sub-cm centering. The `fix_rate=0` / "fix-seating vs deterministic-flight are mutually exclusive" finding STANDS as a fact — but it is **MOOT**, because at the real bar the policy nearly PASSES *without seating any vision fix* (σ_p0 0.15–0.20 ≈ the no-fix baseline already clears ≲0.15). Therefore the **"NEXT LEVER = near-field-gate estimator, NOT look-at RL" recommendation is RETRACTED — RL stays the tool; the real next lever is RL to lift reach/pass-rate** (gate-4 det reach was only 0.467). KEEP verbatim (all still correct): rc1 actor_logstd saturation (exp(2)=7.39 on 2 channels), det reach 0.467, the std-ceiling lever (42ddb0b, green_gate GREEN), and the σ_p0 measurement table. → MEMORY.md:8 + memory/project_rl_increment_history.md §inc8-2026-06-19.
+
 **Worker:** inc8-deterministic-retrain (opus-4.8, EFFORT max). **Branch:** `inc8-deterministic-retrain`
 (local, NOT pushed). **Status:** LIVE — engineering done + laptop-validated; Adroit training launching.
 
@@ -87,6 +89,7 @@ All 3 completed (~50 min each on A100 — the 8h was the SLURM *limit*). All **F
 (success_rate_max 0.65/0.66/0.65, beating rc1's 0.50–0.54); 25 dense snapshots each; precheck RC=0.
 
 ## ⭐ HEADLINE — Objective A ACHIEVED, Objective B MEASURED = NO-GO (deterministic selection, seed0)
+> ⚠️ **SUPERSEDED 2026-06-19** — the "Objective B = NO-GO" half is overturned: 0.08 was a double-count; σ_p0 0.15–0.20 is MARGINAL-PASSING vs the real ≲0.15 bar. Objective A (first det-flyable 2-axis inc8) stands. See top banner.
 **Objective A — first deterministically-flyable 2-axis inc8 policy:** gp1.0 snapshot `upd01700` reaches
 gate-4 at **det reach_rate 0.467** under test=True (rc1 = **0.000** at gp1.0 — it could not). The
 noise-anneal/std-cap lever closes the "un-measurable" gap.
@@ -127,6 +130,7 @@ Deterministic flyability falls monotonically with g_pitch; fix-seating needs ban
 gain that could fix does not fly. This is the goal's "well-supported negative" across a 5-run bracket.
 
 ## CONCLUSION
+> ⚠️ **SUPERSEDED 2026-06-19 (see top banner):** bullet 1 (lever SOLVED) STANDS. Bullet 2's "NO-GO" is overturned — σ_p0 0.16–0.20 is MARGINAL-PASSING at the real ≲0.15 bar (fix_rate=0 is moot: passes without a fix). Bullet 3's "near-field-gate estimator, not look-at RL" is RETRACTED — RL (reach/pass-rate) stays the lever.
 - ✅ **Deterministic-stability problem SOLVED** (the lever works): first deterministically-flyable 2-axis
   inc8 (gp1.0 det reach 0.467; rc1 = 0.000). Root cause (rc1's saturated actor_logstd) found + fixed.
 - ❌ **Gate-4 NOT closed by the look-at bet: 2-axis σ_p0_lat 0.16–0.20 m = NO-GO**, because fix_rate=0 at
@@ -138,6 +142,7 @@ REMAINING (optional firming, BLOCKED on serve-daemon restart): seeds 1,2 of gp1.
 reproduces (N=3). Does NOT change the gate-4 verdict (the negative does not depend on A's reproducibility).
 
 ## MEMORY-DELTA
+> ⚠️ **SUPERSEDED 2026-06-19 (see top banner):** items 1 + 3 (the lever; the bracket) STAND as measured facts. Item 2's "NO-GO vs 0.08" → MARGINAL-PASSING vs the real ≲0.15 bar. Item 4 (near-field-gate estimator next) is RETRACTED — RL for reach/pass-rate is the lever. The actually-banked deltas are at MEMORY.md:8 + §inc8-2026-06-19.
 1. **NOISE-ANNEAL/std-cap lever WORKS — first deterministically-flyable 2-axis inc8** (gp1.0 det reach
    **0.467**, rc1 was 0.000). Root cause of rc1 found+fixed: 2 action channels saturated at std=exp(2)=7.39
    (entropy bonus, no ceiling) → mean unflyable; clamping actor_logstd to a ceiling fixes it.
