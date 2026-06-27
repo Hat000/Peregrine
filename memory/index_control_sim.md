@@ -85,3 +85,4 @@ Mid-level index for sim wire facts, CTBR/legacy sign config, RL deployment recip
 - [[project-ctbr-control-sysid]] — flyable stack: gains/signs, offline twin, Gate-0 saga, alt-relay.
 - [[reference-sim-interface]] — confirmed MAVLink+video wire spec; all 5 must-verify items.
 - [[reference-sim-ops]] — unattended FlightSim mechanics: launch/login, 31000 semantics, idle states, zombie instance, autoreset/spin guards, footguns, §AUTONOMY-READINESS.
+- [[project-togt-time-optimal-bound]] — VQ1 time-optimal lap bound: frictionless ~4.3–4.7 s (thrust-bound), twin-tracked ~8.3 s realistic; reference line + TOGT pipeline + WSL/CRLF env landmines. (Headline bound is the rate-infeasible optimum — current doctrine ≈8 s upright; see [[index-rl-training]] §DOCTRINE REVISION.)
