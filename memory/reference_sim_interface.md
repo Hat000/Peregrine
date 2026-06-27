@@ -7,6 +7,17 @@ metadata:
   originSessionId: 28d436be-ab10-41ec-bbe5-c7f3dd38cc9e
 ---
 
+> 🟢 **VQ2 WIRE RESOLVED — VADR-TS-003 (Issue 00.03, 2026-06-24), §9.3 (added 2026-06-27):** the binding
+> case-A/case-C question is ANSWERED = **case-C, full self-localization, MANDATORY.** In VQ2 qualification
+> the sim BLOCKS `ATTITUDE`, `LOCAL_POSITION_NED`, `ODOMETRY`, **and `GATE_INFO`.** Remaining wire =
+> `HIGHRES_IMU` (raw accel/gyro/mag) + vision (30 Hz JPEG, port 5600, 24 B header — unchanged) +
+> `TIMESYNC` + `HEARTBEAT`; control = `SET_POSITION_TARGET_LOCAL_NED` + `SET_ATTITUDE_TARGET`. **NEW SCOPE:
+> attitude must be self-estimated from IMU (AHRS) — the prior chain trusted given attitude** (§3.8: body→IMU
+> = identity). No live gate info → pre-build the deterministic map. Intrinsics/mount/chassis/gate UNCHANGED
+> from VADR-TS-002 (VFoV=90° still mislabeled → true ≈58.7°, use fy=320). The whole "our sim streams
+> position so VQ1 passes are case-A / is our build the graded one" discrepancy below is now MOOT for VQ2.
+> 🆕 Training vs Competitive flight modes; code-audit on competitive submit. → `MEMORY.md` VQ2 marker · spec PDF `260624_Technical_Spec_0003.pdf`.
+
 The official sim shipped 2026-06-01 as `AI-GP Simulator v1.0.3364.zip` = an inner `AIGP_3364.zip`
 (`FlightSim.exe`, run + log in) + **`PyAIPilotExample`** (the official reference client) +
 README. Extracted on the dev laptop at `C:\Users\Fengy\Downloads\AIGP_sim\`. The README's system
