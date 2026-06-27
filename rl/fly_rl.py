@@ -133,7 +133,7 @@ _GATE_REL_POS = np.array(
 )
 _GATE_YAW_REL = np.zeros(N_GATES, dtype=np.float64)   # 0 everywhere (uniform yaw)
 
-# Obs dim labels (debug dumps + replay_obs.py). Matches obs_from_zup's layout.
+# Obs dim labels (debug dumps + _deprecated/replay_obs.py). Matches obs_from_zup's layout.
 OBS_LABELS = (
     [f"pos_g{i}" for i in "xyz"] + [f"vel_g{i}" for i in "xyz"]
     + ["rpy_g_r", "rpy_g_p", "rpy_g_y"] + [f"w_flu{i}" for i in "xyz"]

@@ -7,9 +7,17 @@ metadata:
   originSessionId: 381822b6-b523-4990-a2cf-3739f8593be8
 ---
 
+> 🟢 **VQ2 SPEC LANDED — VADR-TS-003 (Issue 00.03, 2026-06-24), banked at repo root `260624_Technical_Spec_0003.pdf` (added 2026-06-27). Supersedes VADR-TS-002 for VQ2.** Reconciliations to the intel below:
+> - **case-C CONFIRMED MANDATORY** (§9.3 blocks `ATTITUDE`+`LOCAL_POSITION_NED`+`ODOMETRY`+`GATE_INFO`). The position-not-streamed inference below is now FACT, not inference.
+> - 🚩 **ATTITUDE also blocked → self-estimate attitude from IMU (AHRS) = NEW SCOPE** the prior chain didn't cover (it trusted given attitude).
+> - 🚩 **The "course downloadable → map KNOWN offline → SLAM not required" intel (FAQ point 2 below) is now QUALIFIED:** training track stable (pre-map OK), but **Fengyou suspects (2026-06-27) the COMPETITION track randomizes per-load** → if so, the single-offline-map approach BREAKS for competition (may force online mapping/gate-discovery). Spec §3.5 says "deterministic/identical" — DIRECT TENSION; verify on VQ2 load, do NOT email organizers.
+> - **velocity question (line ~44 below) RESOLVED:** no LOCAL_POSITION_NED/ODOMETRY → NO given velocity either → must estimate.
+> - **Photoreal CONFIRMED** (Fengyou): VQ2 = photorealistic renders → P5 photoreal detector justified.
+> - **NEW:** Training vs Competitive flight modes; code-audit on competitive submit; Python 3.14.2. Intrinsics/mount/chassis/gate UNCHANGED. → `MEMORY.md` VQ2 marker · [[reference-sim-interface]].
+
 **Technical specification (authoritative for sim interface):**
 - Path: `C:\Users\Fengy\Downloads\Projects\Anduril\260508_Technical_Spec_0002.pdf`
-- Document ID: VADR-TS-002, Issue 00.02, 2026-05-08
+- Document ID: VADR-TS-002, Issue 00.02, 2026-05-08 ⚠️ **SUPERSEDED by VADR-TS-003 for VQ2 (see banner above)**
 - 11 pages, covers: simulation environment, drone/gate dimensions, coordinate frames, MAVLink protocol, vision stream packet format, contestant runtime, qualification phase rules
 - Revision note: issue 00.02 added camera details (incl. the 20° upward tilt). Watch for further revisions.
 

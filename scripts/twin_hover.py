@@ -13,7 +13,7 @@ ROOT CAUSE (offline re-derivation, this file):
     track the drop. PROVEN here: with the KF-lagged vz, NO (kp_alt, kd_alt) both threads the descent
     AND holds a static hover -- the two objectives conflict through kd_alt.
   * hover_thrust 0.2656 is NOT the problem: the two-sided climb+sink vprobe pins hover at 0.265-0.267
-    with ~zero vertical drag (scripts/fit_vertical.py) -- so the rung-1 asymmetric duty / large
+    with ~zero vertical drag (_deprecated/fit_vertical.py) -- so the rung-1 asymmetric duty / large
     amplitude was purely the lagged-vz relay, not a hover bias.
 
 THE FIX (structural, not a gain-only re-tune): damp the alt loop on the **RAW given vz** (no lag), like
