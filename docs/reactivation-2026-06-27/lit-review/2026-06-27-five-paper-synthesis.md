@@ -366,3 +366,27 @@ Domains swept: drone-racing canon · VIO/SLAM · perception-aware control (PAMPC
 
 ## Top estimator papers IF deep-diving (else implement from the design above)
 FEJ2 (Chen/Yang/Huang, ICRA 2022) · sqrtVINS (ICRA 2025) · Huang/Mourikis/Roumeliotis FEJ (ISER 2009) + OC-rules (IJRR 2010) · Li & Mourikis robocentric high-precision EKF-VIO (IJRR 2013) · a VB Strong-Tracking robust KF (DSP 2026) · Implicit-Euler super-twisting (IEEE 2019). Plus pull the REAL Veth AFIT PhD 2006 for stochastic-projection.
+
+---
+
+## Round 11 — Open-access theses scout (2026-06-27, Research-Scout agent + Fengyou library access)
+*Mission: fuller, implementation-detailed THESIS versions behind short papers, across our 5 target areas. All links landing-page verified by the agent.*
+
+### Tier 1 — directly load-bearing
+- **van Goor, "Equivariant Filters for Visual Spatial Awareness" (ANU 2023, PhD)** ⭐ — full form behind EqVIO (IEEE T-RO 39(5), arXiv 2205.01980) + the EqF general-observer-design line (arXiv 2006.08276). Adds: EqF as a general observer for any Lie-group-symmetric system; the Visual-SLAM/VIO symmetry construction with complete derivations; the filter-consistency-at-the-symmetry-level proof the T-RO paper only summarizes. **= the CANONICAL reference for our INVARIANT-FILTER fork** (L1 AHRS / L3 estimator menu item "invariant IEKF/EqVIO + learned IMU bias"; robocentric/FEJ2 consistency). OPEN: openresearch-repository.anu.edu.au/handle/1885/271533 (PDF 4.69 MB). EqVIO code open-source.
+- **Cioffi, "Learned Inertial Odometry for Autonomous Drone Racing" (UZH RPG, RA-L 2023)** — IMU-only odometry fusing a model-based filter + TCN using **thrust** measurements; introduces UZH-FPV (10+ km aggressive flight, IMU+GT). **Confirms our commanded-thrust LIO gap-filler.** arXiv 2210.15287 + github uzh-rpg/learned_inertial_model_odometry. No standalone PhD PDF yet (re-check ETH Research Collection).
+- **Changhao Chen, "Learning Methods for Robust Localization" (Oxford 2020, DPhil)** — fuller IONet (AAAI'18) + MotionTransformer + Selective-Sensor-Fusion-for-neural-VIO (CVPR'19), with training/dataset/drift ablations. **Supports the learned-AHRS / learned-IO fork.** OPEN CC-BY: ora.ox.ac.uk/objects/uuid:edfcdcf6-957c-4ef8-9ec9-4028feb5161c (10.3 MB).
+
+### Tier 2 — strong analogs
+- **MonoRace (TU Delft MAVLab, 2026, A2RL champion)** — NEAR-1:1 PRIOR ART: mono rolling-shutter + IMU only, no external positioning, neural gate-seg + drone-model state est, NN→motor @ 500 Hz, 28.23 m/s. Confirms the MEMORY ref (arXiv 2601.15222) accurate. Constituent MSc theses in TU Delft repo worth mining: "Dynamic Modelling and State Estimation of a High Speed Racing Drone" (uuid:a88b7802-...) + "Autonomous drone race" (uuid:022f5ed1-...).
+- **A2RL-2026 finalist papers (NEW — very on-target):** arXiv **2602.01860** (vision-only 6-DoF state, single RGB + IMU, no external loc; top-4/210), **2603.02742** (robust tightly-coupled FILTER-based monocular VINS for racing), **2512.20475** (drift-corrected mono VIO + perception-aware planning: YOLO gate→global pos→KF fuses VIO drift — **mirrors our gate-relative-fix-into-filter design**). Standalone theses likely not yet deposited (2026 dates).
+- **Bingöl, "Bearings-Only Tracking" (METU 2011, MSc)** — full observability treatment + estimator comparison (EKF / modified-polar / PF) + the maneuvering-observer requirement. **Grounds our D4 bearings-only fork** and clarifies when known-gate-size PnP is/ isn't enough to make range observable. OPEN: etd.lib.metu.edu.tr/upload/12613048/index.pdf.
+
+### Tier 3 — defense-GNC (area 4, strapdown-seeker analog)
+- NPS DTIC guidance theses (ADA556639: PN/APN/diff-geometry vs maneuvering targets w/ seeker noise); METU "Missile Guidance with Impact Angle Constraint" (FOV-limited strapdown look-angle guidance); Maley "LOS Rate Estimation for Guided Projectiles with Strapdown Seekers" (2015). **Core analog (verified across sources): a strapdown seeker cannot directly measure inertial LOS rate — it reconstructs it from seeker-angle + IMU body-rate, structurally identical to our "estimate gate-bearing rate from a body-fixed camera + AHRS."** No single dominant open PhD thesis for mono/angle-only strapdown terminal guidance.
+
+### Bridge (areas 1↔5)
+- **EqNIO: Subequivariant Neural Inertial Odometry (NeurIPS 2024, arXiv 2408.06321)** — applies Mahony-group equivariance to learned IMU-only odometry (canonical gravity-aligned frame, roto-reflective symmetry about gravity; wraps TLIO + RoNIN). The conceptual join between van Goor equivariant filtering and the TLIO/RoNIN learned-IO lineage.
+
+### Highest-value PDFs to grab now
+van Goor ANU (#1), Chen Oxford (#3), Bingöl METU (#6) — all verified-open, directly on-topic. MonoRace + the two TU Delft repo records = closest competition-domain prior art.
