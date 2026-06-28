@@ -421,3 +421,13 @@ vision → localization (C2 chain + bearing-range) → obs[0:20] → inc8 policy
 
 ### 🚩 DOUBLE-CONJUGATION FOOTGUN (case-C wiring)
 The ESKF emits TRUE attitude DIRECTLY — there is **NO** `R_y(π)` ODOMETRY telemetry-frame conjugation to undo. The current `estimator_state_for_obs` keeps the RAW ODOMETRY quat precisely so `build_obs` can conjugate it (`_ODO_QUAT_TRUE_CONJ`) + applies `_ODO_RATE_SIGN` to the rate. An AHRS source **must BYPASS both** — wiring GAP#2 must NOT re-apply `_ODO_QUAT_TRUE_CONJ` / `_ODO_RATE_SIGN` or it double-conjugates. (Adapter emits +TRUE-FRD rate; consumers expect ODOMETRY-sign → the `use_ahrs` seam applies the −1 flip per the gyro audit.)
+
+### CASE-C STEP 3 DONE — use_ahrs WIRING (committed da280e2)
+ESKF attitude source wired into the nav loop behind `NavigatorConfig.use_ahrs` (**DEFAULT FALSE = byte-identical**).
+- **contracts.py:** `gyro_body` field on `DroneState` (raw HIGHRES_IMU gyro, body FRD).
+- **mavlink_client.py:** parses `HIGHRES_IMU xgyro/ygyro/zgyro` → `gyro_body`; DEFENSIVE (`hasattr` guard → `None` when a message variant/fake omits gyro; only consumed under `use_ahrs` so OFF stays byte-id + ingest never crashes).
+- **navigator.py:** `use_ahrs` seam feeds `AHRSAttitudeSource(accel,gyro,dt)` → its `R_wb` for KF predict + PnP lever.
+- **state_estimator.py:** routes adapter `euler_rpy`/`body_rate` into NavState, handling the double-conjugation footgun (ESKF emits TRUE attitude → NOT re-conjugated) + the rate sign flip (+TRUE-FRD → ODOMETRY-convention) so `build_obs`/controller unchanged.
+- **Verified:** 77 targeted tests (use_ahrs OFF-byte-id + ON-smoke, +L green, firstcontact/vq2_loadday/mavlink green).
+- 🚩 **GOTCHA CAUGHT:** wiring agent's first cut parsed gyro UNCONDITIONALLY (`msg.xgyro` direct) → crashed 8 tests whose HIGHRES_IMU fakes omit gyro (AttributeError); fixed with the `hasattr` guard.
+- **REMAINING case-C steps:** 5 (case-C deploy profile turning the `use_*` flags ON together) + 6 (dual-Navigator fidelity harness = the actual #37 answer: ESKF case-C obs vs truth-attitude oracle obs).
