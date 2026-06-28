@@ -27,8 +27,9 @@ import numpy as np
 
 from racer import frames
 from racer.contracts import Gate, GatePose
-from racer.frames import ATTITUDE_NOISE_STD_RAD, R_camera_from_body
+from racer.frames import ATTITUDE_NOISE_STD_RAD, CAMERA_INTRINSICS_K, R_camera_from_body
 from racer.state_estimator import LinearKF
+from racer.vision.gate_pose import GATE_INNER_SIZE_M
 
 
 # Analytic-PnP covariance inflation [perception-char 2026-06-08]. The 4-corner world-fix covariance
@@ -203,6 +204,107 @@ def gate_relative_inplane_fix(
         var_along += fix_cov_floor_std ** 2
     R_gate_to_world = np.asarray(gate.R_world_gate, dtype=np.float64)            # gate-frame -> world NED
     cov_gate = np.diag([sig_ip ** 2, sig_ip ** 2, var_along])                   # (X_ip, Y_ip, Z_along)
+    cov_ned = R_gate_to_world @ cov_gate @ R_gate_to_world.T
+    return z_ned, cov_ned
+
+
+# ---------------------------------------------------------------------------------------------------
+# B1 BEARING-RANGE CHANNEL [perception-l2-scope.md 2026-06-28]. An ATTITUDE-INDEPENDENT along-track
+# range measurement from the gate's apparent pixel SPAN (known 1.5 m inner square + intrinsics). The
+# along-track axis is exactly where the absolute / gate-relative fixes are weakest: the loose
+# GATE_REL_ALONG_SIGMA=0.50 m prior, plus the vertical-boresight bias ε_vert that corrupts the +L
+# lever's depth component. The subtended ANGLE of the corners is set by the gate WIDTH, not by where
+# the boresight bias shifts the centroid, so this channel is robust to ε_vert -- it gives the EKF a
+# data-driven, proximity-tightening along-track constraint that does NOT fight the in-plane fix.
+# GATED OFF by default (NavigatorConfig.use_range_channel) -> the default path is byte-identical.
+
+# Range-noise model for the subtended-angle range. Detector corner-pixel noise is ~constant in pixels,
+# so the metric range error from a fixed pixel error grows ~linearly with range over the racing band
+# (sigma_range ~ sigma_rel * range). A small absolute floor covers the near-field where the relative
+# term vanishes (and the 1.5 m gate-size model mismatch). Empirically recalibrate on sim span data.
+GATE_RANGE_SIGMA_REL = 0.03      # per-metre along-track range 1-sigma growth (sigma ~ 3% of range)
+GATE_RANGE_SIGMA_FLOOR = 0.05    # m, near-field absolute floor on the range 1-sigma
+GATE_RANGE_INPLANE_STD = 100.0   # m, deliberately-huge in-plane sigma -> the 3-DOF update is 1-DOF range
+
+
+def apparent_range_from_gate_span(
+    corners_px: np.ndarray,
+    inner_size_m: float = GATE_INNER_SIZE_M,
+    camera_matrix: np.ndarray | None = None,
+) -> float | None:
+    """Range (m) to the gate from the subtended angle of its inner square. ATTITUDE-INDEPENDENT.
+
+    Uses the known inner size: ``range = (size/2) / tan(half_angle)``, where ``half_angle`` is the
+    apparent half-WIDTH of the square (one edge half-extent), recovered as the per-axis RMS of the
+    corner offsets from the centroid, back-projected through the focal lengths into normalised image
+    coordinates (``dx/fx``, ``dy/fy``). Averaging the two PER-AXIS RMS extents (NOT the combined radial
+    distance, which would over-count by sqrt(2) -- it measures the half-DIAGONAL) makes a head-on square
+    of half-size ``s`` at depth ``Z`` recover ``half_angle = s/Z`` exactly, so ``range == Z``. Using both
+    axes symmetrically keeps the estimate robust to which way a moderate tilt foreshortens the square.
+    This is derived from the raw detector pixels (``corners_px``), NOT from the PnP-solved depth, so
+    it bypasses the along-track PnP uncertainty and the vertical-boresight bias (ε_vert shifts the
+    centroid pixel but not the subtended SPAN). Returns ``None`` for fewer than 4 corners (a 3-corner
+    P3P set has no reliable symmetric span) or a degenerate (collapsed) span.
+    """
+    K = CAMERA_INTRINSICS_K if camera_matrix is None else np.asarray(camera_matrix, dtype=np.float64)
+    pts = np.asarray(corners_px, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[0] < 4 or pts.shape[1] != 2:
+        return None
+    centroid = pts.mean(axis=0)
+    fx, fy = float(K[0, 0]), float(K[1, 1])
+    dxn = (pts[:, 0] - centroid[0]) / fx
+    dyn = (pts[:, 1] - centroid[1]) / fy
+    # Per-axis RMS half-extent (NOT the radial distance, which is the half-diagonal = sqrt(2)x too big).
+    half_x = float(np.sqrt(np.mean(dxn ** 2)))
+    half_y = float(np.sqrt(np.mean(dyn ** 2)))
+    half_angle = 0.5 * (half_x + half_y)   # apparent half-WIDTH; == s/Z for a head-on square
+    if not np.isfinite(half_angle) or half_angle < 1e-9:
+        return None
+    return (inner_size_m / 2.0) / half_angle
+
+
+def gate_range_sigma(
+    range_m: float,
+    sigma_rel: float = GATE_RANGE_SIGMA_REL,
+    sigma_floor: float = GATE_RANGE_SIGMA_FLOOR,
+) -> float:
+    """Along-track 1-sigma for a span-derived range: ``max(floor, sigma_rel * range)`` (see above)."""
+    return max(sigma_floor, sigma_rel * float(range_m))
+
+
+def gate_range_fix(
+    range_m: float,
+    gate: Gate,
+    R_world_body: np.ndarray,
+    sigma_range: float | None = None,
+    inplane_std: float = GATE_RANGE_INPLANE_STD,
+    fix_cov_floor_std: float = FIX_COV_FLOOR_STD,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Along-track (gate-normal) RANGE pseudo-fix + anisotropic covariance from the apparent span.
+
+    Builds a 3-DOF world-position measurement that constrains ONLY the along-track (gate-normal)
+    axis: ``z_ned = gate.position_ned - range_m * gate.normal_ned`` (the drone sits ``range_m`` behind
+    the gate plane along its through-direction). The covariance is tight along-track (``sigma_range``,
+    plus the systematics floor) and VERY loose in-plane (``inplane_std``), so feeding it to
+    ``LinearKF.update_position`` / ``RewindKF.update_position_at`` acts as an effective 1-DOF range
+    correction that does NOT fight the tight in-plane gate-relative fix.
+
+    ``sigma_range`` defaults to the range-proportional ``gate_range_sigma(range_m)``. ``R_world_body``
+    is accepted for caller symmetry with the other fixes (and so the same +L camera-vertical-offset
+    convention applies); the measurement itself is gate-frame referenced. PRESERVES the +L sign: the
+    along-track component points the drone BEHIND the gate (``-range * normal``), the same direction
+    the +L lever places it, so this fix and the +L obs slot agree in sign.
+    """
+    if sigma_range is None:
+        sigma_range = gate_range_sigma(range_m)
+    R_gate_to_world = np.asarray(gate.R_world_gate, dtype=np.float64)   # gate-frame -> world NED
+    gate_normal_ned = R_gate_to_world[:, 2]                            # gate +Z (downrange) in world NED
+    z_ned = _apply_camera_vert_offset(gate.position_ned - range_m * gate_normal_ned, R_world_body)
+    var_ip = inplane_std ** 2
+    var_al = sigma_range ** 2
+    if fix_cov_floor_std > 0.0:
+        var_al += fix_cov_floor_std ** 2
+    cov_gate = np.diag([var_ip, var_ip, var_al])                       # (X_ip, Y_ip, Z_along)
     cov_ned = R_gate_to_world @ cov_gate @ R_gate_to_world.T
     return z_ned, cov_ned
 

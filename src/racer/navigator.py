@@ -52,11 +52,16 @@ from racer.frames import ATTITUDE_NOISE_STD_RAD, R_world_from_body, R_world_from
 from racer.kf_rewind import RewindKF
 from racer.localization import (
     FIX_COV_FLOOR_STD,
+    GATE_RANGE_SIGMA_FLOOR,
+    GATE_RANGE_SIGMA_REL,
     GATE_REL_ALONG_SIGMA,
     GATE_REL_INPLANE_SIGMA,
     GATE_REL_RANGE_GROWTH_A1,
     INPLANE_POS_FLOOR_STD,
+    apparent_range_from_gate_span,
     gate_pose_to_world_position,
+    gate_range_fix,
+    gate_range_sigma,
     gate_relative_inplane_fix,
 )
 from racer.state_estimator import LinearKF, make_nav_state
@@ -64,6 +69,9 @@ from racer.state_estimator import LinearKF, make_nav_state
 # chi-square 99.9% quantile, 2 DOF -- the IN-PLANE relative-innovation outlier gate (BLUEPRINT §1.3).
 # (The absolute 3-DOF Mahalanobis gate is 16.27; the gate-relative fix is 2-DOF in-plane -> 13.82.)
 GATE_REL_CHI2_2_999 = 13.815510557964274
+# chi-square 99.9% quantile, 1 DOF -- the along-track RANGE-channel innovation gate (B1, perception-l2).
+# The span-derived range fix is a single along-track scalar constraint -> 1-DOF outlier test.
+GATE_RANGE_CHI2_1_999 = 10.827566170662733
 from racer.vision.association import (
     ASSOC_MAX_CENTER_UNITS,
     ASSOC_MAX_SIZE_RATIO,
@@ -264,6 +272,18 @@ class NavigatorConfig:
     use_inplane_pos_floor: bool = True
     inplane_pos_floor_std: float = INPLANE_POS_FLOOR_STD     # m, sigma_b systematic centering floor (= sigma_ref)
 
+    # B1 bearing-range channel (perception-l2-scope.md 2026-06-28). An ATTITUDE-INDEPENDENT along-track
+    # range fix from the gate's apparent pixel span (known 1.5 m square), layered AFTER the in-plane fix
+    # with its own 1-DOF chi2 gate. It replaces the loose GATE_REL_ALONG_SIGMA=0.5 m prior on the
+    # along-track axis with a data-driven, proximity-tightening range that is robust to the ε_vert
+    # boresight bias (the span sets the subtended ANGLE, not the centroid). OFF by default -> the whole
+    # navigator loop (including the C2 gate-relative path) is byte-identical to main; no new RNG, no obs
+    # change. Requires use_gate_relative=True to participate (the range fix augments the in-plane fix).
+    use_range_channel: bool = False
+    gate_range_sigma_rel: float = GATE_RANGE_SIGMA_REL       # per-metre along-track range 1-sigma growth
+    gate_range_sigma_floor: float = GATE_RANGE_SIGMA_FLOOR   # m, near-field range 1-sigma floor
+    gate_range_chi2: float = GATE_RANGE_CHI2_1_999           # chi2(1, 0.999) along-track range gate
+
 
 @dataclass
 class _VisionDiag:
@@ -276,11 +296,15 @@ class _VisionDiag:
     n_rejected_range: int = 0       # post-PnP depth-sanity rejections (range_consistent)
     n_rel_applied: int = 0          # gate-relative in-plane fixes applied (C2)
     n_rel_rejected: int = 0         # gate-relative fixes rejected by the relative-innovation gate (C2)
+    n_range_applied: int = 0        # B1 along-track range-channel fixes applied
+    n_range_rejected: int = 0       # B1 range fixes rejected by the 1-DOF range-innovation gate
     last_gate_id: int | None = None
     last_range_m: float = float("nan")
     last_reproj_px: float = float("nan")
     last_mahalanobis: float = float("nan")
     last_d2_rel: float = float("nan")   # last gate-relative in-plane innovation statistic (C2)
+    last_range_span_m: float = float("nan")   # last span-derived (B1) range to the gate
+    last_d2_range: float = float("nan")       # last along-track range-channel innovation statistic (B1)
 
 
 @dataclass
@@ -516,6 +540,11 @@ class Navigator:
         # backstop for depth-flips the absolute Maha + reproj gates pass).
         if self.config.use_gate_relative:
             self._apply_gate_relative_fix(pose, gate, R_wb, t_fix_ns)
+        # B1 along-track RANGE channel (perception-l2): an attitude-independent range fix from the gate's
+        # apparent SPAN, layered after the in-plane fix with its own 1-DOF gate. OFF by default -> skipped
+        # entirely (byte-identical). Augments the gate-relative path, so it only runs when that is on too.
+        if self.config.use_range_channel and self.config.use_gate_relative:
+            self._apply_range_fix(obs, gate, R_wb, t_fix_ns)
 
     def _apply_pos_fix(self, z: np.ndarray, cov: np.ndarray, t_fix_ns: int) -> None:
         """Apply a world-position fix to the KF -- capture-time OOSM (RewindKF) or in-place (bare KF)."""
@@ -558,6 +587,41 @@ class Navigator:
         self._apply_pos_fix(z_rel, cov_rel, t_fix_ns)
         self.vision_diag.n_rel_applied += 1
         self._last_fix_gate_R = np.asarray(gate.R_world_gate, dtype=np.float64).copy()
+
+    def _apply_range_fix(self, obs: GateObservation, gate: Gate, R_wb: np.ndarray,
+                         t_fix_ns: int) -> None:
+        """B1 along-track RANGE pseudo-fix from the gate's apparent SPAN + a 1-DOF innovation gate.
+
+        The span-derived range (``apparent_range_from_gate_span``) is ATTITUDE-INDEPENDENT and robust to
+        the ε_vert boresight bias, so it gives a data-driven along-track constraint that replaces the
+        loose GATE_REL_ALONG_SIGMA=0.5 m prior. The fix covariance is tight along-track / very loose
+        in-plane, so the 3-DOF KF update is effectively a 1-DOF range correction that does NOT fight the
+        in-plane gate-relative fix. Gated on the 1-DOF along-track innovation (chi2(1, 0.999)=10.83); a
+        4-corner span is required (``apparent_range_from_gate_span`` returns None otherwise -> skip)."""
+        assert self.kf is not None
+        range_m = apparent_range_from_gate_span(obs.corners_px, gate.inner_size_m)
+        self.vision_diag.last_range_span_m = float("nan") if range_m is None else float(range_m)
+        if range_m is None:
+            return
+        sigma_range = gate_range_sigma(
+            range_m, self.config.gate_range_sigma_rel, self.config.gate_range_sigma_floor)
+        z_range, cov_range = gate_range_fix(
+            range_m, gate, R_wb,
+            sigma_range=sigma_range,
+            fix_cov_floor_std=self.config.fix_cov_floor_std,
+        )
+        # along-track basis (world NED): gate-normal axis = R_world_gate column 2 (through-direction).
+        n = np.asarray(gate.R_world_gate, dtype=np.float64)[:, 2]            # (3,)
+        nu_al = float(n @ (z_range - self.kf.x[:3]))                          # scalar along-track innov
+        s_al = float(n @ (self.kf.P[:3, :3] + cov_range) @ n)
+        d2_range = (nu_al * nu_al / s_al) if s_al > 0.0 else 0.0
+        self.vision_diag.last_d2_range = d2_range
+        if d2_range > self.config.gate_range_chi2:
+            self.n_vision_rejected += 1
+            self.vision_diag.n_range_rejected += 1
+            return
+        self._apply_pos_fix(z_range, cov_range, t_fix_ns)
+        self.vision_diag.n_range_applied += 1
 
     def _associate(self, obs: GateObservation, predicted: dict) -> int | None:
         """Match a detection to the map gate whose predicted SHAPE agrees best (or None)."""
