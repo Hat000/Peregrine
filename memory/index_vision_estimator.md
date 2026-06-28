@@ -373,3 +373,25 @@ Kinematic frustum overlay (no training/sim; `docs/reactivation-2026-06-27/spike-
 **Closed-loop (landmark fixes):** RIEKF in-band avg-NEES 9.01 on HIGH_G_LOOP vs std-EKF under-confident ~4.8. 🚩 **HONEST CAVEAT:** RIEKF NEES HIGH (~26) on very-excursive AGGRESSIVE_S after 8° init error — edge is CALIBRATION quality (not point-accuracy); reported, not tuned away.
 
 **SOT(3) = SO(3) × R⁺ inverse-depth gate-corner bearing DONE+tested** (group / bearing / analytic Jacobians / triangulation FD-verified; bearing scale-invariant → depth from parallax). NEXT: joint pose+landmark covariance + Schur-marginalization = full EqVIO. → [[project_vq2_stack_research]]
+
+### FULL EqVIO COMPLETE (committed 26e25ea, 2026-06-28)
+`EqVIOJointEKF` (`src/racer/ahrs/eqvio.py`) joins SE_2(3) RIEKF pose + per-corner SOT(3) inverse-depth in ONE joint covariance [pose(9) | lmk(4)×K] — coupled bearing update (`update_landmark_joint`) + Schur-complement marginalization (`drop_landmark`, PSD-preserving, == info-form to 5.7e-15). Anchored joint Jacobians in `eqvio_landmark.py` (pose 3×9, landmark 3×4 with NON-ZERO parallax scale column → depth observable), FD-verified ~1e-10.
+
+**VALIDATION:** depth recovers via parallax (world err <0.15 m noiseless); **JOINT BEATS SEPARATE** (decoupled dead-reckon+triangulate) 1.53 vs 2.24 m = 1.47×, wins 90% trials → cross-covariance is load-bearing.
+
+**CONSISTENCY REGIME-DEPENDENT (honest):** forward-parallax pose NEES ~2.1–2.6 (consistent-to-conservative, never overconfident) — forward-parallax IS the racing regime (flying toward a gate); near-constant-range ORBIT NEES HOT ~100–900 (frozen-anchor-pose-error not modeled; pinned as known limitation; next-tier fix = FEJ/null-space).
+
+Tests +18 (`test_eqvio_joint.py`); 78 AHRS+eqvio green. **STILL UNWIRED to the nav loop** (offline/synthetic only). → [[project_vq2_stack_research]]
+
+## BEARING-RANGE CHANNEL B1 (committed af88b2c, 2026-06-28; perception-l2)
+`apparent_range_from_gate_span` + `gate_range_sigma` + `gate_range_fix` in `localization.py`; wired via `NavigatorConfig.use_range_channel=False` (default OFF, byte-identical to VQ1) + `_apply_range_fix` (1-DOF chi2=10.83 along-track innovation gate, requires `use_gate_relative`).
+
+**Motivation:** range from the gate inner-square apparent span is ATTITUDE-INDEPENDENT → robust to ε_vert boresight bias; replaces the loose `GATE_REL_ALONG_SIGMA=0.5` prior on the weak along-track axis.
+
+**FIX vs scope-doc:** span half-angle = per-axis RMS half-WIDTH, not radial (scope-doc sketch was √2 too large).
+
+**NUMBERS:** 0.000% range err head-on 5–30 m; tilt drift 0.17 m @ 15°/10 m (vs ~1.7 m for the +L lever); under +0.6 m depth bias: along-track err 0.600 → 0.149 m (−75.2%).
+
+**+L invariant GREEN** (uses `t_cam_gate` lever, not PnP rotation; `test_obs_sign_faithfulness` passes). Tests `test_gate_range_channel.py` 12/12.
+
+🚩 **NOTE: discard-PnP-rotation (square-flip) upgrade = ZERO code-change** confirmed (`R_cam_gate` already off the fix path) → see `docs/reactivation-2026-06-27/perception-l2-scope.md`. → [[project_vq2_stack_research]]
