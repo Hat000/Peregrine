@@ -364,3 +364,12 @@ Kinematic frustum overlay (no training/sim; `docs/reactivation-2026-06-27/spike-
 - **VERDICT:** SUPPORTS the reachability hypothesis as a general fact; **REFUTES the "gate-4 uniquely excluded by geometry" framing** — the driver is approach altitude, not a gate-4-specific frustum.
 - 🚩 **FORK STAYS OPEN** (per doors-open rule — a model prediction + an analytic overlay don't close it). The actual inc8 RL **pitch trace at 12–28 m from gate-4 is UNKNOWN** locally (no eval trajectory in worktree). CHEAP CLOSER: pull/run an inc8 eval on ShadowPC/Adroit, read the pitch profile near gate-4.
 - **STRATEGY KICK:** strengthens two existing forks — (1) **horizontal-FoV approach shaping** (90° HFoV ≫ 58.7° VFoV → yaw-to-gate where geometry allows, dodging the vertical exit); (2) **approach-from-below / climb-angle reward** to manufacture the pitch headroom gate-4 lacks. Both are POLICY levers (mount is spec-fixed). → [[index-rl-training]]
+
+## SE_2(3) RIGHT-INVARIANT EKF + SOT(3) LANDMARK PROTOTYPE (committed e4447e9, 2026-06-28)
+`src/racer/ahrs/eqvio.py` + `traj6dof.py` + `eqvio_landmark.py`; tests 33/33; full AHRS suite 60/60.
+
+**CONSISTENCY THESIS CONFIRMED at propagation level, deterministic:** noiseless RIEKF NEES CONSTANT (rel-spread ~1e-13, covariance transport group-affine EXACT) vs standard-EKF NEES DRIFTING 15→151. **This explains the earlier SO(3)-only null** (IEKF tied ESKF on attitude-only) — the invariant consistency edge needs the COUPLED att+vel+pos problem.
+
+**Closed-loop (landmark fixes):** RIEKF in-band avg-NEES 9.01 on HIGH_G_LOOP vs std-EKF under-confident ~4.8. 🚩 **HONEST CAVEAT:** RIEKF NEES HIGH (~26) on very-excursive AGGRESSIVE_S after 8° init error — edge is CALIBRATION quality (not point-accuracy); reported, not tuned away.
+
+**SOT(3) = SO(3) × R⁺ inverse-depth gate-corner bearing DONE+tested** (group / bearing / analytic Jacobians / triangulation FD-verified; bearing scale-invariant → depth from parallax). NEXT: joint pose+landmark covariance + Schur-marginalization = full EqVIO. → [[project_vq2_stack_research]]
