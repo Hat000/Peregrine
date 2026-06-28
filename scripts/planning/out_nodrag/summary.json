@@ -1,0 +1,35 @@
+{
+  "lap_time_s": 2.706123579099399,
+  "total_time_to_endpoint_s": 3.4949922271395777,
+  "max_gate_miss_m": 0.7499199514986873,
+  "gate_misses_m": [
+    0.7494,
+    0.7498,
+    0.7499,
+    0.7499,
+    0.7499,
+    0.7497
+  ],
+  "gate_radius_m": 0.75,
+  "all_gates_passed": true,
+  "a_c_max_mps2": 78.2717874449988,
+  "a_c_max_g": 7.9815010676427525,
+  "a_c_ceiling_g": 7.982627962115978,
+  "thrust_sat_frac": 0.9880952380952381,
+  "omega_max_used_rps": [
+    10.935447780700825,
+    10.996930980358766,
+    6.983579373579245
+  ],
+  "omega_limits_rps": [
+    11.0,
+    11.0,
+    7.0
+  ],
+  "max_speed_mps": 84.06419800006776,
+  "mean_speed_mps": 61.54723151902536,
+  "use_drag": false,
+  "ipopt_status": "Solve_Succeeded",
+  "ipopt_success": true,
+  "iter_count": 124
+}
