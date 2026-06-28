@@ -31,7 +31,7 @@ import torch
 import diffaero.algo as _algo
 import diffaero.dynamics as _dyn
 import diffaero.env as _env
-from diffaero.algo.PPO import PPO
+from diffaero.algo.PPO import PPO, AsymmetricPPO
 from diffaero.utils.runner import TrainRunner
 from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
@@ -88,6 +88,59 @@ class GuardedPPO(PPO):
 
 
 _algo.AGENT_ALIAS["ppo"] = GuardedPPO
+
+
+def _install_nan_guard(ppo):
+    """Wrap ppo.optim.step so a non-finite gradient SKIPS the step (instead of NaN'ing the weights),
+    aborting only after NAN_ABORT_AFTER consecutive poisoned minibatches. Shared by GuardedPPO (sym)
+    and GuardedAPPO (asym) so both behave identically; must run AFTER any optimizer rebuild."""
+    ppo.nan_skipped = 0
+    orig_step = ppo.optim.step
+
+    def guarded_step(*a, **k):
+        for group in ppo.optim.param_groups:
+            for p in group["params"]:
+                if p.grad is not None and not torch.isfinite(p.grad).all():
+                    ppo.nan_skipped += 1
+                    ppo.optim.zero_grad()
+                    print(f"[nan-guard] non-finite gradient -- optimizer step SKIPPED "
+                          f"(total skipped: {ppo.nan_skipped})")
+                    if ppo.nan_skipped >= GuardedPPO.NAN_ABORT_AFTER:
+                        raise RuntimeError(
+                            f"[nan-guard] {ppo.nan_skipped} skipped steps -- the run is "
+                            f"persistently poisoned; aborting (emergency save follows)")
+                    return None
+        return orig_step(*a, **k)
+
+    ppo.optim.step = guarded_step
+
+
+class GuardedAPPO(AsymmetricPPO):
+    """AsymmetricPPO (PRIVILEGED state-input critic) + the same NaN-gradient guard + critic-width knob
+    as GuardedPPO. This is the ACTUAL asymmetric/truth-seeing critic the inc8 design intended: the
+    actor sees the 20-d obs, the critic sees env.get_state() (the 37-d gate-relative TRUTH + the
+    confidence triple). Selected via `algo=appo`. The symmetric `algo=ppo`=GuardedPPO path is
+    untouched/byte-identical. critic_hidden_dim still works (CriticV is rebuilt over the state input)."""
+
+    NAN_ABORT_AFTER = 200
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # CRITIC-WIDTH A/B: rebuild ONLY the critic value-net wider when +algo.critic_hidden_dim is set
+        # (no-op/byte-identical when unset). maybe_widen_critic reads the critic's OWN input_dim, so it
+        # correctly rebuilds the STATE-input (asymmetric) critic here. Done BEFORE the nan-guard wraps
+        # self.optim.step, so the re-bound guard wraps the (possibly rebuilt) optimizer.
+        maybe_widen_critic(self, kwargs.get("cfg", args[0] if args else None))
+        _install_nan_guard(self)
+
+    @staticmethod
+    def build(cfg, env, device):
+        return GuardedAPPO(cfg=cfg, obs_dim=env.obs_dim, state_dim=env.state_dim,
+                           action_dim=env.action_dim, n_envs=env.n_envs,
+                           l_rollout=cfg.l_rollout, device=device)
+
+
+_algo.AGENT_ALIAS["appo"] = GuardedAPPO
 
 
 def _weights_finite(agent) -> bool:

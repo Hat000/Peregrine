@@ -135,11 +135,19 @@ class PeregrineRacingInc8(PeregrineRacing):
         self._flip_rate = torch.tensor(R8._FLIP_FRD_FLU, device=dev, dtype=self._inc8_dtype)
         self._act_hi = self._act_lo + self._act_span
 
-        # obs/critic dims: 17->20, 33->36. Deploy/load gates on the checkpoint sidecar obs-dim.
+        # obs/critic dims: obs 17->20. Deploy/load gates on the checkpoint sidecar obs-dim.
         self.obs_dim = 20
         # init the emulator at the current (hover/placeholder) truth for all envs; the runner's
         # reset() re-inits at the real spawn before the first real obs.
         self._reset_emulator(self._arange)
+        # ASYMMETRIC-CRITIC state dim: the privileged TRUTH state get_state() returns is
+        # base PeregrineRacing.get_state (3 v + 4 q + 3x(3+3+3) = 34) + the 3-d confidence triple
+        # = 37 (the SSOT 36 was an off-by-one; measured here so it can never drift). The base
+        # diffaero Racing.__init__ set state_dim=34 (its own get_state layout); AsymmetricPPO.build
+        # reads env.state_dim to size the critic, so it MUST match get_state().size(-1). Set it
+        # from the actual tensor. Symmetric PPO (algo=ppo) never consumes state_dim, so this is a
+        # no-op for inc7/inc8-symmetric runs (byte-identical); it only matters under algo=appo.
+        self.state_dim = int(self.get_state().size(-1))
 
     # ---- surrogate recalibration (plain json; no scipy) ---------------------------------------
     @staticmethod
