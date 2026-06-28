@@ -17,8 +17,11 @@ def _attitude(time_boot_ms, roll=0.0, pitch=0.0, yaw=0.0):
     return m
 
 
-def _imu(time_usec, az=-9.80665):
+def _imu(time_usec, az=-9.80665, gx=0.0, gy=0.0, gz=0.0):
+    # Real HIGHRES_IMU always carries xgyro/ygyro/zgyro (raw body-FRD gyro -> DroneState.gyro_body,
+    # the non-blocked VQ2 AHRS gyro source); include them in the fake so the parse path matches.
     m = SimpleNamespace(time_usec=time_usec, xacc=0.0, yacc=0.0, zacc=az,
+                        xgyro=gx, ygyro=gy, zgyro=gz,
                         xmag=1.0, ymag=2.0, zmag=3.0, abs_pressure=1013.25)
     m.get_type = lambda: "HIGHRES_IMU"
     return m
@@ -119,10 +122,12 @@ def test_local_position_does_not_drive_clock():
 
 def test_highres_imu_populates_sensors():
     c = MavlinkClient()
-    c._handle(_imu(time_usec=500_000, az=-9.0))
+    c._handle(_imu(time_usec=500_000, az=-9.0, gx=0.1, gy=-0.2, gz=0.3))
     np.testing.assert_array_equal(c.state.accel_body, [0.0, 0.0, -9.0])
     np.testing.assert_array_equal(c.state.mag_body, [1.0, 2.0, 3.0])
     assert c.state.baro_pressure_hpa == 1013.25
+    # RAW HIGHRES_IMU gyro -> gyro_body (the VQ2 AHRS gyro source), TRUE FRD, no sign change.
+    np.testing.assert_array_equal(c.state.gyro_body, [0.1, -0.2, 0.3])
 
 
 # -- first-contact additions: arming / acks / statustext / heartbeat metadata --------------

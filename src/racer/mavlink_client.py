@@ -231,6 +231,17 @@ class MavlinkClient:
                 sim_time_ns=int(msg.time_usec) * 1_000,
                 recv_monotonic_ns=recv,
                 accel_body=np.array([msg.xacc, msg.yacc, msg.zacc], dtype=np.float64),
+                # RAW HIGHRES_IMU gyro (rad/s, body FRD; same convention as accel_body). The
+                # non-blocked gyro source for the VQ2 AHRS (case-C). Distinct from the ODOMETRY-
+                # derived angular_rate_body (blocked in VQ2). No sign change -- TRUE FRD.
+                # Defensive: real HIGHRES_IMU always carries gyro, but message variants/fakes may
+                # omit it; gyro_body stays None then (only consumed when use_ahrs=True), so ingest
+                # never crashes and the default (use_ahrs=False) path is byte-identical.
+                gyro_body=(
+                    np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=np.float64)
+                    if hasattr(msg, "xgyro")
+                    else None
+                ),
                 mag_body=np.array([msg.xmag, msg.ymag, msg.zmag], dtype=np.float64),
                 baro_pressure_hpa=float(msg.abs_pressure),
             )

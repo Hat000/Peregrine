@@ -82,6 +82,11 @@ class DroneState:
 
     # HIGHRES_IMU
     accel_body: np.ndarray = _vec(3)          # m/s^2, FRD; specific force (incl. gravity reaction)
+    gyro_body: np.ndarray | None = None       # rad/s, FRD; RAW HIGHRES_IMU gyro (xgyro/ygyro/zgyro).
+                                              # None until the first HIGHRES_IMU message. THE non-blocked
+                                              # gyro source for the VQ2 AHRS (case-C self-localizing); raw
+                                              # TRUE FRD, NOT sign-conjugated. ``angular_rate_body`` above
+                                              # stays the ODOMETRY-derived (blocked-in-VQ2) rate.
     mag_body: np.ndarray | None = None        # FRD; None if unpopulated -> no free mag yaw
     baro_pressure_hpa: float | None = None    # absolute pressure; None if unpopulated -> no free baro z
 

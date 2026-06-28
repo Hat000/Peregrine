@@ -48,7 +48,13 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, NavState
-from racer.frames import ATTITUDE_NOISE_STD_RAD, R_world_from_body, R_world_from_odo_quat_wxyz
+from racer.frames import (
+    ATTITUDE_NOISE_STD_RAD,
+    ODO_QUAT_TRUE_CONJ_WXYZ,
+    R_world_from_body,
+    R_world_from_odo_quat_wxyz,
+    euler_from_quat_wxyz,
+)
 from racer.kf_rewind import RewindKF
 from racer.localization import (
     FIX_COV_FLOOR_STD,
@@ -284,6 +290,22 @@ class NavigatorConfig:
     gate_range_sigma_floor: float = GATE_RANGE_SIGMA_FLOOR   # m, near-field range 1-sigma floor
     gate_range_chi2: float = GATE_RANGE_CHI2_1_999           # chi2(1, 0.999) along-track range gate
 
+    # --- L1 AHRS attitude source (case-C VQ2: SELF-ESTIMATE attitude from raw HIGHRES_IMU) ---
+    # VQ2 §9.3 BLOCKS ATTITUDE / ODOMETRY, so the deployed stack has NO given attitude. When ON, the
+    # Navigator owns an ESKF-based AHRS (racer.ahrs.ahrs_adapter.AHRSAttitudeSource), steps it each IMU
+    # tick from (accel_body, gyro_body, dt), and sources the body->world rotation R_wb (KF predict + PnP
+    # lever, GAP #1) AND the NavState attitude/rate (obs[6:12] feeder, GAP #2) from the AHRS instead of
+    # the ODOMETRY quat. OFF by default -> byte-identical to the VQ1 / case-A ODOMETRY-attitude path
+    # (no AHRS constructed, no extra RNG, no array drawn). The AHRS emits the TRUE FRD->NED attitude
+    # DIRECTLY: the Navigator re-encodes it into the ODOMETRY-wire convention (involutory R_y(pi) quat
+    # conjugation + all-axis rate negation) before handing it to make_nav_state / the obs seam, so EVERY
+    # downstream consumer (build_obs's _ODO_QUAT_TRUE_CONJ/_ODO_RATE_SIGN, the controller's odo_*_sign,
+    # euler_from_quat_wxyz) sees the convention it already expects -- NO double-conjugation, NO
+    # recalibration. Requires ds.gyro_body to be populated (raw HIGHRES_IMU gyro).
+    use_ahrs: bool = False
+    ahrs_gyro_noise_std: float = 0.01      # rad/s, ESKF gyro white-noise 1-sigma (bench-validated default)
+    ahrs_accel_gate_alpha: float = 10.0    # ESKF high-g accel-gating sharpness (bench-validated default)
+
 
 @dataclass
 class _VisionDiag:
@@ -339,6 +361,13 @@ class Navigator:
     # NavState confidence export projects P into (§1.6). None until the first gate-relative fix.
     _last_fix_gate_R: np.ndarray | None = field(default=None, repr=False)
     _gates_by_id: dict[int, Gate] = field(default_factory=dict, repr=False)
+    # L1 AHRS (case-C use_ahrs): owned attitude source, constructed lazily at _initialize ONLY when
+    # config.use_ahrs. None on the OFF path (the AHRS module is not even imported then). Holds the
+    # last AHRS-derived ODOMETRY-convention quat/rate so make_nav_state + the obs seam share one
+    # estimate (computed once per IMU tick in update()).
+    _ahrs: object | None = field(default=None, repr=False)
+    _ahrs_odo_quat: np.ndarray | None = field(default=None, repr=False)   # TRUE attitude re-encoded
+    _ahrs_odo_rate: np.ndarray | None = field(default=None, repr=False)   # to the ODOMETRY-wire convention
 
     def __post_init__(self) -> None:
         self._gates_by_id = {g.gate_id: g for g in self.gates}
@@ -382,6 +411,20 @@ class Navigator:
             self.kf = rk
         else:
             self.kf = kf
+        # L1 AHRS (case-C use_ahrs, GAP #1/#3/#6): construct + seed the attitude source alongside the
+        # KF. Level-seed from the first accel sample (roll/pitch from gravity; yaw at the identity datum
+        # -- gate-relative obs partly absorb a constant yaw offset, scope §2 GAP #6). OFF path never
+        # imports the AHRS module. Re-seeded on a sim epoch reset (reset() drops it; this re-builds).
+        if self.config.use_ahrs:
+            from racer.ahrs.ahrs_adapter import AHRSAttitudeSource
+            from racer.ahrs.eskf import ESKFAHRS
+            self._ahrs = AHRSAttitudeSource(
+                eskf=ESKFAHRS(gyro_noise_std=self.config.ahrs_gyro_noise_std,
+                              accel_gate_alpha=self.config.ahrs_accel_gate_alpha)
+            )
+            self._ahrs.seed(AHRSAttitudeSource.level_seed_from_accel(ds.accel_body))
+            self._ahrs_odo_quat = None
+            self._ahrs_odo_rate = None
         self._last_sim_time_ns = int(ds.sim_time_ns)
         self._reset_counter = int(ds.reset_counter)
         self.initialized = True
@@ -394,6 +437,9 @@ class Navigator:
         self._last_vision_sim_time_ns = None
         self._delta_epoch_ns = None        # P0-b: re-learn the epoch offset after a sim restart
         self._last_fix_gate_R = None       # C2: drop the confidence-export gate frame on restart
+        self._ahrs = None                  # L1: re-seed the AHRS on the next _initialize (sim restart)
+        self._ahrs_odo_quat = None
+        self._ahrs_odo_rate = None
 
     # -- per-tick -----------------------------------------------------------
     def update(self, ds: DroneState, frame: Frame | None = None) -> NavState:
@@ -410,15 +456,24 @@ class Navigator:
             return self._nav_state(ds)
 
         assert self.kf is not None
-        # TRUE physical body->world rotation from the raw ODOMETRY quat (R_y(pi)-conjugated).
-        # The CTBR path uses euler_from_quat_wxyz on the raw quat (aliased, VQ1-proven —
-        # that path is untouched). Vision/PnP/KF must use the true attitude. [vision-frame-fix]
-        R_wb = R_world_from_odo_quat_wxyz(ds.orientation_ned_wxyz)
 
         # Estimation advances only on a NEW IMU sample (sim_time_ns is the master clock). When the
         # control loop ticks faster than the IMU, dt<=0 and we just re-package the current state
         # (no predict, no re-applying a stale measurement -> no covariance collapse).
         dt = (int(ds.sim_time_ns) - self._last_sim_time_ns) / 1e9
+
+        # TRUE physical body->world rotation. Default (use_ahrs OFF): from the raw ODOMETRY quat
+        # (R_y(pi)-conjugated). The CTBR path uses euler_from_quat_wxyz on the raw quat (aliased,
+        # VQ1-proven -- that path is untouched). Vision/PnP/KF must use the true attitude.
+        # [vision-frame-fix]
+        # case-C (use_ahrs ON, GAP #1): R_wb comes from the AHRS (ODOMETRY blocked in VQ2). Step
+        # the AHRS on a fresh IMU sample (dt>0) from raw HIGHRES_IMU (gyro_body / accel_body); on a
+        # between-IMU control tick (dt<=0) reuse the current estimate (no step -- mirrors the KF).
+        if self.config.use_ahrs:
+            R_wb = self._step_ahrs(ds, dt)
+        else:
+            R_wb = R_world_from_odo_quat_wxyz(ds.orientation_ned_wxyz)
+
         if dt <= 0:
             self._maybe_run_vision(ds, frame, R_wb)   # a fresh frame can still land between IMU ticks
             return self._nav_state(ds)
@@ -444,6 +499,37 @@ class Navigator:
                 (self.config.given_vel_std**2) * np.eye(3),
             )
         return self._nav_state(ds)
+
+    # -- L1 AHRS (case-C self-estimated attitude) ---------------------------
+    def _step_ahrs(self, ds: DroneState, dt: float) -> np.ndarray:
+        """Advance the AHRS one IMU tick (when dt>0) and return the TRUE FRD->NED rotation R_wb.
+
+        Sources attitude from raw HIGHRES_IMU (``ds.gyro_body`` / ``ds.accel_body``) -- NOT the
+        ODOMETRY-derived ``angular_rate_body`` (wrong sign + provenance; blocked in VQ2). Snapshots
+        the TRUE attitude (quat) + TRUE FRD body rate, RE-ENCODES them into the ODOMETRY-wire
+        convention, and caches them for ``_nav_state`` (GAP #2):
+          * quat  : ``q_odo = q_true * ODO_QUAT_TRUE_CONJ_WXYZ`` (involutory R_y(pi) conjugation).
+                    Feeding this as ``orientation_ned_wxyz`` to build_obs (which RE-applies the same
+                    conjugation) recovers the TRUE attitude -> obs[6:9] correct, NO double-conjugation.
+                    euler_from_quat_wxyz(q_odo) is the aliased roll/pitch/yaw the controller expects.
+          * rate  : ``-(gyro_body - gyro_bias)`` = ``-true_FRD`` = the ODOMETRY-sign convention
+                    (Fix option A). build_obs RE-applies ``_ODO_RATE_SIGN=[-1,-1,-1]`` -> TRUE FRD ->
+                    obs[9:12] correct; the controller's ``odo_rate_sign`` likewise stays valid.
+        ``dt<=0`` (between-IMU control tick): no step, reuse the cached estimate.
+        """
+        assert self._ahrs is not None
+        gyro = ds.gyro_body
+        if gyro is None:
+            # No raw gyro yet (pre-first HIGHRES_IMU): hold the seed attitude, zero rate.
+            gyro = np.zeros(3)
+        self._ahrs.ingest(ds.accel_body, gyro, float(dt), mag_body=ds.mag_body)
+        q_true = np.asarray(self._ahrs.q_wxyz, dtype=np.float64)
+        # TRUE FRD body rate the AHRS just integrated (bias-corrected). On a dt<=0 tick body_rate
+        # holds the last dt>0 value, so the cached ODOMETRY-convention rate stays consistent.
+        rate_true_frd = np.asarray(self._ahrs.body_rate, dtype=np.float64)
+        self._ahrs_odo_quat = q_true * ODO_QUAT_TRUE_CONJ_WXYZ
+        self._ahrs_odo_rate = -rate_true_frd
+        return self._ahrs.R_wb
 
     # -- vision -------------------------------------------------------------
     def _maybe_run_vision(self, ds: DroneState, frame: Frame | None, R_wb: np.ndarray) -> None:
@@ -671,8 +757,48 @@ class Navigator:
         # = kf.velocity (the obs vel_g = R_w2g @ vel consumes it) and pos_vel_covariance = the full
         # 6x6 KF P (its [3:6,3:6] block is the velocity covariance). No new estimator surface here.
         inplane_sig, along_sig = self._gate_frame_pos_sigma()
+        # case-C (use_ahrs, GAP #2): source NavState attitude/rate from the AHRS instead of the
+        # ODOMETRY-derived ds.roll/pitch/yaw + ds.angular_rate_body (both blocked in VQ2). The cached
+        # values are ALREADY in the ODOMETRY-wire convention (_step_ahrs re-encodes the TRUE attitude),
+        # so the controller (aliased euler) and the obs seam (build_obs re-conjugates) stay correct
+        # with NO double-conjugation. OFF path passes None -> make_nav_state uses ds.* (byte-identical).
+        att_override = None
+        rate_override = None
+        if self.config.use_ahrs and self._ahrs_odo_quat is not None:
+            att_override = euler_from_quat_wxyz(self._ahrs_odo_quat)
+            rate_override = self._ahrs_odo_rate
         return make_nav_state(self.kf, ds, tsv, nav_inplane_sigma=inplane_sig,
-                              nav_along_sigma=along_sig)
+                              nav_along_sigma=along_sig,
+                              attitude_rpy_override=att_override,
+                              angular_rate_override=rate_override)
+
+    def obs_drone_state(self, ds: DroneState) -> DroneState:
+        """The DroneState the case-C OBS seam should consume (use_ahrs attitude routing, GAP #2).
+
+        ``build_obs`` (via ``estimator_obs/estimator_obs20(ds, nav_state, ...)``) reads the ATTITUDE
+        and BODY-RATE from the ``DroneState`` -- ``orientation_ned_wxyz`` (then RE-applies
+        ``_ODO_QUAT_TRUE_CONJ``) and ``angular_rate_body`` (then RE-applies ``_ODO_RATE_SIGN``) -- NOT
+        from the NavState. In VQ2 those wire fields are blocked (None / zero), so the deploy obs loop
+        must hand build_obs a DroneState carrying the AHRS attitude.
+
+        When ``use_ahrs`` is ON and an AHRS estimate exists, this returns ``ds`` with
+        ``orientation_ned_wxyz`` / ``angular_rate_body`` replaced by the AHRS values RE-ENCODED into
+        the ODOMETRY-wire convention (``_step_ahrs``): build_obs's re-conjugation then recovers the
+        TRUE attitude/rate -> obs[6:12] correct, NO double-conjugation. When OFF (or pre-first-tick),
+        returns ``ds`` UNCHANGED -> the VQ1 / case-A obs path is byte-identical.
+
+        This is a thin, opt-in accessor: the deploy loop (the NEXT serial step) calls
+        ``estimator_obs20(nav.obs_drone_state(ds), nav_state, ...)``; the OFF path / existing callers
+        that pass the raw ``ds`` are unaffected.
+        """
+        if not (self.config.use_ahrs and self._ahrs_odo_quat is not None):
+            return ds
+        import dataclasses
+        return dataclasses.replace(
+            ds,
+            orientation_ned_wxyz=np.asarray(self._ahrs_odo_quat, dtype=np.float64).copy(),
+            angular_rate_body=np.asarray(self._ahrs_odo_rate, dtype=np.float64).copy(),
+        )
 
     def _gate_frame_pos_sigma(self) -> tuple[float, float]:
         """Calibrated gate-frame position 1-sigma for the future confidence channel (C2 §1.6).

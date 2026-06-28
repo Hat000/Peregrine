@@ -199,21 +199,41 @@ def make_nav_state(
     time_since_vision_update_s: float,
     nav_inplane_sigma: float = float("inf"),
     nav_along_sigma: float = float("inf"),
+    *,
+    attitude_rpy_override: tuple[float, float, float] | None = None,
+    angular_rate_override: np.ndarray | None = None,
 ) -> NavState:
     """Assemble a NavState from the KF (position/velocity) + given attitude/rates.
 
     ``nav_inplane_sigma`` / ``nav_along_sigma`` are the calibrated gate-frame position 1-sigma (C2
     confidence-channel feeder, BLUEPRINT §1.6); ``inf`` when no gate-relative fix has anchored a gate
     frame yet. ``kf`` is a ``LinearKF`` or its ``RewindKF`` proxy (``.position`` / ``.velocity`` / ``.P``
-    forward to the wrapped filter)."""
+    forward to the wrapped filter).
+
+    ``attitude_rpy_override`` / ``angular_rate_override`` (case-C ``use_ahrs``, GAP #2): when supplied,
+    the NavState attitude/rate are sourced from the AHRS rather than ``drone_state.roll/pitch/yaw`` /
+    ``drone_state.angular_rate_body`` (the ODOMETRY-derived fields blocked in VQ2). BOTH default ``None``
+    -> the existing wire-attitude path, BYTE-IDENTICAL (no new array drawn). The caller (Navigator
+    under ``use_ahrs``) supplies them already in the SAME convention the existing consumers expect
+    (the controller's aliased ``roll/pitch/yaw`` + ODOMETRY-sign ``angular_rate_body``), so no
+    downstream recalibration is needed."""
+    if attitude_rpy_override is None:
+        roll, pitch, yaw = drone_state.roll, drone_state.pitch, drone_state.yaw
+    else:
+        roll, pitch, yaw = (float(attitude_rpy_override[0]), float(attitude_rpy_override[1]),
+                            float(attitude_rpy_override[2]))
+    if angular_rate_override is None:
+        rate = np.asarray(drone_state.angular_rate_body, dtype=np.float64).copy()
+    else:
+        rate = np.asarray(angular_rate_override, dtype=np.float64).copy()
     return NavState(
         sim_time_ns=drone_state.sim_time_ns,
         position_ned=kf.position,
         velocity_ned=kf.velocity,
-        roll=drone_state.roll,
-        pitch=drone_state.pitch,
-        yaw=drone_state.yaw,
-        angular_rate_body=np.asarray(drone_state.angular_rate_body, dtype=np.float64).copy(),
+        roll=roll,
+        pitch=pitch,
+        yaw=yaw,
+        angular_rate_body=rate,
         pos_vel_covariance=kf.P.copy(),
         time_since_vision_update_s=time_since_vision_update_s,
         nav_inplane_sigma=float(nav_inplane_sigma),
