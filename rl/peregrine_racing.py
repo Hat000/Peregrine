@@ -468,9 +468,16 @@ class PeregrineRacing(Racing):
         self.gate_half_outer_m = float(getattr(cfg, "gate_outer_m", 2.72)) / 2.0     # 1.36 m
 
         # per-env course tensors (broadcast VQ1 or sampled); + standing-start pads
-        from peregrine_course import (sample_courses, VQ1_SPAWN_POS_ZUP, VQ1_SPAWN_YAW,
-                                      VQ1_SPAWN_PITCH_RAD)
+        from peregrine_course import (sample_courses, DIFFICULTY_PRESETS,
+                                      VQ1_SPAWN_POS_ZUP, VQ1_SPAWN_YAW, VQ1_SPAWN_PITCH_RAD)
         self._sample_courses = sample_courses
+        # difficulty preset: named preset overrides for sample_courses (random mode only).
+        # +env.track_difficulty=easy|medium|hard|vq1_like  (default "medium" == DEFAULT_COURSE_RANGES)
+        _difficulty = str(getattr(cfg, "track_difficulty", "medium"))
+        if _difficulty not in DIFFICULTY_PRESETS:
+            raise ValueError(f"track_difficulty={_difficulty!r} unknown; "
+                             f"valid: {sorted(DIFFICULTY_PRESETS)}")
+        self._course_overrides = DIFFICULTY_PRESETS[_difficulty]
         self._spawn_pitch = float(VQ1_SPAWN_PITCH_RAD)
         self._vq1 = {
             "gate_pos": vq1_pos, "gate_yaw": vq1_yaw,
@@ -538,11 +545,13 @@ class PeregrineRacing(Racing):
 
     # ---- course plumbing ---------------------------------------------------------------------
     def _assign_courses(self, env_idx: Tensor) -> None:
-        """Sample fresh courses for ``env_idx`` (random mode) and update the per-env tensors."""
+        """Sample fresh courses for ``env_idx`` (random mode) and update the per-env tensors.
+        Difficulty overrides (self._course_overrides) are forwarded to sample_courses as kwargs;
+        empty dict for "medium" leaves DEFAULT_COURSE_RANGES unchanged."""
         m = int(env_idx.numel())
         if m == 0:
             return
-        c = self._sample_courses(m, device=self.device)
+        c = self._sample_courses(m, device=self.device, **self._course_overrides)
         self.gate_pos[env_idx] = c["gate_pos"].to(self.gate_pos.dtype)
         self.gate_yaw[env_idx] = c["gate_yaw"].to(self.gate_yaw.dtype)
         self.spawn_pos[env_idx] = c["spawn_pos"].to(self.spawn_pos.dtype)

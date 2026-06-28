@@ -143,6 +143,49 @@ VQ1_SPAWN_POS_ZUP = (0.0, 0.0, -0.02)
 VQ1_SPAWN_YAW = 0.0          # body yaw at spawn; gates at yaw pi => tail-first (gate-frame yaw ~ pi)
 VQ1_SPAWN_PITCH_RAD = -0.31  # -17.8 deg tilted pad (measured)
 
+# ---- Difficulty presets (override DEFAULT_COURSE_RANGES for named difficulty tiers) -----------
+# Usage in training: +env.track_difficulty=easy   (PeregrineRacing reads this and calls
+# sample_courses(**DIFFICULTY_PRESETS[difficulty]) in _assign_courses).
+# "vq1_like" = constrained to roughly VQ1 geometry -- useful early in training; "easy" and "medium"
+# are the main curriculum presets; "hard" uses the full DEFAULT range + tighter gates.
+DIFFICULTY_PRESETS = {
+    # Nearly-straight, moderate-length, mostly-descending course ~ VQ1 character.
+    "vq1_like": dict(
+        seg_len_m=(20.0, 40.0),
+        turn_rad=0.35,           # +-20 deg max per segment (VQ1 <= ~20 deg)
+        drop_m=(0.0, 11.0),      # only descending (VQ1 is all descent)
+        max_grade=0.32,
+        yaw_jitter_rad=0.18,
+        spawn_dist_m=(20.0, 26.0),
+        spawn_below_g0_m=(1.0, 2.0),
+        min_pair_dist_m=12.0,
+    ),
+    # Gentle turns, moderate segments -- for bootstrapping a fresh policy.
+    "easy": dict(
+        seg_len_m=(20.0, 40.0),
+        turn_rad=0.52,           # +-30 deg
+        drop_m=(-2.0, 10.0),
+        max_grade=0.38,
+        yaw_jitter_rad=0.18,
+        spawn_dist_m=(18.0, 26.0),
+        spawn_below_g0_m=(0.8, 2.2),
+        min_pair_dist_m=12.0,
+    ),
+    # Default ranges (DEFAULT_COURSE_RANGES): no overrides needed, kept as alias.
+    "medium": dict(),
+    # Full 60-deg turns, short segments, level or climbing segments -- hardest generalisation.
+    "hard": dict(
+        seg_len_m=(12.0, 30.0),  # shorter => tighter turns at speed
+        turn_rad=1.047,          # +-60 deg (full budget)
+        drop_m=(-5.0, 12.0),     # climbs allowed too
+        max_grade=0.50,
+        yaw_jitter_rad=0.21,
+        spawn_dist_m=(15.0, 28.0),
+        spawn_below_g0_m=(0.5, 2.5),
+        min_pair_dist_m=8.0,
+    ),
+}
+
 
 def _circ_mean(a, b):
     """Circular mean of two angles (torch tensors), elementwise."""
