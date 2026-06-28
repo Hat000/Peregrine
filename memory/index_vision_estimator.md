@@ -395,3 +395,29 @@ Tests +18 (`test_eqvio_joint.py`); 78 AHRS+eqvio green. **STILL UNWIRED to the n
 **+L invariant GREEN** (uses `t_cam_gate` lever, not PnP rotation; `test_obs_sign_faithfulness` passes). Tests `test_gate_range_channel.py` 12/12.
 
 🚩 **NOTE: discard-PnP-rotation (square-flip) upgrade = ZERO code-change** confirmed (`R_cam_gate` already off the fix path) → see `docs/reactivation-2026-06-27/perception-l2-scope.md`. → [[project_vq2_stack_research]]
+
+## CASE-C INTEGRATION (self-localizing loop, #37) — 2026-06-28
+
+### Closed-loop scope (committed a5d232b; `docs/reactivation-2026-06-27/case-c-integration-scope.md`)
+vision → localization (C2 chain + bearing-range) → obs[0:20] → inc8 policy = **WIRED + pinned byte-faithful** (golden-tuple 7/7, #37 emulator-fidelity ≤1e-6, +L green). IMU → AHRS → attitude = **MISSING from loop** (7 AHRS filters prototyped, ESKF selected, all UNWIRED).
+
+**CENTRAL GAP = attitude:** `navigator.py:416` reads ODOMETRY quat into R_wb (predict + PnP lever) + `state_estimator.py:215` copies euler/rates into NavState obs[6:12] — both VQ2-blocked. ESKF must replace both via ONE new `use_ahrs` seam.
+
+**6-step build plan:** 2 parallel (gyro audit, adapter shim) DONE, then 4 serial (wire behind `use_ahrs=False` → route into NavState → case-C deploy profile → dual-Navigator fidelity harness).
+
+### Gyro plumbing audit (committed 077eefd; `docs/.../gyro-plumbing-audit.md`)
+`angular_rate_body` sourced ONLY from `ODOMETRY.{roll,pitch,yaw}speed` (`mavlink_client.py:275-277`) = VQ2-blocked; `HIGHRES_IMU` gyro NEVER parsed (no `gyro_body` field on DroneState).
+
+🚩 **`angular_rate_body` carries ODOMETRY-convention sign = −1 × true-FRD** (`_ODO_RATE_SIGN=[-1,-1,-1]`); raw `HIGHRES_IMU` gyro is body-FRD (no rotation).
+
+**Minimal fix (option A — zero downstream recal):** add `gyro_body` to DroneState, parse `xgyro/ygyro/zgyro`, feed raw FRD gyro to ESKF, write AHRS out as `−(gyro_body−bias)` into `NavState.angular_rate_body` (true-FRD → ODOMETRY-convention so obs/controller unchanged). Gate behind `use_ahrs=False`.
+
+### AHRS adapter shim (committed 2d927a7; `src/racer/ahrs/ahrs_adapter.py`)
+`AHRSAttitudeSource` wraps `ESKFAHRS`, standalone / UNWIRED / additive (transparent-wrapper bit-identical 1e-15).
+
+**Contract:** `R_wb` / `q_wxyz` TRUE FRD→NED wxyz (drop-in for OUTPUT of `R_world_from_odo_quat_wxyz` @ `navigator.py:416`); `euler_rpy` via `euler_from_quat_wxyz` (== `state_estimator.py:215`); `body_rate` = gyro−bias = `R_i2b@w` (TRUE FRD, NOT raw/quat-FD).
+
+**Validation:** convention parity 1e-12; tracking p90 STATIC 0.084°/SPIN 0.183°/ROLLING 5.846°; 19 tests, AHRS suite 70 pass. → [[project_vq2_stack_research]]
+
+### 🚩 DOUBLE-CONJUGATION FOOTGUN (case-C wiring)
+The ESKF emits TRUE attitude DIRECTLY — there is **NO** `R_y(π)` ODOMETRY telemetry-frame conjugation to undo. The current `estimator_state_for_obs` keeps the RAW ODOMETRY quat precisely so `build_obs` can conjugate it (`_ODO_QUAT_TRUE_CONJ`) + applies `_ODO_RATE_SIGN` to the rate. An AHRS source **must BYPASS both** — wiring GAP#2 must NOT re-apply `_ODO_QUAT_TRUE_CONJ` / `_ODO_RATE_SIGN` or it double-conjugates. (Adapter emits +TRUE-FRD rate; consumers expect ODOMETRY-sign → the `use_ahrs` seam applies the −1 flip per the gyro audit.)
