@@ -48,11 +48,27 @@ def geodesic_error_rad(
     if q_gt.ndim == 1:
         q_gt = q_gt[np.newaxis]
 
-    # Dot product between each pair; take absolute value (q and -q same rotation)
+    # Normalise both inputs. Real estimators (and even our test fixtures) emit
+    # quaternions that are only approximately unit-norm; without renormalising,
+    # |dot| can read e.g. 0.99998 for a true-zero rotation and arccos(0.99998)
+    # inflates a 0-deg error to ~0.7 deg. This is NOT a substitute for the
+    # double-cover abs() below — it removes the magnitude artefact only.
+    q_est = q_est / np.clip(np.linalg.norm(q_est, axis=1, keepdims=True), 1e-12, None)
+    q_gt = q_gt / np.clip(np.linalg.norm(q_gt, axis=1, keepdims=True), 1e-12, None)
+
+    # Dot product between each pair; take absolute value because q and -q are the
+    # SAME rotation (quaternion double-cover). Without the abs(), an estimate that
+    # happens to land on the -q representative reads as a ~360 deg error.
     dots = np.abs(np.sum(q_est * q_gt, axis=1))
-    # Clamp to [0, 1] to avoid arccos domain error from floating-point noise
+    # Clamp to [0, 1] to avoid arccos domain error from floating-point noise.
     dots = np.clip(dots, 0.0, 1.0)
-    return 2.0 * np.arccos(dots)
+
+    # Numerically robust geodesic angle. Near dots=1 (small errors, the regime we
+    # care about most), 2*arccos(dots) loses precision because arccos has infinite
+    # slope at 1. The half-angle identity theta = 2*atan2(sqrt(1-dots^2), dots) is
+    # well-conditioned across the whole range and agrees with 2*arccos elsewhere.
+    sin_half = np.sqrt(np.clip(1.0 - dots * dots, 0.0, 1.0))
+    return 2.0 * np.arctan2(sin_half, dots)
 
 
 def score_filter(

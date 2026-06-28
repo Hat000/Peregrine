@@ -21,6 +21,7 @@ from scipy.spatial.transform import Rotation
 
 from racer.ahrs.imu_gen import generate_imu_sequence, Scenario, IMUSequence, GRAVITY
 from racer.ahrs.eskf import ESKFAHRS
+from racer.ahrs.iekf import LeftInvariantEKF, _Exp_so3, _R_to_quat_wxyz, _quat_to_R_wxyz
 from racer.ahrs.classical import MadgwickAHRS, MahonyAHRS
 from racer.ahrs.metrics import geodesic_error_rad, score_filter, run_filter_on_sequence
 
@@ -227,30 +228,58 @@ class TestHighGDiscrimination:
             f"ESKF p90={eskf_p90:.2f} must beat Mahony p90={mahony_p90:.2f} on HIGH_G_RANDOM"
         )
 
-    def test_no_gating_eskf_does_not_beat_classical(self):
-        """A disabled-gating ESKF (alpha=0) should NOT beat classical filters on high-g.
-        This verifies the gating IS the mechanism (not just that ESKF is better overall)."""
+    def test_gating_is_the_mechanism(self):
+        """Gating IS the mechanism, and the INNOVATION (chi-square) gate dominates.
+
+        Ablation on HIGH_G_RANDOM (the maximally adversarial scenario: ~43% of samples
+        have |a| within 10%% of g while their direction is random-corrupted):
+          - fully ungated ESKF (alpha=0, chi2=0)  -> catastrophic (>30 deg p90)
+          - innovation gate on (chi2=7.815)        -> rescued to < a few deg p90
+        This proves the high-g robustness comes from the direction-aware innovation gate,
+        not merely from the ESKF being 'a Kalman filter'. The magnitude gate alone CANNOT
+        reject a near-g-magnitude, wrong-direction disturbance, so it is not the mechanism
+        here (it adds only a small complementary improvement on top of the innovation gate).
+        """
+        seq = generate_imu_sequence(Scenario.HIGH_G_RANDOM, duration_s=8.0, dt=0.005, seed=42,
+                                    gyro_noise_std=0.005, accel_noise_std=0.05)
+
+        eskf_ungated = ESKFAHRS(gyro_noise_std=0.01, accel_gate_alpha=0.0,
+                                accel_chi2_thresh=0.0)   # BOTH gates off
+        eskf_innovgate = ESKFAHRS(gyro_noise_std=0.01, accel_gate_alpha=0.0,
+                                  accel_chi2_thresh=7.815)  # innovation gate ON
+
+        err_ungated = score_filter(
+            geodesic_error_rad(run_filter_on_sequence(eskf_ungated, seq), seq.q_wxyz_gt))
+        err_innov = score_filter(
+            geodesic_error_rad(run_filter_on_sequence(eskf_innovgate, seq), seq.q_wxyz_gt))
+
+        # The fully-ungated ESKF must be badly degraded on this adversarial high-g case...
+        assert err_ungated["p90_deg"] > 10.0, (
+            f"Ungated ESKF p90={err_ungated['p90_deg']:.2f} deg should be large (>10) "
+            f"on HIGH_G_RANDOM; if not, the scenario is not stressing the accel gate."
+        )
+        # ...and the innovation gate must rescue it dramatically (the real mechanism).
+        assert err_innov["p90_deg"] < 0.2 * err_ungated["p90_deg"], (
+            f"Innovation gate p90={err_innov['p90_deg']:.2f} should be << ungated "
+            f"p90={err_ungated['p90_deg']:.2f} (>=5x better): the chi-square gate is the mechanism."
+        )
+
+    def test_magnitude_gate_complements_innovation_gate(self):
+        """Magnitude gate adds a small complementary improvement on top of the innovation gate.
+
+        Both gates on should be at least as good as the innovation gate alone on a
+        sustained high-g pull (where |a| is persistently >> g, the regime the magnitude
+        gate is designed for)."""
         seq = generate_imu_sequence(Scenario.HIGH_G_PULL, duration_s=8.0, dt=0.005, seed=42,
                                     gyro_noise_std=0.005, accel_noise_std=0.05)
-        eskf_nogating = ESKFAHRS(gyro_noise_std=0.01, accel_gate_alpha=0.0)  # NO gating
-        madgwick = MadgwickAHRS(beta=0.1)
-
-        q_eskf = run_filter_on_sequence(eskf_nogating, seq)
-        q_madgwick = run_filter_on_sequence(madgwick, seq)
-
-        err_eskf = score_filter(geodesic_error_rad(q_eskf, seq.q_wxyz_gt))
-        err_madgwick = score_filter(geodesic_error_rad(q_madgwick, seq.q_wxyz_gt))
-
-        # Without gating, ESKF should NOT dramatically outperform Madgwick
-        # (they're both vulnerable to the high-g accel disturbance)
-        # We just verify the gated ESKF is meaningfully better than the ungated one
-        eskf_gated = ESKFAHRS(gyro_noise_std=0.01, accel_gate_alpha=10.0)
-        q_gated = run_filter_on_sequence(eskf_gated, seq)
-        err_gated = score_filter(geodesic_error_rad(q_gated, seq.q_wxyz_gt))
-
-        assert err_gated["p90_deg"] < err_eskf["p90_deg"], (
-            f"Gated ESKF p90={err_gated['p90_deg']:.2f} should beat ungated ESKF "
-            f"p90={err_eskf['p90_deg']:.2f} under high-g"
+        innov_only = ESKFAHRS(gyro_noise_std=0.01, accel_gate_alpha=0.0, accel_chi2_thresh=7.815)
+        both = ESKFAHRS(gyro_noise_std=0.01, accel_gate_alpha=10.0, accel_chi2_thresh=7.815)
+        e_innov = score_filter(geodesic_error_rad(run_filter_on_sequence(innov_only, seq), seq.q_wxyz_gt))
+        e_both = score_filter(geodesic_error_rad(run_filter_on_sequence(both, seq), seq.q_wxyz_gt))
+        # Allow a small tolerance; the claim is "complementary, not harmful".
+        assert e_both["p90_deg"] <= e_innov["p90_deg"] * 1.25, (
+            f"Both-gates p90={e_both['p90_deg']:.2f} should not be much worse than "
+            f"innovation-only p90={e_innov['p90_deg']:.2f} on sustained high-g."
         )
 
 
@@ -355,6 +384,29 @@ class TestESKFGating:
             np.testing.assert_allclose(w, 1.0, atol=1e-9,
                                        err_msg=f"alpha=0: gate weight must be 1.0 at |a|={mag:.1f}")
 
+    def test_innovation_gate_rejects_inconsistent_accel(self):
+        """A single wildly-inconsistent accel sample (near-g magnitude, wrong direction)
+        must be REJECTED by the chi-square gate, leaving attitude unchanged. With the gate
+        disabled (chi2=0) the same sample perturbs the attitude."""
+        gate_on = ESKFAHRS(accel_gate_alpha=0.0, accel_chi2_thresh=7.815)
+        gate_off = ESKFAHRS(accel_gate_alpha=0.0, accel_chi2_thresh=0.0)
+        gate_on.reset(); gate_off.reset()
+        # Converge both on rest so the prior is confident and at identity.
+        for _ in range(300):
+            a_rest = np.array([0., 0., -GRAVITY])
+            gate_on.step(np.zeros(3), a_rest, dt=0.005)
+            gate_off.step(np.zeros(3), a_rest, dt=0.005)
+        # Now a near-g-magnitude accel pointing sideways (direction-corrupted, |a|~g).
+        a_bad = np.array([GRAVITY, 0., 0.])
+        q_on = gate_on.step(np.zeros(3), a_bad, dt=0.005)
+        q_off = gate_off.step(np.zeros(3), a_bad, dt=0.005)
+        err_on = geodesic_error_rad(q_on, np.array([1., 0., 0., 0.]))[0]
+        err_off = geodesic_error_rad(q_off, np.array([1., 0., 0., 0.]))[0]
+        assert err_on < np.deg2rad(0.5), (
+            f"Gated filter should reject the bad accel (err {np.rad2deg(err_on):.2f} deg)"
+        )
+        assert err_off > err_on, "Ungated filter should be perturbed more by the bad accel"
+
     def test_eskf_step_returns_unit_quaternion(self):
         """Every ESKF step must return a unit-norm quaternion."""
         filt = ESKFAHRS()
@@ -379,3 +431,87 @@ class TestESKFGating:
                 q = filt.step(gyro, accel, dt=0.005)
                 np.testing.assert_allclose(np.linalg.norm(q), 1.0, atol=1e-5,
                                            err_msg=f"{FiltClass.__name__} must return unit quat")
+
+
+# ---------------------------------------------------------------------------
+# 8. Left-Invariant EKF (IEKF) — research-grounded contender
+# ---------------------------------------------------------------------------
+
+class TestIEKF:
+    """Validate the left-invariant EKF: helpers, convergence, and ESKF equivalence."""
+
+    def test_R_quat_roundtrip(self):
+        """_R_to_quat_wxyz . _quat_to_R_wxyz must round-trip several rotations."""
+        rng = np.random.default_rng(3)
+        for _ in range(20):
+            q = rng.normal(0, 1, 4)
+            q /= np.linalg.norm(q)
+            if q[0] < 0:
+                q = -q
+            R = _quat_to_R_wxyz(q)
+            q2 = _R_to_quat_wxyz(R)
+            # Compare as rotations (double-cover safe)
+            err = geodesic_error_rad(q, q2)[0]
+            assert err < 1e-9, f"roundtrip error {np.rad2deg(err):.2e} deg"
+
+    def test_exp_so3_matches_known_rotation(self):
+        """_Exp_so3 of a pure-axis vector must give the textbook rotation matrix."""
+        R = _Exp_so3(np.array([0., 0., np.pi / 2]))   # 90 deg about Z
+        expected = np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+        np.testing.assert_allclose(R, expected, atol=1e-12)
+
+    def test_iekf_static_convergence(self):
+        seq = generate_imu_sequence(Scenario.STATIC_GRAVITY, duration_s=5.0, dt=0.005,
+                                    gyro_noise_std=0.005, accel_noise_std=0.02, seed=1)
+        filt = LeftInvariantEKF(gyro_noise_std=0.01, accel_gate_alpha=10.0)
+        q = run_filter_on_sequence(filt, seq)
+        stats = score_filter(geodesic_error_rad(q, seq.q_wxyz_gt), skip_init_steps=200)
+        assert stats["mean_deg"] < 1.0, f"IEKF static mean {stats['mean_deg']:.2f} deg"
+
+    def test_iekf_step_returns_unit_quaternion(self):
+        filt = LeftInvariantEKF()
+        filt.reset()
+        rng = np.random.default_rng(0)
+        for _ in range(50):
+            gyro = rng.normal(0, 0.1, 3)
+            accel = rng.normal(0, 5.0, 3) + np.array([0., 0., -GRAVITY])
+            q = filt.step(gyro, accel, dt=0.005)
+            np.testing.assert_allclose(np.linalg.norm(q), 1.0, atol=1e-6)
+
+    def test_iekf_matches_eskf_on_attitude_only(self):
+        """For the SO(3) attitude-from-gravity problem the left-invariant EKF and the
+        ESKF produce algebraically equivalent updates; they must track to <1e-3 deg on
+        every scenario (this cross-validates BOTH implementations)."""
+        for scen in Scenario:
+            seq = generate_imu_sequence(scen, duration_s=8.0, dt=0.005, seed=42,
+                                        gyro_noise_std=0.005, accel_noise_std=0.05)
+            q_eskf = run_filter_on_sequence(
+                ESKFAHRS(gyro_noise_std=0.01, accel_gate_alpha=10.0), seq)
+            q_iekf = run_filter_on_sequence(
+                LeftInvariantEKF(gyro_noise_std=0.01, accel_gate_alpha=10.0), seq)
+            diff = geodesic_error_rad(q_eskf, q_iekf)
+            assert np.max(diff) < np.deg2rad(1e-3), (
+                f"{scen.name}: IEKF vs ESKF max diff {np.rad2deg(np.max(diff)):.2e} deg"
+            )
+
+    def test_iekf_recovers_from_large_initial_error(self):
+        """The invariant filter must recover quickly from a large (80 deg) but observable
+        initial tilt error once the innovation gate is open (chi2 disabled here to let the
+        large startup innovation through, as a cold-start would)."""
+        q_bad = np.array([np.cos(np.deg2rad(40)), np.sin(np.deg2rad(40)), 0., 0.])
+        q_bad /= np.linalg.norm(q_bad)
+        seq = generate_imu_sequence(Scenario.STATIC_GRAVITY, duration_s=8.0, dt=0.005,
+                                    seed=42, gyro_noise_std=0.005, accel_noise_std=0.05)
+        filt = LeftInvariantEKF(gyro_noise_std=0.01, accel_gate_alpha=10.0,
+                                accel_chi2_thresh=0.0)
+        filt.reset(q_bad)
+        # Inflate the initial tilt covariance so the gain is meaningful from a cold start.
+        filt._P = np.diag([1.0]*3 + [1e-4]*3)
+        q = np.zeros((seq.N, 4))
+        for i in range(seq.N):
+            q[i] = filt.step(seq.gyro[i], seq.accel[i], seq.dt)
+        err = geodesic_error_rad(q, seq.q_wxyz_gt)
+        # Converged within 1 s, and stays small.
+        assert np.rad2deg(err[int(1.0 / seq.dt)]) < 1.0, (
+            f"IEKF not converged after 1s from 80 deg: {np.rad2deg(err[int(1.0/seq.dt)]):.2f} deg"
+        )

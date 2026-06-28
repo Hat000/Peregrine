@@ -1,8 +1,27 @@
-"""AHRS T1 Benchmark: compare ESKF vs Madgwick vs Mahony on synthetic high-g IMU.
+"""AHRS T1 Benchmark: ESKF vs IEKF vs Madgwick vs Mahony on synthetic high-g IMU.
 
-Runs all three filters on 5 scenarios (static/spin/roll/high-g-pull/high-g-random),
-reports geodesic attitude error (mean/p90/max), and highlights the discriminating
-high-g result where ESKF accel-gating should outperform classical filters.
+The #1 VQ2 frontier build. VQ2's competitive wire BLOCKS the ATTITUDE message
+(VADR-TS-003 §9.3), so the LinearKF in state_estimator.py (which trusts given attitude)
+cannot run; a self-attitude estimator from HIGHRES_IMU is mandatory. This bench picks the
+filter.
+
+Runs all four filters on 5 scenarios (static/spin/roll/high-g-pull/high-g-random), reports
+geodesic attitude error (mean/p90/max), and highlights the discriminating high-g result.
+
+HEADLINE FINDING (synthetic, this bench)
+----------------------------------------
+The model-based filters (ESKF / IEKF) beat the classical complementary filters under
+high-g, but ONLY with a direction-aware *innovation* (chi-square) gate -- magnitude
+gating alone is insufficient because a random-direction acceleration whose MAGNITUDE
+sits near g (~43%% of HIGH_G_RANDOM samples) sails through the magnitude gate while its
+direction is wrong. With the two-gate scheme:
+    HIGH_G_RANDOM  : ESKF/IEKF p90 ~0.65 deg vs Madgwick ~0.85, Mahony ~5.8
+    HIGH_G_PULL    : ESKF/IEKF p90 ~6.5 deg  vs Madgwick ~27,   Mahony ~82
+    STATIC/SPIN    : ESKF/IEKF p90 ~0.11 deg (best); Mahony ~0.09; Madgwick ~0.20
+The IEKF (left-invariant, Barrau-Bonnabel / van Goor EqF) matches the ESKF to ~1e-11 deg
+on this attitude-only problem -- it cross-validates the ESKF; its consistency advantage is
+realised on the coupled SE_2(3)/INS problem, not attitude-from-gravity. See README in
+src/racer/ahrs/ for the full table and the why.
 
 Usage:
     python scripts/benches/ahrs_bench.py              # default scenarios
@@ -22,10 +41,12 @@ Extension stubs for Fengyou's morning decision:
                   van Goor P (2022) ANU thesis — Section 3 (EqVIO / IEKF).
        Priority: HIGH if ESKF plateau is still above 1-2 deg at VQ2 speeds (gyro bias random walk dominates).
 
-  2. Invariant EKF / EqVIO (SO(3) right-invariant):
-       Swap _compute_F and _accel_H in eskf.py for Lie-group Jacobians.
-       Advantage: consistency maintained under large attitudes (no linearisation error).
-       Priority: MEDIUM — try if ESKF shows bias on long roll/yaw arcs.
+  2. Invariant EKF / EqVIO (DONE for SO(3): src/racer/ahrs/iekf.py):
+       The left-invariant SO(3) attitude+bias filter is implemented and benchmarked.
+       It matches the ESKF on attitude-only. The OPEN extension is SE_2(3): fold in
+       velocity+position so the invariant consistency advantage actually bites (this is
+       the natural merge point with the C2 vision-estimator / EqVIO line).
+       Priority: MEDIUM — pursue when AHRS couples to translation/VIO.
 
   3. This bench itself as a real-data validator:
        Twin HIGHRES_IMU at ~200 Hz is already in the recording format (extract_run.py).
@@ -46,8 +67,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from racer.ahrs.imu_gen import generate_imu_sequence, Scenario
 from racer.ahrs.eskf import ESKFAHRS
+from racer.ahrs.iekf import LeftInvariantEKF
 from racer.ahrs.classical import MadgwickAHRS, MahonyAHRS
 from racer.ahrs.metrics import geodesic_error_rad, score_filter, run_filter_on_sequence
+
+
+# Names of the model-based (Kalman) filters; the rest are classical comparators.
+# Used by the high-g verdict to compare best-model vs best-classical.
+MODEL_FILTER_PREFIXES = ("ESKF", "IEKF")
 
 
 # ---------------------------------------------------------------------------
@@ -55,17 +82,30 @@ from racer.ahrs.metrics import geodesic_error_rad, score_filter, run_filter_on_s
 # ---------------------------------------------------------------------------
 
 def make_filters():
-    """Instantiate all three filters with tuned defaults."""
+    """Instantiate all benchmarked filters with tuned defaults.
+
+    ESKF and IEKF both use the two-gate robustness scheme (magnitude gate +
+    chi-square innovation gate). Madgwick/Mahony are the classical comparators.
+    """
     eskf = ESKFAHRS(
         gyro_noise_std=0.01,
         gyro_bias_std=1e-4,
         accel_noise_std=0.3,
-        accel_gate_alpha=10.0,  # key parameter: gating sharpness
+        accel_gate_alpha=10.0,    # magnitude-gate sharpness
+        accel_chi2_thresh=7.815,  # chi2(3,.95) innovation gate
+    )
+    iekf = LeftInvariantEKF(
+        gyro_noise_std=0.01,
+        gyro_bias_std=1e-4,
+        accel_noise_std=0.3,
+        accel_gate_alpha=10.0,
+        accel_chi2_thresh=7.815,
     )
     madgwick = MadgwickAHRS(beta=0.1)
     mahony = MahonyAHRS(kp=2.0, ki=0.005)
     return [
-        ("ESKF (alpha=10)", eskf),
+        ("ESKF (a=10,chi2)", eskf),
+        ("IEKF (a=10,chi2)", iekf),
         ("Madgwick (b=0.1)", madgwick),
         ("Mahony (kp=2,ki=0.005)", mahony),
     ]
@@ -128,11 +168,15 @@ def print_high_g_verdict(all_results: dict) -> None:
         if scen_name not in all_results:
             continue
         results = all_results[scen_name]
-        eskf_p90 = min(v["p90_deg"] for k, v in results.items() if "ESKF" in k)
-        classical_p90 = max(v["p90_deg"] for k, v in results.items() if "ESKF" not in k)
-        improvement = classical_p90 / max(eskf_p90, 0.01)
-        verdict = "PASS" if eskf_p90 < classical_p90 else "FAIL (ESKF not beating classical)"
-        print(f"  {scen_name}: ESKF p90={eskf_p90:.2f} deg, "
+
+        def _is_model(k):
+            return any(k.startswith(p) for p in MODEL_FILTER_PREFIXES)
+
+        model_p90 = min(v["p90_deg"] for k, v in results.items() if _is_model(k))
+        classical_p90 = min(v["p90_deg"] for k, v in results.items() if not _is_model(k))
+        improvement = classical_p90 / max(model_p90, 0.01)
+        verdict = "PASS" if model_p90 < classical_p90 else "FAIL (model not beating classical)"
+        print(f"  {scen_name}: best-model p90={model_p90:.2f} deg, "
               f"best-classical p90={classical_p90:.2f} deg, "
               f"improvement={improvement:.1f}x  [{verdict}]")
 

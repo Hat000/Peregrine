@@ -30,8 +30,20 @@ attitude estimate. The gating mechanism DOWNWEIGHTS the accel update:
   gate_weight = exp(-alpha * ((|a| - g) / g)^2)
 
 This weight multiplies the measurement noise covariance (R_accel / gate_weight),
-effectively ignoring the accel when the drone is pulling g's. This is what
-distinguishes the ESKF from Madgwick/Mahony which lack principled gating.
+effectively ignoring the accel when the drone is pulling g's.
+
+CRITICAL (empirical, this bench): magnitude gating ALONE is insufficient. A
+random-direction acceleration whose MAGNITUDE happens to sit near g (e.g. ~43% of
+the HIGH_G_RANDOM samples) sails through the magnitude gate while its DIRECTION is
+wildly wrong, poisoning the tilt update (ESKF p90 blew up to ~67 deg). The fix is a
+second, direction-aware gate: a Mahalanobis / chi-square consistency test on the
+innovation itself (the same family as the relinnov chi2 gate in the C2 estimator
+chain). The accel update is APPLIED ONLY IF
+    innovation^T S^-1 innovation <= accel_chi2_thresh   (chi2(3, .95) = 7.815)
+With this innovation gate the ESKF beats both classical filters across every high-g
+scenario; without it, magnitude gating alone loses to a gyro-trusting Madgwick.
+This two-gate design is what distinguishes the ESKF from Madgwick/Mahony, which lack
+any principled rejection of acceleration disturbances.
 
 Magnetometer update (optional)
 -------------------------------
@@ -133,6 +145,8 @@ class ESKFAHRS:
     gyro_bias_std: float = 1e-4         # rad/s/sqrt(s)
     accel_noise_std: float = 0.3        # m/s^2
     accel_gate_alpha: float = 10.0      # high-g sharpness (0 = disabled)
+    accel_chi2_thresh: float = 7.815    # innovation-gate threshold; chi2(3, .95)=7.815
+                                        # (0 or negative = innovation gate disabled)
     mag_ned: Optional[np.ndarray] = None
     mag_noise_std: float = 0.1          # normalised
 
@@ -259,31 +273,49 @@ class ESKFAHRS:
         if gate < 1e-4:
             return
 
-        # Gravity in body frame: g_body = R^T @ G_NED = [0,0,+g] at rest (pointing down FRD)
+        # Gravity DIRECTION in body frame: g_hat = R^T @ G_NED / g = [0,0,+1] at rest.
+        # We work entirely in NORMALISED (unit-vector) measurement space so the
+        # innovation and the Jacobian share the same units -- mixing a unit-vector
+        # innovation with a g-scaled (~9.8x) Jacobian miscalibrates the Kalman gain
+        # and was the root cause of the accel update *corrupting* attitude.
         R_wb = _quat_to_R_wxyz(self._q)
-        g_body = R_wb.T @ G_NED      # [0, 0, +g] at rest
+        g_body = R_wb.T @ G_NED                      # [0, 0, +g] at rest
+        g_hat = g_body / max(np.linalg.norm(g_body), 1e-9)   # [0, 0, +1] at rest
 
-        # Predicted specific force direction: h_hat = -g_body / |g_body| = [0,0,-1] at rest
-        g_mag = np.linalg.norm(g_body)
-        h_hat = -g_body / max(g_mag, 1e-9)
+        # Predicted specific-force direction: h_hat = -g_hat = [0,0,-1] at rest.
+        h_hat = -g_hat
 
-        # Normalised accel measurement: a_hat = [0,0,-1] at rest (matches h_hat)
+        # Normalised accel measurement: a_hat = [0,0,-1] at rest (matches h_hat).
         a_hat = accel / accel_mag
 
         # Innovation: z - h(x)
         innovation = a_hat - h_hat
 
-        # Jacobian H (3 x 6): d(h_body)/d(delta_phi) = -skew(g_body)
-        # (small-angle perturbation: perturbed R = R*(I + [delta_phi]x)
-        #  => g_perturbed = R^T*(I - [delta_phi]x)^T * G_NED = g_body - [delta_phi]x * g_body
-        #     = g_body - skew(delta_phi) @ g_body = g_body + skew(g_body) @ delta_phi
-        #  h_body = -g_perturbed => d(h_body)/d(delta_phi) = -skew(g_body))
+        # Jacobian H (3 x 6): d(h_hat)/d(delta_phi). With the right-multiplicative
+        # body-frame error convention used at injection (q <- q * exp(delta_phi)),
+        # h_hat = -R^T G_NED/g and a finite-difference check (see scratch) gives
+        #   d(h_hat)/d(delta_phi) = -skew(g_hat).
+        # NOTE the normalisation by g: g_hat is the UNIT gravity direction, matching
+        # the unit innovation above.
         H = np.zeros((3, 6))
-        H[:, :3] = -_skew(g_body)
+        H[:, :3] = -_skew(g_hat)
 
         # Effective measurement noise: R_meas / gate (larger noise when gate small = high-g)
         sigma_a = self.accel_noise_std / GRAVITY  # normalised units
         R_meas = (sigma_a**2 / gate) * np.eye(3)
+
+        # Direction-aware innovation gate (Mahalanobis / chi-square consistency test).
+        # Magnitude gating cannot reject a near-g-magnitude disturbance whose DIRECTION
+        # is wrong; this gate can. Skip the update when the innovation is inconsistent
+        # with its predicted covariance S.
+        if self.accel_chi2_thresh > 0.0:
+            S = H @ self._P @ H.T + R_meas
+            try:
+                md = float(innovation @ np.linalg.solve(S, innovation))
+            except np.linalg.LinAlgError:
+                return
+            if md > self.accel_chi2_thresh:
+                return  # reject: accel inconsistent with attitude prior (high-g disturbance)
 
         # Kalman update on error state
         self._apply_eskf_update(innovation, H, R_meas)

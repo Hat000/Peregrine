@@ -202,25 +202,30 @@ class MahonyAHRS:
         q = self._q
         w, x, y, z = q
 
-        # Estimated gravity direction in body frame from current quaternion
-        # g_body_pred = R^T @ [0, 0, 1]_NED = [2(xz-wy), 2(yz+wx), 1-2(x^2+y^2)]
-        # (specific force sign: at rest, body FRD down = +Z, so g_pred_body = [0,0,1]
-        #  in normalised units pointing "down" in the body frame)
+        # Predicted gravity-DOWN direction in the body frame from current quaternion.
+        # g_pred = R_wb^T @ [0,0,1]_NED = [2(xz-wy), 2(yz+wx), 1-2(x^2+y^2)];
+        # at rest this is [0,0,+1] (gravity points down the body FRD +Z axis).
         g_pred = np.array([
             2.0*(x*z - w*y),
             2.0*(y*z + w*x),
             1.0 - 2.0*(x*x + y*y),
         ])
 
-        # Normalise accelerometer measurement
-        a_n = _normalize(accel)
+        # SIGN (critical): accel is SPECIFIC FORCE, which reads [0,0,-g] at rest
+        # (reaction is UP the body -Z axis). g_pred above is the gravity-DOWN
+        # direction [0,0,+1]. To compare like-with-like we measure the gravity-down
+        # direction from the accelerometer by NEGATING the specific force:
+        #   v_meas = normalise(-accel) = [0,0,+1] at rest.
+        # Feeding the un-negated specific force would put the filter at the UNSTABLE
+        # 180-deg equilibrium (cross of antiparallel vectors is ~0 at rest but the
+        # correction has the wrong sign off-rest), which collapses to ~30 deg error.
+        a_n = _normalize(-accel)
         if np.linalg.norm(a_n) < 1e-6:
             a_n = np.zeros(3)
             e = np.zeros(3)
         else:
-            # Error = cross(a_meas, g_pred)
-            # When a_meas points at true gravity direction (= g_pred), cross = 0.
-            # When they differ, the cross product gives the rotation axis to correct.
+            # Error = cross(v_meas, g_pred): zero when the estimate is correct,
+            # otherwise the rotation axis that drives g_pred toward v_meas.
             e = np.cross(a_n, g_pred)
 
         # Integral feedback (bias estimation)
