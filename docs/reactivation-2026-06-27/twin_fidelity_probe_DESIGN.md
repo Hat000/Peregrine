@@ -219,3 +219,10 @@ If MARGINAL: widen `QUAD_DRAG_C2_MEASURED` DR range by 2× and proceed; add a sp
 ---
 
 *Author: VQ2 pre-staging agent, 2026-06-28.  Fengyou to review §5 before coding starts.*
+
+---
+## PRE-ANSWERS to the 5 review Qs (2026-06-28, autonomous — from codebase)
+- **(a) Command capture in Competitive:** commands are `SET_ATTITUDE_TARGET` (attitude or body-rate/CTBR) sent via `mavlink_client.py:418/430`; `recording.py:record_mavlink()` logs raw MAVLink. We generate our own commands → the command log is available regardless of telemetry blocking. (Confirm whether the deployed loop also writes a debug_obs.jsonl, but raw-MAVLink record is sufficient.)
+- **(b) AHRS attitude source at load — CRITICAL:** current `state_estimator.LinearKF` TRUSTS the given `ATTITUDE` message and does NOT estimate orientation (docstring: "the sim HANDS us attitude"). **VQ2 blocks ATTITUDE → LinearKF cannot run as-is; there is NO self-attitude estimator built.** The ESKF is documented-but-unbuilt. ⇒ the FALLBACK tier's attitude source MUST be a newly-built ESKF or learned AHRS; this is the same gap the T1 AHRS bench targets. Twin-fidelity FALLBACK validation and the AHRS build are coupled.
+- **(d) RecordingReader cv2 dep:** YES — `recording.py:242 RecordingReader` uses `cv2.imdecode` + `import cv2`. Plan for the cv2 dependency in the harness env.
+- (c) anchor spacing + (e) calibration write-back: JUDGMENT calls — leave for Fengyou.
