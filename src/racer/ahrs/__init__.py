@@ -15,11 +15,24 @@ iekf         -- Left-Invariant EKF AHRS on SO(3) (Barrau-Bonnabel / van Goor EqF
 classical    -- Madgwick and Mahony complementary filters (benchmark comparators).
 metrics      -- geodesic attitude error (angle-axis), per-filter scoring helpers.
 
+eqvio        -- SE_2(3) RIGHT-invariant EKF (attitude+velocity+position) + a standard-EKF
+                foil + a 6-DoF synthetic bench. This is where the invariant filter's
+                CONSISTENCY edge materialises (the SO(3) iekf deliberately ties the ESKF):
+                the RIEKF's covariance transport is group-affine EXACT (NEES constant under
+                propagation) where the standard EKF drifts/mis-calibrates. See traj6dof.
+eqvio_landmark-- SOT(3)=SO(3)xR+ inverse-depth gate-corner bearing parameterization (van Goor
+                EqVIO line): group + bearing measurement + analytic Jacobians + triangulation.
+                The landmark-side group that composes with eqvio's SE_2(3) pose into a full
+                EqVIO (joint-covariance wiring is the documented next step).
+traj6dof     -- full 6-DoF synthetic trajectory generator (extends imu_gen to v/p GT) +
+                NEES/consistency evaluation harness for the SE_2(3) filters.
+
 Extension stubs (NOT implemented — Fengyou's decision point):
   - RIANN / GRU learned gyro-denoising (van Goor ANU thesis / Brossard et al. 2020).
-  - SE_2(3) invariant EKF / EqVIO (the IEKF's consistency advantage materialises on the
-    COUPLED attitude+velocity+position problem; the SO(3) iekf here is the attitude core).
-  These are the natural next-tier after this T1 bench is validated on real twin IMU data
+  - FULL EqVIO: augment eqvio's SE_2(3) RIEKF covariance with one eqvio_landmark.SOT3 per
+    tracked corner (joint pose+landmark filter). Pose-side consistency + landmark group +
+    Jacobians are done & tested; the joint covariance/marginalisation bookkeeping remains.
+  These are the natural next-tier after this bench is validated on real twin IMU data
   (plug in via imu_gen.IMUSequence).
 
 Frame convention (matches frames.py throughout):
@@ -34,6 +47,9 @@ from racer.ahrs.eskf import ESKFAHRS
 from racer.ahrs.iekf import LeftInvariantEKF
 from racer.ahrs.classical import MadgwickAHRS, MahonyAHRS
 from racer.ahrs.metrics import geodesic_error_rad, score_filter
+from racer.ahrs.eqvio import SE23RightInvariantEKF, SE23StandardEKF
+from racer.ahrs.eqvio_landmark import SOT3
+from racer.ahrs.traj6dof import Traj6DoF, generate_traj6dof, run_se23_filter, Traj
 
 __all__ = [
     "IMUSequence",
@@ -45,4 +61,11 @@ __all__ = [
     "MahonyAHRS",
     "geodesic_error_rad",
     "score_filter",
+    "SE23RightInvariantEKF",
+    "SE23StandardEKF",
+    "SOT3",
+    "Traj6DoF",
+    "generate_traj6dof",
+    "run_se23_filter",
+    "Traj",
 ]
