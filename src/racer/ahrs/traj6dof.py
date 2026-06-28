@@ -394,3 +394,143 @@ def _left_jacobian_inv_so3(phi: np.ndarray) -> np.ndarray:
     half = theta / 2.0
     c = (1.0 / theta**2) * (1.0 - (theta * np.cos(half)) / (2.0 * np.sin(half)))
     return np.eye(3) - 0.5 * K + c * (K @ K)
+
+
+# ===========================================================================
+# JOINT EqVIO harness: per-frame CAMERA bearings + a runner for EqVIOJointEKF.
+# ===========================================================================
+# The pose-only bench above feeds KNOWN-p_L body-frame observations. The JOINT filter
+# instead consumes per-frame *camera bearings* of corners whose depth it must triangulate.
+# These helpers synthesise that bearing stream (noiseless => exact parallax probe) and run
+# the joint filter, returning NEES (pose + joint), landmark depth-recovery error, and the
+# pose-only / landmark-only baselines for the does-coupling-earn-its-keep comparison.
+
+
+def synth_camera_bearings(
+    seq: "Traj6DoF",
+    R_bc: np.ndarray = None,
+    bearing_noise_std: float = 0.0,
+    seed: int = 0,
+):
+    """Per-pos_idx CAMERA-frame UNIT bearings of seq.landmarks_world.
+
+    Returns (bearings, visible): bearings[m, l] = pi(R_bc^T R_gt^T (p_L - p_gt)) at fix m
+    (plus optional small tangential noise), and visible[m, l] a bool gate (corner in front
+    of the camera: positive optical-axis component). Anchored on the GT poses so a noiseless
+    run is an exact parallax/consistency probe."""
+    R_bc = np.eye(3) if R_bc is None else R_bc
+    rng = np.random.default_rng(seed)
+    M = len(seq.pos_idx)
+    L = seq.landmarks_world.shape[0]
+    bearings = np.zeros((M, L, 3))
+    visible = np.zeros((M, L), dtype=bool)
+    for m, idx in enumerate(seq.pos_idx):
+        Rg = seq.R_gt[idx]; pg = seq.p_gt[idx]
+        for l in range(L):
+            d_cam = R_bc.T @ (Rg.T @ (seq.landmarks_world[l] - pg))
+            n = np.linalg.norm(d_cam)
+            if n < 1e-9:
+                continue
+            b = d_cam / n
+            if bearing_noise_std > 0:
+                b = b + rng.normal(0.0, bearing_noise_std, 3)
+                b = b / max(np.linalg.norm(b), 1e-12)
+            bearings[m, l] = b
+            visible[m, l] = d_cam[2] > 0.0          # in front of optical axis (+z cam)
+    return bearings, visible
+
+
+def run_eqvio_joint(
+    filt,
+    seq: "Traj6DoF",
+    R0=None, v0=None, p0=None, P0=None,
+    R_bc: np.ndarray = None,
+    bearing_noise_std: float = 0.0,
+    rho_init: float = 0.05,
+    rho_var: float = 1.0,
+    marginalize_after: int = None,
+    seed: int = 0,
+):
+    """Run the joint EqVIO filter over the trajectory.
+
+    At each pos_idx fix: propagate (IMU), add any newly-visible corner (anchored at the
+    current pose with large inverse-depth variance), then apply a joint bearing update for
+    every tracked-and-visible corner. Optionally marginalise a corner after a fixed number
+    of fixes (exercises drop_landmark). Returns per-fix pose/joint NEES, the landmark
+    inverse-depth recovery error vs GT, and the final landmark world-point error.
+    """
+    R_bc = np.eye(3) if R_bc is None else R_bc
+    R0 = seq.R_gt[0] if R0 is None else R0
+    v0 = seq.v_gt[0] if v0 is None else v0
+    p0 = seq.p_gt[0] if p0 is None else p0
+    filt.reset(R=R0, v=v0, p=p0, P_pose=P0)
+    if R_bc is not None:
+        filt.R_bc = R_bc
+
+    bearings, visible = synth_camera_bearings(seq, R_bc, bearing_noise_std, seed)
+    L = seq.landmarks_world.shape[0]
+    pos_lookup = {int(idx): k for k, idx in enumerate(seq.pos_idx)}
+    pos_set = set(int(i) for i in seq.pos_idx)
+    dt = seq.dt
+
+    nees_pose, nees_t = [], []
+    invdepth_err_hist = []
+    fix_count = 0
+
+    for i in range(seq.N):
+        if i > 0:
+            filt.predict(seq.gyro[i - 1], seq.accel[i - 1], dt)
+        if i in pos_set:
+            m = pos_lookup[i]
+            # add newly-visible corners
+            for l in range(L):
+                if visible[m, l] and not filt.has_landmark(l):
+                    filt.add_landmark(l, bearings[m, l], rho_init=rho_init, rho_var=rho_var)
+            # joint bearing update for every tracked+visible corner
+            for l in range(L):
+                if visible[m, l] and filt.has_landmark(l):
+                    filt.update_landmark_joint(l, bearings[m, l])
+            fix_count += 1
+
+            if marginalize_after is not None and fix_count == marginalize_after:
+                ids = filt.landmark_ids()
+                if ids:
+                    filt.drop_landmark(ids[0])
+
+            # pose NEES (post-update), right-invariant tangent
+            if i > 0:
+                e_pose = _error_vector_pose(filt, seq, i)
+                Ppose = filt.pose_cov()
+                try:
+                    nees_pose.append(float(e_pose @ np.linalg.solve(Ppose, e_pose)))
+                    nees_t.append(i * dt)
+                except np.linalg.LinAlgError:
+                    pass
+
+            # landmark inverse-depth recovery error (per tracked corner, vs GT depth in the
+            # landmark's OWN anchor frame).
+            for lm in filt._lmks:
+                p_L_gt = seq.landmarks_world[lm.lm_id]
+                d_anchor = R_bc.T @ (lm.R_anchor.T @ (p_L_gt - lm.p_anchor))
+                rho_gt = 1.0 / max(np.linalg.norm(d_anchor), 1e-9)
+                invdepth_err_hist.append(abs(lm.sot.rho - rho_gt))
+
+    # final landmark world-point errors
+    final_lmk_err = {}
+    for lm in filt._lmks:
+        p_est = filt.landmark_world(lm.lm_id)
+        final_lmk_err[lm.lm_id] = float(np.linalg.norm(p_est - seq.landmarks_world[lm.lm_id]))
+
+    return {
+        "nees_pose": np.array(nees_pose),
+        "nees_t": np.array(nees_t),
+        "invdepth_err": np.array(invdepth_err_hist),
+        "final_lmk_err": final_lmk_err,
+        "n_landmarks": filt.n_landmarks,
+    }
+
+
+def _error_vector_pose(filt, seq: "Traj6DoF", i: int) -> np.ndarray:
+    """Right-invariant 9-dof pose error of the joint filter vs GT (same tangent its pose
+    covariance lives in)."""
+    return _log_se23_error(seq.R_gt[i], seq.v_gt[i], seq.p_gt[i], filt.R, filt.v, filt.p)

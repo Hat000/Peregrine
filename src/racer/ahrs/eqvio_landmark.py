@@ -250,16 +250,96 @@ def triangulate_inverse_depth(
 
 
 # ---------------------------------------------------------------------------
-# NEXT STEPS (documented, not yet wired)
+# Anchored inverse-depth world point + JOINT bearing Jacobians (for full EqVIO).
 # ---------------------------------------------------------------------------
-# To form the FULL EqVIO from these two modules:
-#   1. Augment the SE_2(3) RIEKF covariance with one SOT(3) tangent (4 dof) per tracked
-#      corner: P grows to (9 + 4*K). New corners enter with large 1/rho variance.
-#   2. On each frame, for every tracked corner apply update_landmark-style bearing updates
-#      using H = [bearing_jacobian_pose | ... | bearing_jacobian_landmark] (the joint
-#      pose+landmark Jacobian). The pose block is the consistency-preserving RIGHT-invariant
-#      form already validated in eqvio.update_landmark / TestConsistencyEdge.
-#   3. Marginalise corners that leave the field of view (Schur complement) to bound state
-#      size — the standard MSCKF/EqVIO sliding-window step.
-# The pieces here (group, measurement, analytic Jacobians, triangulation) are unit-tested;
-# the joint covariance bookkeeping is the remaining integration work.
+# These additive helpers are what the joint pose+landmark filter (eqvio.EqVIOJointEKF)
+# consumes. A landmark's SOT(3) is anchored at a FROZEN reference camera pose (R_a, p_a)
+# captured at first observation; the world point is reconstructed from that fixed anchor
+# plus the live SOT(3) state, and observed (as a bearing) from the CURRENT (uncertain)
+# pose. Anchoring at a frozen pose is the standard MSCKF-style anchored-inverse-depth
+# choice: the landmark stays 4-dof and the only state-coupling on the measurement is
+# current-pose error <-> landmark error, which is exactly the cross-covariance a joint
+# filter must carry (and a separate pose-only / landmark-only pair cannot).
+
+
+def world_point_from_anchored_sot(
+    sot: "SOT3",
+    R_anchor: np.ndarray,
+    p_anchor: np.ndarray,
+    R_bc: np.ndarray = None,
+) -> np.ndarray:
+    """World point of an inverse-depth landmark anchored at a FROZEN camera pose.
+
+        p_L = p_anchor + (1/rho) (R_anchor R_bc) Q e_z
+            = p_anchor + R_anchor R_bc * ray_cam(sot)
+
+    Identical math to reconstruct_world_point, named separately to make the
+    'anchor pose is a frozen constant, not the live filter pose' contract explicit.
+    """
+    return reconstruct_world_point(sot, R_anchor, p_anchor, R_bc)
+
+
+def bearing_jacobian_anchored_landmark(
+    sot: "SOT3",
+    R_anchor: np.ndarray,
+    p_anchor: np.ndarray,
+    R_cur: np.ndarray,
+    p_cur: np.ndarray,
+    R_bc: np.ndarray = None,
+) -> np.ndarray:
+    """Jacobian (3x4) of the CURRENT-pose camera bearing w.r.t. the landmark SOT(3)
+    tangent [omega(3); s(1)], for a landmark anchored at a FROZEN pose (R_anchor,p_anchor)
+    and observed from a DIFFERENT current pose (R_cur,p_cur).
+
+    Unlike bearing_jacobian_landmark (which observes the landmark from its OWN anchor and
+    is therefore scale-invariant, d b / d s = 0), here the baseline between anchor and
+    current pose makes the INVERSE DEPTH observable: the scale column is non-zero. This is
+    the parallax channel — the whole reason the joint filter can triangulate depth.
+
+    Derivation. d_cam = R_bc^T R_cur^T (p_L - p_cur), b = pi(d_cam), and
+        p_L = p_anchor + (1/rho) M Q e_z,  M = R_anchor R_bc.
+      d p_L / d omega = -(1/rho) M Q [e_z]_x      (right increment Q<-Q Exp(omega))
+      d p_L / d s     = -(1/rho) M Q e_z          (rho<-rho e^s; the full ray, negated)
+    so  H = Jpi @ (R_bc^T R_cur^T) @ [ d p_L/d omega | d p_L/d s ].
+    """
+    R_bc = np.eye(3) if R_bc is None else R_bc
+    p_L = world_point_from_anchored_sot(sot, R_anchor, p_anchor, R_bc)
+    d_cam = R_bc.T @ (R_cur.T @ (p_L - p_cur))
+    Jpi = d_project_d_v(d_cam)
+    Wc = R_bc.T @ R_cur.T                      # current cam-from-world
+    M = R_anchor @ R_bc
+    QZ = sot.Q @ E_Z                           # bearing direction in anchor cam frame
+    dpL_domega = -(1.0 / sot.rho) * (M @ sot.Q @ _skew(E_Z))   # (3x3)
+    dpL_ds = -(1.0 / sot.rho) * (M @ QZ)                        # (3,)
+    H = np.zeros((3, 4))
+    H[:, 0:3] = Jpi @ (Wc @ dpL_domega)
+    H[:, 3] = Jpi @ (Wc @ dpL_ds)
+    return H
+
+
+def bearing_jacobian_pose_anchored(
+    sot: "SOT3",
+    R_anchor: np.ndarray,
+    p_anchor: np.ndarray,
+    R_cur: np.ndarray,
+    p_cur: np.ndarray,
+    R_bc: np.ndarray = None,
+    right_invariant: bool = True,
+) -> np.ndarray:
+    """Jacobian (3x9) of the current-pose camera bearing w.r.t. the SE_2(3) pose error,
+    for an anchored landmark whose world point is reconstructed from the SOT(3) estimate.
+
+    Identical to bearing_jacobian_pose but with p_L taken from the (estimated) anchored
+    landmark rather than passed in as a known constant — so the joint filter linearises
+    consistently about its OWN current landmark estimate. Right-invariant attitude block
+    is anchored to that estimated world point (mirrors eqvio.update_landmark)."""
+    R_bc = np.eye(3) if R_bc is None else R_bc
+    p_L = world_point_from_anchored_sot(sot, R_anchor, p_anchor, R_bc)
+    return bearing_jacobian_pose(p_L, R_cur, p_cur, R_bc, right_invariant=right_invariant)
+
+
+# ---------------------------------------------------------------------------
+# NEXT STEPS — now wired in eqvio.EqVIOJointEKF (joint pose+landmark filter):
+#   the group (SOT3), measurement (bearing_*), analytic Jacobians (pose + anchored
+#   landmark, both FD-verified), and triangulation here are composed there into the joint
+#   covariance + Schur-complement marginalisation. See eqvio.py / tests/test_eqvio_joint.py.

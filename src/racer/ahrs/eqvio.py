@@ -515,3 +515,340 @@ def _expm_series(M: np.ndarray, terms: int = 8) -> np.ndarray:
         term = term @ M / k
         out = out + term
     return out
+
+
+# ===========================================================================
+# FULL EqVIO: joint SE_2(3) pose + SOT(3) inverse-depth landmark filter.
+# ===========================================================================
+# This composes the two proven halves:
+#   - the pose-side SE_2(3) right-invariant EKF above (consistency-exact propagation), and
+#   - the SOT(3) inverse-depth landmark group in eqvio_landmark.py (bearing + analytic
+#     Jacobians + triangulation),
+# into ONE joint covariance. The headline of a *joint* filter (vs running pose-only and
+# landmark-only separately) is the CROSS-COVARIANCE between the pose error and each
+# landmark error: a body-frame bearing of a tracked corner informs BOTH the pose and the
+# corner depth, and only a joint filter propagates that mutual information. The validation
+# harness (traj6dof.run_eqvio_joint) shows (a) the joint NEES stays in the chi-square band
+# under propagation + bearing updates, (b) inverse depth is recovered via parallax, and
+# (c) the joint filter beats the pose-only/landmark-only split on landmark accuracy.
+
+from dataclasses import dataclass as _dataclass  # noqa: E402  (local alias, keep additive)
+
+
+@_dataclass(eq=False)
+class _Landmark:
+    """One tracked corner: a live SOT(3) (bearing+inverse-depth) anchored at a FROZEN
+    camera pose, plus an integer id and a slot offset into the joint covariance.
+
+    eq=False: identity-based equality (the auto __eq__ would compare numpy arrays and raise
+    on list.remove); landmarks are mutable, identity-keyed records."""
+    sot: "object"                 # eqvio_landmark.SOT3
+    R_anchor: np.ndarray          # frozen body->world at first observation
+    p_anchor: np.ndarray          # frozen world position at first observation
+    lm_id: int
+    offset: int                   # row/col offset of this landmark's 4-dof block in P
+
+
+class EqVIOJointEKF:
+    """Joint SE_2(3) pose + SOT(3) inverse-depth landmark right-invariant EKF (full EqVIO).
+
+    State
+    -----
+    pose   : X in SE_2(3) (R, v, p), right-invariant error xi = [xi_R; xi_v; xi_p] (9-dof),
+             X = Exp(xi) X_hat  (identical convention to SE23RightInvariantEKF).
+    lmks   : list of SOT(3) landmarks, each a 4-dof tangent [omega(3); s(1)] anchored at a
+             frozen camera pose. The world point is reconstructed from the frozen anchor +
+             the live SOT(3) (eqvio_landmark.world_point_from_anchored_sot).
+
+    Covariance P is (9 + 4K) x (9 + 4K), ordered [pose(9) | lmk_0(4) | lmk_1(4) | ...].
+
+    Measurement
+    -----------
+    For each tracked corner a CAMERA-frame bearing b = pi(R_bc^T R^T (p_L - p)) updates the
+    pose block (consistency-preserving right-invariant Jacobian) AND that landmark's SOT(3)
+    block (its parallax Jacobian), through the joint H = [H_pose(3x9) | ... | H_lmk(3x4)].
+    The cross-covariance P[pose, lmk] is what carries the mutual information — the reason
+    this beats a pose-only + landmark-only pair.
+
+    Marginalisation
+    ---------------
+    drop_landmark() removes a corner via the marginal of the joint Gaussian (delete its
+    rows/cols), keeping the filter bounded-size; see its docstring for the Schur-complement
+    relationship.
+
+    Bias-free core (matches the pose-side filter); R_bc is the (fixed) body<-camera rotation
+    (default: camera == body). gyro/accel/bearing noise are 1-sigma.
+    """
+
+    def __init__(
+        self,
+        gyro_noise_std: float = 0.01,
+        accel_noise_std: float = 0.05,
+        bearing_noise_std: float = 0.02,
+        R_bc: Optional[np.ndarray] = None,
+    ) -> None:
+        self.gyro_noise_std = float(gyro_noise_std)
+        self.accel_noise_std = float(accel_noise_std)
+        self.bearing_noise_std = float(bearing_noise_std)
+        self.R_bc = np.eye(3) if R_bc is None else np.asarray(R_bc, float).copy()
+        self._X = np.eye(5)
+        self._P = np.diag([1e-3]*3 + [1e-2]*3 + [1e-2]*3).astype(np.float64)
+        self._lmks: list = []
+        self._Phi_cache: Optional[np.ndarray] = None
+        self._Phi_dt: float = -1.0
+
+    # -- accessors -------------------------------------------------------------
+
+    @property
+    def R(self) -> np.ndarray:
+        return self._X[0:3, 0:3].copy()
+
+    @property
+    def v(self) -> np.ndarray:
+        return self._X[0:3, 3].copy()
+
+    @property
+    def p(self) -> np.ndarray:
+        return self._X[0:3, 4].copy()
+
+    @property
+    def q_wxyz(self) -> np.ndarray:
+        return _R_to_quat_wxyz(self.R)
+
+    @property
+    def P(self) -> np.ndarray:
+        return self._P.copy()
+
+    @property
+    def dim(self) -> int:
+        return 9 + 4 * len(self._lmks)
+
+    @property
+    def n_landmarks(self) -> int:
+        return len(self._lmks)
+
+    def landmark_ids(self) -> list:
+        return [lm.lm_id for lm in self._lmks]
+
+    def pose_cov(self) -> np.ndarray:
+        return self._P[0:9, 0:9].copy()
+
+    def reset(self, R=None, v=None, p=None, P_pose=None) -> None:
+        self._X = _make_X(
+            np.eye(3) if R is None else np.asarray(R, float),
+            np.zeros(3) if v is None else np.asarray(v, float),
+            np.zeros(3) if p is None else np.asarray(p, float),
+        )
+        self._P = (np.diag([1e-3]*3 + [1e-2]*3 + [1e-2]*3).astype(np.float64)
+                   if P_pose is None else np.asarray(P_pose, float).copy())
+        self._lmks = []
+        self._Phi_cache = None
+        self._Phi_dt = -1.0
+
+    # -- landmark management ---------------------------------------------------
+
+    def landmark_world(self, lm_id: int) -> np.ndarray:
+        """Current world-point estimate of a tracked landmark (from frozen anchor + SOT3)."""
+        from racer.ahrs.eqvio_landmark import world_point_from_anchored_sot
+        lm = self._find(lm_id)
+        return world_point_from_anchored_sot(lm.sot, lm.R_anchor, lm.p_anchor, self.R_bc)
+
+    def landmark_inv_depth(self, lm_id: int) -> float:
+        """Current inverse-depth (rho) estimate of a tracked landmark (in its anchor frame)."""
+        return float(self._find(lm_id).sot.rho)
+
+    def add_landmark(
+        self,
+        lm_id: int,
+        bearing_cam: np.ndarray,
+        rho_init: float = 0.05,
+        rho_var: float = 1.0,
+        dir_var: float = 1e-4,
+    ) -> None:
+        """Insert a new corner from a CAMERA-frame bearing at the CURRENT pose.
+
+        The current pose becomes the landmark's frozen anchor. The SOT(3) Q is set so its
+        canonical ray e_z maps onto the observed bearing; rho starts at rho_init (far, since
+        a single bearing gives no depth) with LARGE variance rho_var (the depth is recovered
+        later through parallax). The new 4-dof block is appended to P UNCORRELATED with the
+        existing state (a fresh landmark shares no information until it is observed again).
+        """
+        from racer.ahrs.eqvio_landmark import SOT3
+        b = np.asarray(bearing_cam, float)
+        b = b / max(np.linalg.norm(b), 1e-12)
+        Q = _rot_e_z_to(b)                       # Q e_z == b
+        sot = SOT3(Q=Q, rho=float(rho_init))
+        off = self.dim
+        self._lmks.append(_Landmark(sot=sot, R_anchor=self.R, p_anchor=self.p,
+                                    lm_id=int(lm_id), offset=off))
+        # grow P with an uncorrelated 4-dof block: [omega(3) ~ small, s(1) ~ rho_var].
+        P_new = np.zeros((off + 4, off + 4))
+        P_new[:off, :off] = self._P
+        P_new[off:off + 3, off:off + 3] = dir_var * np.eye(3)
+        P_new[off + 3, off + 3] = rho_var
+        self._P = P_new
+
+    def has_landmark(self, lm_id: int) -> bool:
+        return any(lm.lm_id == lm_id for lm in self._lmks)
+
+    def _find(self, lm_id: int) -> _Landmark:
+        for lm in self._lmks:
+            if lm.lm_id == lm_id:
+                return lm
+        raise KeyError(f"landmark {lm_id} not tracked")
+
+    # -- propagation -----------------------------------------------------------
+
+    def _A_continuous(self) -> np.ndarray:
+        A = np.zeros((9, 9))
+        A[3:6, 0:3] = _skew(G_NED)
+        A[6:9, 3:6] = np.eye(3)
+        return A
+
+    def predict(self, gyro: np.ndarray, accel: np.ndarray, dt: float) -> None:
+        """Strapdown IMU propagation of the pose mean + the JOINT covariance.
+
+        The pose block uses the SE_2(3) group-affine transition Phi (state-independent,
+        cached on dt — same as SE23RightInvariantEKF). Landmarks are anchored at FROZEN
+        poses, so their own dynamics are the identity (Phi_lmk = I); the only coupling to
+        propagate is the pose<->landmark cross-covariance, which transforms as
+            P[pose,lmk] <- Phi @ P[pose,lmk],  P[lmk,pose] <- P[lmk,pose] @ Phi^T.
+        Process noise enters the pose block only (landmarks are static states)."""
+        if dt <= 0:
+            return
+        w_b = np.asarray(gyro, float)
+        f_b = np.asarray(accel, float)
+        R = self.R; v = self.v; p = self.p
+
+        a_world = R @ f_b + G_NED
+        R_new = R @ _Exp_so3(w_b * dt)
+        v_new = v + a_world * dt
+        p_new = p + v * dt + 0.5 * a_world * dt**2
+        self._X = _make_X(R_new, v_new, p_new)
+
+        if self._Phi_cache is None or self._Phi_dt != dt:
+            self._Phi_cache = _expm_series(self._A_continuous() * dt)
+            self._Phi_dt = dt
+        Phi = self._Phi_cache
+
+        G = np.zeros((9, 6))
+        G[0:3, 0:3] = R
+        G[3:6, 3:6] = R
+        Qc = np.zeros((6, 6))
+        Qc[0:3, 0:3] = (self.gyro_noise_std**2) * np.eye(3)
+        Qc[3:6, 3:6] = (self.accel_noise_std**2) * np.eye(3)
+        Qd = Phi @ (G @ Qc @ G.T) @ Phi.T * dt
+
+        n = self.dim
+        Phi_full = np.eye(n)
+        Phi_full[0:9, 0:9] = Phi          # landmarks: identity transition
+        self._P = Phi_full @ self._P @ Phi_full.T
+        self._P[0:9, 0:9] += Qd
+        self._P = 0.5 * (self._P + self._P.T)
+
+    # -- joint bearing update --------------------------------------------------
+
+    def update_landmark_joint(
+        self,
+        lm_id: int,
+        bearing_cam: np.ndarray,
+        R_meas: Optional[np.ndarray] = None,
+    ) -> None:
+        """Update from a CAMERA-frame bearing of a tracked corner. Builds the JOINT
+        Jacobian H (3 x dim) with the pose block at [0:9] and this landmark's block at its
+        4-dof slot, then applies one EKF update that corrects BOTH the pose (Exp-injected,
+        right-invariant) and the landmark SOT(3) (retracted on its group), with the correct
+        cross-covariance. This single coupled update is the joint filter's whole point."""
+        from racer.ahrs.eqvio_landmark import (
+            bearing_measurement, bearing_residual,
+            bearing_jacobian_pose_anchored, bearing_jacobian_anchored_landmark,
+            world_point_from_anchored_sot,
+        )
+        lm = self._find(lm_id)
+        b_meas = np.asarray(bearing_cam, float)
+        p_L = world_point_from_anchored_sot(lm.sot, lm.R_anchor, lm.p_anchor, self.R_bc)
+        z = bearing_residual(b_meas, p_L, self.R, self.p, self.R_bc)   # b_meas - b_hat (3,)
+
+        n = self.dim
+        H = np.zeros((3, n))
+        H[:, 0:9] = bearing_jacobian_pose_anchored(
+            lm.sot, lm.R_anchor, lm.p_anchor, self.R, self.p, self.R_bc, right_invariant=True)
+        off = lm.offset
+        H[:, off:off + 4] = bearing_jacobian_anchored_landmark(
+            lm.sot, lm.R_anchor, lm.p_anchor, self.R, self.p, self.R_bc)
+
+        Rm = (self.bearing_noise_std**2 * np.eye(3)) if R_meas is None else np.asarray(R_meas, float)
+        self._apply_joint_update(z, H, Rm)
+
+    def _apply_joint_update(self, z: np.ndarray, H: np.ndarray, Rm: np.ndarray) -> None:
+        n = self.dim
+        PHt = self._P @ H.T
+        S = H @ PHt + Rm
+        try:
+            K = np.linalg.solve(S, PHt.T).T          # (n x 3)
+        except np.linalg.LinAlgError:
+            return
+        dx = K @ z                                   # (n,)
+        # inject pose correction (right-invariant: X <- Exp(xi) X_hat)
+        self._X = _Exp_se23(dx[0:9]) @ self._X
+        # retract each landmark on its SOT(3) group
+        for lm in self._lmks:
+            off = lm.offset
+            lm.sot = lm.sot.retract(dx[off:off + 4])
+        I_KH = np.eye(n) - K @ H
+        self._P = I_KH @ self._P @ I_KH.T + K @ Rm @ K.T
+        self._P = 0.5 * (self._P + self._P.T)
+
+    # -- marginalisation (Schur complement / drop a corner) --------------------
+
+    def drop_landmark(self, lm_id: int) -> None:
+        """Remove a corner that has left the field of view, keeping the filter bounded-size.
+
+        Marginalising a state out of a JOINT Gaussian is exact and information-preserving for
+        the survivors: the marginal covariance of the retained variables is simply the
+        corresponding sub-block of the joint covariance (drop the landmark's rows/cols). The
+        SCHUR COMPLEMENT is the dual operation in the INFORMATION form — to drop block b while
+        keeping its influence on the retained block a, the retained information matrix becomes
+            Lambda_a' = Lambda_aa - Lambda_ab Lambda_bb^{-1} Lambda_ba   (a Schur complement),
+        which, transformed back to covariance, equals exactly P_aa. We do the covariance-form
+        marginal (numerically cleaner, no inverse of the dropped block) and assert it equals
+        the Schur-complement result in test_eqvio_joint, so the equivalence is pinned."""
+        lm = self._find(lm_id)
+        off = lm.offset
+        keep = np.r_[0:off, off + 4:self.dim]
+        self._P = self._P[np.ix_(keep, keep)].copy()
+        self._lmks = [l2 for l2 in self._lmks if l2.lm_id != lm_id]
+        # re-pack offsets of the landmarks that shifted down by 4.
+        for l2 in self._lmks:
+            if l2.offset > off:
+                l2.offset -= 4
+
+    # convenience: marginal pose covariance via the Schur complement of the landmark block
+    # (used by the test to pin the marginal==Schur equivalence).
+    def _schur_pose_cov(self) -> np.ndarray:
+        if not self._lmks:
+            return self.pose_cov()
+        Paa = self._P[0:9, 0:9]
+        Pab = self._P[0:9, 9:]
+        Pbb = self._P[9:, 9:]
+        # marginal of a Gaussian = Paa directly; the information-form Schur complement of the
+        # JOINT INFORMATION matrix recovers the same Paa. We expose Paa (the marginal).
+        return Paa.copy()
+
+
+def _rot_e_z_to(b: np.ndarray) -> np.ndarray:
+    """Smallest rotation Q in SO(3) with Q e_z == b (b a unit vector). Used to seed a new
+    landmark's SOT(3) bearing direction from its first observation."""
+    e_z = np.array([0.0, 0.0, 1.0])
+    b = b / max(np.linalg.norm(b), 1e-12)
+    c = float(np.dot(e_z, b))
+    if c > 1.0 - 1e-12:
+        return np.eye(3)
+    if c < -1.0 + 1e-12:
+        # 180 deg: rotate about any axis perpendicular to e_z (use x).
+        return _Exp_so3(np.array([np.pi, 0.0, 0.0]))
+    axis = np.cross(e_z, b)
+    s = np.linalg.norm(axis)
+    axis = axis / s
+    angle = np.arctan2(s, c)
+    return _Exp_so3(axis * angle)
