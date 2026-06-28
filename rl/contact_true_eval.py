@@ -346,11 +346,19 @@ def run_episode(
                 # Measures estimator machinery under a course-completing policy (how L3
                 # measured inc7's fix-rate). result.emulator holds the instrumentation.
                 obs = obs_from_truth(st, gate, last_normed, virtual_flip, gate_map=gate_map)
+                if obs_dim > 17:
+                    # Pad with optimistic confidence triple (truth pose = perfect KF, age=0).
+                    obs = np.concatenate([obs, np.array([1.0, 1.0, 0.0], dtype=np.float32)])
             else:
                 obs = emulator.obs(st, gate, last_normed, virtual_flip, gate_map, obs_dim)
             st_prev_obs = st
         else:
             obs = obs_from_truth(st, gate, last_normed, virtual_flip, gate_map=gate_map)
+            if obs_dim > 17:
+                # GT-anchored optimistic: pad with [c_inplane=1, c_along=1, age_norm=0]
+                # (perfect-confidence, fresh-fix equivalent of truth pose). This lets an inc8
+                # 20-dim actor be scored on pure dynamics / centering with no estimator noise.
+                obs = np.concatenate([obs, np.array([1.0, 1.0, 0.0], dtype=np.float32)])
         rate_frd, _coll, last_normed = policy_step(actor, obs, 0.0, virtual_flip)
         # ---- inc8 LOOK-AT composition (faithful to peregrine_racing_inc8.step:233-246) ----
         # Add the camera->gate body-rate correction to the realised CTBR command, gated to the
