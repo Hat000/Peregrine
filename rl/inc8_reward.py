@@ -79,6 +79,20 @@ class Inc8RewardWeights:
     # track vs along-track), the existing NEAR-gate centering (estimator-error, σ_p0) and the look-at
     # primitive (camera, not flight path), so it composes with all of them. 0 -> the zero term (byte-id).
     through_centering: float = 0.0  # rw for the through-approach lateral centering pull (0 == off)
+    # TIME-OPTIMAL LINE PROGRESS (bridge offline-exact -> RL, 2026-06-28): a DENSE projected-progress
+    # reward along the validated 4.62 s time-OPTIMAL racing line (rl/time_optimal_line_inc8.json), to
+    # attack (a) the sparse-gate exploration wall and (b) the 8 s -> 4.62 s policy gap. ORTHOGONAL to
+    # the gate-centred arc-Γ R1' (this line is the FAST racing line, NOT dead-centre): R1' densifies
+    # along-track on the contact-safe line; this densifies toward the time-optimal line. Forward Δ
+    # arc-length only (backward clamped, anti-loiter, like R5'). 0 -> the EXACT zero term (byte-id).
+    line_progress: float = 0.0      # rw for time-optimal-line forward arc-length progress (0 == off)
+    # SPEED-PROFILE SOFT REFERENCE (separate gate): -rw * |‖v‖ - v_ref(s)| where v_ref(s) is the
+    # optimal speed at the drone's projected arc-length on the time-optimal line. The line already
+    # encodes the corner slow-downs (drag wall + turn) so the policy gets the achievable v(s) to chase
+    # without discovering it. SOFT (a shaping nudge, not a hard tracking setpoint -> the policy keeps
+    # authority to absorb inner-loop lag). 0 -> the EXACT zero term (byte-id; cf. line_progress).
+    speed_ref: float = 0.0          # rw for the time-optimal speed-profile soft reference (0 == off)
+    speed_ref_tol_mps: float = 2.0  # dead-band (m/s): |‖v‖-v_ref| within tol pays ~0 (Huber-ish floor)
 
 
 def arc_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float) -> Tensor:
@@ -248,6 +262,38 @@ def through_centering_reward(prev_inplane_m: Tensor, curr_inplane_m: Tensor,
     if rw_through_centering == 0.0:
         return torch.zeros_like(prev_inplane_m)
     return rw_through_centering * (prev_inplane_m - curr_inplane_m)
+
+
+def line_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_line_progress: float) -> Tensor:
+    """TIME-OPTIMAL LINE PROGRESS: rw * max(s_curr - s_prev, 0) -- the FORWARD arc-length advanced this
+    step along the 4.62 s time-optimal RACING line (rl/time_optimal_line_inc8.json). A DENSE projected-
+    progress signal that densifies the sparse gate reward toward the FAST line (the planner places this
+    line for time-optimality, NOT dead-centre). BACKWARD-CLAMPED (max(.,0)): unlike arc-Γ R1' (which can
+    go negative to penalise backing up on the contact-safe line), this is a one-sided pull toward the
+    fast line -- it never PENALISES a deviation (the centring/contact terms own that), it only REWARDS
+    advancing along it, so it composes cleanly with R1' (along-track on a different geometry) without a
+    tug-of-war when the two lines diverge through a corner. rw_line_progress == 0 -> the EXACT zero term
+    (byte-identical inc8; the caller still projects both s, but multiplies by 0.0)."""
+    if rw_line_progress == 0.0:
+        return torch.zeros_like(s_curr)
+    return rw_line_progress * torch.clamp(s_curr - s_prev, min=0.0)
+
+
+def speed_profile_reward(speed_mps: Tensor, v_ref_mps: Tensor, delta_s_line: Tensor,
+                         rw_speed_ref: float, tol_mps: float) -> Tensor:
+    """SPEED-PROFILE SOFT REFERENCE: -rw * relu(|‖v‖ - v_ref(s)| - tol) * advancing, where v_ref(s) is
+    the optimal speed at the drone's projected arc-length on the time-optimal line. The dead-band ``tol``
+    (relu of the excess) makes it a SOFT nudge -- small speed errors pay ~0, only a gross under/over-speed
+    is penalised, so the policy keeps authority to absorb inner-loop lag (a shaping target, not a hard
+    setpoint). PROGRESS-GATED by ``delta_s_line > 0`` (anti-loiter + only meaningful while moving along
+    the line; a stationary/backward drone has no well-defined v_ref to chase). The line already encodes
+    the corner slow-downs (drag wall + turn) so this hands the policy the achievable v(s). rw_speed_ref
+    == 0 -> the EXACT zero term (byte-identical inc8)."""
+    if rw_speed_ref == 0.0:
+        return torch.zeros_like(speed_mps)
+    excess = torch.clamp((speed_mps - v_ref_mps).abs() - tol_mps, min=0.0)
+    advancing = (delta_s_line > 0).to(speed_mps.dtype)
+    return -rw_speed_ref * excess * advancing
 
 
 def bsr3_update(spin_clock: Tensor, omega_realized: Tensor, dt: float,

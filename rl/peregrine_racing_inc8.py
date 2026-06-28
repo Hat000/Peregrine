@@ -45,8 +45,15 @@ from peregrine_racing import (PeregrineRacing, RewardWeights, compute_reward_ter
 import inc8_estimator_emul as IE                                      # noqa: E402
 import inc8_reward as R8                                             # noqa: E402
 from reference_line_torch import BatchedReferenceLine                # noqa: E402
+from time_optimal_line import TimeOptimalLine                        # noqa: E402
 
 _REFLINE_JSON = os.path.join(os.path.dirname(__file__), "reference_line_inc8.json")
+# TRACK-AGNOSTIC default optimal-line fixture for the rw_line_progress / rw_speed_ref shaping terms.
+# The line FILE is a config input (`+env.line_progress_file=<path>`): on a new track (e.g. VQ2 drop)
+# feed that track's optimal line; the reward mechanism is identical. This default (the VQ1 time-optimal
+# line) is ONLY a smoke fixture to exercise the code path -- it is NEVER loaded unless a term weight is
+# set ON (default both 0.0 -> the line is not loaded at all), so it is not a hidden VQ1 training target.
+_TOLINE_JSON_DEFAULT = os.path.join(os.path.dirname(__file__), "time_optimal_line_inc8.json")
 _FLIP_ZUP_NED = (1.0, -1.0, -1.0)       # involutory Z-up<->NED / FLU<->FRD axis flip
 
 
@@ -113,6 +120,16 @@ class PeregrineRacingInc8(PeregrineRacing):
             self.n_envs, gate_pos_ned, R_world_gate, config=self._emul_cfg, params=params,
             device=dev, dtype=self._inc8_dtype)
         self._refline = BatchedReferenceLine.load(_REFLINE_JSON, dev, self._inc8_dtype)
+        # OPTIMAL-LINE shaping (bridge offline-exact -> RL, 2026-06-28): a DENSE projected-progress
+        # reward along an ARBITRARY precomputed optimal line + an optional v(s) soft speed reference.
+        # TRACK-AGNOSTIC: the line FILE is a config input (`+env.line_progress_file=<path>`) so a new
+        # track (VQ2) just supplies its own optimal-line JSON -- the mechanism is unchanged. Built ONLY
+        # when a term weight is on (default both 0.0 -> _toline stays None, the file is NOT loaded, and
+        # the step() projection is skipped == byte-identical inc8). The default path is a smoke fixture.
+        self._toline_on = (self._inc8w.line_progress != 0.0) or (self._inc8w.speed_ref != 0.0)
+        self._toline_file = str(getattr(cfg, "line_progress_file", _TOLINE_JSON_DEFAULT))
+        self._toline = (TimeOptimalLine.load(self._toline_file, dev, self._inc8_dtype)
+                        if self._toline_on else None)
         self._spin_clock = torch.zeros(self.n_envs, device=dev, dtype=self._inc8_dtype)
 
         # ---- active-perception LOOK-AT primitive (architecture pivot S0; default OFF) ----
@@ -272,6 +289,17 @@ class PeregrineRacingInc8(PeregrineRacing):
                 tg, float(self.dt), accept_u, accel_noise, fix_noise)
             s_prev = self._refline.progress(prev_pos_ned)
             s_curr = self._refline.progress(cur_pos_ned)
+            # TIME-OPTIMAL line projection (bridge offline-exact -> RL): forward arc-length progress on
+            # the 4.62 s racing line + the optimal v_ref at the drone's projected arc-length. Computed
+            # ONLY when a term is on (_toline is None otherwise -> the terms short-circuit to the exact
+            # zero tensor below == byte-identical inc8). vel in NED Z-up->NED via self._flip_t (== f).
+            if self._toline is not None:
+                ls_prev = self._toline.progress(prev_pos_ned)
+                ls_curr = self._toline.progress(cur_pos_ned)
+                cur_speed_to = torch.linalg.norm(self._v * f, dim=-1)
+                v_ref_to = self._toline.speed_ref(cur_pos_ned)
+            else:
+                ls_prev = ls_curr = cur_speed_to = v_ref_to = None
             geom = self._emu._last_geom
             err_ip = self._emu.gate_frame_error_inplane(tg, cur_pos_ned)
             triple = self._emu.confidence_channel(tg)
@@ -364,8 +392,22 @@ class PeregrineRacingInc8(PeregrineRacing):
         prev_ip = torch.sqrt(prev_rel_t[..., 1] ** 2 + prev_rel_t[..., 2] ** 2)
         curr_ip = torch.sqrt(curr_rel_t[..., 1] ** 2 + curr_rel_t[..., 2] ** 2)
         tc = R8.through_centering_reward(prev_ip, curr_ip, self._inc8w.through_centering)
+        # TIME-OPTIMAL line shaping (bridge offline-exact -> RL, 2026-06-28). DENSE projected progress
+        # toward the 4.62 s racing line + the optional soft v(s) speed reference. Both default 0.0 ->
+        # the EXACT zero tensor (byte-identical inc8: _toline is None, lp_delta defaults to a zeros
+        # tensor, and the term funcs short-circuit at weight 0.0). lp_delta also gates the speed term
+        # (advancing-only). ORTHOGONAL to arc-Γ R1' (different geometry: the fast line, not dead-centre).
+        if self._toline is not None:
+            lp_delta = ls_curr - ls_prev
+            lp = R8.line_progress_reward(ls_curr, ls_prev, self._inc8w.line_progress)
+            sp = R8.speed_profile_reward(cur_speed_to, v_ref_to, lp_delta,
+                                         self._inc8w.speed_ref, self._inc8w.speed_ref_tol_mps)
+        else:
+            lp_delta = torch.zeros_like(s_curr)
+            lp = torch.zeros_like(s_curr)
+            sp = torch.zeros_like(s_curr)
         spin_pen = self.rw_spin * spin_abort.float()
-        reward = reward_frozen + r1p + gt + cs + r5 + fb + cr + tc - spin_pen
+        reward = reward_frozen + r1p + gt + cs + r5 + fb + cr + tc + lp + sp - spin_pen
 
         loss = (-reward).detach()
         reward = reward.detach()
@@ -426,11 +468,14 @@ class PeregrineRacingInc8(PeregrineRacing):
             band_az_abs.to(mdt),                  # inc8_band_az_abs_deg (look-at sign/efficacy)
             band_el_abs.to(mdt),                  # inc8_band_el_abs_deg (vertical residual / S2 sign-check)
             tc.mean().to(mdt),                    # inc8_through_centering (lateral restoring reward)
+            lp.mean().to(mdt),                    # inc8_line_progress (time-optimal dense progress reward)
+            sp.mean().to(mdt),                    # inc8_speed_ref (time-optimal speed-profile soft ref)
+            lp_delta.mean().to(mdt),              # inc8_line_delta_s_m (mean forward arc-length step)
         ])
         (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
          age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v,
          lockband_point_v, fix_bonus_v, centering_v, band_az_v, band_el_v,
-         through_centering_v) = metric_vec.tolist()  # ONE sync
+         through_centering_v, line_progress_v, speed_ref_v, line_delta_s_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
             "obs_nonfinite": obs_nonfinite_v,
             "inc8_fix_rate": fix_rate_v,
@@ -450,6 +495,9 @@ class PeregrineRacingInc8(PeregrineRacing):
             "inc8_band_az_abs_deg": band_az_v,
             "inc8_band_el_abs_deg": band_el_v,
             "inc8_through_centering": through_centering_v,
+            "inc8_line_progress": line_progress_v,
+            "inc8_speed_ref": speed_ref_v,
+            "inc8_line_delta_s_m": line_delta_s_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())
