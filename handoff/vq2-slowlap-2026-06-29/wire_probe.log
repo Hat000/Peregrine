@@ -1,0 +1,14 @@
+connected.
+=== WIRE PROBE ===
+position_ned : None
+attitude_wxyz: None
+sim_time_ns  : 395757593000
+sim_time_s   : 395.757593
+distinct sim_time samples in 4s: 380
+distinct RACE_STATUS updates in 4s: 17
+RACE_STATUS  : {'sim_boot_time_ms': 395763, 'race_start_boot_time_ms': 75895, 'race_finish_time_ns': -1, 'active_gate_index': 0, 'last_gate_race_time': -1, 'started': True, 'finished': False}
+to_go_s      : -319.868
+started      : True
+finished     : False
+active_gate  : 0
+track_gates (map on wire): 0

@@ -1,0 +1,332 @@
+[
+  {
+    "i": 0,
+    "frame_id": 982,
+    "n_detections": 2,
+    "mean_bgr": [
+      35.2,
+      36.2,
+      35.3
+    ],
+    "red_frac": 0.0234
+  },
+  {
+    "i": 1,
+    "frame_id": 983,
+    "n_detections": 1,
+    "mean_bgr": [
+      35.2,
+      36.1,
+      35.3
+    ],
+    "red_frac": 0.0237
+  },
+  {
+    "i": 2,
+    "frame_id": 984,
+    "n_detections": 1,
+    "mean_bgr": [
+      35.1,
+      36.1,
+      35.3
+    ],
+    "red_frac": 0.024
+  },
+  {
+    "i": 3,
+    "frame_id": 985,
+    "n_detections": 1,
+    "mean_bgr": [
+      35.0,
+      36.1,
+      35.3
+    ],
+    "red_frac": 0.0241
+  },
+  {
+    "i": 4,
+    "frame_id": 986,
+    "n_detections": 1,
+    "mean_bgr": [
+      34.8,
+      35.8,
+      35.0
+    ],
+    "red_frac": 0.0238
+  },
+  {
+    "i": 5,
+    "frame_id": 987,
+    "n_detections": 1,
+    "mean_bgr": [
+      34.7,
+      35.6,
+      34.8
+    ],
+    "red_frac": 0.0246
+  },
+  {
+    "i": 6,
+    "frame_id": 988,
+    "n_detections": 1,
+    "mean_bgr": [
+      35.0,
+      35.4,
+      35.0
+    ],
+    "red_frac": 0.0267
+  },
+  {
+    "i": 7,
+    "frame_id": 989,
+    "n_detections": 2,
+    "mean_bgr": [
+      35.3,
+      35.7,
+      35.8
+    ],
+    "red_frac": 0.0309
+  },
+  {
+    "i": 8,
+    "frame_id": 999,
+    "n_detections": 0,
+    "mean_bgr": [
+      12.8,
+      13.1,
+      13.1
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 9,
+    "frame_id": 1000,
+    "n_detections": 0,
+    "mean_bgr": [
+      9.9,
+      10.0,
+      10.0
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 10,
+    "frame_id": 1001,
+    "n_detections": 0,
+    "mean_bgr": [
+      8.5,
+      8.5,
+      8.5
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 11,
+    "frame_id": 1002,
+    "n_detections": 0,
+    "mean_bgr": [
+      7.5,
+      7.6,
+      7.6
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 12,
+    "frame_id": 1003,
+    "n_detections": 0,
+    "mean_bgr": [
+      7.7,
+      7.8,
+      7.8
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 13,
+    "frame_id": 1004,
+    "n_detections": 0,
+    "mean_bgr": [
+      6.7,
+      6.8,
+      6.8
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 14,
+    "frame_id": 1012,
+    "n_detections": 0,
+    "mean_bgr": [
+      7.7,
+      7.8,
+      9.9
+    ],
+    "red_frac": 0.0016
+  },
+  {
+    "i": 15,
+    "frame_id": 1013,
+    "n_detections": 0,
+    "mean_bgr": [
+      7.1,
+      7.2,
+      7.3
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 16,
+    "frame_id": 1014,
+    "n_detections": 0,
+    "mean_bgr": [
+      5.1,
+      5.2,
+      5.2
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 17,
+    "frame_id": 1015,
+    "n_detections": 0,
+    "mean_bgr": [
+      4.2,
+      4.2,
+      4.2
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 18,
+    "frame_id": 1016,
+    "n_detections": 0,
+    "mean_bgr": [
+      4.0,
+      4.0,
+      4.0
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 19,
+    "frame_id": 1017,
+    "n_detections": 0,
+    "mean_bgr": [
+      4.1,
+      4.1,
+      4.1
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 20,
+    "frame_id": 1018,
+    "n_detections": 0,
+    "mean_bgr": [
+      4.8,
+      4.9,
+      4.9
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 21,
+    "frame_id": 1026,
+    "n_detections": 0,
+    "mean_bgr": [
+      4.6,
+      4.7,
+      4.7
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 22,
+    "frame_id": 1027,
+    "n_detections": 0,
+    "mean_bgr": [
+      5.2,
+      5.2,
+      5.2
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 23,
+    "frame_id": 1028,
+    "n_detections": 0,
+    "mean_bgr": [
+      6.1,
+      6.1,
+      6.1
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 24,
+    "frame_id": 1029,
+    "n_detections": 0,
+    "mean_bgr": [
+      7.6,
+      7.7,
+      7.8
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 25,
+    "frame_id": 1030,
+    "n_detections": 0,
+    "mean_bgr": [
+      9.1,
+      9.3,
+      9.3
+    ],
+    "red_frac": 0.0
+  },
+  {
+    "i": 26,
+    "frame_id": 1039,
+    "n_detections": 0,
+    "mean_bgr": [
+      28.0,
+      31.9,
+      32.9
+    ],
+    "red_frac": 0.0046
+  },
+  {
+    "i": 27,
+    "frame_id": 1040,
+    "n_detections": 0,
+    "mean_bgr": [
+      28.8,
+      30.7,
+      31.8
+    ],
+    "red_frac": 0.0001
+  },
+  {
+    "i": 28,
+    "frame_id": 1041,
+    "n_detections": 0,
+    "mean_bgr": [
+      19.6,
+      20.6,
+      25.0
+    ],
+    "red_frac": 0.0001
+  },
+  {
+    "i": 29,
+    "frame_id": 1042,
+    "n_detections": 0,
+    "mean_bgr": [
+      19.4,
+      20.3,
+      29.2
+    ],
+    "red_frac": 0.0
+  }
+]

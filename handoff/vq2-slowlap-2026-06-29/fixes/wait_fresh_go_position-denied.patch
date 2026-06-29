@@ -1,0 +1,33 @@
+diff --git a/rl/fly_rl.py b/rl/fly_rl.py
+index 4bfe03a..3d51bd4 100644
+--- a/rl/fly_rl.py
++++ b/rl/fly_rl.py
+@@ -785,13 +785,17 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
+         client.pump()
+         s  = client.state
+         rs = client.race_status
+-        live = s.position_ned is not None and s.sim_time_ns > 0
++        # F-D/VQ2: a self-localizing wire denies raw position_ned (and attitude) — the sim is
++        # still "live" if its clock is advancing. Don't gate GO acceptance on wire position;
++        # use sim_time for liveness and RACE_STATUS.active_gate_index as the start-line authority.
++        have_pos = s.position_ned is not None
++        live = s.sim_time_ns > 0
+         now  = time.monotonic()
+         if rs and rs["started"] and live:
+             to_go = rs["race_start_boot_time_ms"] - rs["sim_boot_time_ms"]
+             fresh = rs["race_start_boot_time_ms"] >= 0 and to_go > -2000.0
+             if fresh and to_go <= -margin_ms:
+-                pos_off = float(np.linalg.norm(s.position_ned))
++                pos_off = float(np.linalg.norm(s.position_ned)) if have_pos else 0.0
+                 if pos_off > 5.0:
+                     print(f"\n  stale GO: drone {pos_off:.0f} m from origin — waiting on.",
+                           file=sys.stderr)
+@@ -813,7 +817,7 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
+                 gi = rs.get("active_gate_index")
+                 at_gate0 = gi is None or int(gi) == 0
+                 not_finished = not rs.get("finished")
+-                pos_off = float(np.linalg.norm(s.position_ned))
++                pos_off = float(np.linalg.norm(s.position_ned)) if have_pos else 0.0
+                 if at_gate0 and not_finished and pos_off <= 5.0:
+                     print(f"\n  LATE-JOIN GO!  to_go={to_go/1000:+.2f}s  pos_off={pos_off:.2f} m"
+                           f"  gi={gi}.  {telemetry_summary(client)}")
