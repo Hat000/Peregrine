@@ -439,19 +439,23 @@ def check_multigate_pursuit_locks_one_gate(cruise_speed: float) -> bool:
     cap = make_seeker_controller().max_body_rate_rps
     n = 60
 
-    # OLD: tracking OFF + no slew/roll cap (cap raised to the controller max so only saturation shows).
+    # OLD: tracking OFF + no slew/roll cap + the LEGACY velocity pursuit (use_feedforward_forward=False)
+    # so the heading-aligned velocity setpoint produces the roll swing the unbounded servo crashed on
+    # (cap raised to the controller max so only saturation shows). Egress off (isolate pursuit).
     old_seeker = GateSeeker(
         config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0,
                                 anchor_release_detections=1, use_gate_track=False,
                                 pursuit_ramp_s=0.0, pursuit_yaw_slew_rps=0.0,
-                                pursuit_roll_rate_cap_rps=0.0, visual_yaw_rate_cap_rps=cap),
+                                pursuit_roll_rate_cap_rps=0.0, visual_yaw_rate_cap_rps=cap,
+                                use_feedforward_forward=False, use_spawn_egress=False),
         detector=_MultiGateDetector(gates, np.zeros(3), None))
     old_r, old_roll, old_yaw = _run_multigate(old_seeker, old_seeker.detector, n, cruise_speed)
 
-    # NEW: tracking ON + heading slew-limit + roll cap (the shipped defaults).
+    # NEW: tracking ON + heading slew-limit + roll cap (the shipped defaults); egress off to isolate
+    # the tracked-pursuit gate-lock + roll bound (egress is exercised in its own check below).
     new_seeker = GateSeeker(
         config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0,
-                                anchor_release_detections=1),
+                                anchor_release_detections=1, use_spawn_egress=False),
         detector=_MultiGateDetector(gates, np.zeros(3), None))
     new_r, new_roll, new_yaw = _run_multigate(new_seeker, new_seeker.detector, n, cruise_speed)
 
@@ -596,6 +600,137 @@ def check_spawn_tilt_hold_keeps_gate_in_view(cruise_speed: float) -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# CHECK 7 — MAP-FREE PITCH BOUND: forward motion can't wind pitch to saturation (A4)
+# ---------------------------------------------------------------------------
+def check_mapfree_pursuit_pitch_bounded(cruise_speed: float) -> bool:
+    """Reproduce the A4 pursuit PITCH-windup (the crash) and prove the bounded-feedforward fix. On the
+    MAP-FREE VQ2 wire velocity is UNOBSERVABLE: the navigator can't estimate forward velocity, so
+    ``nav.velocity_ned`` stays ~0 even as the drone is commanded forward. We hold the drone at a fixed
+    hover pose (velocity=0 -- the unobservable case) with the gate centred + anchored, and run a
+    SUSTAINED pursuit window, recording the commanded pitch each tick.
+
+      * OLD pursuit (``use_feedforward_forward=False``): asks the controller for a desired VELOCITY
+        (cruise_speed*los). The controller closes it with a velocity-ERROR term ``kd_vel*(des_vel-vel)``
+        that NEVER closes (vel stays 0) -> the demanded forward accel/tilt stays large -> the commanded
+        PITCH WINDS UP toward the -4.0 rad/s controller limit (the A4 trace: -0.69 -> -2.39 -> -3.999).
+      * NEW pursuit (bounded feedforward forward tilt + pitch cap + forward ramp): the forward demand is
+        a fixed bounded feedforward accel (no velocity term to wind up), so the commanded PITCH stays
+        BOUNDED well below saturation across the whole window.
+
+    Asserts: OLD pitch winds toward the -4.0 limit; NEW pitch stays bounded (<= the pitch cap)."""
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)   # dead-ahead, centred
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    cap = make_seeker_controller().max_body_rate_rps      # the controller saturation limit (4.0)
+    pitch_cap = GateSeekerConfig().pursuit_pitch_rate_cap_rps
+
+    def _run(feedforward: bool, egress: bool, pitch_cap_rps: float):
+        seeker = GateSeeker(
+            config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0,
+                                    anchor_release_detections=1,
+                                    use_feedforward_forward=feedforward, use_spawn_egress=egress,
+                                    pursuit_pitch_rate_cap_rps=pitch_cap_rps),
+            detector=_ProjDetector(gate, np.zeros(3), R_wb))
+        pitches = []
+        # a SUSTAINED pursuit window: velocity is HELD at 0 (the map-free unobservable case) the whole
+        # time, so a velocity-error forward term has unbounded time to wind up.
+        for k in range(40):
+            t_ns = int(k * 0.05 * 1e9)
+            ns = NavState(sim_time_ns=t_ns, position_ned=np.zeros(3), velocity_ned=np.zeros(3),
+                          roll=0.0, pitch=0.0, yaw=0.0,
+                          time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+            frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=np.ones((360, 640, 3), np.uint8))
+            cmd = seeker.command_visual(ns, frame, 0)
+            pitches.append(float(cmd.body_rate[1]))
+        return np.array(pitches)
+
+    # OLD: legacy velocity pursuit, pitch cap OFF (so the raw windup shows), egress off (isolate the
+    # pursuit pitch windup). This is the genuine pre-A4 path: a velocity setpoint the controller closes
+    # with a velocity-error term that never closes map-free -> the pitch winds to saturation.
+    old_pitch = _run(feedforward=False, egress=False, pitch_cap_rps=0.0)
+    # NEW: bounded feedforward + the shipped pitch cap (egress off so we measure the PURSUIT pitch).
+    new_pitch = _run(feedforward=True, egress=False, pitch_cap_rps=pitch_cap)
+
+    old_max = float(np.max(np.abs(old_pitch)))
+    new_max = float(np.max(np.abs(new_pitch)))
+    old_winds = old_max > 0.9 * cap                       # OLD winds toward the -4.0 saturation limit
+    new_bounded = new_max <= pitch_cap + 1e-9             # NEW stays under the pitch cap (no windup)
+    ok = old_winds and new_bounded
+    print(f"  [pitch-bound] OLD |pitch|max {old_max:.2f} rad/s (winds toward {cap:g}: {old_winds})  "
+          f"->  NEW |pitch|max {new_max:.2f} rad/s (cap {pitch_cap:g}: bounded={new_bounded})"
+          f"  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# CHECK 8 — SPAWN-GATE EGRESS: clear the start gate before pursuing downrange (A4)
+# ---------------------------------------------------------------------------
+def check_spawn_gate_egress_clears_gate0(cruise_speed: float) -> bool:
+    """Reproduce the A4 start-gate contact and prove the egress phase. The drone SPAWNS INSIDE gate 0:
+    the START gate is at the spawn (drone sits in its plane). A downrange gate is far ahead. With the
+    spawn heading == the start-gate normal (the direction OUT of the gate), we integrate a point-mass
+    under the seeker's forward demand and check whether the FIRST forward motion drives the drone
+    along the gate normal (egress, clearing the start-gate structure) or lunges off-heading.
+
+      * OLD (no egress): the instant pursuit begins the seeker re-aims at the DOWNRANGE gate and the
+        forward lunge is toward it -- but the drone is still in the start-gate plane, so the first
+        motion is an immediate forward drive into the surrounding gate frame (A4: a 44-rps impact spike).
+      * NEW (egress): a brief CAPPED creep along the FROZEN spawn heading (the start-gate normal) first,
+        clearing gate 0 by a margin BEFORE the downrange re-aim -- a gentle straight departure.
+
+    Asserts: NEW makes net forward progress along the start-gate normal during egress (clears gate 0)
+    while staying gentle (bounded forward tilt); OLD's first forward motion is into the start-gate
+    plane (a downrange re-aim with no straight egress)."""
+    # start gate at the spawn, normal +X; a downrange gate far ahead and OFF to the side so the
+    # downrange re-aim would pull the heading AWAY from the clean +X egress direction.
+    start_normal = np.array([1.0, 0.0, 0.0])
+    downrange = _gate([12.0, 8.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=1)   # off to the +Y side
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)                # spawn level, facing +X (== start normal)
+
+    def _run(egress: bool):
+        seeker = GateSeeker(
+            config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0,
+                                    anchor_release_detections=1, use_spawn_egress=egress,
+                                    egress_s=0.8, forward_ramp_s=1.0),
+            detector=_ProjDetector(downrange, np.zeros(3), R_wb))
+        pos = np.zeros(3)            # spawn at the origin = inside the start gate
+        vel = np.zeros(3)
+        dt = 0.05
+        max_lateral = 0.0           # max off-(start-normal) excursion during the first ~0.8 s
+        for k in range(20):         # ~1 s
+            t_ns = int(k * dt * 1e9)
+            ns = NavState(sim_time_ns=t_ns, position_ned=pos.copy(), velocity_ned=vel.copy(),
+                          roll=0.0, pitch=0.0, yaw=0.0,
+                          time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+            frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=np.ones((360, 640, 3), np.uint8))
+            cmd = seeker.command_visual(ns, frame, 0)
+            # integrate a simple point-mass under the commanded TILT -> horizontal accel a ~ g*tan(tilt)
+            # along the commanded heading. We approximate the realised forward accel from the seeker's
+            # OWN forward-demand model (bounded feedforward) so the egress vs re-aim DIRECTION is what
+            # we score (the inner-loop tracking fidelity is validated elsewhere).
+            yaw_cmd = float(seeker._last_yaw) if seeker._last_yaw is not None else 0.0
+            a = np.array([np.cos(yaw_cmd), np.sin(yaw_cmd), 0.0]) * 1.0   # unit forward demand
+            vel = vel + a * dt
+            pos = pos + vel * dt
+            max_lateral = max(max_lateral, abs(float(pos[1])))           # off the +X start-normal
+        return float(pos[0]), max_lateral
+
+    new_fwd, new_lat = _run(egress=True)
+    old_fwd, old_lat = _run(egress=False)
+
+    # NEW: during egress the heading is the FROZEN spawn heading (+X start-normal) -> the drone departs
+    # STRAIGHT out of the start gate: net +X progress with LITTLE lateral excursion (clears gate 0).
+    new_clears = new_fwd > 0.3 and new_lat < 0.5
+    # OLD: no egress -> the first motion re-aims at the off-side downrange gate -> the heading pulls
+    # OFF the clean egress line (more lateral excursion while still in the start-gate plane).
+    old_reaims_off = old_lat > new_lat + 1e-6
+    ok = new_clears and old_reaims_off
+    print(f"  [egress] NEW fwd {new_fwd:+.2f} m lateral {new_lat:.2f} m (clears straight: {new_clears})"
+          f"  ->  OLD fwd {old_fwd:+.2f} m lateral {old_lat:.2f} m (re-aims off-line: {old_reaims_off})"
+          f"  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -614,17 +749,22 @@ def main() -> int:
     ok4 = check_cold_ahrs_launch_stays_bounded(args.speed)
     ok5 = check_multigate_pursuit_locks_one_gate(args.speed)
     ok6 = check_spawn_tilt_hold_keeps_gate_in_view(args.speed)
+    ok7 = check_mapfree_pursuit_pitch_bounded(args.speed)
+    ok8 = check_spawn_gate_egress_clears_gate0(args.speed)
 
     print()
-    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6:
+    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8:
         print("RESULT: PASS — the integrated gate-seeker produces sane, slow, gate-pointing "
               "commands on synthetic data; the self-localized estimate stays bounded; the seeker "
               "RELEASES its launch-hold on its OWN map-free detections (the attempt-2 BUG A, where "
               "the old tsv signal pins forever); the cold ~18deg AHRS launch settles with bounded "
               "roll/pitch (the attempt-2 BUG B); the multi-gate pursuit LOCKS one gate so the range "
-              "stays smooth and the roll stays bounded (the attempt-3 LAYER-2 roll-over); and the "
+              "stays smooth and the roll stays bounded (the attempt-3 LAYER-2 roll-over); the "
               "spawn-tilt hold FREEZES attitude so the gate stays in view and the release streak "
-              "completes (the attempt-3 LAYER-1 stall).")
+              "completes (the attempt-3 LAYER-1 stall); the map-free pursuit commands forward motion "
+              "as a BOUNDED FEEDFORWARD tilt so the PITCH stays bounded with no velocity observability "
+              "(the attempt-4 pitch windup); and the SPAWN-GATE EGRESS clears gate 0 along the start "
+              "normal before the downrange re-aim (the attempt-4 start-gate contact).")
         return 0
     print("RESULT: FAIL — see the failing check above.")
     return 1

@@ -214,6 +214,48 @@ class GateSeekerConfig:
     # saturate roll into a roll-over (A3's crash axis). Well below the controller's max_body_rate_rps.
     pursuit_roll_rate_cap_rps: float = 1.5
 
+    # --- BOUNDED FEEDFORWARD FORWARD TILT (the 2026-06-29 attempt-4 PITCH-windup fix) ---
+    # A4: with roll + yaw capped, PITCH was the last uncapped pursuit axis -- and it WOUND UP to the
+    # -4.0 rad/s controller limit over ~1 s (cmd_pitch -0.69 -> -2.39 -> -3.999), then crashed. ROOT
+    # CAUSE: the old pursuit asked the controller for a desired VELOCITY (cruise_speed*los) and the
+    # decoupled controller closes it with a velocity-ERROR term ``kd_vel*(des_vel - vel)``. On the
+    # MAP-FREE VQ2 wire velocity is UNOBSERVABLE (no position/velocity on the wire; the navigator's
+    # dead-reckoned velocity stays ~0), so the velocity error NEVER closes -> the demanded forward
+    # accel stays at ~kd_vel*cruise_speed -> the tilt -> the pitch rate saturates. You CANNOT use a
+    # velocity setpoint for forward motion in the self-localizing regime.
+    #
+    # THE FIX (this block): command forward motion as a BOUNDED FEEDFORWARD horizontal acceleration
+    # (a small fixed forward demand the controller adds as PURE feedforward, ``sp.accel_ned``, with NO
+    # velocity_ned term to wind up), RAMPED in over ``forward_ramp_s`` and the pitch rate hard-CAPPED
+    # symmetric to the roll cap. The forward tilt is therefore bounded + rate-limited + ramped and can
+    # never saturate. ``use_feedforward_forward`` gates the whole behaviour (off => legacy velocity).
+    use_feedforward_forward: bool = True
+    # The bounded forward horizontal acceleration demand (m/s^2) along the (slewed) gate heading. Small
+    # so the steady forward tilt is gentle: forward accel a -> lean ~atan(a/g), so 1.2 m/s^2 ~ 7 deg.
+    # This is the CREEP demand for the slow lap; it does NOT depend on (unobservable) velocity.
+    forward_accel_mps2: float = 1.2
+    # Cap the PITCH (FRD body-rate Y) command in pursuit -- the A4 crash axis. Symmetric to the roll
+    # cap; well below the controller's max_body_rate_rps so the forward lean can never wind to the
+    # -4.0 limit even on a transient attitude error.
+    pursuit_pitch_rate_cap_rps: float = 1.5
+    # Ramp the forward-accel demand up from zero over this window from the anchor release, so the
+    # forward lean eases IN (the first pursuit ticks don't step to the full forward tilt). Mirrors the
+    # post-release authority ramp. 0.0 => forward demand applied at full from tick 1 (legacy step).
+    forward_ramp_s: float = 1.0
+
+    # --- SPAWN-GATE EGRESS (the 2026-06-29 attempt-4 start-gate-contact fix) ---
+    # A4: the drone SPAWNS INSIDE the start gate (gate 0). The first forward motion drove it straight
+    # into the start-gate structure (realized IMU: a 44-rps spike at impact). THE FIX: after release,
+    # before full pursuit, run a brief EGRESS phase -- a small CAPPED forward creep along the START-GATE
+    # NORMAL (the spawn heading, which is the direction OUT of the gate the drone is sitting in) -- to
+    # clear gate 0, then transition to normal pursuit. Gentle + bounded (it reuses the same feedforward
+    # tilt + pitch cap as pursuit, only the heading is FROZEN to the spawn heading, not slewed to the
+    # downrange gate). use_spawn_egress gates it; egress_s is its duration.
+    use_spawn_egress: bool = True
+    egress_s: float = 0.8
+    # The egress forward demand (m/s^2): a gentle straight creep out of the spawn gate. Small.
+    egress_accel_mps2: float = 1.0
+
     # --- ANCHOR RELEASE on the seeker's OWN detections (the 2026-06-29 attempt-2 BUG A fix) ---
     # On the LIVE VQ2 wire the navigator is MAP-FREE (gates=[]), so its map-associated fix path
     # never fires and ``nav.time_since_vision_update_s`` stays inf FOREVER -- the old anchor-release
@@ -279,6 +321,8 @@ class GateSeeker:
     # -- post-release pursuit ramp (Layer 2b): the sim-time the anchor released --
     _release_t_ns: int | None = field(default=None, repr=False)
     _last_pursuit_t_ns: int | None = field(default=None, repr=False)  # last pursuit tick (heading slew dt)
+    # -- spawn-gate egress (A4 fix): the heading frozen at release = the direction OUT of the start gate --
+    _spawn_heading: float | None = field(default=None, repr=False)
 
     # -- guidance: NavState + active gate -> Setpoint -----------------------
     def plan(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> Setpoint:
@@ -492,6 +536,9 @@ class GateSeeker:
                 or np.isfinite(nav.time_since_vision_update_s)):
             if not self._anchored:
                 self._release_t_ns = int(nav.sim_time_ns)   # start the post-release pursuit ramp clock
+                # FREEZE the spawn heading = the direction OUT of the start gate the drone sits in
+                # (the egress phase creeps along it to clear gate 0 before re-aiming downrange).
+                self._spawn_heading = float(nav.yaw)
             self._anchored = True
 
         # --- regime 0: POST-ARM SETTLE -> conservative level hold, all rates clamped, thrust bounded ---
@@ -506,12 +553,22 @@ class GateSeeker:
             return self._hold_command(nav, yaw_rate_cap=self.config.anchor_yaw_rate_rps,
                                       attitude_safe=True)
 
+        # --- regime 1.5: SPAWN-GATE EGRESS (just released, drone still inside gate 0) -> a brief,
+        # CAPPED forward creep along the FROZEN spawn heading (the direction OUT of the start gate),
+        # to clear the start-gate structure BEFORE re-aiming at the downrange gate. The forward
+        # demand is a bounded feedforward tilt (NOT a velocity setpoint), pitch-rate capped, so it
+        # cannot lunge -- it eases the drone out of the spawn gate. (A4: the first forward motion
+        # drove straight into the start-gate frame; the egress departs the spawn gate first.) ---
+        if self._in_egress(int(nav.sim_time_ns)):
+            return self._egress_command(nav)
+
         # --- regime 2: NO DETECTION -> coast level on the last heading, gentle re-acquire ---
         if pose is None:
             return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
                                       attitude_safe=True)
 
-        # --- regime 3: PURSUIT -> velocity toward the SEEN opening + centering yaw, smoothly capped ---
+        # --- regime 3: PURSUIT -> bounded feedforward forward tilt toward the SEEN opening +
+        # centering yaw, pitch + roll capped, forward demand ramped (never a velocity setpoint) ---
         return self._visual_pursuit_command(nav, pose)
 
     def _in_settle(self, sim_time_ns: int) -> bool:
@@ -535,15 +592,18 @@ class GateSeeker:
     def _visual_pursuit_command(self, nav: NavState, pose: GatePose) -> ControlCommand:
         """Build the slow pursuit CTBR from the SEEN gate's relative bearing (no map, no abs position).
 
-        Desired velocity = cruise_speed along the world bearing to the gate, but HOLD ALTITUDE (zero
-        the vertical component) so slow flight stays level + blur-free (z is the estimator's weakest
-        axis on VQ2). Yaw centers the gate bearing's horizontal heading.
+        FORWARD MOTION (A4 PITCH-windup fix): commanded as a BOUNDED FEEDFORWARD horizontal
+        acceleration (``forward_accel_mps2`` along the slewed gate heading), RAMPED in over
+        ``forward_ramp_s`` -- NOT a velocity setpoint. Map-free, velocity is unobservable, so a
+        velocity-error term (the old ``cruise_speed*los`` path) never closes and winds the pitch to
+        the controller limit. A fixed feedforward forward demand depends on no velocity estimate, so
+        the forward tilt is BOUNDED by construction; the PITCH rate is then hard-capped symmetric to
+        the roll cap. Altitude is held by the alt-hold (the forward demand is purely horizontal).
+        ``use_feedforward_forward=False`` restores the legacy velocity-setpoint pursuit.
 
-        LAYER-2b smoothing (the A3 roll-over fix): the commanded heading is RATE-LIMITED so a noisy
-        bearing can't STEP the yaw setpoint (a heading jump becomes a saturating roll/yaw); a
-        post-release PURSUIT RAMP scales authority up from a small floor over ``pursuit_ramp_s`` so
-        the FIRST pursuit ticks ease in instead of leaning hard on a still-settling bearing; and the
-        ROLL command is capped well below saturation so a residual bearing swing can never roll over."""
+        LAYER-2b smoothing (the A3 roll-over fix, retained): the commanded heading is RATE-LIMITED so
+        a noisy bearing can't STEP the yaw setpoint; a post-release PURSUIT RAMP scales lean authority
+        up from a small floor over ``pursuit_ramp_s``; the ROLL command is capped below saturation."""
         gdir = self._gate_dir_world(nav, pose)
         horiz = np.array([gdir[0], gdir[1], 0.0])
         los = _unit(horiz, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
@@ -558,6 +618,14 @@ class GateSeeker:
         ramp = self._pursuit_ramp(int(nav.sim_time_ns))
         launch = self._launch_ramp(int(nav.sim_time_ns))
         eff_ramp = ramp if launch is None else min(ramp, launch)
+        if self.config.use_feedforward_forward:
+            # BOUNDED FEEDFORWARD forward tilt toward the seen gate: a fixed forward accel demand
+            # (ramped), NO velocity term to wind up. Cross-track centering is owned by the yaw (the
+            # heading points at the gate, so "forward" == toward the opening).
+            return self._feedforward_command(nav, los, yaw, eff_ramp,
+                                              self.config.forward_accel_mps2,
+                                              self._forward_accel_ramp(int(nav.sim_time_ns)))
+        # LEGACY: a desired-velocity setpoint (the controller closes it with a velocity-error term).
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
             velocity_ned=self.config.cruise_speed * los,    # level pursuit (altitude held by alt-hold)
@@ -566,7 +634,70 @@ class GateSeeker:
         )
         cmd = self.controller.command(nav, sp)
         cmd = self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
-        return self._cap_roll_rate(cmd, self.config.pursuit_roll_rate_cap_rps)
+        cmd = self._cap_roll_rate(cmd, self.config.pursuit_roll_rate_cap_rps)
+        return self._cap_pitch_rate(cmd, self.config.pursuit_pitch_rate_cap_rps)
+
+    def _feedforward_command(self, nav: NavState, los: np.ndarray, yaw: float,
+                             launch_ramp: float | None, accel_mps2: float,
+                             demand_ramp: float) -> ControlCommand:
+        """Shared bounded-feedforward forward-tilt CTBR (pursuit + egress). Commands a horizontal
+        acceleration ``accel_mps2 * demand_ramp`` along the unit world heading ``los`` via
+        ``Setpoint.accel_ned`` -- the controller adds it as PURE feedforward (no velocity-error term
+        that could wind up map-free) and turns it into a tilt. The pursuit/launch authority ramp,
+        yaw cap, roll cap and PITCH cap are then applied so the forward lean is bounded + rate-limited
+        + ramped and can NEVER saturate pitch (the A4 crash). Altitude is held by the alt-hold."""
+        a_fwd = float(max(accel_mps2, 0.0)) * float(np.clip(demand_ramp, 0.0, 1.0))
+        sp = Setpoint(
+            sim_time_ns=int(nav.sim_time_ns),
+            accel_ned=a_fwd * np.asarray(los, dtype=np.float64),   # bounded feedforward forward tilt
+            yaw=yaw,
+            launch_ramp=launch_ramp,
+        )
+        cmd = self.controller.command(nav, sp)
+        cmd = self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
+        cmd = self._cap_roll_rate(cmd, self.config.pursuit_roll_rate_cap_rps)
+        return self._cap_pitch_rate(cmd, self.config.pursuit_pitch_rate_cap_rps)
+
+    def _in_egress(self, sim_time_ns: int) -> bool:
+        """True during the SPAWN-GATE EGRESS window: the first ``egress_s`` after the anchor releases.
+        A brief straight creep along the frozen spawn heading clears the start gate (the drone spawns
+        inside gate 0) before normal downrange pursuit. Off when ``use_spawn_egress`` is False / not
+        yet released."""
+        if not self.config.use_spawn_egress or self.config.egress_s <= 0.0:
+            return False
+        if self._release_t_ns is None or self._spawn_heading is None:
+            return False
+        return (int(sim_time_ns) - self._release_t_ns) / 1e9 < self.config.egress_s
+
+    def _egress_command(self, nav: NavState) -> ControlCommand:
+        """SPAWN-GATE EGRESS: a small CAPPED forward creep along the FROZEN spawn heading (the
+        direction OUT of the start gate the drone sits in), to clear gate 0 before re-aiming at the
+        downrange gate. Reuses the bounded feedforward forward-tilt + pitch cap; the heading is the
+        spawn heading (NOT slewed toward the downrange gate) so the drone departs straight out of the
+        spawn gate rather than turning + lunging into its frame."""
+        yaw0 = self._spawn_heading if self._spawn_heading is not None else float(nav.yaw)
+        self._last_yaw = yaw0
+        los = np.array([np.cos(yaw0), np.sin(yaw0), 0.0])
+        launch = self._launch_ramp(int(nav.sim_time_ns))
+        # ramp the egress creep in over its own window so even the egress lean eases (no step-lunge).
+        if self.config.egress_s > 0.0 and self._release_t_ns is not None:
+            elapsed = (int(nav.sim_time_ns) - self._release_t_ns) / 1e9
+            demand_ramp = float(np.clip(elapsed / self.config.egress_s, 0.0, 1.0))
+        else:
+            demand_ramp = 1.0
+        return self._feedforward_command(nav, los, yaw0, launch,
+                                         self.config.egress_accel_mps2, demand_ramp)
+
+    def _forward_accel_ramp(self, sim_time_ns: int) -> float:
+        """Forward-demand ramp [0,1] over ``forward_ramp_s`` from the anchor release, so the forward
+        tilt eases IN (the first pursuit ticks don't step to the full forward lean). The egress window
+        sits inside this ramp, so when pursuit takes over the forward demand is already partly ramped;
+        we measure the ramp from RELEASE (not from pursuit start) for a continuous build. 1.0 once the
+        ramp completes / when disabled."""
+        if self.config.forward_ramp_s <= 0.0 or self._release_t_ns is None:
+            return 1.0
+        elapsed = (int(sim_time_ns) - self._release_t_ns) / 1e9
+        return float(np.clip(elapsed / self.config.forward_ramp_s, 0.0, 1.0))
 
     def _slew_heading(self, yaw_des: float, sim_time_ns: int) -> float:
         """Rate-limit the commanded heading: step ``_last_yaw`` toward ``yaw_des`` by at most
@@ -606,6 +737,18 @@ class GateSeeker:
         br = np.asarray(cmd.body_rate, dtype=np.float64).copy()
         c = abs(float(cap_rps))
         br[0] = float(np.clip(br[0], -c, c))
+        return dataclasses.replace(cmd, body_rate=br)
+
+    def _cap_pitch_rate(self, cmd: ControlCommand, cap_rps: float) -> ControlCommand:
+        """Clamp the PITCH (FRD body-rate Y) command to +/-``cap_rps`` -- the pursuit PITCH-windup
+        guard (A4's crash axis: the map-free forward lean must never wind to the -4.0 limit).
+        Symmetric to ``_cap_roll_rate``; the second half of the bounded-feedforward-tilt fix."""
+        if cmd.body_rate is None or cap_rps <= 0.0:
+            return cmd
+        import dataclasses
+        br = np.asarray(cmd.body_rate, dtype=np.float64).copy()
+        c = abs(float(cap_rps))
+        br[1] = float(np.clip(br[1], -c, c))
         return dataclasses.replace(cmd, body_rate=br)
 
     def _hold_command(self, nav: NavState, *, yaw_rate_cap: float,
@@ -742,6 +885,7 @@ class GateSeeker:
         self._track_coast_ticks = 0
         self._release_t_ns = None
         self._last_pursuit_t_ns = None
+        self._spawn_heading = None
 
     # -- internals ----------------------------------------------------------
     def _launch_ramp(self, sim_time_ns: int) -> float | None:

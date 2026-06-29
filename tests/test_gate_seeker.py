@@ -734,10 +734,11 @@ def test_temporal_track_locks_one_gate_smooth_range_old_redetect_flaps():
     R_wb = R_world_from_body(0.0, 0.0, 0.0)
 
     old = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
-                                             anchor_release_detections=1, use_gate_track=False),
+                                             anchor_release_detections=1, use_gate_track=False,
+                                             use_spawn_egress=False),
                      detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
     new = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
-                                             anchor_release_detections=1),
+                                             anchor_release_detections=1, use_spawn_egress=False),
                      detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
     old_r, _ = _drive_multigate(old, old.detector, 40)
     new_r, _ = _drive_multigate(new, new.detector, 40)
@@ -760,13 +761,16 @@ def test_temporal_track_keeps_roll_bounded_old_redetect_swings_it():
     R_wb = R_world_from_body(0.0, 0.0, 0.0)
     cap = make_seeker_controller().max_body_rate_rps
 
+    # OLD baseline: the A3 caps off AND the legacy velocity pursuit (use_feedforward_forward=False),
+    # so the heading-aligned velocity setpoint produces the roll swing the unbounded servo crashed on.
     old = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
                                              anchor_release_detections=1, use_gate_track=False,
                                              pursuit_ramp_s=0.0, pursuit_yaw_slew_rps=0.0,
-                                             pursuit_roll_rate_cap_rps=0.0, visual_yaw_rate_cap_rps=cap),
+                                             pursuit_roll_rate_cap_rps=0.0, visual_yaw_rate_cap_rps=cap,
+                                             use_feedforward_forward=False, use_spawn_egress=False),
                      detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
     new = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
-                                             anchor_release_detections=1),
+                                             anchor_release_detections=1, use_spawn_egress=False),
                      detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
     _, old_roll = _drive_multigate(old, old.detector, 40)
     _, new_roll = _drive_multigate(new, new.detector, 40)
@@ -935,6 +939,165 @@ def test_vq2_case_c_profile_is_map_free_for_steering():
     p = vq2_case_c()
     assert p.self_localizing is True
     assert p.nav_config.use_given_position is False     # no absolute self-position to steer from
+
+
+# ===========================================================================
+# A4 (2026-06-29 attempt-4): BOUNDED FEEDFORWARD forward tilt (map-free PITCH-windup fix)
+# ===========================================================================
+def test_mapfree_pursuit_pitch_bounded_old_velocity_winds_up():
+    """THE 2026-06-29 attempt-4 fix (the crash): on the MAP-FREE wire velocity is UNOBSERVABLE
+    (``nav.velocity_ned`` stays ~0). The OLD pursuit asked for a desired VELOCITY (cruise*los); the
+    controller closes it with a velocity-ERROR term that NEVER closes -> the commanded PITCH winds up
+    to the -4.0 controller limit (A4: -0.69 -> -2.39 -> -3.999, then crash). The NEW pursuit commands a
+    BOUNDED FEEDFORWARD forward tilt (no velocity term) + a pitch cap, so the pitch stays bounded over a
+    sustained pursuit window with velocity held at 0."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    cap = make_seeker_controller().max_body_rate_rps          # the 4.0 saturation limit
+    pitch_cap = GateSeekerConfig().pursuit_pitch_rate_cap_rps
+
+    def _run(feedforward, pitch_cap_rps):
+        det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+        seeker = GateSeeker(config=GateSeekerConfig(
+            cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+            use_feedforward_forward=feedforward, use_spawn_egress=False,
+            pursuit_pitch_rate_cap_rps=pitch_cap_rps), detector=det)
+        pitches = []
+        for k in range(40):                          # SUSTAINED window: velocity HELD at 0 (map-free)
+            t_ns = int(k * 0.05 * 1e9)
+            ns = NavState(sim_time_ns=t_ns, position_ned=np.zeros(3), velocity_ned=np.zeros(3),
+                          roll=0.0, pitch=0.0, yaw=0.0,
+                          time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+            cmd = seeker.command_visual(ns, _frame(k, t_ns), 0)
+            pitches.append(abs(float(cmd.body_rate[1])))
+        return max(pitches)
+
+    # OLD: velocity setpoint, pitch cap off -> the raw windup to saturation.
+    old_max = _run(feedforward=False, pitch_cap_rps=0.0)
+    # NEW: bounded feedforward + the shipped pitch cap -> bounded.
+    new_max = _run(feedforward=True, pitch_cap_rps=pitch_cap)
+    assert old_max > 0.9 * cap, "old velocity-feedback pursuit should wind pitch toward saturation map-free"
+    assert new_max <= pitch_cap + 1e-9, "new bounded-feedforward pursuit must keep pitch under the cap"
+
+
+def test_pursuit_pitch_rate_capped():
+    """The pursuit pitch command is hard-capped below saturation (A4's crash axis), symmetric to the
+    roll cap."""
+    seeker = GateSeeker(config=GateSeekerConfig(pursuit_pitch_rate_cap_rps=1.5))
+    cmd = ControlCommand(mode=ControlMode.BODY_RATE, body_rate=np.array([0.2, 5.0, 0.1]), thrust=0.3)
+    capped = seeker._cap_pitch_rate(cmd, 1.5)
+    assert abs(float(capped.body_rate[1])) <= 1.5 + 1e-9
+    assert capped.body_rate[0] == 0.2 and capped.body_rate[2] == 0.1   # other axes untouched
+
+
+def test_pursuit_forward_is_feedforward_accel_not_velocity_setpoint():
+    """The bounded-feedforward pursuit sends a Setpoint with accel_ned (pure feedforward the controller
+    adds, no wind-up) and NO velocity_ned -- the structural fix. With feedforward ON the seeker's
+    setpoint to the controller carries accel and not velocity; with it OFF (legacy) it carries velocity."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    captured = {}
+
+    class _SpyController:
+        """Wrap the real controller; record the Setpoint it is handed on the pursuit tick."""
+        def __init__(self, inner):
+            self.inner = inner
+            self.max_body_rate_rps = inner.max_body_rate_rps
+            self.hover_thrust = inner.hover_thrust
+        def command(self, nav, sp):
+            captured["sp"] = sp
+            return self.inner.command(nav, sp)
+
+    def _last_sp(feedforward):
+        det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+        seeker = GateSeeker(config=GateSeekerConfig(
+            cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+            use_feedforward_forward=feedforward, use_spawn_egress=False), detector=det)
+        seeker.controller = _SpyController(seeker.controller)
+        seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+        captured.clear()
+        # a tick PAST release (the forward-demand ramp has eased in) so the accel magnitude is > 0.
+        t1 = int(0.5 * 1e9)
+        seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t1), _frame(1, t1), 0)
+        return captured["sp"]
+
+    ff_sp = _last_sp(feedforward=True)
+    assert ff_sp.accel_ned is not None and ff_sp.velocity_ned is None, \
+        "feedforward pursuit must command accel_ned (bounded feedforward), not a velocity setpoint"
+    assert float(np.linalg.norm(ff_sp.accel_ned)) > 0.0   # a real forward demand once the ramp eased in
+    legacy_sp = _last_sp(feedforward=False)
+    assert legacy_sp.velocity_ned is not None, "legacy pursuit still uses a velocity setpoint"
+
+
+# ===========================================================================
+# A4 (2026-06-29 attempt-4): SPAWN-GATE EGRESS — clear gate 0 before pursuit
+# ===========================================================================
+def test_spawn_egress_creeps_along_spawn_heading_then_pursues():
+    """THE 2026-06-29 attempt-4 start-gate fix: the drone SPAWNS INSIDE gate 0. After release the NEW
+    seeker runs a brief EGRESS phase -- a capped forward creep along the FROZEN spawn heading (the
+    start-gate normal, the way OUT) -- BEFORE re-aiming at the downrange gate. During egress the
+    commanded heading is the spawn heading (not slewed toward an off-side downrange gate); after
+    egress_s it transitions to pursuit (re-aims at the seen gate)."""
+    from racer.frames import R_world_from_body
+    # the seen downrange gate is OFF to the +Y side: if the seeker re-aimed immediately, the heading
+    # would swing toward +Y. During egress it must stay on the +X spawn heading (the way out of gate 0).
+    gate = _gate([12.0, 8.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    egress = 0.5
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=True, egress_s=egress, pursuit_yaw_slew_rps=1.0), detector=det)
+    # tick 0 (t=0): releases + enters egress; the commanded heading is the spawn heading (~0, +X).
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0, yaw=0.0), _frame(0, 0), 0)
+    assert seeker._in_egress(0)
+    assert abs(float(seeker._last_yaw)) < 1e-6, "egress must creep along the +X spawn heading, not re-aim"
+    # a tick still INSIDE the egress window: heading still frozen on the spawn heading.
+    t_mid = int(0.2 * 1e9)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_mid, yaw=0.0), _frame(1, t_mid), 0)
+    assert seeker._in_egress(t_mid)
+    assert abs(float(seeker._last_yaw)) < 1e-6, "still egressing -> heading stays on the spawn normal"
+    # a tick PAST egress -> pursuit: the heading now slews TOWARD the off-side downrange gate (+Y -> +yaw).
+    t_past = int((egress + 0.2) * 1e9)
+    assert not seeker._in_egress(t_past)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_past, yaw=0.0), _frame(2, t_past), 0)
+    assert float(seeker._last_yaw) > 0.0, "after egress the seeker re-aims (yaws toward the +Y gate)"
+
+
+def test_spawn_egress_forward_tilt_is_bounded():
+    """The egress creep is a BOUNDED feedforward tilt + pitch cap (gentle, no lunge): every egress
+    command is a sane bounded BODY_RATE with the pitch under the pursuit pitch cap."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    pitch_cap = GateSeekerConfig().pursuit_pitch_rate_cap_rps
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=True, egress_s=0.8), detector=det)
+    for k in range(8):                       # the egress window (0.8 s at ~0.05 s/tick)
+        t_ns = int(k * 0.05 * 1e9)
+        cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_ns), _frame(k, t_ns), 0)
+        assert seeker._in_egress(t_ns)
+        assert cmd.mode is ControlMode.BODY_RATE and np.all(np.isfinite(cmd.body_rate))
+        assert np.linalg.norm(cmd.body_rate) <= seeker.controller.max_body_rate_rps + 1e-9
+        assert abs(float(cmd.body_rate[1])) <= pitch_cap + 1e-9, "egress pitch must be capped (no lunge)"
+        assert 0.0 <= cmd.thrust <= 1.0
+
+
+def test_spawn_egress_off_goes_straight_to_pursuit():
+    """With use_spawn_egress=False (legacy) there is no egress phase: the seeker re-aims at the seen
+    gate immediately after release (the OLD behaviour that lunged into the start-gate frame)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 8.0, -2.5], normal=[1.0, 0.0, 0.0])   # off-side gate
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, pursuit_yaw_slew_rps=1.0), detector=det)
+    assert not seeker._in_egress(0)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0, yaw=0.0), _frame(0, 0), 0)
+    t1 = int(0.05 * 1e9)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t1, yaw=0.0), _frame(1, t1), 0)
+    # no egress -> the heading immediately slews toward the off-side gate (the legacy re-aim).
+    assert float(seeker._last_yaw) > 0.0
 
 
 def test_pipeline_smoke_off_path_navigator_still_constructs():
