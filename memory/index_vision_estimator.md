@@ -138,7 +138,7 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 - **Camera tilt = 20° UP from body +X (MAV_FRAME_BODY_NED). SPEC-EXACT — stated ONCE, NO tolerance/range. Mount is FIXED; mount-uptilt lever is DEAD.**
 - **Zero translational offset** — camera origin = body origin (no lever arm).
 - Pinhole, NO lens distortion. Resolution 640×360. [cx,cy]=[320,180] (dead-centre, no principal-point offset). [fx,fy]=[320,320] (square pixels).
-- Vision stream: 30 Hz, 640×360 JPEG, UDP port 5600. Sensors: HIGHRES_IMU, ATTITUDE, TIMESYNC. Body↔IMU = identity. Physics 120 Hz, command <100 Hz.
+- Vision stream: 30 Hz, 640×360 JPEG, UDP port 5600, 24-byte header. VQ2 wire: HEARTBEAT(10Hz) + HIGHRES_IMU(117Hz, **accel+gyro ONLY** — 🚩 NO MAG/NO BARO confirmed 2026-06-29; fields_updated=63) + ENCAPSULATED_DATA=RACE_STATUS(4Hz, `active_gate_index`) + ACTUATOR_OUTPUT_STATUS(95Hz) + TIMESYNC(response-only). ATTITUDE/LOCAL_POSITION_NED/ODOMETRY/GATE_INFO ALL BLOCKED. Body↔IMU = identity. Physics 120 Hz, command <100 Hz.
 - 🚩 **VFoV=90° IN SPEC IS MISLABELED — IT IS HFoV. TRUE VFoV≈58.7° (±29.35°); HFoV=90.0° exactly.** Derivation: fy=320, H=360 → 2·atan(180/320)=58.7°; fx=320, W=640 → 2·atan(320/320)=90.0°. ALWAYS decode vertical from fy=320 — NEVER from a literal 90° VFoV. Audit that render-prediction AND PnP both use fy=320.
 - **Boresight ε_vert ≈ 0.56° reconciled with spec:** 20° is spec-EXACT, so the 0.56° boresight is NOT a wrong mount angle — it is a CONVENTION/PROJECTION seam (spec explicitly offloads the body→camera→image-library frame rotation) and/or fy/VFoV mishandling. Code-side and CALIBRATABLE (0.56° ≈ 3.1 px vertical). NEXT ACTION: vision-extrinsics audit (body→cam→image rotation + fy=320 consistency).
 - ~100 TOPS onboard. Obstacles exist but don't map monocularly.
@@ -446,8 +446,37 @@ ESKF attitude source wired into the nav loop behind `NavigatorConfig.use_ahrs` (
 - **Training imagery is OFF-DISTRIBUTION:** current training images rendered as photoreal daylight are wrong-domain for the detector. Re-capture/re-render in the true low-light/glowing-red appearance before any VQ2 detector fine-tune.
 - **What is UNAFFECTED (appearance-agnostic):** plant/distillation, estimator math (EqVIO, bearing-range channel, AHRS), case-C self-localization wiring (`use_ahrs`), RL substrate, obs contract (+L), gate geometry (1.5 m inner square = unchanged).
 
-**OPEN RECON ACTIONS (must verify on VQ2 before acting):**
-1. Measure bloom extent — pixel spread beyond the true gate edge at the emissive intensity.
-2. Test whether a simple HSV/red-channel threshold corners better than YOLO in this appearance (was previously REJECTED for VQ1 appearance — needs fresh eval for VQ2).
-3. Check whether the existing YOLO detector (trained on photoreal) at all detects in the low-light/red-glow scene, or requires full retraining.
-4. Confirm bloom does NOT systematically bias the apparent gate span used by `apparent_range_from_gate_span` (bearing-range channel B1).
+**LOAD-DAY RECON CONFIRMED 2026-06-29 (12 labeled 640x360 frames, handoff/vq2-recon-2026-06-29/frames/curated/):**
+- Scene mean gray ~36/255 (very low-light). Glowing-RED (emissive) gate borders on near-black structure.
+- Clutter: blue direction-chevrons INSIDE gates, orange floor light-beams, blue floor lane-lines (converge toward next gate), green/red pole markers, white ceiling-truss + floor grid, numbered station pillars 01-20, AND multiple distant red gates in view simultaneously.
+- 🚩 **DETECTOR THRESHOLD RULE: gate corners on SATURATED RED CORE (R≥250, red-dominant) ONLY.** Bloom halo (~12px outer, ~3px crisp inner core edge) + low-amplitude red ambient wash INFLATE apparent square → bias range NEAR if thresholded too loosely. Extreme-near approach = corner BLOW-OUT (saturates white) → dead-reckon final approach on IMU.
+- Structured grid/truss/lane-lines = rich VIO features between gates (helps vision-pinned yaw/z).
+- 🚩 **P5 photoreal/GS-NeRF direction RETRACTED** (see APPEARANCE section above). Re-scope to low-light/red-glow training data.
+
+## VQ2-WIRE-RECON-2026-06-29 (live build 1.0.3379; handoff/vq2-recon-2026-06-29/RECON.md)
+
+### Wire confirmed (live)
+- **ALL §9.3 blocks confirmed live** in BOTH training AND competition (byte-identical message sets). The "training may expose more" hedge REFUTED. VQ1 (build 3364) streamed LPN+ODOMETRY+TRACK_INFO; VQ2 does NOT.
+- Present: HEARTBEAT(10Hz), HIGHRES_IMU(117Hz), 30Hz JPEG cam (udpin:14550/video:5600, 24-byte header unchanged from VQ1), ENCAPSULATED_DATA=RACE_STATUS(4Hz, data_type=1), ACTUATOR_OUTPUT_STATUS(95Hz, 4 motor outputs idle 0.05), TIMESYNC(response-only).
+- ARM via MAV_CMD 400 ACCEPTED (result 0).
+
+### 🚩🚩 NO MAGNETOMETER, NO BAROMETER
+- `HIGHRES_IMU.fields_updated=63` (bits 0-5) = accel + gyro ONLY. Mag (xmag/ymag/zmag) + baro (abs_pressure/pressure_alt/temperature) = NaN/absent.
+- **CONSEQUENCE: YAW has NO inertial reference** (gravity gives roll/pitch only; gyro yaw drifts unbounded). **ALTITUDE has no baro.**
+- YAW + Z MUST COME FROM VISION. ESKF/AHRS demotes to a roll/pitch leveler. EqVIO joint filter (built, unwired) becomes the estimator SPINE — gate-corner + structured-grid bearings pin yaw+z.
+- AHRS adapter's mag param is moot (always None in VQ2).
+
+### RACE_STATUS.active_gate_index (gate ordering SOLVED)
+- `ENCAPSULATED_DATA` data_type=1 @4Hz carries `active_gate_index` = current target gate index.
+- Gate ORDERING/sequencing is SOLVED on the wire — the old "gate ordering without a map" open question is ANSWERED. Perception needs to DETECT+LOCALIZE the active gate among multiple red markers + build a LOCAL gate map from vision (no global map on wire).
+
+### ACTUATOR_OUTPUT_STATUS (sysid gift)
+- @95Hz, 4 motor outputs; idle 0.05.
+- DISTILL pillar can identify the inner-loop plant from REAL (actuator→IMU accel/gyro) sim data, not only synthetic.
+
+### 🚩 OPEN BLOCKER — CONTROL-MODE HANDSHAKE (CRITICAL PATH)
+- `SET_POSITION_TARGET_LOCAL_NED` velocity setpoints in sim default ACRO mode → drone tumbled + env COLLISIONs id=1002.
+- ARM accepted (MAV_CMD 400 result 0). Controllable angle/position mode needs a mode-switch/handshake (possibly TIMESYNC-only no-heartbeat regime). **UNRESOLVED; needs focused ShadowPC investigation. BLOCKS all closed-loop VQ2 flight.**
+
+### docs/first_contact.md now STALE
+- Describes VQ1 pose+map wire; VQ2 has neither. Do NOT use as VQ2 wire reference.
