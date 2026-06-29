@@ -1,0 +1,35 @@
+[detector] 41 frames; >=1 detection: 26
+[tlog] 303 HIGHRES_IMU samples first 4s
+  t=0.000 acc_tilt(r,p)=(-0,+18)deg gyro=[0.0, 0.0, -0.0] |a|=9.8
+  t=0.083 acc_tilt(r,p)=(-0,+18)deg gyro=[0.0, 0.0, -0.0] |a|=9.8
+  t=0.167 acc_tilt(r,p)=(-0,+18)deg gyro=[0.0, 0.0, -0.0] |a|=9.8
+  t=0.250 acc_tilt(r,p)=(-0,+8)deg gyro=[0.001, -0.001, 0.0] |a|=9.5
+  t=0.340 acc_tilt(r,p)=(+0,-0)deg gyro=[0.0, 0.002, 0.0] |a|=9.6
+  t=0.424 acc_tilt(r,p)=(+0,-0)deg gyro=[0.0, 0.001, -0.0] |a|=9.9
+  t=0.507 acc_tilt(r,p)=(+0,+0)deg gyro=[0.0, 0.0, 0.0] |a|=9.9
+  t=0.597 acc_tilt(r,p)=(-0,+1)deg gyro=[0.0, 0.0, -0.0] |a|=9.9
+  t=0.681 acc_tilt(r,p)=(-0,+0)deg gyro=[0.0, 0.0, -0.0] |a|=10.0
+  t=0.764 acc_tilt(r,p)=(-0,+1)deg gyro=[0.0, 0.0, -0.0] |a|=10.5
+  t=0.854 acc_tilt(r,p)=(+0,+0)deg gyro=[0.0, 0.0, 0.0] |a|=10.6
+  t=0.938 acc_tilt(r,p)=(-0,+1)deg gyro=[0.0, 0.0, -0.0] |a|=10.6
+  t=1.021 acc_tilt(r,p)=(-0,+2)deg gyro=[0.0, 0.0, 0.0] |a|=10.5
+  t=1.111 acc_tilt(r,p)=(-0,+2)deg gyro=[0.0, 0.0, 0.0] |a|=10.5
+  t=1.195 acc_tilt(r,p)=(+0,+2)deg gyro=[0.0, 0.0, -0.0] |a|=10.5
+  t=1.278 acc_tilt(r,p)=(-0,+2)deg gyro=[0.0, 0.0, 0.0] |a|=10.5
+  t=1.368 acc_tilt(r,p)=(-0,+3)deg gyro=[0.0, 0.0, 0.0] |a|=10.5
+  t=1.452 acc_tilt(r,p)=(-0,+3)deg gyro=[0.0, 0.0, 0.0] |a|=10.5
+  t=1.535 acc_tilt(r,p)=(-0,+4)deg gyro=[0.0, 0.0, 0.0] |a|=10.5
+  t=1.625 acc_tilt(r,p)=(+0,+4)deg gyro=[0.0, 0.0, 0.0] |a|=10.5
+  t=1.709 acc_tilt(r,p)=(-0,+5)deg gyro=[-0.032, 1.751, 0.081] |a|=9.8
+  t=1.792 acc_tilt(r,p)=(-0,+5)deg gyro=[-0.028, 1.837, 0.061] |a|=9.9
+  t=1.882 acc_tilt(r,p)=(-0,+5)deg gyro=[-0.029, 1.863, 0.065] |a|=9.8
+  t=1.966 acc_tilt(r,p)=(-0,+5)deg gyro=[-0.029, 1.881, 0.064] |a|=9.5
+  t=2.049 acc_tilt(r,p)=(-0,+5)deg gyro=[-0.029, 1.892, 0.064] |a|=9.1
+  t=2.139 acc_tilt(r,p)=(+0,+4)deg gyro=[-0.041, 4.377, 0.065] |a|=8.9
+  t=2.223 acc_tilt(r,p)=(-0,+2)deg gyro=[-0.042, 4.118, 0.069] |a|=7.3
+  t=2.306 acc_tilt(r,p)=(-0,+2)deg gyro=[-0.042, 4.163, 0.069] |a|=7.2
+  t=2.396 acc_tilt(r,p)=(-2,-2)deg gyro=[-4.543, 1.719, 1.097] |a|=29.1
+  t=2.480 acc_tilt(r,p)=(+178,-72)deg gyro=[-0.031, -0.044, 0.003] |a|=31.6
+  t=2.563 acc_tilt(r,p)=(+174,-3)deg gyro=[0.04, -0.012, -0.013] |a|=10.5
+[tlog] peak |gyro| @t=2.327s -> [-9.778, 43.276, -3.422] rps
+wrote handoff\vq2-slowlap-a4-2026-06-29\run2_speed3\frames\analysis.json
