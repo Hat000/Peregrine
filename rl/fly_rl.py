@@ -8,6 +8,29 @@ training action pipeline (tanh -> rescale to [min,max] action bounds), sends
 SET_ATTITUDE_TARGET (BODY_RATE).  Records each flight for race_outcome, and can
 chain --flights N attempts back-to-back via the sim-reset command.
 
+VQ2 CONTROL RECIPE (live-confirmed 2026-06-29, sim build 1.0.3379) -- this deploy path
+ALREADY matches it byte-for-byte (no change needed beyond the two opt-in deltas below):
+  * ARM = MAV_CMD_COMPONENT_ARM_DISARM (=400), param1=1  -> client.arm() (mavlink_client.py).
+  * Control = SET_ATTITUDE_TARGET in BODY-RATE mode, type_mask=0b10000000
+    (_ATT_MASK_BODY_RATE in mavlink_client.py), FRD body rates + normalized collective [0,1],
+    streamed at the training cadence (30 Hz here; sim default mode ACRO == ControlMode.BODY_RATE).
+    The collective is clipped to [0,1] in policy_step; the rates are FRD. This is the SAME uplink
+    fly_rl already drove on VQ1 -- verified, not re-plumbed.
+  * DELTA 1 (cmd_rate_scale): the VQ2 sim realizes a commanded body rate ~2.5x. --cmd-rate-scale
+    (MavlinkClient.cmd_rate_scale, default 1.0 == byte-identical) feed-forward-compensates at the
+    uplink; pass ~0.4 (=1/2.5). Default 1.0 lets the CLOSED-LOOP policy absorb the gain instead
+    (the correct/safe default) -- the scale is OPT-IN.
+  * DELTA 2 (gyro_body deploy source): VQ2 BLOCKS ODOMETRY, so the obs body rate (obs[9:12] w_flu)
+    + attitude (obs[6:9] rpy_g) must come from the AHRS fed by the RAW HIGHRES_IMU gyro
+    (DroneState.gyro_body, body FRD), NOT the ODOMETRY-derived angular_rate_body. That routing is
+    OWNED by the navigator's ``use_ahrs`` seam (NavigatorConfig.use_ahrs=True; AHRSAttitudeSource
+    consumes ds.gyro_body -- ahrs_adapter.py / test_use_ahrs_wiring.py). The RL deploy obs path
+    consumes the AHRS-sourced rate read-only via estimator_obs20(nav.obs_drone_state(ds), ...).
+    DEPLOY TOGGLE: build the Navigator with NavigatorConfig(use_ahrs=True) for the case-C VQ2 run;
+    use_ahrs=False (default) keeps the VQ1 ODOMETRY-rate path byte-identical. build_obs(state, ...)
+    reads state.angular_rate_body, so the case-C wiring supplies the AHRS rate through that field
+    (Fix-A convention: ODOMETRY-sign-compatible) -- fly_rl's raw build_obs default path is unchanged.
+
 DEPLOYMENT MATH (verified against the diffaero source the checkpoint trained on,
 S1.2 session 2026-06-10 -- see the constants below for the per-item derivations):
   * action = tanh(actor_mean(obs)); env action = min + (max-min)*(action+1)/2
@@ -1214,6 +1237,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-rate",     type=float, default=0.0,
                     help="cap |body-rate| (rad/s, per-axis, FLU) before sending; "
                          "0 = off. OOD-start diagnostic (PATH A).")
+    ap.add_argument("--cmd-rate-scale", type=float, default=1.0,
+                    help="command->realized body-rate calibration applied at the MAVLink uplink "
+                         "(MavlinkClient.cmd_rate_scale). DEFAULT 1.0 == byte-identical (no scaling; "
+                         "the VQ1 path). The VQ2 sim (build 1.0.3379) realizes a commanded body rate "
+                         "~2.5x, so pass ~0.4 (=1/2.5) to feed-forward-compensate. The alternative is "
+                         "to let the closed-loop policy absorb the 2.5x via obs[9:12], so 1.0 is the "
+                         "safe default and the scale is OPT-IN. Scales BODY_RATE rates only; collective "
+                         "thrust is untouched. [VQ2-CONTROL-HANDSHAKE 2026-06-29]")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "
@@ -1310,7 +1341,12 @@ def main() -> int:
               "check DiffAero actor architecture.", file=sys.stderr)
 
     # -- MAVLink --
-    client = MavlinkClient(args.endpoint)
+    # cmd_rate_scale (default 1.0 == identity / byte-identical VQ1 path). ~0.4 compensates the
+    # VQ2 ~2.5x command->realized body-rate gain at the uplink (see build_parser --cmd-rate-scale).
+    client = MavlinkClient(args.endpoint, cmd_rate_scale=args.cmd_rate_scale)
+    if args.cmd_rate_scale != 1.0:
+        print(f"  [vq2] cmd_rate_scale={args.cmd_rate_scale:g} -> BODY_RATE commands scaled at the "
+              f"uplink (command->realized ~{1.0 / args.cmd_rate_scale:.2f}x compensation).")
     print(f"connecting {args.endpoint} ...")
     client.connect(wait_heartbeat=False, timeout_s=args.connect_timeout)
 
@@ -1358,6 +1394,7 @@ def main() -> int:
             recorder.add_meta(
                 endpoint=args.endpoint, label=args.label, flight=flight,
                 rate_hz=args.rate, max_rate=args.max_rate, yaw_scale=args.yaw_scale,
+                cmd_rate_scale=args.cmd_rate_scale,
                 virtual_flip=args.virtual_flip, bridge=args.bridge,
                 handoff_dist=args.handoff_dist,
                 handoff_speed_min=args.handoff_speed_min,

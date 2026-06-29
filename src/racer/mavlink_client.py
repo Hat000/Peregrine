@@ -138,8 +138,21 @@ class MavlinkClient:
     HEARTBEAT_HZ = 2   # spec minimum
     TIMESYNC_HZ = 10   # the reference client's keepalive rate (no heartbeat)
 
-    def __init__(self, endpoint: str = "udp:127.0.0.1:14550"):
+    def __init__(self, endpoint: str = "udp:127.0.0.1:14550",
+                 cmd_rate_scale: float = 1.0):
         self.endpoint = endpoint
+        # COMMAND->REALIZED body-rate calibration (VQ2 control handshake, 2026-06-29). On the VQ2
+        # sim (build 1.0.3379) a commanded body rate realizes at ~2.5x on the wire, so the policy's
+        # demanded rate is over-applied. ``cmd_rate_scale`` multiplies the BODY_RATE command's body
+        # rates at the UPLINK boundary (send_command), so set it to ~0.4 (= 1/2.5) to compensate.
+        # DEFAULT 1.0 == NO change: the emitted body rates are NUMERICALLY IDENTICAL to before, so
+        # the VQ1 / inc7 path is byte-identical. The alternative to scaling here is to let the
+        # CLOSED-LOOP policy absorb the gain (it sees the realized rate via obs[9:12] and adapts) --
+        # which is why 1.0 is the correct/safe default and the scale is an OPT-IN open-loop
+        # feedforward for cases where the policy cannot (or should not) absorb the 2.5x itself.
+        # Applied ONLY to ControlMode.BODY_RATE; collective thrust + attitude/position paths are
+        # untouched. [VQ2-CONTROL-HANDSHAKE 2026-06-29]
+        self.cmd_rate_scale = float(cmd_rate_scale)
         self.conn: mavutil.mavlink_connection | None = None
         self.state = DroneState()
         self.unknown_msg_types: set[str] = set()
@@ -437,6 +450,10 @@ class MavlinkClient:
             )
         elif cmd.mode == ControlMode.BODY_RATE:
             assert cmd.body_rate is not None and cmd.thrust is not None
+            # cmd_rate_scale: command->realized body-rate calibration (default 1.0 == identity, so
+            # the emitted rates are byte-identical to the raw command). Set ~0.4 to compensate the
+            # VQ2 ~2.5x realization gain (see __init__). FRD body rates; collective is NOT scaled.
+            s = self.cmd_rate_scale
             r = cmd.body_rate
             self.conn.mav.set_attitude_target_send(
                 self._now_ms(),
@@ -444,7 +461,7 @@ class MavlinkClient:
                 self.conn.target_component,
                 _ATT_MASK_BODY_RATE,
                 [1.0, 0.0, 0.0, 0.0],  # quaternion ignored by the mask
-                float(r[0]), float(r[1]), float(r[2]),
+                float(r[0]) * s, float(r[1]) * s, float(r[2]) * s,
                 float(cmd.thrust),
             )
         else:
