@@ -1338,6 +1338,274 @@ def test_distance_egress_off_is_legacy_time_based():
     assert not seeker._in_egress(int(0.9 * 1e9))      # past egress_s -> done (pure time-based)
 
 
+# ===========================================================================
+# A5 FOOTAGE FIX: DEAD-RECKON THROUGH THE PASS + NEXT-GATE HANDOFF
+# ===========================================================================
+class _RangingDetector:
+    """Project whatever gates it currently holds from a re-pointable (drone_pos, R_wb). The caller
+    scripts the pass: gate 0's range closes >3 -> <2.5 -> LOST, then a NEXT gate appears downrange."""
+
+    def __init__(self, drone_pos, R_wb):
+        from racer.frames import R_camera_from_body
+        self.gates = []
+        self.drone_pos = np.asarray(drone_pos, float)
+        self.R_wb = np.asarray(R_wb, float)
+        self._R_cb = R_camera_from_body()
+
+    def detect(self, frame):
+        from racer.frames import CAMERA_INTRINSICS_K
+        out = []
+        for g in self.gates:
+            half = g.inner_size_m / 2.0
+            cg = np.array([[-half, half, 0.0], [half, half, 0.0], [half, -half, 0.0], [-half, -half, 0.0]])
+            R_wg = np.asarray(g.R_world_gate, float)
+            K = CAMERA_INTRINSICS_K
+            px, ok = [], True
+            for c in cg:
+                p_cam = self._R_cb @ (self.R_wb.T @ (g.position_ned + R_wg @ c - self.drone_pos))
+                if p_cam[2] <= 0.05:
+                    ok = False
+                    break
+                px.append([K[0, 0] * p_cam[0] / p_cam[2] + K[0, 2], K[1, 1] * p_cam[1] / p_cam[2] + K[1, 2]])
+            if ok:
+                out.append(GateObservation(frame_id=frame.frame_id, sim_time_ns=frame.sim_time_ns,
+                                           corners_px=np.asarray(px, float), corner_ids=np.array([0, 1, 2, 3]),
+                                           corner_confidence=np.ones(4)))
+        return out
+
+
+def _drive_pass(seeker, det, *, drone_pos, lean_pitch):
+    """Drive the seeker through a scripted pass: gate 0 closes 3.4->0 then is lost; a NEXT off-axis gate
+    appears downrange + the wire advances active_gate_index. Returns per-tick (regime-passing, the first
+    degenerate-tick pitch-rate command, whether the next gate was re-acquired+pursued)."""
+    dt = 0.05
+    rng0 = 3.4
+    gi = 0
+    next_gate = _gate([16.0, 2.5, -2.5], normal=[1.0, 0.0, 0.0], gate_id=1)
+    degenerate_pitch = None
+    reacquired = False
+    passing_during_pass = False
+    for k in range(40):
+        t_ns = int(k * dt * 1e9)
+        if rng0 > 0.15:
+            det.gates = [_gate([rng0, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)]
+            degenerate = rng0 <= 2.5
+            rng0 -= 0.22
+        else:
+            det.gates = [next_gate]
+            gi = 1
+            degenerate = False
+        det.drone_pos = np.asarray(drone_pos, float)
+        ns = NavState(sim_time_ns=t_ns, position_ned=np.asarray(drone_pos, float),
+                      velocity_ned=np.zeros(3), roll=0.0, pitch=float(lean_pitch), yaw=0.0,
+                      time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+        cmd = seeker.command_visual(ns, _frame(k, t_ns), gi)
+        if degenerate and degenerate_pitch is None:
+            degenerate_pitch = float(cmd.body_rate[1])
+        if seeker._passing:
+            passing_during_pass = True
+        if gi == 1 and not seeker._passing and seeker._last_pose is not None \
+                and float(seeker._last_pose.range_m) > 5.0 and abs(float(seeker._last_yaw)) > 0.02:
+            reacquired = True
+    return passing_during_pass, degenerate_pitch, reacquired
+
+
+def test_pass_dead_reckon_arms_and_commits_then_coasts():
+    """The pass state machine ARMS once the tracked range drops below pass_arm_range_m and COMMITS to
+    the dead-reckon coast once degenerate-close / lost -- the seeker enters the _passing coast regime
+    (not the no-detection hold) through the pass."""
+    from racer.frames import R_world_from_body
+    det = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=True,
+        pass_arm_range_m=3.0, pass_degenerate_range_m=2.5, pass_coast_s=0.6), detector=det)
+    passing, _, _ = _drive_pass(seeker, det, drone_pos=[0.0, 0.0, -2.5], lean_pitch=np.deg2rad(-7.0))
+    assert passing, "the seeker must enter the dead-reckon coast (_passing) through the pass"
+
+
+def test_pass_dead_reckon_suppresses_the_pitch_up_old_pursuit_noses_up():
+    """THE A5-footage fix: threading the gate while leaned forward, the OLD pursuit servos on the seen
+    gate and commands a sizeable NOSE-UP at the close pass tick (the backside-clip pitch-up). The NEW
+    dead-reckon coast SUPPRESSES it (holds the forward lean, ~zero pitch-rate command)."""
+    from racer.frames import R_world_from_body
+    lean = np.deg2rad(-7.0)
+    cfg = dict(cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+               use_spawn_egress=False, use_vertical_align=False, pass_arm_range_m=3.0,
+               pass_degenerate_range_m=2.5, pass_coast_s=0.6)
+    det_old = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    old = GateSeeker(config=GateSeekerConfig(use_pass_dead_reckon=False, **cfg), detector=det_old)
+    _, old_pitch, _ = _drive_pass(old, det_old, drone_pos=[0.0, 0.0, -2.5], lean_pitch=lean)
+    det_new = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    new = GateSeeker(config=GateSeekerConfig(use_pass_dead_reckon=True, **cfg), detector=det_new)
+    _, new_pitch, _ = _drive_pass(new, det_new, drone_pos=[0.0, 0.0, -2.5], lean_pitch=lean)
+    # odo pitch-rate sign (-1): a NOSE-UP correction off the forward lean is a POSITIVE body_rate[1].
+    assert old_pitch is not None and old_pitch > 0.5, "OLD pursuit should command a nose-up at the pass"
+    assert new_pitch is not None and new_pitch < 0.5 * old_pitch, \
+        "NEW dead-reckon coast must SUPPRESS the pass pitch-up (hold the forward lean)"
+
+
+def test_pass_dead_reckon_hands_off_to_next_gate():
+    """After the dead-reckon glide the NEW seeker re-acquires the NEXT gate (active_gate_index advanced)
+    and resumes pursuit -- a +yaw toward the off-axis next gate (the handoff), not an indefinite drift."""
+    from racer.frames import R_world_from_body
+    det = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=True,
+        pass_arm_range_m=3.0, pass_degenerate_range_m=2.5, pass_coast_s=0.6, acquire_next_s=3.0),
+        detector=det)
+    _, _, reacq = _drive_pass(seeker, det, drone_pos=[0.0, 0.0, -2.5], lean_pitch=np.deg2rad(-7.0))
+    assert reacq, "the seeker must re-acquire + pursue the next gate after the pass (the handoff)"
+    assert not seeker._passing, "the pass regime must have ended once the next gate is pursued"
+
+
+def test_pass_coast_commands_forward_demand_not_a_zero_hold():
+    """During the dead-reckon coast the seeker commands the bounded FORWARD feedforward tilt (accel_ned),
+    NOT the no-detection zero-velocity hold -- so it glides THROUGH the opening instead of stalling.
+    The Setpoint carries a real accel_ned along the frozen heading + no horizontal velocity setpoint."""
+    from racer.frames import R_world_from_body
+    captured = {}
+
+    class _Spy:
+        def __init__(self, inner):
+            self.inner = inner
+            self.max_body_rate_rps = inner.max_body_rate_rps
+            self.hover_thrust = inner.hover_thrust
+        def command(self, nav, sp):
+            captured["sp"] = sp
+            return self.inner.command(nav, sp)
+
+    # detector drone at the gate HEIGHT (z=-2.5) so the PnP range ≈ the horizontal closing range.
+    det = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=True,
+        pass_arm_range_m=3.0, pass_degenerate_range_m=2.5, pass_coast_accel_mps2=1.2), detector=det)
+    seeker.controller = _Spy(seeker.controller)
+    # anchor + arm + commit: drive a few closing ticks into the degenerate band.
+    rng = 3.4
+    for k in range(10):
+        det.gates = [_gate([rng, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)]
+        rng -= 0.22
+        det.drone_pos = np.array([0.0, 0.0, -2.5])
+        seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=int(k * 0.05 * 1e9)),
+                              _frame(k, int(k * 0.05 * 1e9)), 0)
+    assert seeker._passing, "precondition: the seeker should be in the dead-reckon coast"
+    sp = captured["sp"]
+    assert sp.accel_ned is not None and float(np.linalg.norm(sp.accel_ned)) > 0.0, \
+        "the pass coast must command a forward feedforward demand (glide through), not a zero hold"
+    # horizontal velocity setpoint must be zero/None (no velocity windup; vertical-align is off here).
+    assert sp.velocity_ned is None or (sp.velocity_ned[0] == 0.0 and sp.velocity_ned[1] == 0.0)
+
+
+def test_mid_approach_detection_gap_does_not_trigger_pitch_up():
+    """A transient mid-approach detection gap (a brief det=0 BEFORE the pass is armed -- the gate still
+    far, range never below pass_arm_range_m) must NOT trigger the pass dead-reckon / a pitch-up: the
+    seeker coasts level on the last heading (the gentle no-detection hold), never commits to the pass."""
+    from racer.frames import R_world_from_body
+    det = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=True,
+        pass_arm_range_m=3.0, pass_degenerate_range_m=2.5), detector=det)
+    far = _gate([14.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)   # FAR (never armed: 14 m >> 3 m)
+    # anchor on the far gate, then a transient detection gap (empty det) mid-approach.
+    det.gates = [far]; det.drone_pos = np.zeros(3)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+    assert seeker._anchored and not seeker._pass_armed   # far gate -> never armed
+    det.gates = []                                       # transient detection gap (gate momentarily lost)
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=10_000_000),
+                                _frame(1, 10_000_000), 0)
+    assert not seeker._passing, "an UNARMED mid-approach detection gap must NOT commit to the pass"
+    # the no-detection hold freezes attitude (zero roll/pitch rate) -> no pitch-up.
+    assert abs(float(cmd.body_rate[1])) < 1e-6, "the unarmed gap must coast level (no pitch-up)"
+
+
+def test_pass_dead_reckon_off_is_legacy_no_pass_regime():
+    """With use_pass_dead_reckon=False (opt-in guard) the pass regime never engages: through the same
+    pass the seeker never sets _passing (the legacy pursuit -> no-detection-hold path is preserved)."""
+    from racer.frames import R_world_from_body
+    det = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=False), detector=det)
+    passing, _, _ = _drive_pass(seeker, det, drone_pos=[0.0, 0.0, -2.5], lean_pitch=np.deg2rad(-7.0))
+    assert not passing, "with the pass dead-reckon OFF the seeker must never enter the pass regime"
+
+
+def test_pass_index_advance_triggers_dead_reckon():
+    """The wire signal: even without a close-range geometric trigger, an active_gate_index INCREMENT
+    (RACE_STATUS advanced) commits the dead-reckon coast -- the authoritative pass signal."""
+    from racer.frames import R_world_from_body
+    gate = _gate([8.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)   # comfortably > arm range
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=True), detector=det)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)  # gi 0
+    assert not seeker._passing
+    # the wire advances the active gate index -> commit the dead-reckon coast (a pass happened).
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=10_000_000),
+                          _frame(1, 10_000_000), 1)
+    assert seeker._passing, "an active_gate_index increment must commit the dead-reckon coast"
+
+
+def test_pass_dead_reckon_window_is_bounded_reverts_to_hold():
+    """The committed coast (dead-reckon + acquire-next) is BOUNDED by pass_coast_s + acquire_next_s; past
+    that, with no next gate ever seen, the seeker ends the pass and reverts to the gentle no-detection
+    level hold (never an indefinite forward glide / never a pitch-up)."""
+    from racer.frames import R_world_from_body
+    det = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=True,
+        pass_arm_range_m=3.0, pass_degenerate_range_m=2.5, pass_coast_s=0.4, acquire_next_s=0.4),
+        detector=det)
+    # arm + commit by closing into the degenerate band, then NO gate at all (next never appears).
+    rng = 3.4
+    for k in range(10):
+        det.gates = [_gate([rng, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)]; rng -= 0.22
+        det.drone_pos = np.array([0.0, 0.0, -2.5])
+        seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=int(k * 0.05 * 1e9)),
+                              _frame(k, int(k * 0.05 * 1e9)), 0)
+    assert seeker._passing
+    # well past the coast+acquire window with nothing in view -> the pass ends, revert to the hold.
+    det.gates = []
+    t_late = int(2.0 * 1e9)
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_late), _frame(99, t_late), 0)
+    assert not seeker._passing, "the bounded coast+acquire window must end the pass (no infinite glide)"
+    assert abs(float(cmd.body_rate[1])) < 1e-6, "after the bounded window it reverts to a level hold (no pitch-up)"
+
+
+def test_reset_clears_pass_state():
+    """reset() drops the pass state machine (back to the launch-anchor boot regime)."""
+    from racer.frames import R_world_from_body
+    det = _RangingDetector(np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1, use_spawn_egress=False,
+        use_pass_dead_reckon=True, pass_arm_range_m=3.0, pass_degenerate_range_m=2.5), detector=det)
+    rng = 3.4
+    for k in range(10):
+        det.gates = [_gate([rng, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)]; rng -= 0.22
+        det.drone_pos = np.array([0.0, 0.0, -2.5])
+        seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=int(k * 0.05 * 1e9)),
+                              _frame(k, int(k * 0.05 * 1e9)), 0)
+    assert seeker._passing and seeker._pass_armed
+    seeker.reset()
+    assert not seeker._passing and not seeker._pass_armed
+    assert seeker._pass_t_ns is None and seeker._pass_heading is None
+    assert seeker._pass_min_range_m == float("inf")
+
+
+def test_default_config_enables_pass_dead_reckon():
+    """The dead-reckon-through-pass + handoff ships ON by default (the slow-lap deploy needs it); the
+    behaviour is self-defaulting (no fly_rl flag needed)."""
+    cfg = GateSeekerConfig()
+    assert cfg.use_pass_dead_reckon is True
+    assert cfg.pass_arm_range_m == 3.0 and cfg.pass_degenerate_range_m == 2.5
+
+
 def test_pipeline_smoke_off_path_navigator_still_constructs():
     """Control: the legacy (vq1_case_a) profile config builds a Navigator that runs on a GIVEN pose
     with NO AHRS -- the byte-identical legacy path is unaffected by the new modules."""

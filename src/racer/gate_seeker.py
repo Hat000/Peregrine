@@ -355,6 +355,49 @@ class GateSeekerConfig:
     # so the spawn tilt is small; freezing it is safe -- and far safer than a slow pitch off-gate.)
     hold_freeze_attitude: bool = True
 
+    # --- DEAD-RECKON THROUGH THE PASS + NEXT-GATE HANDOFF (the 2026-06-29 A5-footage fix) ---
+    # A5 FOOTAGE (post-mortem of run4/run5): the drone THREADS the first gate dead-straight (lateral +
+    # yaw perfect), then the POST-PASS transition kills it. At the pass the gate FILLS the frame and the
+    # tracked range -> ~0, so the gate-relative geometry (t_cam_gate) is DEGENERATE: the close-range
+    # vision fix corrupts (run4: est_pitch jumps to -1.08 rad at the 2.78 m pass tick, thr spikes 0.27->
+    # 0.52) AND, the instant the gate is lost behind the drone, the seeker drops into the NO-DETECTION
+    # hold -- which commands velocity=0 + launch_ramp=0 (re-level) and zeros the forward feedforward, so
+    # the forward-leaned attitude SNAPS toward level => a PITCH-UP into the BACKSIDE of the gate (3.0
+    # runs), or just an indefinite forward DRIFT that never re-acquires the next gate (2.0 runs). THE
+    # FIX: a dedicated DEAD-RECKON-THROUGH-PASS regime. When the tracked gate range drops below
+    # ``pass_arm_range_m`` the pass is ARMED; once the (about-to-be-passed) gate is then LOST/behind, or
+    # ``active_gate_index`` increments, the seeker STOPS vision-servoing + STOPS vertical-align on the
+    # degenerate near-zero lever, FREEZES the pre-pass pursuit heading, and commands a BOUNDED LEVEL
+    # forward COAST (the same bounded feedforward forward tilt as pursuit, on the frozen heading, with NO
+    # re-level snap) -- gliding straight through the opening on IMU. After the coast it enters ACQUIRE-
+    # NEXT: it keeps the bounded forward coast while the track is reset so first-acquisition re-locks the
+    # NEXT gate (active_gate_index now points to it); once re-acquired it resumes normal pursuit (a
+    # smooth yaw toward an off-axis next gate, never a pitch-up, never an indefinite drift). This also
+    # disarms the EARLY pitch-up: a transient mid-approach detection gap (range NOT yet armed) no longer
+    # routes to a re-level hold -- it coasts level on the last heading instead.
+    use_pass_dead_reckon: bool = True
+    # ARM the pass once the tracked gate range drops below this (m). Below ~this the PnP lever is
+    # degenerate (gate fills the frame) and we must NOT take a close-range vision fix from it. ~the gate
+    # depth + a margin so we commit to the dead-reckon glide before the fix corrupts.
+    pass_arm_range_m: float = 3.0
+    # Below this even-tighter range (m) the vision fix is treated as DEGENERATE: while armed and this
+    # close we stop servoing on the gate's bearing/vertical-offset (coast straight on the frozen heading)
+    # even if a (corrupt) detection is still returned -- the run4 est_pitch -1.08 blow-out tick.
+    pass_degenerate_range_m: float = 2.5
+    # The bounded LEVEL forward coast after the pass is detected runs for at most this long (s) before
+    # ACQUIRE-NEXT takes over (which itself keeps coasting until the next gate is seen). A hard upper
+    # bound so the dead-reckon glide is a brief committed push through the opening, not an open loop.
+    pass_coast_s: float = 1.2
+    # Forward accel demand (m/s^2) for the dead-reckon / acquire-next coast: the same gentle bounded
+    # feedforward creep discipline as pursuit (lean ~atan(a/g)), so the coast holds the pre-pass forward
+    # attitude rather than snapping level. Small.
+    pass_coast_accel_mps2: float = 1.2
+    # ACQUIRE-NEXT: after the dead-reckon coast, keep the bounded forward coast for up to this long (s)
+    # while re-acquiring the next gate (resetting the track so first-acquisition re-locks). If the next
+    # gate is not seen within this window the seeker reverts to the gentle no-detection level coast (it
+    # never pitches up or stalls). Generous -- the next gate may be briefly out of frame after the pass.
+    acquire_next_s: float = 3.0
+
 
 @dataclass
 class GateSeeker:
@@ -392,6 +435,13 @@ class GateSeeker:
     _egress_v: float = field(default=0.0, repr=False)                 # dead-reckoned egress creep speed
     _last_egress_t_ns: int | None = field(default=None, repr=False)   # last egress tick (for the dt integral)
     _egress_done: bool = field(default=False, repr=False)             # distance target reached -> egress complete
+    # -- dead-reckon through the pass + next-gate handoff (A5-footage fix) --
+    _pass_armed: bool = field(default=False, repr=False)              # tracked range dropped below pass_arm_range_m
+    _pass_min_range_m: float = field(default=float("inf"), repr=False)  # closest tracked range seen while pursuing
+    _passing: bool = field(default=False, repr=False)                # PASS detected -> dead-reckon coast active
+    _pass_t_ns: int | None = field(default=None, repr=False)         # sim time the pass dead-reckon began
+    _pass_heading: float | None = field(default=None, repr=False)    # FROZEN pre-pass pursuit heading (coast direction)
+    _pass_index: int | None = field(default=None, repr=False)        # active_gate_index at the moment the pass armed
 
     # -- guidance: NavState + active gate -> Setpoint -----------------------
     def plan(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> Setpoint:
@@ -596,14 +646,34 @@ class GateSeeker:
              finite tsv (live map path) latches the anchor too.
           2. **No detection** (between gates / momentarily lost): coast level, hold the last heading,
              gentle re-acquire — never a blind large slew.
+          2.5 **Dead-reckon through the pass + acquire-next** (the A5-footage fix): once the tracked
+             gate range drops below ``pass_arm_range_m`` the pass is ARMED; when that gate is then
+             lost/behind (or ``active_gate_index`` increments) the seeker STOPS vision-servoing on the
+             degenerate near-zero lever, FREEZES the pre-pass heading and commands a BOUNDED LEVEL
+             forward coast (no re-level pitch-up) straight through the opening, then re-acquires the
+             NEXT gate before resuming pursuit. Eliminates the post-pass backside-clip pitch-up + the
+             indefinite forward drift.
           3. **Pursuit** (anchored + gate seen): build a desired velocity toward the seen opening at
              the slow cap and a yaw that centers its bearing, capped so the turn is smooth.
         """
         if self._t0_sim_ns is None:
             self._t0_sim_ns = int(nav.sim_time_ns)
+        # wire-driven pass signal: did RACE_STATUS advance the active gate since the last command?
+        index_advanced = self._last_index is not None and int(active_gate_index) > self._last_index
         self._last_index = int(active_gate_index)
         if self._last_yaw is None:
             self._last_yaw = float(nav.yaw)
+
+        # ACQUIRE-NEXT track reset: once we are past the dead-reckon GLIDE (the pass_coast_s window) the
+        # just-passed gate is behind us; the temporal track may still be stale-locked on it (a fresh
+        # downrange gate would read as a big range JUMP and be rejected as a flapper, blocking the
+        # handoff). While in the acquire-next window we CLEAR the track each tick so first-acquisition
+        # re-locks the NEXT gate cleanly. (Inside the glide window we leave it alone -- we are coasting
+        # straight and deliberately not steering on any gate.)
+        if (self.config.use_pass_dead_reckon and self._passing
+                and self._pass_t_ns is not None
+                and (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9 >= self.config.pass_coast_s):
+            self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
 
         # Detect the gate to chase (idempotent across re-feeds of the same frame_id; a re-fed frame
         # keeps the cached bearing decision rather than re-running the detector).
@@ -655,7 +725,28 @@ class GateSeeker:
         if self._in_egress(int(nav.sim_time_ns)):
             return self._egress_command(nav)
 
+        # --- PASS DETECTION + DEAD-RECKON-THROUGH bookkeeping (the A5-footage fix) -------------------
+        # Maintain the closest tracked range seen while pursuing and ARM the pass once it drops below
+        # pass_arm_range_m (the gate is filling the frame; below this the PnP lever degenerates). When
+        # an armed gate is then LOST/behind, or the wire advances active_gate_index, we COMMIT to the
+        # dead-reckon coast: STOP servoing on the about-to-be-passed gate, FREEZE the heading, glide
+        # straight through on IMU, then acquire the next gate. ``_update_pass_state`` evaluates the
+        # arm/commit triggers; ``_in_pass_dead_reckon`` bounds the committed coast/acquire-next window.
+        if self.config.use_pass_dead_reckon and self._anchored:
+            self._update_pass_state(int(nav.sim_time_ns), pose, index_advanced)
+            if self._passing:
+                # PASS COMMITTED: glide straight on the FROZEN pre-pass heading (no re-level snap, no
+                # vision-servo on the degenerate lever). After ``pass_coast_s`` (the dead-reckon glide)
+                # a fresh NEXT gate re-acquisition ends the pass and resumes normal pursuit on it;
+                # otherwise keep the bounded forward coast (bounded by the coast+acquire window).
+                if self._pass_acquired_next(nav, pose):
+                    self._end_pass()                # next gate re-acquired -> resume pursuit below
+                else:
+                    return self._pass_coast_command(nav)
+
         # --- regime 2: NO DETECTION -> coast level on the last heading, gentle re-acquire ---
+        # (Not during a pass: a pass-time gate loss is handled by the dead-reckon coast above, which
+        # holds the forward lean instead of re-levelling into a pitch-up.)
         if pose is None:
             return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
                                       attitude_safe=True)
@@ -663,6 +754,106 @@ class GateSeeker:
         # --- regime 3: PURSUIT -> bounded feedforward forward tilt toward the SEEN opening +
         # centering yaw, pitch + roll capped, forward demand ramped (never a velocity setpoint) ---
         return self._visual_pursuit_command(nav, pose)
+
+    # =======================================================================
+    # DEAD-RECKON THROUGH THE PASS + NEXT-GATE HANDOFF  (the A5-footage fix)
+    # =======================================================================
+    def _update_pass_state(self, sim_time_ns: int, pose: GatePose | None,
+                           index_advanced: bool) -> None:
+        """Maintain the pass state machine each anchored tick (called before the no-detection /
+        pursuit regimes). Three jobs:
+
+          * ARM the pass once the tracked gate range drops below ``pass_arm_range_m`` (the gate is
+            filling the frame; below this the PnP lever degenerates). Tracks the closest range seen.
+          * COMMIT to the dead-reckon coast (``_passing``) when an armed gate is (a) within the even-
+            tighter ``pass_degenerate_range_m`` (the run4 est_pitch -1.08 blow-out: a close-range fix
+            is already corrupt -> stop servoing on it NOW), or (b) LOST/behind after being armed, or
+            (c) the wire advanced ``active_gate_index`` (the authoritative pass signal). On commit it
+            FREEZES the current heading as the straight-through coast direction.
+          * A transient mid-approach detection gap that is NOT armed (range never went below
+            pass_arm_range_m) does NOT commit -- it falls through to the gentle no-detection coast, so
+            an early detection dropout can never trigger the pass pitch-up.
+        """
+        # ARM + track the closest range while we still have a usable (non-degenerate) sighting.
+        if pose is not None:
+            rng = float(pose.range_m)
+            self._pass_min_range_m = min(self._pass_min_range_m, rng)
+            if rng <= self.config.pass_arm_range_m:
+                if not self._pass_armed:
+                    self._pass_index = self._last_index
+                self._pass_armed = True
+        if self._passing:
+            return                                  # already committed -> nothing more to arm
+        # COMMIT triggers (only meaningful once anchored + past egress):
+        degenerate_close = (self._pass_armed and pose is not None
+                            and float(pose.range_m) <= self.config.pass_degenerate_range_m)
+        lost_after_arm = self._pass_armed and pose is None
+        if degenerate_close or lost_after_arm or index_advanced:
+            self._begin_pass(sim_time_ns)
+
+    def _begin_pass(self, sim_time_ns: int) -> None:
+        """Commit to the dead-reckon-through-pass coast: FREEZE the current pursuit heading (the
+        straight-through direction) and start the coast clock. Drops the temporal gate track so that,
+        once the coast ends, ACQUIRE-NEXT re-runs first-acquisition on the NEXT gate."""
+        self._passing = True
+        self._pass_t_ns = int(sim_time_ns)
+        self._pass_heading = self._last_yaw if self._last_yaw is not None else 0.0
+        # reset the temporal track so the next-gate re-acquisition starts clean (a different gate).
+        self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+
+    def _end_pass(self) -> None:
+        """End the pass regime (the NEXT gate has been re-acquired) -> resume normal pursuit on it.
+        Re-arms the pass bookkeeping for the next gate."""
+        self._passing = False
+        self._pass_armed = False
+        self._pass_min_range_m = float("inf")
+        self._pass_t_ns = None
+        self._pass_heading = None
+        self._pass_index = self._last_index
+
+    def _pass_acquired_next(self, nav: NavState, pose: GatePose) -> bool:
+        """True iff the seeker is in the ACQUIRE-NEXT window (past the dead-reckon coast) AND a fresh
+        NEXT gate has been re-acquired -- i.e. a usable pose that is NOT the just-passed gate (a real
+        downrange range, past the degenerate band). During the initial dead-reckon coast (within
+        ``pass_coast_s``) we IGNORE any pose (it is the gate we are passing through) and keep gliding;
+        only after that window do we accept a re-acquired gate as the next one to pursue."""
+        if self._pass_t_ns is None or pose is None:
+            return False
+        elapsed = (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9
+        if elapsed < self.config.pass_coast_s:
+            return False                            # still gliding through the opening -> not yet
+        # past the dead-reckon coast: a sighting at a real downrange range = the next gate re-acquired.
+        return float(pose.range_m) > self.config.pass_degenerate_range_m
+
+    def _in_pass_dead_reckon(self, sim_time_ns: int) -> bool:
+        """True while the committed pass coast (dead-reckon + acquire-next) window is active. Bounded
+        by ``pass_coast_s + acquire_next_s`` so the straight glide can never run forever; past that the
+        seeker reverts to the gentle no-detection coast (never a pitch-up)."""
+        if not self._passing or self._pass_t_ns is None:
+            return False
+        elapsed = (int(sim_time_ns) - self._pass_t_ns) / 1e9
+        return elapsed < (self.config.pass_coast_s + self.config.acquire_next_s)
+
+    def _pass_coast_command(self, nav: NavState) -> ControlCommand:
+        """The bounded LEVEL forward COAST through the pass (dead-reckon) + while acquiring the next
+        gate. Holds the FROZEN pre-pass heading and commands the same bounded feedforward forward tilt
+        as pursuit (so the forward lean is MAINTAINED -- no re-level snap that pitches up into the gate
+        backside) with the pitch/roll caps. NO vision-servo on the degenerate near-zero lever and NO
+        vertical-align (the lever is degenerate at the pass). If the coast+acquire window has elapsed
+        without re-acquiring the next gate, fall back to the gentle no-detection level coast (which can
+        never pitch up), so the dead-reckon glide is always bounded."""
+        if not self._in_pass_dead_reckon(int(nav.sim_time_ns)):
+            # the bounded coast+acquire window elapsed -> end the pass, revert to the gentle level hold.
+            self._end_pass()
+            return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
+                                      attitude_safe=True)
+        yaw0 = self._pass_heading if self._pass_heading is not None else float(nav.yaw)
+        self._last_yaw = yaw0
+        los = np.array([np.cos(yaw0), np.sin(yaw0), 0.0])
+        launch = self._launch_ramp(int(nav.sim_time_ns))
+        # full forward authority for the coast (we are committed to the glide); no vertical-align.
+        return self._feedforward_command(nav, los, yaw0, launch,
+                                         self.config.pass_coast_accel_mps2, 1.0, vz_cmd=0.0)
 
     def _in_settle(self, sim_time_ns: int) -> bool:
         """True while within ``settle_s`` of the launch clock arming (the post-arm cold-AHRS settle)."""
@@ -1077,6 +1268,12 @@ class GateSeeker:
         self._egress_v = 0.0
         self._last_egress_t_ns = None
         self._egress_done = False
+        self._pass_armed = False
+        self._pass_min_range_m = float("inf")
+        self._passing = False
+        self._pass_t_ns = None
+        self._pass_heading = None
+        self._pass_index = None
 
     # -- internals ----------------------------------------------------------
     def _launch_ramp(self, sim_time_ns: int) -> float | None:

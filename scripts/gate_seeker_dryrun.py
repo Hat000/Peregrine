@@ -859,6 +859,143 @@ def check_nearest_gate_first_acquisition(cruise_speed: float) -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# CHECK 11 — DEAD-RECKON THROUGH THE PASS + NEXT-GATE HANDOFF (the A5-footage fix)
+# ---------------------------------------------------------------------------
+class _RangingProjDetector:
+    """_ProjDetector whose gate set + drone pose are re-pointed each tick by the caller. Used to drive
+    the pass: the active gate's range closes from >3 m to <2.5 m to LOST (behind), then a NEXT gate
+    appears downrange. Projects whatever gates it currently holds from the current (drone_pos, R_wb)."""
+
+    def __init__(self, drone_pos, R_wb):
+        self.gates = []
+        self.drone_pos = np.asarray(drone_pos, float)
+        self.R_wb = np.asarray(R_wb, float)
+        self._R_cb = R_camera_from_body()
+
+    def detect(self, frame):
+        out = []
+        for g in self.gates:
+            px = _project_gate_px(g, self.drone_pos, self.R_wb, self._R_cb)
+            if px is None:
+                continue
+            out.append(GateObservation(frame_id=frame.frame_id, sim_time_ns=frame.sim_time_ns,
+                                       corners_px=px, corner_ids=np.array([0, 1, 2, 3]),
+                                       corner_confidence=np.ones(4)))
+        return out
+
+
+def check_dead_reckon_through_pass_no_pitch_up(cruise_speed: float) -> bool:
+    """Reproduce the A5 POST-PASS failure (footage-derived) and prove the dead-reckon-through-pass +
+    next-gate handoff fix. The drone THREADS gate 0 dead-straight, then at the pass the gate FILLS the
+    frame (range -> ~2.78 m, the PnP lever DEGENERATES) and the close-range vision/attitude fix CORRUPTS
+    (run4 telem: est_pitch jumps to -1.08 rad at the 2.78 m tick). Servoing on that degenerate state,
+    the OLD pursuit controller commands a large NOSE-UP correction (run4 cmd_pitch +1.50) to 'fix' the
+    spuriously-steep estimated lean -> the drone PITCHES UP into the BACKSIDE of the gate. The gate is
+    then lost behind us; the OLD seeker drifts (never re-acquires the next gate).
+
+    THE FIX: once the pass is ARMED (range < pass_arm_range_m) and DEGENERATE-close (range <
+    pass_degenerate_range_m), the NEW seeker STOPS vision-servoing on the gate and commands a bounded
+    LEVEL forward COAST on the FROZEN pre-pass heading. The pursuit controller (servoing on the seen
+    gate while leaned forward) commands a SUSTAINED NOSE-UP through the close approach; the coast holds
+    a bounded forward tilt instead (≈zero pitch-rate), so the nose-up is SUPPRESSED. It glides straight
+    through, then ACQUIRE-NEXT re-locks the downrange gate and resumes pursuit (the handoff).
+
+    PITCH-UP SIGNATURE: with the odo pitch-rate sign (-1), a NOSE-UP correction is a POSITIVE commanded
+    body_rate[1]. We feed the cruise forward LEAN attitude (run4 cruised at est_pitch ~-0.31 rad) and
+    compare the commanded pitch rate at the close-range pass tick.
+
+    Asserts: at the degenerate pass tick OLD pursuit commands a sizeable NOSE-UP (positive) pitch rate
+    while NEW SUPPRESSES it (the coast holds the forward lean, pitch-rate ≈0); and NEW re-acquires +
+    pursues the next gate (handoff) while OLD drops into the no-detection hold + drifts (no handoff)."""
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    cruise_lean = np.deg2rad(-7.0)     # the gentle cruise forward lean (the seeker's own bounded tilt)
+    def _gate0(rng):
+        return _gate([rng, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)
+    next_gate = _gate([16.0, 2.5, -2.5], normal=[1.0, 0.0, 0.0], gate_id=1)   # off-axis -> handoff yaws
+    drone_pos = np.array([0.0, 0.0, -2.5])
+
+    class _SpyController:
+        """Wrap the controller to record the forward feedforward accel demand each tick."""
+        def __init__(self, inner):
+            self.inner = inner
+            self.max_body_rate_rps = inner.max_body_rate_rps
+            self.hover_thrust = inner.hover_thrust
+            self.last_fwd = 0.0
+        def command(self, nav, sp):
+            self.last_fwd = float(np.linalg.norm(sp.accel_ned)) if sp.accel_ned is not None else 0.0
+            return self.inner.command(nav, sp)
+
+    def _run(dead_reckon: bool):
+        det = _RangingProjDetector(drone_pos, R_wb)
+        seeker = GateSeeker(config=GateSeekerConfig(
+            cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+            use_spawn_egress=False, use_vertical_align=False, use_pass_dead_reckon=dead_reckon,
+            pass_arm_range_m=3.0, pass_degenerate_range_m=2.5, pass_coast_s=0.6, acquire_next_s=3.0),
+            detector=det)
+        spy = _SpyController(seeker.controller)
+        seeker.controller = spy
+        dt = 0.05
+        rng0 = 3.4
+        gi = 0
+        degenerate_pitch_cmd = None    # the commanded pitch RATE at the first degenerate (close) tick
+        gap_fwd_demands = []           # forward feedforward demand during the lost-gate gap (the drift test)
+        reacquired = False
+        for k in range(70):
+            t_ns = int(k * dt * 1e9)
+            if rng0 > 0.15:
+                det.gates = [_gate0(rng0)]
+                degenerate = rng0 <= 2.5                  # the close-range degenerate band
+                rng0 -= 0.22                              # close the range through the pass
+                gate_lost = False
+            else:
+                det.gates = [next_gate]                   # gate 0 passed/behind -> only the NEXT gate
+                gi = 1                                    # the wire advances the active gate index
+                degenerate = False
+                gate_lost = True
+            det.drone_pos = drone_pos
+            ns = NavState(sim_time_ns=t_ns, position_ned=drone_pos.copy(), velocity_ned=np.zeros(3),
+                          roll=0.0, pitch=float(cruise_lean), yaw=0.0,
+                          time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+            frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=np.ones((360, 640, 3), np.uint8))
+            cmd = seeker.command_visual(ns, frame, gi)
+            # capture the pitch-rate command at the FIRST degenerate tick (the close-range pass tick).
+            if degenerate and degenerate_pitch_cmd is None:
+                degenerate_pitch_cmd = float(cmd.body_rate[1])
+            # during the lost-gate gap (gate 0 gone, next not yet pursued) record the forward demand:
+            # OLD holds (no forward demand -> drift); NEW coasts (a forward demand -> progress).
+            if gate_lost and not reacquired:
+                gap_fwd_demands.append(spy.last_fwd)
+            # did the seeker re-acquire + pursue the NEXT gate? (off-axis -> a +yaw toward +Y).
+            if gi == 1 and not seeker._passing and seeker._last_pose is not None \
+                    and float(seeker._last_pose.range_m) > 5.0 and float(seeker._last_yaw) > 0.02:
+                reacquired = True
+        gap_fwd = float(np.mean(gap_fwd_demands)) if gap_fwd_demands else 0.0
+        return degenerate_pitch_cmd, reacquired, gap_fwd
+
+    new_pitch_cmd, new_reacq, new_gap_fwd = _run(dead_reckon=True)
+    old_pitch_cmd, old_reacq, old_gap_fwd = _run(dead_reckon=False)
+
+    # OLD: at the close pass tick the pursuit servos on the seen gate while leaned -> a sizeable NOSE-UP
+    # (positive) pitch-rate correction (the backside-clip pitch-up); and during the lost-gate gap it
+    # drops into the no-detection HOLD with NO forward demand -> it DRIFTS (the 2.0 'drift forward
+    # forever' / the failure to power through to the next gate).
+    old_pitches_up = old_pitch_cmd is not None and old_pitch_cmd > 0.5
+    old_drifts = old_gap_fwd < 0.3                         # ~no forward demand in the gap (stalls/drifts)
+    # NEW: the dead-reckon coast SUPPRESSES the nose-up (holds a bounded forward tilt), MAINTAINS a
+    # forward demand through the gap (the bounded coast), and re-acquires + pursues the next gate (the
+    # handoff: a +yaw toward the off-axis +Y next gate).
+    new_no_pitch_up = new_pitch_cmd is not None and new_pitch_cmd < 0.5 * old_pitch_cmd
+    new_coasts_fwd = new_gap_fwd > 0.5 and new_gap_fwd > 2.0 * old_gap_fwd   # real bounded forward coast
+    new_hands_off = new_reacq
+    ok = (old_pitches_up and old_drifts and new_no_pitch_up and new_coasts_fwd and new_hands_off)
+    print(f"  [pass-deadreckon] OLD pitch-cmd {old_pitch_cmd:+.3f} rps (nose-up: {old_pitches_up}) "
+          f"gap-fwd {old_gap_fwd:.2f} (drifts: {old_drifts})  ->  NEW pitch-cmd {new_pitch_cmd:+.3f} rps "
+          f"(suppressed: {new_no_pitch_up}) gap-fwd {new_gap_fwd:.2f} handoff {new_reacq}"
+          f"  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -881,9 +1018,10 @@ def main() -> int:
     ok8 = check_spawn_gate_egress_clears_gate0(args.speed)
     ok9 = check_vertical_alignment_threads_offset_opening(args.speed)
     ok10 = check_nearest_gate_first_acquisition(args.speed)
+    ok11 = check_dead_reckon_through_pass_no_pitch_up(args.speed)
 
     print()
-    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and ok10:
+    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and ok10 and ok11:
         print("RESULT: PASS — the integrated gate-seeker produces sane, slow, gate-pointing "
               "commands on synthetic data; the self-localized estimate stays bounded; the seeker "
               "RELEASES its launch-hold on its OWN map-free detections (the attempt-2 BUG A, where "
@@ -898,7 +1036,10 @@ def main() -> int:
               "ALIGNMENT descends/climbs onto the gate-opening centre (bounded vz) instead of holding "
               "altitude and clipping the top bar (the attempt-5 BLOCKER 1 close-range clip); and the "
               "NEAREST-GATE first acquisition locks the near start-line gate over a far off-axis one "
-              "(the attempt-5 BLOCKER 2 far-gate lock).")
+              "(the attempt-5 BLOCKER 2 far-gate lock); and the DEAD-RECKON-THROUGH-PASS holds a "
+              "bounded level forward coast through the gate opening instead of re-levelling into a "
+              "pitch-up (the A5-footage post-pass backside-clip) and HANDS OFF to the next gate "
+              "instead of drifting forever.")
         return 0
     print("RESULT: FAIL — see the failing check above.")
     return 1
