@@ -150,12 +150,20 @@ class LeftInvariantEKF:
     accel_gate_alpha : magnitude-gate sharpness (0 disables). exp(-alpha*((|a|-g)/g)^2).
     accel_chi2_thresh : innovation (chi-square) gate threshold; chi2(3,.95)=7.815.
                         0 or negative disables the innovation gate.
+    accel_freefall_tol_lo / accel_freefall_tol_hi : free-fall / high-|a| magnitude guard
+                        (catastrophic-failure safety net, identical to ESKFAHRS so the two
+                        gravity-referenced filters stay algebraically equivalent). Skip the
+                        accel update when |a| is outside [g*(1-tol_lo), g*(1+tol_hi)]; the
+                        accel is only the gravity reference when |a| ~ g. Negative disables
+                        that side. See eskf.py for the full rationale.
     """
     gyro_noise_std: float = 0.01
     gyro_bias_std: float = 1e-4
     accel_noise_std: float = 0.3
     accel_gate_alpha: float = 10.0
     accel_chi2_thresh: float = 7.815
+    accel_freefall_tol_lo: float = 0.75   # reject when |a| < g*(1-0.75) = 0.25 g  (free-fall)
+    accel_freefall_tol_hi: float = 9.0    # reject when |a| > g*(1+9.0)  = 10 g    (extreme high-g)
 
     _R: np.ndarray = field(default_factory=lambda: np.eye(3))
     _b_g: np.ndarray = field(default_factory=lambda: np.zeros(3))
@@ -225,9 +233,21 @@ class LeftInvariantEKF:
         deviation = (accel_mag - GRAVITY) / GRAVITY
         return float(np.exp(-self.accel_gate_alpha * deviation**2))
 
+    def _accel_magnitude_in_band(self, accel_mag: float) -> bool:
+        """Free-fall / high-|a| magnitude guard (identical to ESKFAHRS). True iff |a| ~ g."""
+        if self.accel_freefall_tol_lo >= 0.0 and accel_mag < GRAVITY * (1.0 - self.accel_freefall_tol_lo):
+            return False
+        if self.accel_freefall_tol_hi >= 0.0 and accel_mag > GRAVITY * (1.0 + self.accel_freefall_tol_hi):
+            return False
+        return True
+
     def _update_accel(self, accel: np.ndarray) -> None:
         accel_mag = float(np.linalg.norm(accel))
         if accel_mag < 1e-6:
+            return
+        # Free-fall / high-|a| magnitude guard: skip the accel update when |a| is not ~ g
+        # (the accel is only the gravity reference near |a|=g). No-op when |a| ~ g.
+        if not self._accel_magnitude_in_band(accel_mag):
             return
         gate = self._accel_gate_weight(accel_mag)
         if gate < 1e-4:

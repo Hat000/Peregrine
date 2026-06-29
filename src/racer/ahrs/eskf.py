@@ -23,6 +23,25 @@ When |a_meas| is close to g (within threshold), the accel points mostly at -g in
 body frame and carries tilt information. We form the predicted gravity direction in
 the body frame from the nominal quaternion and use it as the measurement model.
 
+Free-fall / high-|a| magnitude guard (the catastrophic-failure SAFETY NET)
+--------------------------------------------------------------------------
+The accelerometer equals (specific force = reaction to) gravity ONLY when |a| ~ g.
+In FREE-FALL the proper acceleration collapses (|a| -> ~0), so the accel reads near
+ZERO and its NORMALISED direction ``a/|a|`` points at whatever tiny residual / noise
+remains -- it is NO LONGER the gravity direction. Feeding that bogus direction into
+the tilt update can INVERT the attitude estimate (the VQ2 A6 free-fall tumble: a ~2 Hz
+thrust slam cut commanded thrust to the alt floor -> brief near-free-fall -> the AHRS
+lost its gravity reference -> est roll/yaw flipped to +-180 deg). The chi2 innovation
+gate is NOT a reliable catch here (in free-fall the prior covariance is small and a
+near-zero measurement can still test "consistent" enough to leak through, and a slewing
+attitude makes the innovation ambiguous). The principled, unconditional catch is a
+MAGNITUDE band: the accel update is SKIPPED entirely (gyro-propagate only, no bogus
+gravity correction) whenever |a| falls outside ``[g*(1-tol_lo), g*(1+tol_hi)]``.
+Free-fall (|a|~1, ~90% below g) is WAY outside any sane band, so even a loose band
+catches it deterministically. When |a| ~ g (the overwhelming majority of ticks) the
+band is a NO-OP and the update is byte-identical to before. This is COMPLEMENTARY to
+(and EARLIER than) the chi2 gate, not a replacement.
+
 CRITICAL: During high-g maneuvers, |a_meas| >> g, so the accel is dominated by
 kinematic acceleration and DOES NOT point at -g. Using it naively would corrupt the
 attitude estimate. The gating mechanism DOWNWEIGHTS the accel update:
@@ -172,6 +191,19 @@ class ESKFAHRS:
     accel_gate_alpha: float = 10.0      # high-g sharpness (0 = disabled)
     accel_chi2_thresh: float = 7.815    # innovation-gate threshold; chi2(3, .95)=7.815
                                         # (0 or negative = innovation gate disabled)
+    # Free-fall / high-|a| magnitude guard (the catastrophic-failure safety net). The accel
+    # is only the gravity reference when |a| ~ g; skip the accel update entirely (gyro-propagate
+    # only) when |a| is outside [g*(1-tol_lo), g*(1+tol_hi)]. ASYMMETRIC by design:
+    #   * tol_lo (low side) catches FREE-FALL (|a|->~0). The default 0.75 means "reject below
+    #     0.25 g (|a| < 2.45 m/s^2)" -- free-fall |a|~1 is caught, while the synthetic bench's
+    #     adversarial HIGH_G_RANDOM tail (min |a|~3.24 m/s^2, ~0.33 g) is left to the chi2 gate,
+    #     preserving the ESKF<->IEKF cross-validation. A deployment can tighten this toward ~0.25.
+    #   * tol_hi (high side) is a coarse high-g backstop; the smooth accel_gate_alpha weight +
+    #     chi2 gate already handle sustained high-g, so the default 9.0 (reject above 10 g) is a
+    #     loose last-resort net that never trips in the bench (max |a|~5.5 g).
+    # tol_lo<0 or tol_hi<0 disables that side. A no-op band (very loose) leaves behaviour identical.
+    accel_freefall_tol_lo: float = 0.75   # reject when |a| < g*(1-0.75) = 0.25 g  (free-fall)
+    accel_freefall_tol_hi: float = 9.0    # reject when |a| > g*(1+9.0)  = 10 g    (extreme high-g)
     mag_ned: Optional[np.ndarray] = None
     mag_noise_std: float = 0.1          # normalised
 
@@ -292,6 +324,27 @@ class ESKFAHRS:
         deviation = (accel_mag - GRAVITY) / GRAVITY
         return float(np.exp(-self.accel_gate_alpha * deviation**2))
 
+    def _accel_magnitude_in_band(self, accel_mag: float) -> bool:
+        """Free-fall / high-|a| magnitude guard: True iff |a| ~ g (accel IS the gravity reference).
+
+        The accelerometer only equals the gravity reaction when ``|a| ~ g``. In FREE-FALL
+        (|a| -> ~0) the normalised accel direction is meaningless and feeding it to the tilt
+        update can INVERT the attitude estimate; in extreme high-g (|a| >> g) the accel is
+        kinematic, not gravity. Either way the accel update must be SKIPPED. Returns True only
+        when ``g*(1-tol_lo) <= |a| <= g*(1+tol_hi)`` (the regime where the accel carries tilt).
+        A negative tolerance disables that side. When |a| ~ g this is True (the band is a no-op
+        and the accel update proceeds byte-identically to before).
+        """
+        if self.accel_freefall_tol_lo >= 0.0:
+            lo = GRAVITY * (1.0 - self.accel_freefall_tol_lo)
+            if accel_mag < lo:
+                return False
+        if self.accel_freefall_tol_hi >= 0.0:
+            hi = GRAVITY * (1.0 + self.accel_freefall_tol_hi)
+            if accel_mag > hi:
+                return False
+        return True
+
     def _update_accel(self, accel: np.ndarray) -> None:
         """Tilt update using accelerometer; gated by high-g weighting.
 
@@ -305,6 +358,14 @@ class ESKFAHRS:
         """
         accel_mag = float(np.linalg.norm(accel))
         if accel_mag < 1e-6:
+            return
+
+        # Free-fall / high-|a| magnitude guard (catastrophic-failure safety net): if |a| is
+        # outside the gravity-magnitude band, the accel is NOT the gravity reference, so SKIP
+        # the accel correction entirely (we already gyro-propagated in _predict). This is an
+        # earlier, unconditional reject than the chi2 gate, specifically for the free-fall case
+        # that can invert the attitude estimate. When |a| ~ g this is a no-op (returns in-band).
+        if not self._accel_magnitude_in_band(accel_mag):
             return
 
         gate = self._accel_gate_weight(accel_mag)

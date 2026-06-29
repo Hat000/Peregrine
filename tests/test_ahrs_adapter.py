@@ -293,6 +293,145 @@ class TestLifecycle:
 # 5. Uncertainty channel sanity (cold-start gating feeder)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 5b. Free-fall / high-|a| magnitude guard (the catastrophic-failure SAFETY NET)
+# ---------------------------------------------------------------------------
+
+class TestFreeFallGuard:
+    """The ESKF accel-magnitude guard: skip the gravity-referenced accel update when |a| is
+    NOT ~ g, so a brief free-fall window can NEVER invert the attitude estimate (the VQ2 A6
+    tumble mechanism: a ~2 Hz thrust slam -> near free-fall -> accel reads ~0, no longer the
+    gravity direction -> bogus tilt correction flips est roll/yaw to +-180 deg).
+
+    The default band is asymmetric (tol_lo=0.75 catches free-fall |a| -> ~0; tol_hi=9.0 is a
+    loose high-g backstop). The guard is COMPLEMENTARY to (earlier than) the chi2 innovation
+    gate -- these tests show the chi2 gate ALONE does NOT catch free-fall, but the magnitude
+    guard does.
+    """
+
+    GRAVITY = 9.80665
+
+    def _freefall_run(self, tol_lo, chi2=7.815, seed=0, n_settle=300, n_ff=120, p_grown=2.0):
+        """Settle the ESKF at level rest, GROW the prior (sparse fixes during free-fall), then
+        feed a free-fall window: tiny accel (|a|~0.8) pointing the WRONG way (+Z body, i.e.
+        opposite the resting -Z specific force). Returns the geodesic error from level (deg).
+
+        The grown prior is the faithful A6 condition: at ~2 Hz the attitude covariance inflates
+        between fixes, so a bogus near-zero accel gets a LARGE Kalman gain and yanks the estimate
+        past 90 deg into inversion -- unless the magnitude guard freezes the accel correction.
+        """
+        rng = np.random.default_rng(seed)
+        src = AHRSAttitudeSource(eskf=ESKFAHRS(
+            gyro_noise_std=0.01, accel_gate_alpha=10.0, accel_chi2_thresh=chi2,
+            accel_freefall_tol_lo=tol_lo, accel_freefall_tol_hi=9.0))
+        src.seed(np.array([1.0, 0.0, 0.0, 0.0]))
+        dt = 0.005
+        for _ in range(n_settle):
+            src.ingest(np.array([0.0, 0.0, -self.GRAVITY]) + rng.normal(0, 0.05, 3),
+                       np.zeros(3), dt)
+        src.eskf._P = np.diag([p_grown] * 3 + [1e-5] * 3)   # grown prior (sparse-fix free-fall)
+        for _ in range(n_ff):
+            a = np.array([0.0, 0.0, 0.8]) + rng.normal(0, 0.2, 3)   # |a|~0.8, WRONG direction
+            src.ingest(a, np.zeros(3), dt)
+        err = geodesic_error_rad(src.q_wxyz, np.array([1.0, 0.0, 0.0, 0.0]))[0]
+        return float(np.rad2deg(err))
+
+    def test_freefall_guard_keeps_attitude_bounded(self):
+        """WITH the guard (default tol_lo=0.75): the free-fall window is rejected, attitude
+        stays level (sub-degree) -- the accel correction is frozen, gyro holds the estimate."""
+        for seed in range(6):
+            err_on = self._freefall_run(tol_lo=0.75, seed=seed)
+            assert err_on < 1.0, (
+                f"seed {seed}: with the free-fall guard the attitude must stay bounded "
+                f"(got {err_on:.2f} deg)"
+            )
+
+    def test_freefall_without_guard_inverts(self):
+        """WITHOUT the guard (tol_lo<0 = low side disabled = OLD behaviour): the SAME free-fall
+        window drives the estimate far past vertical (>90 deg = inverted). The chi2 innovation
+        gate (left ON here) does NOT catch it -- proving the magnitude guard is the needed net."""
+        worst = max(self._freefall_run(tol_lo=-1.0, chi2=7.815, seed=s) for s in range(6))
+        assert worst > 90.0, (
+            f"without the magnitude guard the free-fall accel should invert the estimate "
+            f"(>90 deg); got worst {worst:.2f} deg -- the chi2 gate alone does not catch free-fall"
+        )
+
+    def test_chi2_gate_alone_does_not_catch_freefall(self):
+        """Pin the task's premise: chi2 ON vs chi2 OFF (both WITHOUT the magnitude guard) are
+        BOTH catastrophic on free-fall, so chi2 is not the free-fall catch -- the magnitude guard is."""
+        with_chi2 = self._freefall_run(tol_lo=-1.0, chi2=7.815, seed=0)
+        no_chi2 = self._freefall_run(tol_lo=-1.0, chi2=0.0, seed=0)
+        assert with_chi2 > 90.0 and no_chi2 > 90.0, (
+            f"chi2 gate must NOT rescue free-fall (chi2-on {with_chi2:.1f} deg, "
+            f"chi2-off {no_chi2:.1f} deg -- both should invert)"
+        )
+
+    def test_high_g_window_also_skipped(self):
+        """The high side of the band rejects an extreme high-|a| burst (|a| >> g): the accel is
+        kinematic, not gravity. A sustained |a|=12 g burst with the prior grown must not corrupt
+        attitude when the guard is on, but does when the high side is disabled."""
+        def run(tol_hi):
+            rng = np.random.default_rng(3)
+            src = AHRSAttitudeSource(eskf=ESKFAHRS(
+                gyro_noise_std=0.01, accel_gate_alpha=0.0, accel_chi2_thresh=0.0,
+                accel_freefall_tol_lo=0.75, accel_freefall_tol_hi=tol_hi))
+            src.seed(np.array([1.0, 0.0, 0.0, 0.0]))
+            dt = 0.005
+            for _ in range(300):
+                src.ingest(np.array([0.0, 0.0, -self.GRAVITY]), np.zeros(3), dt)
+            src.eskf._P = np.diag([1.0] * 3 + [1e-5] * 3)
+            for _ in range(60):
+                a = np.array([12.0 * self.GRAVITY, 0.0, -self.GRAVITY]) + rng.normal(0, 0.2, 3)
+                src.ingest(a, np.zeros(3), dt)
+            return float(np.rad2deg(geodesic_error_rad(src.q_wxyz, np.array([1., 0., 0., 0.]))[0]))
+        guarded = run(tol_hi=9.0)     # 12 g > 10 g band -> rejected
+        unguarded = run(tol_hi=1e9)   # high side effectively disabled -> 12 g leaks in
+        assert guarded < 1.0, f"high-g guard should freeze attitude (got {guarded:.2f} deg)"
+        assert unguarded > guarded, "disabling the high side must let the high-g burst perturb attitude"
+
+    def test_normal_flight_byte_identical(self):
+        """NORMAL |a| ~ g: the guard is a NO-OP. The full quaternion stream with the default
+        guard must be BYTE-IDENTICAL to the guard disabled (low+high sides off) on benign streams.
+        This is the 'normal flight unchanged' invariant -- the guard only activates off-nominal."""
+        for scen in (Scenario.STATIC_GRAVITY, Scenario.CONSTANT_SPIN, Scenario.ROLLING_MANEUVER):
+            seq = generate_imu_sequence(scen, duration_s=5.0, dt=0.005, seed=7,
+                                        gyro_noise_std=0.005, accel_noise_std=0.05)
+
+            guarded = AHRSAttitudeSource(eskf=ESKFAHRS(
+                gyro_noise_std=0.01, accel_gate_alpha=10.0,
+                accel_freefall_tol_lo=0.75, accel_freefall_tol_hi=9.0))
+            disabled = AHRSAttitudeSource(eskf=ESKFAHRS(
+                gyro_noise_std=0.01, accel_gate_alpha=10.0,
+                accel_freefall_tol_lo=-1.0, accel_freefall_tol_hi=-1.0))
+            guarded.seed(seq.q_wxyz_gt[0])
+            disabled.seed(seq.q_wxyz_gt[0])
+
+            q_g = np.array([guarded.ingest(seq.accel[i], seq.gyro[i], seq.dt) for i in range(seq.N)])
+            q_d = np.array([disabled.ingest(seq.accel[i], seq.gyro[i], seq.dt) for i in range(seq.N)])
+            assert np.array_equal(q_g, q_d), (
+                f"{scen.name}: default free-fall guard must be byte-identical to disabled on "
+                f"normal |a| (max diff {np.max(np.abs(q_g - q_d)):.2e})"
+            )
+
+    def test_magnitude_band_predicate(self):
+        """Unit-pin the band predicate: in-band at |a|~g, out-of-band in free-fall and extreme high-g,
+        and a negative tolerance disables that side."""
+        f = ESKFAHRS(accel_freefall_tol_lo=0.75, accel_freefall_tol_hi=9.0)
+        g = self.GRAVITY
+        assert f._accel_magnitude_in_band(g)                  # |a| = g -> in band (no-op)
+        assert f._accel_magnitude_in_band(0.9 * g)            # mild dip -> still in band
+        assert f._accel_magnitude_in_band(1.5 * g)            # mild high-g -> in band
+        assert not f._accel_magnitude_in_band(1.0)            # free-fall |a|~1 -> OUT (rejected)
+        assert not f._accel_magnitude_in_band(0.1 * g)        # near free-fall -> OUT
+        assert not f._accel_magnitude_in_band(11.0 * g)       # extreme high-g -> OUT
+        # Disabling the low side: free-fall now passes the magnitude predicate.
+        f_lo_off = ESKFAHRS(accel_freefall_tol_lo=-1.0, accel_freefall_tol_hi=9.0)
+        assert f_lo_off._accel_magnitude_in_band(1.0)
+        # Disabling the high side: extreme high-g now passes.
+        f_hi_off = ESKFAHRS(accel_freefall_tol_lo=0.75, accel_freefall_tol_hi=-1.0)
+        assert f_hi_off._accel_magnitude_in_band(11.0 * g)
+
+
 def test_attitude_uncertainty_decreases_with_fixes():
     """Under a benign (level) stream the accel updates should shrink attitude uncertainty
     from its seeded value -- the channel the wiring step gates the alignment transient on."""
