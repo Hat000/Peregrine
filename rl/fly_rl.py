@@ -934,12 +934,165 @@ def fly_once(client, actor, args, flight_idx: int,
             print(f"  disarm error: {exc}", file=sys.stderr)
 
 
+def _build_casec_seeker(args, gates):
+    """Construct the case-C Navigator + the slow gate-seeker from the deploy profile (--gate-seeker).
+
+    Returns ``(navigator, seeker, profile)``. The Navigator runs the SELF-LOCALIZING estimator
+    (use_ahrs + vision yaw/z + gate-relative chain, NO given position) with an opt-in detector;
+    the seeker is the transparent slow pursuit controller. No torch / no RL checkpoint needed."""
+    from racer.deploy_profile import get_profile
+    from racer.gate_seeker import GateSeeker, GateSeekerConfig
+    from racer.navigator import Navigator
+
+    profile = get_profile(args.deploy_profile)
+    detector = None
+    if args.seeker_detector == "red_glow":
+        from racer.vision.red_glow_detector import RedGlowGateDetector
+        detector = RedGlowGateDetector()
+    elif args.seeker_detector == "yolo":
+        from racer.vision.detector import GateDetector
+        detector = GateDetector.load(args.checkpoint)   # weights path (artifact-pipe); opt-in
+    nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=args.seeker_speed))
+    return nav, seeker, profile
+
+
+def _fly_gate_seeker(client, args, flight_idx: int,
+                     session_dir: Path | None, result: dict) -> dict:
+    """SLOW GATE-SEEKER deploy loop on the case-C self-localizing stack (--gate-seeker).
+
+    The transparent alternative to the RL policy: build the case-C Navigator (deploy profile,
+    self-localizing) + the slow pursuit gate-seeker, then each tick run
+    ``navigator.update(state, frame) -> NavState``, map ``RACE_STATUS.active_gate_index`` to the
+    ordered gate, and command ``seeker.command(nav, gate, idx) -> CTBR``. Same safety scaffolding
+    as the RL loop (collision / sim-reset / finish / sim-stall guards). The deploy profile's
+    ``cmd_rate_scale`` was applied to ``client`` at construction (main()).
+
+    Needs the gate map (``client.track_gates`` from TRACK_INFO, or the ``--map`` JSON). Without it
+    the loop aborts cleanly (NO_MAP) rather than flying blind."""
+    from racer.contracts import Frame
+    from racer.navigator import gates_from_track_records, load_track_map
+
+    # --- gate map: prefer the live TRACK_INFO; fall back to the --map JSON ---
+    if client.track_gates:
+        gates = gates_from_track_records(client.track_gates, corner_to_center=True)
+    elif args.map and Path(args.map).exists():
+        gates = load_track_map(args.map, corner_to_center=True)
+    else:
+        print("  [gate-seeker] no gate map (no TRACK_INFO, no --map) -> cannot fly. abort.",
+              file=sys.stderr)
+        result["final_state"] = "NO_MAP"
+        return result
+    n_gates = len(gates)
+
+    nav, seeker, profile = _build_casec_seeker(args, gates)
+    print(f"\n[gate-seeker] profile={profile.name} self_localizing={profile.self_localizing} "
+          f"cmd_rate_scale={client.cmd_rate_scale:g} detector={args.seeker_detector} "
+          f"cruise={args.seeker_speed:g} m/s  gates={n_gates}  max={args.max_seconds:g}s ...")
+
+    tick        = 1.0 / args.rate
+    deadline    = time.monotonic() + args.max_seconds
+    next_t      = time.monotonic()
+    last_sim_t  = int(client.state.sim_time_ns)
+    last_adv_w  = time.monotonic()
+    last_p      = 0.0
+    n_coll0     = result["collisions_at_start"]
+    gate_index  = 0
+    final_state = "IDLE"
+
+    reset_counter0 = int(client.state.reset_counter)
+    prev_pos = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
+                if client.state.position_ned is not None else None)
+
+    while time.monotonic() < deadline:
+        while time.monotonic() < next_t:
+            client.pump()
+            time.sleep(0.001)
+        client.pump()
+        next_t = time.monotonic() + tick
+        now = time.monotonic()
+        s  = client.state
+        rs = client.race_status
+
+        # --- stop conditions (mirror the RL loop) ---
+        st = int(s.sim_time_ns)
+        if st > last_sim_t:
+            last_sim_t, last_adv_w = st, now
+        elif now - last_adv_w > 1.5:
+            print("\n  [gate-seeker] sim_time stalled (race ended) -> stopping.")
+            break
+        if rs and rs.get("finished"):
+            print("\n  [gate-seeker] RACE_STATUS finished -> stopping.")
+            final_state = "FINISHED"
+            break
+        if any(c["threat_level"] >= 2 for c in client.collisions[n_coll0:]):
+            print("\n  [gate-seeker] HARD COLLISION -> abort.")
+            final_state = "CRASH"
+            break
+
+        # --- sim-reset guard (epoch discontinuity -> cut commands) ---
+        jump = (float(np.linalg.norm(np.asarray(s.position_ned) - prev_pos))
+                if (s.position_ned is not None and prev_pos is not None) else 0.0)
+        if int(s.reset_counter) != reset_counter0 or jump > 10.0:
+            print("\n  [gate-seeker] SIM RESET DETECTED -> cutting commands.")
+            final_state = "SIM_RESET"
+            break
+        if s.position_ned is not None:
+            prev_pos = np.asarray(s.position_ned, dtype=np.float64).copy()
+
+        # --- active gate from RACE_STATUS (authoritative ordering signal) ---
+        gi = (int(rs["active_gate_index"])
+              if rs and rs.get("active_gate_index") is not None else gate_index)
+        if gi > gate_index:
+            print(f"\n  [gate-seeker] gate {gate_index} PASSED -> targeting {gi}", flush=True)
+        gate_index = min(max(gi, 0), n_gates - 1)
+        is_final = gate_index >= n_gates - 1
+
+        # --- perception: read the freshest frame the video thread published (non-blocking) ---
+        # The video thread owns the single UDP receiver and stashes the latest reassembled Frame
+        # in client._latest_frame; we consume it here, once per new frame_id (the navigator's
+        # _maybe_run_vision is itself frame_id-idempotent, so re-feeding the same frame is a no-op).
+        frame: Frame | None = getattr(client, "_latest_frame", None)
+
+        # --- estimate (case-C self-localizing) then command the slow pursuit ---
+        nav_state = nav.update(s, frame)
+        cmd = seeker.command(nav_state, gates[gate_index], gate_index, is_final_gate=is_final)
+        client.send_command(cmd)
+
+        if now - last_p >= 1.0:
+            p = nav_state.position_ned
+            br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
+            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} "
+                  f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) "
+                  f"thr={cmd.thrust:.3f} rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
+                  f"tsv={nav_state.time_since_vision_update_s:.2f}s   ",
+                  end="\r", flush=True)
+            last_p = now
+
+    if final_state == "IDLE":
+        final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
+        print(f"\n  ({final_state.lower()})")
+    result["final_state"] = final_state
+    result["gate_index"]  = gate_index
+    result["collisions"]  = len(client.collisions) - n_coll0
+    return result
+
+
 def _fly_armed(client, actor, args, flight_idx: int,
                session_dir: Path | None, result: dict) -> dict:
     """The armed-flight body of ``fly_once`` (PATH B bridge -> RL control loop ->
     finish hold), factored out so ``fly_once`` can wrap it in a try/finally that
     force-disarms on EVERY exit path (F-B). Mutates + returns ``result``; the caller
     owns arming and the guaranteed disarm, so this function NEVER disarms itself."""
+    # ------------------------------------------------------------------
+    # OPT-IN: SLOW GATE-SEEKER on the case-C self-localizing stack (VQ2 "slow is
+    # smooth" first lap). --gate-seeker swaps the RL policy for the transparent
+    # pursuit controller (gate_seeker.py) flying on the case-C Navigator (deploy
+    # profile). DEFAULT OFF: the RL policy path below is untouched. [VQ2 slow-lap]
+    # ------------------------------------------------------------------
+    if getattr(args, "gate_seeker", False):
+        return _fly_gate_seeker(client, args, flight_idx, session_dir, result)
+
     # ------------------------------------------------------------------
     # PATH B bridge: CTBR launcher to the handoff seam
     # ------------------------------------------------------------------
@@ -1245,6 +1398,25 @@ def build_parser() -> argparse.ArgumentParser:
                          "to let the closed-loop policy absorb the 2.5x via obs[9:12], so 1.0 is the "
                          "safe default and the scale is OPT-IN. Scales BODY_RATE rates only; collective "
                          "thrust is untouched. [VQ2-CONTROL-HANDSHAKE 2026-06-29]")
+    # --- SLOW GATE-SEEKER on the case-C self-localizing stack (VQ2 first lap; opt-in) ---
+    ap.add_argument("--gate-seeker", action="store_true",
+                    help="OPT-IN: fly the TRANSPARENT slow gate-seeker (gate_seeker.py) on the "
+                         "case-C self-localizing Navigator (deploy profile) INSTEAD of the RL "
+                         "policy. The 'slow is smooth' first VQ2 lap: a pursuit law that flies "
+                         "slowly through the active gate's centre, all self-localized (vision "
+                         "yaw/z, no mag/baro). DEFAULT OFF (the RL path is unchanged).")
+    ap.add_argument("--deploy-profile", default="vq2_case_c",
+                    help="named estimator+control preset for --gate-seeker (racer.deploy_profile): "
+                         "'vq2_case_c' (self-localizing, default) or 'vq1_case_a' (legacy/given pose). "
+                         "Sets the NavigatorConfig flags + the uplink cmd_rate_scale as one bundle.")
+    ap.add_argument("--seeker-detector", default="red_glow",
+                    choices=["red_glow", "yolo", "none"],
+                    help="perception detector for --gate-seeker: 'red_glow' (classical, no GPU; "
+                         "default), 'yolo' (--checkpoint weights), or 'none' (estimator coasts on "
+                         "IMU/AHRS with no vision fix -- diagnostic only).")
+    ap.add_argument("--seeker-speed", type=float, default=3.0,
+                    help="gate-seeker cruise speed cap (m/s). SLOW first (default 3.0): more frames "
+                         "per metre, no motion blur, vision yaw/z self-loc works. Ramp later.")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "
@@ -1343,7 +1515,15 @@ def main() -> int:
     # -- MAVLink --
     # cmd_rate_scale (default 1.0 == identity / byte-identical VQ1 path). ~0.4 compensates the
     # VQ2 ~2.5x command->realized body-rate gain at the uplink (see build_parser --cmd-rate-scale).
-    client = MavlinkClient(args.endpoint, cmd_rate_scale=args.cmd_rate_scale)
+    # Under --gate-seeker the deploy profile's cmd_rate_scale wins UNLESS the user passed an explicit
+    # --cmd-rate-scale (!= the 1.0 default) -- so the case-C profile is one flag, but still overridable.
+    cmd_rate_scale = args.cmd_rate_scale
+    if getattr(args, "gate_seeker", False) and args.cmd_rate_scale == 1.0:
+        from racer.deploy_profile import get_profile
+        cmd_rate_scale = get_profile(args.deploy_profile).cmd_rate_scale
+        print(f"  [gate-seeker] deploy profile {args.deploy_profile!r} -> "
+              f"cmd_rate_scale={cmd_rate_scale:g}")
+    client = MavlinkClient(args.endpoint, cmd_rate_scale=cmd_rate_scale)
     if args.cmd_rate_scale != 1.0:
         print(f"  [vq2] cmd_rate_scale={args.cmd_rate_scale:g} -> BODY_RATE commands scaled at the "
               f"uplink (command->realized ~{1.0 / args.cmd_rate_scale:.2f}x compensation).")
@@ -1355,11 +1535,16 @@ def main() -> int:
     holder: dict = {"rec": None}
     stop = threading.Event()
 
+    client._latest_frame = None   # gate-seeker perception source (freshest reassembled Frame)
+
     def _video():
         while not stop.is_set():
             try:
                 with JpegUdpReceiver(port=args.video_port) as rx:
                     for fr in rx.frames(max_wait_s=5.0):
+                        # publish the freshest frame for the gate-seeker's case-C perception
+                        # (the navigator is frame_id-idempotent, so re-reads are harmless).
+                        client._latest_frame = fr
                         rec = holder["rec"]
                         if rec is not None:
                             rec.record_frame(fr)
