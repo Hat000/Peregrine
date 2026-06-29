@@ -1,0 +1,6 @@
+
+=== 20260629_234501_vq2_slow_seeker_a7_f1  [PASS] ===
+  frames kept   : 711 of 711 sent  -> DROPPED 0 (0.0%)   longest hole 0 frames
+  effective fps : 30.1  (sender nominal 28.6)   burst fps 28.9   over 23.63s
+  recv dt (ms)  : p50=34.6 p95=35.9 max=45.0 std=3.3   (sim dt p50=34.7)
+  surges (>60ms holes): 0   gaps in frame_id: 0
