@@ -24,6 +24,13 @@ from racer.vision import heading_vp, floor_height  # noqa: E402
 from racer.vision.manhattan_lines import (  # noqa: E402
     extract_line_segments,
     fit_vanishing_point,
+    fit_multiple_vanishing_points,
+    segment_homog_lines,
+    segment_midpoints,
+    segment_angles,
+    _vp_consistency_residual,
+    _refine_vp,
+    VanishingPoint,
 )
 
 _K = CAMERA_INTRINSICS_K
@@ -318,3 +325,189 @@ def test_recon_blur_or_facingaway_handled(name):
     fh = floor_height.estimate_floor_height(img, roll=0.0, pitch=0.0)
     if fh is not None:
         assert fh.height_m > 0.0
+
+
+# --------------------------------------------------------------------------------------------
+# RANSAC vectorization — behaviour-equivalence + perf guard
+#
+# ``fit_vanishing_point`` was rewritten from a 2000-iteration Python loop (``np.cross`` per
+# iteration) into a vectorized batch (explicit cross components + one (M,N) residual matrix). That
+# vectorization is the #1 flight fix: the old path took ~448 ms/nav-tick and ran the control loop at
+# ~2 Hz instead of 30 Hz. The rewrite REPLAYS the exact same hypothesis pairs the original loop drew
+# (``rng.choice`` consumed in the same order) and only batches the scoring, so it returns the
+# BIT-IDENTICAL vanishing point / inlier set. These tests pin that equivalence against a verbatim
+# port of the original algorithm (the heading depends on the VP — a subtle vectorization bug would
+# silently change the flight), and guard the speed against regression.
+# --------------------------------------------------------------------------------------------
+
+def _fit_vanishing_point_reference(
+    segs, inlier_thresh_deg=1.5, iters=2000, min_segments=8, seed=0,
+):
+    """Verbatim port of the ORIGINAL (pre-vectorization) ``fit_vanishing_point`` RANSAC loop.
+
+    This is the oracle: the vectorized production implementation must match its VP / inlier set
+    bit-for-bit on every input. Kept inside the test (not shipped) so the reference can never drift.
+    """
+    segs = np.asarray(segs, dtype=np.float64).reshape(-1, 4)
+    n = len(segs)
+    if n < int(min_segments):
+        return None
+    lines = segment_homog_lines(segs)
+    mids = segment_midpoints(segs)
+    angs = segment_angles(segs)
+    thr = np.deg2rad(inlier_thresh_deg)
+    rng = np.random.default_rng(seed)
+
+    best_mask = None
+    best_score = -1
+    for _ in range(int(iters)):
+        i, j = rng.choice(n, 2, replace=False)
+        vp_h = np.cross(lines[i], lines[j])
+        if abs(vp_h[2]) < 1e-9:
+            continue
+        vp = vp_h[:2] / vp_h[2]
+        resid = _vp_consistency_residual(vp, mids, angs)
+        mask = resid < thr
+        score = int(mask.sum())
+        if score > best_score:
+            best_score, best_mask = score, mask
+
+    if best_mask is None or best_score < max(int(min_segments), 4):
+        return None
+    return _refine_vp(segs, lines, mids, angs, best_mask, thr)
+
+
+def _assert_vp_identical(a, b, ctx=""):
+    """Both None, or bit-identical inlier mask + VP point + count + rms + at_infinity."""
+    if a is None or b is None:
+        assert a is None and b is None, f"{ctx}: one is None ({a is None} vs {b is None})"
+        return
+    assert np.array_equal(a.inlier_mask, b.inlier_mask), f"{ctx}: inlier masks differ"
+    assert a.inlier_count == b.inlier_count, f"{ctx}: counts {a.inlier_count} != {b.inlier_count}"
+    assert np.allclose(a.point_px, b.point_px, rtol=0, atol=1e-9), (
+        f"{ctx}: VP point {a.point_px} != {b.point_px}")
+    assert a.at_infinity == b.at_infinity, f"{ctx}: at_infinity differs"
+    assert np.allclose(a.direction_px, b.direction_px, rtol=0, atol=1e-9), f"{ctx}: direction differs"
+    if np.isfinite(a.rms_resid_rad) and np.isfinite(b.rms_resid_rad):
+        assert abs(a.rms_resid_rad - b.rms_resid_rad) < 1e-12, f"{ctx}: rms differs"
+
+
+_SYNTH_VP_CASES = [
+    dict(yaw_deg=0.0, grid_cell_m=2.0), dict(yaw_deg=8.0, grid_cell_m=1.5),
+    dict(yaw_deg=-7.0, grid_cell_m=2.0), dict(yaw_deg=20.0, grid_cell_m=1.5),
+    dict(yaw_deg=-25.0, grid_cell_m=2.0), dict(yaw_deg=35.0, grid_cell_m=2.0),
+    dict(yaw_deg=12.0, roll_deg=5.0, pitch_deg=6.0, grid_cell_m=2.0),
+]
+
+
+@pytest.mark.parametrize("case", _SYNTH_VP_CASES)
+@pytest.mark.parametrize("seed", [0, 1, 7])
+@pytest.mark.parametrize("iters", [256, 2000])
+def test_fit_vp_vectorized_matches_reference_synthetic(case, seed, iters):
+    """Vectorized fit == original-loop reference, bit-for-bit, on synthetic Manhattan frames."""
+    img = render_manhattan(**case)
+    segs = extract_line_segments(img, min_length_px=25.0)
+    ref = _fit_vanishing_point_reference(segs, iters=iters, seed=seed)
+    got = fit_vanishing_point(segs, iters=iters, seed=seed)
+    _assert_vp_identical(ref, got, ctx=f"synth {case} seed={seed} iters={iters}")
+
+
+@pytest.mark.parametrize("name", _STRUCT_FRAMES)
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_fit_vp_vectorized_matches_reference_recon(name, seed):
+    """Vectorized fit == original-loop reference, bit-for-bit, on the real low-light recon frames."""
+    img = _load_recon(name)
+    segs = extract_line_segments(img, min_length_px=25.0)
+    ref = _fit_vanishing_point_reference(segs, iters=2000, seed=seed)
+    got = fit_vanishing_point(segs, iters=2000, seed=seed)
+    _assert_vp_identical(ref, got, ctx=f"recon {name} seed={seed}")
+
+
+def test_fit_vp_consistency_residual_batched_matches_scalar():
+    """The batched (M,N) ``_vp_consistency_residual`` row-for-row equals the scalar per-VP path."""
+    rng = np.random.default_rng(3)
+    mids = rng.uniform(0, 640, size=(50, 2))
+    angs = rng.uniform(-np.pi / 2, np.pi / 2, size=50)
+    vps = rng.uniform(-2000, 2000, size=(12, 2))
+    batched = _vp_consistency_residual(vps, mids, angs)  # (12, 50)
+    assert batched.shape == (12, 50)
+    for k, vp in enumerate(vps):
+        scalar = _vp_consistency_residual(vp, mids, angs)
+        assert np.array_equal(batched[k], scalar)
+
+
+def test_fit_vp_handles_degenerate_inputs():
+    """Too few / parallel-only segments behave the same as the reference (None or honest fit)."""
+    # Below min_segments -> None.
+    assert fit_vanishing_point(np.zeros((3, 4)), min_segments=8) is None
+    # All-parallel horizontal segments: every hypothesis is at infinity (skipped) -> None.
+    par = np.array([[0.0, float(y), 600.0, float(y)] for y in range(0, 200, 8)])
+    ref = _fit_vanishing_point_reference(par, iters=500, seed=0)
+    got = fit_vanishing_point(par, iters=500, seed=0)
+    _assert_vp_identical(ref, got, ctx="all-parallel")
+
+
+def test_fit_multiple_vps_matches_reference_recon():
+    """The greedy 3-VP peel (the actual nav-tick call) is bit-identical to a reference peel."""
+    img = _load_recon("02_gate_deadahead_from_startpad.png")
+    segs = extract_line_segments(img, min_length_px=25.0)
+
+    def _ref_multi(segs, n_vps=3, iters=2000, min_inliers=8, seed=0):
+        segs = np.asarray(segs, dtype=np.float64).reshape(-1, 4)
+        remaining = np.ones(len(segs), dtype=bool)
+        out = []
+        for k in range(n_vps):
+            idx = np.flatnonzero(remaining)
+            if len(idx) < max(min_inliers, 8):
+                break
+            vp = _fit_vanishing_point_reference(
+                segs[idx], iters=iters, min_segments=max(min_inliers, 8), seed=seed + k)
+            if vp is None or vp.inlier_count < min_inliers:
+                break
+            gm = np.zeros(len(segs), dtype=bool)
+            gm[idx[vp.inlier_mask]] = True
+            out.append(gm)
+            remaining &= ~gm
+        return out
+
+    ref = _ref_multi(segs, n_vps=3, iters=2000, seed=0)
+    got = fit_multiple_vanishing_points(segs, n_vps=3, iters=2000, seed=0)
+    assert len(ref) == len(got), f"VP count differs {len(ref)} != {len(got)}"
+    for k, (rm, vp) in enumerate(zip(ref, got)):
+        assert np.array_equal(rm, vp.inlier_mask), f"VP#{k} global inlier mask differs"
+
+
+def test_fit_vp_perf_regression_guard():
+    """Vectorized fit must stay well under the old per-iteration cost on a representative frame.
+
+    The original ``np.cross``-in-a-loop took ~110-250 ms/VP (210 segments); the vectorized batch is
+    several-fold faster. The bound is RELATIVE to the original loop timed on the same machine/input,
+    so it catches a re-introduction of the per-iteration Python loop without flaking on slow CI.
+    """
+    img = _load_recon("02_gate_deadahead_from_startpad.png")
+    segs = extract_line_segments(img, min_length_px=25.0)
+    assert len(segs) >= 150, "perf frame should be segment-rich"
+
+    fit_vanishing_point(segs, iters=2000, seed=0)  # warm
+    best = min(
+        (_timed(fit_vanishing_point, segs, iters=2000, seed=0) for _ in range(5)),
+    )
+    # Reference: the original loop on the SAME input (so the bound is relative to this machine).
+    _fit_vanishing_point_reference(segs, iters=2000, seed=0)  # warm
+    ref_best = min(
+        (_timed(_fit_vanishing_point_reference, segs, iters=2000, seed=0) for _ in range(3)),
+    )
+    speedup = ref_best / best
+    # At least 2x faster than the original loop at the same iters (typically 3-5x); this is the
+    # regression signal — a revert to per-iteration np.cross collapses the ratio toward 1.0.
+    assert speedup >= 2.0, f"vectorized VP only {speedup:.2f}x vs original loop (regression?)"
+    # Absolute ceiling: 2000-iter vectorized fit on ~200 segments should be well under 120 ms even
+    # on slow hardware (the original was 110-250 ms; the doc's faster box hit ~5 ms at 512 iters).
+    assert best < 0.120, f"vectorized fit {best * 1e3:.1f} ms too slow (perf regression)"
+
+
+def _timed(fn, *args, **kwargs):
+    import time
+    t = time.perf_counter()
+    fn(*args, **kwargs)
+    return time.perf_counter() - t

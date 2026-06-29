@@ -102,10 +102,23 @@ def segment_angles(segs: np.ndarray) -> np.ndarray:
 def _vp_consistency_residual(vp_px: np.ndarray, mids: np.ndarray, angs: np.ndarray) -> np.ndarray:
     """Per-segment angular residual (rad) between a segment and the line from its midpoint to the
     candidate vanishing point. A segment that passes through ``vp_px`` has residual 0. The wrap to
-    [0, pi/2] makes it direction-agnostic (a line and its reversal are the same)."""
-    d = vp_px[None, :] - mids
-    a_to_vp = np.arctan2(d[:, 1], d[:, 0])
-    return np.abs(((a_to_vp - angs + np.pi / 2.0) % np.pi) - np.pi / 2.0)
+    [0, pi/2] makes it direction-agnostic (a line and its reversal are the same).
+
+    Accepts either a single VP ``(2,)`` -> ``(N,)`` residuals, or a batch of VPs ``(M,2)`` ->
+    ``(M,N)`` residuals (one row per VP). The batched form lets a RANSAC score every hypothesis in
+    a single vectorized pass instead of a Python loop. The scalar computation is byte-identical to
+    the per-VP path for any given VP (broadcasting only changes the iteration, not the arithmetic).
+    """
+    vp_px = np.asarray(vp_px, dtype=np.float64)
+    if vp_px.ndim == 1:
+        d = vp_px[None, :] - mids
+        a_to_vp = np.arctan2(d[:, 1], d[:, 0])
+        return np.abs(((a_to_vp - angs + np.pi / 2.0) % np.pi) - np.pi / 2.0)
+    # Batched: vp_px (M,2), mids (N,2), angs (N,) -> (M,N).
+    dx = vp_px[:, 0][:, None] - mids[:, 0][None, :]
+    dy = vp_px[:, 1][:, None] - mids[:, 1][None, :]
+    a_to_vp = np.arctan2(dy, dx)
+    return np.abs(((a_to_vp - angs[None, :] + np.pi / 2.0) % np.pi) - np.pi / 2.0)
 
 
 @dataclass(frozen=True)
@@ -152,23 +165,52 @@ def fit_vanishing_point(
     mids = segment_midpoints(segs)
     angs = segment_angles(segs)
     thr = np.deg2rad(inlier_thresh_deg)
+    iters = int(iters)
     rng = np.random.default_rng(seed)
 
-    best_mask: np.ndarray | None = None
-    best_score = -1
-    for _ in range(int(iters)):
-        i, j = rng.choice(n, 2, replace=False)
-        vp_h = np.cross(lines[i], lines[j])
-        if abs(vp_h[2]) < 1e-9:
-            continue  # the two segments are parallel in-image -> VP at infinity, skip the hypo
-        vp = vp_h[:2] / vp_h[2]
-        resid = _vp_consistency_residual(vp, mids, angs)
-        mask = resid < thr
-        score = int(mask.sum())
-        if score > best_score:
-            best_score, best_mask = score, mask
+    # --- Draw the SAME hypothesis pairs the original per-iteration loop would have ----------------
+    # Replaying ``rng.choice(n, 2, replace=False)`` once per iteration into a pre-allocated array
+    # consumes the RNG stream in the exact same order, so ``pairs[k]`` == the ``(i, j)`` the old
+    # ``for _ in range(iters)`` loop produced at iteration ``k`` (bit-for-bit, given ``seed``). Only
+    # the SCORING is vectorized below — the hypotheses are identical, so the chosen VP is identical.
+    pairs = np.empty((iters, 2), dtype=np.intp)
+    for k in range(iters):
+        pairs[k] = rng.choice(n, 2, replace=False)
+    li = lines[pairs[:, 0]]  # (M,3)
+    lj = lines[pairs[:, 1]]  # (M,3)
 
-    if best_mask is None or best_score < max(int(min_segments), 4):
+    # --- Vectorized homogeneous intersection via EXPLICIT cross-product components ----------------
+    # cross(a, b) = (a_y b_z - a_z b_y, a_z b_x - a_x b_z, a_x b_y - a_y b_x). The old loop called
+    # ``np.cross`` on tiny 3-vectors 2000x/VP — numpy's np.cross is dominated by
+    # moveaxis/normalize_axis_tuple overhead for tiny arrays, so this microcall-in-a-Python-loop was
+    # the bulk of the 448 ms/tick. The explicit batched scalar form is mathematically identical and
+    # collapses all 2000 hypotheses into a handful of array ops.
+    ax, ay, az = li[:, 0], li[:, 1], li[:, 2]
+    bx, by, bz = lj[:, 0], lj[:, 1], lj[:, 2]
+    vh0 = ay * bz - az * by
+    vh1 = az * bx - ax * bz
+    vh2 = ax * by - ay * bx  # (M,)
+
+    # Parallel-in-image hypotheses (|w| < 1e-9) were ``continue``d (never scored) in the original.
+    valid = np.abs(vh2) >= 1e-9
+    safe_w = np.where(valid, vh2, 1.0)  # avoid div-by-zero; masked out below
+    vp_batch = np.column_stack([vh0 / safe_w, vh1 / safe_w])  # (M,2)
+
+    # --- Score every hypothesis in one pass: (M,N) residual matrix -> per-hypothesis inlier count --
+    resid = _vp_consistency_residual(vp_batch, mids, angs)  # (M,N)
+    masks = resid < thr
+    scores = masks.sum(axis=1).astype(np.int64)  # (M,)
+    scores[~valid] = -1  # parallel hypotheses can never win (matches the original's skip)
+
+    if iters == 0 or not valid.any():
+        return None
+    # ``np.argmax`` returns the FIRST maximal index -> identical tie-break to the original loop's
+    # ``if score > best_score`` (strict >, keeps the earliest-iteration hypothesis on ties).
+    best_iter = int(np.argmax(scores))
+    best_score = int(scores[best_iter])
+    best_mask = masks[best_iter]
+
+    if best_score < 0 or best_score < max(int(min_segments), 4):
         return None
 
     return _refine_vp(segs, lines, mids, angs, best_mask, thr)
