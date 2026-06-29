@@ -589,3 +589,30 @@ Tests: `test_manhattan_cues.py` (32). **NEXT:** ESKF `update_yaw` scalar pseudo-
 🆕 **Existing `blender_gen` photoreal pipeline (8-kpt superset)** → VQ2 scene step = RETARGET to `appearance_params.json` + `MockRenderer` interface, NOT from scratch. Blender MCP needs Blender running at localhost:9876 (was NOT connected at build time).
 
 Tests: `test_blender_pipeline.py` (18).
+
+## VQ2 SLOW GATE-SEEKER + CASE-C DEPLOY PROFILE BUILT (5bf97a2, 2026-06-29)
+
+### deploy_profile.py — NavigatorConfig presets
+`src/racer/deploy_profile.py` (new file):
+- **`vq2_case_c()`:** full self-localizing chain ON together: `use_ahrs + use_vp_yaw + use_gate_bearing_yaw + use_floor_height + use_gate_relative + use_rewind_kf + use_range_channel`; `given_pos/vel OFF`; `cmd_rate_scale=0.4` (=1/2.5, compensates the 2.5× command→realized body-rate gain measured in VQ2-CONTROL-HANDSHAKE-2026-06-29).
+- **`vq1_case_a()`:** bare legacy baseline (all flags OFF).
+- All flags default OFF → VQ1/RL paths byte-identical.
+
+### gate_seeker.py — transparent slow pursuit controller
+`src/racer/gate_seeker.py`: NOT the RL policy — deliberately chosen to isolate self-localization for the first slow lap per [[feedback_slow_is_smooth]].
+- **Pursuit:** carrot 2 m beyond gate centre along through-direction; capped cruise (default 3 m/s) along LOS; yaw to keep gate in +20° cam FoV; alt-hold; launch ramp (drone spawns INSIDE start gate).
+- **Uplink:** emits BODY_RATE CTBR via the proven decoupled `Controller` (ff_gain=1.0); `cmd_rate_scale` on uplink owns the 2.5× — no double-compensation in the seeker.
+- **Gate advance:** `RACE_STATUS.active_gate_index` (authoritative) + range backstop (plane-cross capture); final-gate dead-reckon blow-out.
+
+### fly_rl.py integration
+`rl/fly_rl.py`: `--gate-seeker` opt-in; flags `--deploy-profile`, `--seeker-detector {red_glow,yolo,none}`, `--seeker-speed`; default RL/VQ1 path unchanged.
+
+### Offline dry-run (scripts/gate_seeker_dryrun.py)
+🟢 PASS: 3 synthetic gates at 0.60 m worst miss; case-C estimator+seeker 74 vision fixes; self-localized estimate bounded 0.27 m; 0 bad commands; max|rate|=4.0; max thrust=0.600.
+
+### Tests + sentinel
+`tests/test_gate_seeker.py` (22 tests); `green_gate` GREEN (sentinel 1385).
+
+### Next milestone
+First self-localized SLOW lap on live VQ2 ShadowPC (branch `vq2-slowlap-2026-06-29` pending).
+🚩 **FLY CMD (ShadowPC, live VQ2):** `.venv\Scripts\python.exe rl\fly_rl.py --gate-seeker --label vq2_slow_seeker`
