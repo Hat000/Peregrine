@@ -256,11 +256,18 @@ def main() -> None:
         "autopilot": client.autopilot,
         "custom_mode": client.custom_mode,
     }
+    # frozen-episode guard: a crashed VQ2 episode returns to menu but the wire keeps
+    # replaying the last state -> accel is byte-constant and motors never move. Flag it so
+    # a dead run is never mistaken for a clean hover.
+    all_acc = [r["accel_mag"] for r in samples if r["accel_mag"] == r["accel_mag"]]
+    verdict["live"] = bool(len(all_acc) > 5 and (max(all_acc) - min(all_acc)) > 1e-3)
+
     # heuristic clean-hover flag
     g = verdict["hover_accel_mag"]
     gy = verdict["hover_gyro_mag"]
     verdict["clean_hover"] = bool(
-        verdict["collisions_in_window"] == 0
+        verdict["live"]
+        and verdict["collisions_in_window"] == 0
         and g is not None and abs(g["mean"] - 9.8) < 3.0 and g["std"] < 4.0
         and gy is not None and gy["mean"] < 1.0
     )
