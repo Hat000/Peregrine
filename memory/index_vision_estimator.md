@@ -615,4 +615,22 @@ Tests: `test_blender_pipeline.py` (18).
 
 ### Next milestone
 First self-localized SLOW lap on live VQ2 ShadowPC (branch `vq2-slowlap-2026-06-29` pending).
+
+## VQ2 SLOW-LAP ATTEMPT 1 (FAILED 2026-06-29)
+Branch `origin/vq2-slowlap-2026-06-29`, FLIGHT.md. Scoreboard: armed YES, 0/6 gates, self-localized NO (estimator pinned at origin (0,0,0), ZERO accepted vision fixes), contact YES (environmental, start-gate structure ~1.2-1.4s post-launch, NOT a gate-pass contact).
+
+**ROOT CAUSE — "blind launch U-turn":** gate_seeker steered by ABSOLUTE world position (self-pose + a gate MAP); VQ2 has NO map on the wire so fly_rl fell back to a stale VQ1 map (gate0 at world (-23.3,-0.4,0)); estimator seeds at origin yaw 0 with no vision fix yet → tick-1 guidance demanded heading atan2(-0.4,-23.3) ≈ -179 deg → yaw controller SATURATED +4 rad/s → drone spun ~180 deg AWAY from the start gate the camera saw at spawn (detector locked it frames 0-7) → vision lost (camera to dark ceiling, 0 detections) → estimator never anchored → tumble. Identical at 3.0 and 2.0 m/s (speed NOT the lever).
+
+**SECONDARY BUG (fixed to proceed):** `wait_fresh_go()` gated "race live" on raw wire `position_ned`, which VQ2 BLOCKS → GO never accepted. Patch saved at `fixes/wait_fresh_go_position-denied.patch`; fix = re-base on RACE_STATUS/IMU liveness (not position_ned).
+
+**Live-reconfirmed VQ2 wire:** `position_ned=None`, `attitude_wxyz=None`, IMU ~95-119 Hz, RACE_STATUS @4 Hz, RTF ~1.0.
+
+**FIX IN PROGRESS (Attempt 2 targets):**
+1. Map-free gate-RELATIVE visual-servo guidance: chase the gate the camera SEES, not an absolute map position.
+2. Launch-anchor: hold/clamp yaw until first vision fix anchors on the visible start gate.
+3. `wait_fresh_go` re-based on RACE_STATUS/IMU liveness (not `position_ned`).
+4. Drop the stale-VQ1-map fallback entirely.
+5. Dry-run updated to model no-map/origin-seed/gate-visible (hostile deployment conditions).
+
+→ [[feedback_offline_harness_realism]] for the craft lesson on why the dry-run passed but live failed.
 🚩 **FLY CMD (ShadowPC, live VQ2):** `.venv\Scripts\python.exe rl\fly_rl.py --gate-seeker --label vq2_slow_seeker`
