@@ -971,7 +971,19 @@ def _build_casec_seeker(args, gates):
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
     # steer to the absolute map position (the 2026-06-29 blind-launch fix).
-    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=args.seeker_speed), detector=detector)
+    # cruise_speed: the slow cap. settle_s: the post-arm cold-AHRS settle hold (2026-06-29 attempt-2
+    # tumble fix) -- hold conservative level + bounded hover thrust + clamped rates while the mag-free
+    # AHRS gravity-aligns before any lean. anchor_release_detections is the map-free anchor-release
+    # streak (BUG A fix): release the launch-hold on the seeker's OWN consecutive detections, since on
+    # the live VQ2 wire the navigator runs map-free and nav.time_since_vision_update_s never goes finite.
+    seeker = GateSeeker(
+        config=GateSeekerConfig(
+            cruise_speed=args.seeker_speed,
+            settle_s=args.seeker_settle,
+            anchor_release_detections=args.seeker_anchor_dets,
+        ),
+        detector=detector,
+    )
     return nav, seeker, profile
 
 
@@ -1459,6 +1471,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seeker-speed", type=float, default=3.0,
                     help="gate-seeker cruise speed cap (m/s). SLOW first (default 3.0): more frames "
                          "per metre, no motion blur, vision yaw/z self-loc works. Ramp later.")
+    ap.add_argument("--seeker-settle", type=float, default=0.75,
+                    help="post-arm SETTLE hold (s) for --gate-seeker (default 0.75): hold a "
+                         "conservative LEVEL attitude + bounded hover thrust + clamped roll/pitch/yaw "
+                         "rates while the cold mag-free AHRS gravity-aligns + the gyro bias converges, "
+                         "BEFORE any estimator-driven lean. The 2026-06-29 attempt-2 cold-AHRS tumble "
+                         "fix. 0 => no settle.")
+    ap.add_argument("--seeker-anchor-dets", type=int, default=3,
+                    help="map-free ANCHOR-RELEASE streak for --gate-seeker (default 3): leave the "
+                         "launch-hold after this many CONSECUTIVE own quality-gated gate detections. "
+                         "On the live VQ2 wire the navigator is map-free so nav.time_since_vision_"
+                         "update_s never goes finite -- the seeker releases on its OWN detections "
+                         "instead (the 2026-06-29 attempt-2 BUG A fix).")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "

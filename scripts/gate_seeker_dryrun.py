@@ -189,47 +189,37 @@ def check_casec_estimator_seeker(cruise_speed: float) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# CHECK 3 — VQ2 REALITY: map-free visual servo at launch (the 2026-06-29 failure)
+# CHECK 3 — VQ2 REALITY: MAP-FREE anchor release (the 2026-06-29 attempt-2 BUG A)
 # ---------------------------------------------------------------------------
-def check_vq2_launch_no_blind_slew(cruise_speed: float) -> bool:
-    """Reproduce the LIVE VQ2 launch the first slow-lap crashed on, and prove the NEW map-free seeker
-    survives it:
+def check_vq2_map_free_anchor_release(cruise_speed: float) -> bool:
+    """Reproduce the LIVE VQ2 wire the SECOND slow-lap stalled on (BUG A), and prove the NEW seeker
+    survives it. On VQ2 the navigator runs MAP-FREE (gates=[]): its map-associated fix path never
+    fires, so ``nav.time_since_vision_update_s`` stays inf FOREVER. The OLD anchor-release signal
+    (tsv finite) is therefore structurally UNREACHABLE -> the seeker is pinned in the launch-hold
+    forever, even with the gate centred (exactly attempt-2: held level, saw the gate, never pursued).
 
-      * The estimator SEEDS at the origin (no given pose) with NO accepted vision fix yet.
-      * The only absolute "map" available is STALE/WRONG — gate 0 at world (-23.3,-0.4,0), the
-        2026-06-29 VQ1-map fallback that demanded a ~180deg launch U-turn.
-      * The START GATE is VISIBLE straight ahead at spawn (the camera locked it, frames 0-7).
-
-    Asserts the NEW command_visual:
-      (a) does NOT command a blind ~180deg yaw slew at tick 1 (the saturated +4 rad/s spin that lost
-          the gate) — the launch anchor holds yaw until the estimator anchors;
-      (b) ANCHORS on the visible gate (the navigator records a vision fix);
-      (c) makes forward PROGRESS toward the seen gate (a level pursuit after anchoring).
-
-    REGRESSION: the OLD absolute-map command(), handed the WRONG map gate + the origin seed, WOULD
-    have produced a large launch yaw command (|yaw_rate| near saturation) — pinned so this class of
-    bug can never silently return."""
+    Asserts:
+      (a) OLD rule (release only when tsv finite) NEVER releases over the whole map-free run -> pinned;
+      (b) NEW rule (release on the seeker's OWN N consecutive quality-gated detections) RELEASES even
+          though tsv stays inf, and the seeker then makes forward PROGRESS toward the seen gate;
+      (c) no blind launch slew before release; every command is a sane bounded BODY_RATE."""
     from racer.ahrs.imu_gen import Scenario, generate_imu_sequence
 
     # The TRUE start gate is ahead (north) + up — exactly what the camera sees at spawn.
     true_gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)
-    # The STALE/WRONG map gate (the real 2026-06-29 fallback): behind + to the side at (-23.3,-0.4,0).
-    wrong_gate = _gate([-23.3, -0.4, 0.0], normal=[-1.0, 0.0, 0.0], gate_id=0)
-
     drone_pos = np.zeros(3)
     R_wb = R_world_from_body(0.0, 0.0, 0.0)        # level, facing north -> the TRUE gate is in view
     detector = _ProjDetector(true_gate, drone_pos, R_wb)
 
-    # Case-C navigator: NO given pose (origin seed), self-localizing. The navigator is given an EMPTY
-    # map (the guard now ignores the stale map) so its map fixes simply don't fire — yet the seeker
-    # still flies on the SEEN gate. We feed the detector to the seeker (the map-free visual servo).
+    # MAP-FREE navigator: gates=[] (the live VQ2 wire). No map gates -> no map-associated fix ever ->
+    # tsv stays inf. This is the seam attempt-2 actually flew (NOT a true-gate-fed nav that masks it).
     cfg = NavigatorConfig(use_given_position=False, use_given_velocity=False, use_vision=True,
                           use_ahrs=True, use_gate_relative=True, use_rewind_kf=True,
                           use_range_channel=True)
-    # the navigator localizes against the TRUE visible gate (its detector sees it); the point is that
-    # STEERING never touches an absolute map — so we hand the seeker the detector, not a map gate.
-    nav = Navigator(gates=[true_gate], detector=_ProjDetector(true_gate, drone_pos, R_wb), config=cfg)
-    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0),
+    nav = Navigator(gates=[], detector=None, config=cfg)
+    N = 3
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0,
+                                                settle_s=0.0, anchor_release_detections=N),
                         detector=detector)
 
     seq = generate_imu_sequence(Scenario.STATIC_GRAVITY, duration_s=1.5, dt=0.01, seed=7)
@@ -237,23 +227,13 @@ def check_vq2_launch_no_blind_slew(cruise_speed: float) -> bool:
 
     cap = seeker.controller.max_body_rate_rps
 
-    # --- REGRESSION: the OLD absolute-map command on the WRONG map WOULD slew hard at launch ---
-    nav0 = Navigator(gates=[wrong_gate], detector=None, config=cfg)
-    ds0 = DroneState(sim_time_ns=0, accel_body=np.asarray(seq.accel[0], float),
-                     gyro_body=np.asarray(seq.gyro[0], float), position_ned=None,
-                     velocity_ned=None, active_gate_index=0)
-    ns0 = nav0.update(ds0, None)                    # origin seed, no fix, yaw 0
-    old_cmd = GateSeeker(config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0)).command(
-        ns0, wrong_gate, 0)
-    old_yaw_rate = abs(float(old_cmd.body_rate[2]))
-    old_would_have_slewed = old_yaw_rate > 0.9 * cap     # the saturated launch U-turn
-
-    # --- the NEW map-free seeker over the launch window ---
-    tick1_yaw_rate = None
-    anchored_tick = None
-    max_launch_yaw_rate_preanchor = 0.0
+    old_anchored = False            # the OLD tsv-only rule, evaluated over the map-free run
+    tsv_ever_finite = False
+    release_tick = None
+    max_yaw_pre_release = 0.0
     fwd_progress = 0.0
     bad = 0
+    last_ns = None
     for k in range(seq.N):
         t_ns = int(k * 0.01 * 1e9)
         ds = DroneState(sim_time_ns=t_ns, accel_body=np.asarray(seq.accel[k], float),
@@ -261,40 +241,104 @@ def check_vq2_launch_no_blind_slew(cruise_speed: float) -> bool:
                         velocity_ned=None, active_gate_index=0)
         frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=img)
         ns = nav.update(ds, frame)
-        anchored_before = np.isfinite(ns.time_since_vision_update_s)
+        last_ns = ns
+        if np.isfinite(ns.time_since_vision_update_s):     # the OLD release rule
+            old_anchored = True
+            tsv_ever_finite = True
+        was_anchored = seeker._anchored
         cmd = seeker.command_visual(ns, frame, 0)
         yr = abs(float(cmd.body_rate[2]))
-        if k == 0:
-            tick1_yaw_rate = yr
-        if not anchored_before:
-            max_launch_yaw_rate_preanchor = max(max_launch_yaw_rate_preanchor, yr)
-        elif anchored_tick is None:
-            anchored_tick = k
-        # forward (north) component of the commanded desired tilt shows up as a body pitch; use the
-        # along-gate velocity intent: re-plan to read the desired velocity the seeker would track.
+        if not seeker._anchored:
+            max_yaw_pre_release = max(max_yaw_pre_release, yr)
+        if seeker._anchored and not was_anchored and release_tick is None:
+            release_tick = k
         if (cmd.mode is not ControlMode.BODY_RATE or not np.all(np.isfinite(cmd.body_rate))
                 or not np.isfinite(cmd.thrust) or not (0.0 <= cmd.thrust <= 1.0)
                 or np.linalg.norm(cmd.body_rate) > cap + 1e-9):
             bad += 1
-    # forward progress proxy: after anchoring the pursuit aims a level velocity at the seen gate; the
-    # seeker's own world bearing to the gate is ~north, so the desired-velocity north component is +.
-    if anchored_tick is not None:
-        # rebuild the final pursuit setpoint to read the steered direction (map-free, from the lever).
-        last_pose = seeker._last_pose
-        if last_pose is not None:
-            gdir = seeker._gate_dir_world(ns, last_pose)
-            fwd_progress = float(gdir[0])           # +north == toward the seen start gate
+    if seeker._anchored and seeker._last_pose is not None:
+        fwd_progress = float(seeker._gate_dir_world(last_ns, seeker._last_pose)[0])
 
-    tick1_safe = tick1_yaw_rate is not None and tick1_yaw_rate < 0.5     # no blind launch slew
-    preanchor_safe = max_launch_yaw_rate_preanchor < 0.5                 # held until anchored
-    anchored = anchored_tick is not None
+    new_released = seeker._anchored and release_tick is not None
+    old_would_pin = not old_anchored and not tsv_ever_finite   # tsv never finite -> OLD pinned forever
+    preanchor_safe = max_yaw_pre_release < 0.5
     progressed = fwd_progress > 0.5
-    ok = (tick1_safe and preanchor_safe and anchored and progressed and bad == 0
-          and old_would_have_slewed)
-    print(f"  [vq2-launch] tick1 |yaw_rate| {tick1_yaw_rate:.2f} rad/s (cap {cap:g})  "
-          f"pre-anchor max {max_launch_yaw_rate_preanchor:.2f}  anchored@tick {anchored_tick}  "
-          f"fwd {fwd_progress:+.2f}  bad {bad}  |  OLD-map yaw {old_yaw_rate:.2f} "
-          f"(slew={old_would_have_slewed})  -> {'PASS' if ok else 'FAIL'}")
+    ok = new_released and old_would_pin and preanchor_safe and progressed and bad == 0
+    print(f"  [vq2-mapfree] OLD tsv-finite ever? {tsv_ever_finite} (OLD pins={old_would_pin})  "
+          f"NEW released@tick {release_tick} (own-detection, N={N})  "
+          f"pre-release max|yaw| {max_yaw_pre_release:.2f}  fwd {fwd_progress:+.2f}  "
+          f"bad {bad}  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# CHECK 4 — COLD-AHRS LAUNCH: attitude-safe settle from ~18deg (2026-06-29 attempt-2 BUG B)
+# ---------------------------------------------------------------------------
+def check_cold_ahrs_launch_stays_bounded(cruise_speed: float) -> bool:
+    """Reproduce the attempt-2 cold-AHRS pitch tumble (BUG B) and prove the fix. The drone spawns
+    TILTED ~18deg inside the start gate on a cold, mag-free AHRS. We drive the case-C AHRS over a
+    tilted-rest IMU stream and run the seeker's launch hold each tick.
+
+      * GRAVITY-ALIGN seed: the adapter's first-ingest now seeds level-from-accel, so the ESTIMATED
+        attitude tracks the TRUE 18deg tilt (estimate ERROR ~0deg) -- NOT identity (18deg error).
+      * SETTLE + ATTITUDE-SAFE HOLD: the seeker holds conservative level with roll/pitch clamped.
+
+    The failure mode was: an IDENTITY seed makes the AHRS believe LEVEL while the drone is 18deg
+    tilted -> the controller leans off a wrong attitude AND the accel-pull transient drives a large
+    correction -> the saturated pitch-over. With a gravity-align seed the ESTIMATE matches reality
+    (~0 error) AND the attitude-safe hold clamps roll/pitch, so no pitch-over.
+
+    Asserts: (a) the gravity-align seed ERROR vs the true tilt is ~0 (the OLD identity seed = 18deg
+    error); (b) the estimate stays low-error (tracks the true attitude) through the settle; (c) the
+    commanded roll/pitch rates stay BOUNDED (no saturated pitch-over)."""
+    from racer.ahrs.ahrs_adapter import AHRSAttitudeSource
+    from racer.frames import euler_from_quat_wxyz
+
+    # an ~18deg pitched rest attitude: the specific force the IMU reads at rest, tilted.
+    pitch0 = np.deg2rad(18.0)
+    R_tilt = R_world_from_body(0.0, pitch0, 0.0)
+    g_ned = np.array([0.0, 0.0, 9.80665])
+    sf_body = R_tilt.T @ (-g_ned)                  # specific force at rest, in the tilted body frame
+
+    # OLD identity seed: it believes LEVEL while the drone is 18deg tilted -> 18deg ESTIMATE ERROR.
+    old_identity_err_deg = float(np.rad2deg(abs(pitch0)))
+
+    # NEW gravity-align seed via the adapter's first ingest (level_seed_from_accel).
+    src = AHRSAttitudeSource()
+    src.ingest(sf_body, np.zeros(3), dt=0.0)       # dt<=0: just seed (no integration)
+    r0, p0, _ = euler_from_quat_wxyz(src.q_wxyz)
+    seed_err_deg = float(np.rad2deg(np.hypot(r0 - 0.0, p0 - pitch0)))   # vs the TRUE tilt -> ~0
+
+    # run a short tilted-rest stream through the adapter + the seeker's settle/attitude-safe hold.
+    rp_rate_cap = GateSeekerConfig().hold_rp_rate_cap_rps
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0,
+                                                settle_s=0.75), detector=None)
+    dt = 0.01
+    n = 120
+    max_rp_rate = 0.0
+    max_est_err_deg = 0.0
+    for k in range(n):
+        t_ns = int(k * dt * 1e9)
+        src.ingest(sf_body, np.zeros(3), dt=dt)    # static tilted rest: constant specific force
+        r, p, y = src.euler_rpy
+        # ESTIMATE ERROR vs the TRUE 18deg tilt (the gravity-align estimate should TRACK it, ~0 err).
+        max_est_err_deg = max(max_est_err_deg, float(np.rad2deg(np.hypot(r - 0.0, p - pitch0))))
+        # the seeker reads the AHRS attitude via NavState; build one carrying it.
+        ns = NavState(sim_time_ns=t_ns, position_ned=np.array([0.0, 0.0, -2.5]),
+                      velocity_ned=np.zeros(3), roll=float(r), pitch=float(p), yaw=float(y),
+                      angular_rate_body=src.body_rate, time_since_vision_update_s=float("inf"))
+        cmd = seeker.command_visual(ns, None, 0)   # None frame -> no detection; in settle/hold
+        max_rp_rate = max(max_rp_rate, float(np.linalg.norm(cmd.body_rate[:2])))
+
+    seed_ok = seed_err_deg < 1.0                   # the gravity-align seed nails the tilt (~0 error)
+    est_tracks = max_est_err_deg < 5.0             # the estimate TRACKS the true attitude (low error)
+    rate_bounded = max_rp_rate <= rp_rate_cap + 1e-9   # no saturated pitch-over in the hold
+    old_was_bad = old_identity_err_deg > 10.0          # the OLD identity seed started 18deg in error
+    ok = seed_ok and est_tracks and rate_bounded and old_was_bad
+    print(f"  [cold-ahrs] OLD identity-seed err {old_identity_err_deg:.1f}deg  "
+          f"NEW gravity-seed err {seed_err_deg:.2f}deg  max est-err {max_est_err_deg:.2f}deg  "
+          f"max|rp rate| {max_rp_rate:.2f} rad/s (cap {rp_rate_cap:g})  bounded={rate_bounded}  "
+          f"-> {'PASS' if ok else 'FAIL'}")
     return ok
 
 
@@ -312,13 +356,16 @@ def main() -> int:
 
     ok1 = check_pursuit_trajectory(args.speed, args.gates)
     ok2 = check_casec_estimator_seeker(args.speed)
-    ok3 = check_vq2_launch_no_blind_slew(args.speed)
+    ok3 = check_vq2_map_free_anchor_release(args.speed)
+    ok4 = check_cold_ahrs_launch_stays_bounded(args.speed)
 
     print()
-    if ok1 and ok2 and ok3:
+    if ok1 and ok2 and ok3 and ok4:
         print("RESULT: PASS — the integrated gate-seeker produces sane, slow, gate-pointing "
-              "commands on synthetic data; the self-localized estimate stays bounded; and the "
-              "MAP-FREE seeker survives the VQ2 launch (no blind slew, anchors on the seen gate).")
+              "commands on synthetic data; the self-localized estimate stays bounded; the seeker "
+              "RELEASES its launch-hold on its OWN map-free detections (the attempt-2 BUG A, where "
+              "the old tsv signal pins forever); and the cold ~18deg AHRS launch settles to level "
+              "with bounded roll/pitch (the attempt-2 BUG B pitch tumble).")
         return 0
     print("RESULT: FAIL — see the failing check above.")
     return 1

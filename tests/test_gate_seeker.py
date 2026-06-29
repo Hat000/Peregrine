@@ -453,12 +453,14 @@ def test_launch_anchor_holds_yaw_until_first_fix_no_blind_slew():
 
 
 def test_after_anchor_pursues_the_seen_gate_with_forward_velocity():
-    """Once anchored (a vision fix landed, tsv finite) the map-free seeker pursues the SEEN gate:
-    a sane bounded BODY_RATE that turns toward + leans into the gate the camera sees, NOT a slew."""
+    """Once anchored (a vision fix landed, tsv finite) AND past the settle window the map-free seeker
+    pursues the SEEN gate: a sane bounded BODY_RATE that turns toward + leans into the gate the camera
+    sees, NOT a slew. (settle_s=0 isolates the anchor/pursuit logic from the cold-start settle hold.)"""
     from racer.frames import R_world_from_body
     gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
     det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
-    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0), detector=det)
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0),
+                        detector=det)
     # first tick anchors the latch (tsv finite); a fresh frame_id each call so the detector re-runs.
     seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
     cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=10_000_000),
@@ -478,7 +480,7 @@ def test_off_axis_seen_gate_yaws_toward_it_not_away():
     # gate to the north-EAST: the world bearing has a +east (+y) component -> yaw should be > 0.
     gate = _gate([12.0, 6.0, -2.5], normal=[1.0, 0.0, 0.0])
     det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
-    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0,
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
                                                 visual_yaw_rate_cap_rps=1.5), detector=det)
     seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0, yaw=0.0), _frame(0, 0), 0)
     cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=10_000_000, yaw=0.0),
@@ -530,6 +532,121 @@ def test_regression_old_absolute_map_command_would_blind_slew_new_visual_does_no
     assert abs(float(new_cmd.body_rate[2])) < 0.5, "new visual servo must not slew at launch"
 
 
+# ===========================================================================
+# BUG A (2026-06-29 attempt-2): the MAP-FREE anchor release on the seeker's OWN detections
+# ===========================================================================
+def test_map_free_anchor_releases_on_own_detections_when_tsv_stays_inf():
+    """THE 2026-06-29 attempt-2 BUG A fix: on the LIVE VQ2 wire the navigator is MAP-FREE, so its
+    map-associated fix path never fires and ``nav.time_since_vision_update_s`` stays inf FOREVER.
+    The OLD release signal (tsv finite) is therefore structurally UNREACHABLE -> the seeker would be
+    pinned in the launch-hold forever. The NEW seeker releases on its OWN consecutive quality-gated
+    detections: with tsv=inf throughout but the gate VISIBLE, after anchor_release_detections ticks
+    it ANCHORS and reaches PURSUIT (forward lean toward the seen gate)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    N = 3
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
+                                                anchor_release_detections=N), detector=det)
+    # tsv stays inf the ENTIRE time (the map-free wire) -- the only release signal is own-detection.
+    assert not seeker._anchored
+    for k in range(N):
+        assert not seeker._anchored, f"released too early at tick {k} (need {N} detections)"
+        cmd = seeker.command_visual(
+            _nav_fix([0, 0, -2.5], tsv=float("inf"), sim_time_ns=k * 10_000_000),
+            _frame(k, k * 10_000_000), 0)
+        assert cmd.mode is ControlMode.BODY_RATE
+    # after N consecutive detections the anchor has released (tsv NEVER went finite).
+    assert seeker._anchored, "map-free anchor never released on own detections -> BUG A regression"
+    # and it now PURSUES the seen gate: a forward (north) world bearing -> a real lean, not a hold.
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=float("inf"), sim_time_ns=N * 10_000_000),
+                                _frame(N, N * 10_000_000), 0)
+    gdir = seeker._gate_dir_world(_nav_fix([0, 0, -2.5], tsv=float("inf")), seeker._last_pose)
+    assert gdir[0] > 0.5, "did not pursue the seen gate after the map-free release"
+
+
+def test_old_tsv_only_release_would_pin_forever_on_map_free_wire():
+    """REGRESSION pinning BUG A: model the OLD release rule (anchor ONLY when tsv finite). On the
+    map-free VQ2 wire tsv stays inf for every tick, so the old rule NEVER releases -> the drone is
+    pinned in the launch-hold forever even with the gate centred. This asserts the failure the NEW
+    own-detection release fixes, so the structural bug can never silently return."""
+    # the OLD anchor condition, evaluated over a map-free run (tsv=inf throughout):
+    old_anchored = False
+    for _ in range(50):                       # many ticks, gate visible the whole time
+        tsv = float("inf")                    # map-free wire: never a map fix -> never finite
+        if np.isfinite(tsv):                  # the OLD release rule
+            old_anchored = True
+    assert not old_anchored, "old tsv-only rule would have to stay pinned on the map-free wire"
+
+
+# ===========================================================================
+# BUG B (2026-06-29 attempt-2): the ATTITUDE-SAFE cold-start hold (no pitch tumble)
+# ===========================================================================
+def test_cold_start_hold_clamps_roll_pitch_not_just_yaw():
+    """THE 2026-06-29 attempt-2 BUG B fix: the launch/settle hold must clamp ROLL/PITCH rates, not
+    only yaw. Feed a NavState whose attitude estimate is wildly tilted (a cold mag-free AHRS ~18deg
+    off) so the level-hold controller would demand a large pitch correction; assert the hold bounds
+    EVERY axis to the conservative cap (no saturated pitch-over that tumbles into the gate)."""
+    # an ~18deg cold attitude error: the controller's level-hold wants to drive a big roll/pitch rate.
+    cold = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, -2.5]),
+                    velocity_ned=np.zeros(3), roll=np.deg2rad(18.0), pitch=np.deg2rad(18.0),
+                    yaw=0.0, time_since_vision_update_s=float("inf"))
+    cap = 0.6
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.75,
+                                                hold_rp_rate_cap_rps=cap), detector=None)
+    cmd = seeker.command_visual(cold, _frame(0, 0), 0)        # tick 0 -> in the settle hold
+    assert cmd.mode is ControlMode.BODY_RATE
+    assert abs(float(cmd.body_rate[0])) <= cap + 1e-9, "roll rate not clamped in the cold-start hold"
+    assert abs(float(cmd.body_rate[1])) <= cap + 1e-9, "pitch rate not clamped (the tumble axis!)"
+    assert abs(float(cmd.body_rate[2])) <= cap + 1e-9, "yaw rate not clamped"
+
+
+def test_old_yaw_only_hold_would_diverge_in_pitch_from_18deg():
+    """REGRESSION pinning BUG B: the OLD hold clamped ONLY yaw. From an ~18deg cold attitude error the
+    level-hold controller demands a large PITCH rate; with only-yaw clamping that pitch command rides
+    UNBOUNDED (the saturated -3.4 rad/s pitch-over the tlog showed). This asserts the OLD yaw-only hold
+    WOULD produce an out-of-(conservative)-bound pitch -- the divergence the new clamp removes."""
+    cold = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, -2.5]),
+                    velocity_ned=np.zeros(3), roll=0.0, pitch=np.deg2rad(18.0), yaw=0.0)
+    cap = 0.6
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0))
+    # the OLD hold: yaw-only clamp (no attitude_safe roll/pitch clamp). Reproduce it directly.
+    old_cmd = seeker._cap_yaw_rate(
+        seeker.controller.command(
+            cold, __import__("racer.contracts", fromlist=["Setpoint"]).Setpoint(
+                sim_time_ns=0, velocity_ned=np.zeros(3), yaw=0.0, launch_ramp=0.0)),
+        0.0)
+    # from 18deg pitch error the controller commands a pitch rate well beyond the conservative cap.
+    assert abs(float(old_cmd.body_rate[1])) > cap, \
+        "old yaw-only hold should leave a large (divergent) pitch rate from 18deg"
+    # the NEW attitude-safe hold bounds that same pitch.
+    new_cmd = seeker._hold_command(cold, yaw_rate_cap=0.0, attitude_safe=True)
+    assert abs(float(new_cmd.body_rate[1])) <= cap + 1e-9
+
+
+def test_settle_holds_then_releases_to_pursuit_after_window():
+    """The post-arm SETTLE holds for settle_s (conservative level, clamped rates) EVEN with the gate
+    visible + anchored, then transitions to pursuit once the window elapses (the cold AHRS has had
+    time to gravity-align). Models the launch SEQUENCE: hold early, pursue late."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    settle = 0.5
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=settle,
+                                                anchor_release_detections=1), detector=det)
+    # tick 0 (t=0): inside the settle -> a clamped hold even though the gate is dead ahead + anchored.
+    cmd0 = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+    assert np.linalg.norm(cmd0.body_rate) < 1.0          # held (no pursuit lean) during settle
+    assert seeker._in_settle(0)
+    # a tick PAST the settle window -> pursuit (the seeker leans toward the seen gate).
+    t_past = int((settle + 0.2) * 1e9)
+    assert not seeker._in_settle(t_past)
+    cmd1 = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_past),
+                                 _frame(1, t_past), 0)
+    assert cmd1.mode is ControlMode.BODY_RATE
+    assert np.all(np.isfinite(cmd1.body_rate))
+
+
 def test_reset_returns_seeker_to_launch_anchor_regime():
     """After reset the seeker is back in the launch-anchor regime (re-holds until re-anchored)."""
     from racer.frames import R_world_from_body
@@ -540,6 +657,7 @@ def test_reset_returns_seeker_to_launch_anchor_regime():
     assert seeker._anchored is True
     seeker.reset()
     assert seeker._anchored is False and seeker._last_pose is None
+    assert seeker._consec_detections == 0          # the own-detection streak is cleared too
     # immediately after reset, even with the gate in view, it HOLDS (tsv inf again).
     cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=float("inf")), _frame(1, 0), 0)
     assert abs(float(cmd.body_rate[2])) < 1e-6

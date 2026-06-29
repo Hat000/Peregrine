@@ -176,10 +176,17 @@ class AHRSAttitudeSource:
         mag_body : (3,) optional body-frame magnetometer (only used if the wrapped ESKF was
                    built with ``mag_ned``; otherwise ignored).
 
-        Side effect: auto-seeds at identity on the very first call if not seeded yet.
+        Side effect: auto-seeds on the very first call if not seeded yet -- GRAVITY-ALIGNED from
+        this first accel sample (``level_seed_from_accel``), NOT identity. On VQ2 the drone spawns
+        TILTED inside the start gate (~18deg) on a cold, mag-free filter; an identity seed starts the
+        ESKF ~18deg in error and the accel update has to pull that in WHILE the controller is already
+        commanding off the wrong attitude -> the 2026-06-29 attempt-2 launch tumble. Seeding roll/pitch
+        from the first stationary gravity vector starts the filter at ~0deg error (yaw stays 0 --
+        unobservable from gravity; the gate-relative / vision-yaw chain pins yaw). This only affects
+        the use_ahrs=True path; use_ahrs=False is byte-identical (the adapter is unused there).
         """
         if not self._seeded:
-            self.seed(None)
+            self.seed(self.level_seed_from_accel(np.asarray(accel_body, dtype=np.float64)))
         gyro = np.asarray(gyro_body, dtype=np.float64)
         if dt > 0:
             # The bias-corrected body rate the ESKF actually integrates this step

@@ -229,11 +229,24 @@ class TestLifecycle:
         np.testing.assert_allclose(src.q_wxyz, q / np.linalg.norm(q), atol=1e-12)
 
     def test_auto_seed_on_first_ingest(self):
-        """Ingesting before an explicit seed auto-seeds at identity (no crash)."""
+        """Ingesting before an explicit seed auto-seeds GRAVITY-ALIGNED from the first accel sample
+        (NOT identity) -- the 2026-06-29 cold-start fix. A level first accel -> level seed; a tilted
+        first accel (the VQ2 in-gate spawn) -> a roll/pitch-levelled seed at ~0deg error, not 18deg."""
         src = AHRSAttitudeSource()
         assert not src.seeded
         src.ingest(np.array([0.0, 0.0, -9.80665]), np.zeros(3), dt=0.005)
         assert src.seeded
+        np.testing.assert_allclose(src.q_wxyz, [1.0, 0.0, 0.0, 0.0], atol=1e-9)  # level -> level
+
+        # A TILTED first accel (drone spawned pitched ~18deg in the gate): the auto-seed must
+        # gravity-align so the ESKF starts at ~0deg error, not ~18deg (the old identity seed).
+        pitch0 = np.deg2rad(18.0)
+        R = _quat_to_R_wxyz(_quat_wxyz(roll=0.0, pitch=pitch0, yaw=0.0))
+        sf_body = R.T @ np.array([0.0, 0.0, -9.80665])      # specific force at rest, tilted
+        src2 = AHRSAttitudeSource()
+        src2.ingest(sf_body, np.zeros(3), dt=0.005)
+        r, p, _ = euler_from_quat_wxyz(src2.q_wxyz)
+        np.testing.assert_allclose([r, p], [0.0, pitch0], atol=1e-3)   # seeded at the true tilt
 
     def test_reset_reseeds_cleanly(self):
         """After running, reset() returns to a fresh seeded state (attitude + body rate + bias)."""

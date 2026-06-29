@@ -68,10 +68,15 @@ the body/world frame with the estimator's gravity-known attitude, and steers hea
 CENTER and fly THROUGH the seen opening at the slow cap. NO absolute gate map and NO absolute
 self-position enter the steering. Two safety behaviours guard the blind-launch failure:
 
-  * **Launch anchor.** Until the estimator records its FIRST accepted vision fix
-    (``nav.time_since_vision_update_s`` finite) the seeker HOLDS attitude and CLAMPS the yaw rate
-    to a small value — it never maneuvers blind and never slews the visible start gate out of
-    frame. Normal pursuit begins only after the first fix (the estimator is anchored).
+  * **Post-arm settle + launch anchor.** At arm the seeker HOLDS a conservative LEVEL attitude with
+    bounded hover thrust and ALL rates clamped (roll/pitch/yaw) for a short settle window, so the
+    cold mag-free AHRS gravity-aligns and the gyro bias converges before any lean (the 2026-06-29
+    attempt-2 cold-AHRS tumble fix). It then stays in the launch anchor until it has SEEN the gate
+    for N consecutive quality-gated detections of its OWN detector (``anchor_release_detections``)
+    -- the MAP-FREE release signal the seeker owns, since on the live VQ2 wire the navigator runs
+    map-free and ``nav.time_since_vision_update_s`` never goes finite (a finite tsv, when a real
+    map IS present, latches the anchor too). It never maneuvers blind and never slews the visible
+    start gate out of frame; normal pursuit begins only after release.
   * **No detection.** When the detector returns nothing this tick (between gates / momentarily
     lost) the seeker HOLDS heading and coasts level — never a blind large slew. It re-acquires
     when the gate re-enters frame.
@@ -165,6 +170,30 @@ class GateSeekerConfig:
     # the gate out of frame faster than the controller can track it.
     visual_yaw_rate_cap_rps: float = 1.5
 
+    # --- ANCHOR RELEASE on the seeker's OWN detections (the 2026-06-29 attempt-2 BUG A fix) ---
+    # On the LIVE VQ2 wire the navigator is MAP-FREE (gates=[]), so its map-associated fix path
+    # never fires and ``nav.time_since_vision_update_s`` stays inf FOREVER -- the old anchor-release
+    # signal is structurally unreachable. The seeker owns its OWN detector, so it releases the
+    # launch-hold on its OWN quality-gated detections instead: after this many CONSECUTIVE ticks
+    # with a usable ``detect_gate_lever`` pose, the estimator is provably seeing the gate -> release.
+    # (``nav.time_since_vision_update_s`` finite STILL latches the anchor too, when the map path is
+    # live -- own-detection is an ADDITIONAL, map-free release path, never a regression.)
+    anchor_release_detections: int = 3
+
+    # --- ATTITUDE-SAFE COLD START (the 2026-06-29 attempt-2 BUG B fix) ---
+    # POST-ARM SETTLE: after the first command, hold a conservative LEVEL attitude + bounded hover
+    # thrust + zero horizontal lean for this long, letting the ESKF/AHRS gravity-align + the gyro
+    # bias converge BEFORE any estimator-driven leaning or pursuit. 0.0 => no settle (legacy).
+    settle_s: float = 0.75
+    # In the LAUNCH-HOLD / SETTLE the roll/pitch body-rate command is clamped to this (the cold-AHRS
+    # tumble guard): a bad cold estimate can demand a saturated pitch-over, so we bound EVERY axis,
+    # not just yaw. Conservative-level small correction only -- never a saturated lean.
+    hold_rp_rate_cap_rps: float = 0.6
+    # In the LAUNCH-HOLD / SETTLE the alt-hold collective is bounded to [hover*lo, hover*hi] so a
+    # weak/uncorrected cold z-estimate can't saturate the thrust into a climb into the gate.
+    hold_thrust_lo_frac: float = 0.6
+    hold_thrust_hi_frac: float = 1.4
+
 
 @dataclass
 class GateSeeker:
@@ -187,6 +216,7 @@ class GateSeeker:
     _last_yaw: float | None = field(default=None, repr=False)  # last commanded heading (no-detection hold)
     _last_frame_id: int | None = field(default=None, repr=False)  # detector idempotence across re-feeds
     _last_pose: GatePose | None = field(default=None, repr=False)  # cached detected lever for re-fed frames
+    _consec_detections: int = field(default=0, repr=False)     # consecutive own-detection ticks (anchor release)
 
     # -- guidance: NavState + active gate -> Setpoint -----------------------
     def plan(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> Setpoint:
@@ -275,12 +305,18 @@ class GateSeeker:
 
         The live VQ2 entry point (replaces the absolute-map :meth:`command` on the wire). Never reads
         an absolute gate map or absolute self-position for steering; every command is derived from the
-        DETECTED gate's relative bearing plus the estimator's gravity-known attitude. Three regimes:
+        DETECTED gate's relative bearing plus the estimator's gravity-known attitude. Four regimes:
 
-          1. **Launch anchor** (no accepted vision fix yet): HOLD attitude, clamp yaw rate small. We
-             never maneuver blind, so the visible start gate stays in frame until the estimator
-             anchors on it (the 2026-06-29 blind-launch fix). A detection arriving here STILL only
-             gently centers (no saturated slew) — see the anchor yaw clamp.
+          0. **Post-arm settle** (first ``settle_s`` after the launch clock arms): HOLD a conservative
+             LEVEL attitude + bounded hover thrust + zero rates, letting the cold AHRS gravity-align
+             and the gyro bias converge BEFORE any estimator-driven leaning (the 2026-06-29 attempt-2
+             cold-AHRS tumble fix). roll/pitch rates are clamped, not just yaw.
+          1. **Launch anchor** (settled, but not yet anchored): HOLD attitude, clamp ALL rates small.
+             We never maneuver blind, so the visible start gate stays in frame until the estimator
+             anchors on it. The anchor RELEASES on the seeker's OWN consecutive quality-gated
+             detections (``anchor_release_detections``) -- the map-free release signal the seeker
+             owns, since on VQ2 ``nav.time_since_vision_update_s`` never goes finite (BUG A fix). A
+             finite tsv (live map path) latches the anchor too.
           2. **No detection** (between gates / momentarily lost): coast level, hold the last heading,
              gentle re-acquire — never a blind large slew.
           3. **Pursuit** (anchored + gate seen): build a desired velocity toward the seen opening at
@@ -292,28 +328,55 @@ class GateSeeker:
         if self._last_yaw is None:
             self._last_yaw = float(nav.yaw)
 
-        # The estimator is ANCHORED once it has accepted at least one vision fix (tsv finite). Latch it
-        # (a momentary coast back to tsv=inf must not drop us back into the launch-hold).
-        if np.isfinite(nav.time_since_vision_update_s):
-            self._anchored = True
-
         # Detect the gate to chase (idempotent across re-feeds of the same frame_id; a re-fed frame
         # keeps the cached bearing decision rather than re-running the detector).
         if frame is not None and frame.frame_id != self._last_frame_id:
             self._last_frame_id = int(frame.frame_id)
             self._last_pose = self.detect_gate_lever(frame)
+            # Track CONSECUTIVE own-detection ticks for the map-free anchor release: a usable pose
+            # increments, a miss resets (we want a STREAK of clean sightings, not one lucky frame).
+            if self._last_pose is not None:
+                self._consec_detections += 1
+            else:
+                self._consec_detections = 0
         pose = self._last_pose
 
-        # --- regime 1: LAUNCH ANCHOR (no accepted fix yet) -> hold attitude, clamp yaw rate small ---
+        # ANCHOR RELEASE -- two independent latches (whichever fires first; never un-latches):
+        #   (a) MAP-FREE (VQ2 live): N consecutive own quality-gated detections -> the seeker is
+        #       provably seeing the gate, so it is safe to leave the hold and pursue. This is the
+        #       BUG A fix: the seeker owns this signal, so it works even though the navigator's
+        #       map-fix path (and thus tsv) never fires on the empty VQ2 map.
+        #   (b) LIVE MAP: the navigator accepted a map-associated fix (tsv finite) -- the legacy
+        #       signal, retained for the case where a real map IS present.
+        if (self._consec_detections >= max(1, int(self.config.anchor_release_detections))
+                or np.isfinite(nav.time_since_vision_update_s)):
+            self._anchored = True
+
+        # --- regime 0: POST-ARM SETTLE -> conservative level hold, all rates clamped, thrust bounded ---
+        # Hold for settle_s from the launch clock so the cold AHRS gravity-aligns before we lean. We
+        # stay here EVEN IF a detection arrives early (the estimate is not yet trustworthy to lean on).
+        if self._in_settle(int(nav.sim_time_ns)):
+            return self._hold_command(nav, yaw_rate_cap=self.config.anchor_yaw_rate_rps,
+                                      attitude_safe=True)
+
+        # --- regime 1: LAUNCH ANCHOR (settled, no release yet) -> hold attitude, clamp ALL rates ---
         if not self._anchored:
-            return self._hold_command(nav, yaw_rate_cap=self.config.anchor_yaw_rate_rps)
+            return self._hold_command(nav, yaw_rate_cap=self.config.anchor_yaw_rate_rps,
+                                      attitude_safe=True)
 
         # --- regime 2: NO DETECTION -> coast level on the last heading, gentle re-acquire ---
         if pose is None:
-            return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps)
+            return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
+                                      attitude_safe=True)
 
         # --- regime 3: PURSUIT -> velocity toward the SEEN opening + centering yaw, smoothly capped ---
         return self._visual_pursuit_command(nav, pose)
+
+    def _in_settle(self, sim_time_ns: int) -> bool:
+        """True while within ``settle_s`` of the launch clock arming (the post-arm cold-AHRS settle)."""
+        if self.config.settle_s <= 0.0 or self._t0_sim_ns is None:
+            return False
+        return (int(sim_time_ns) - self._t0_sim_ns) / 1e9 < self.config.settle_s
 
     def _gate_dir_world(self, nav: NavState, pose: GatePose) -> np.ndarray:
         """Unit world-NED direction from the drone to the DETECTED gate centre, from the relative lever.
@@ -348,10 +411,18 @@ class GateSeeker:
         cmd = self.controller.command(nav, sp)
         return self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
 
-    def _hold_command(self, nav: NavState, *, yaw_rate_cap: float) -> ControlCommand:
+    def _hold_command(self, nav: NavState, *, yaw_rate_cap: float,
+                      attitude_safe: bool = False) -> ControlCommand:
         """A SAFE, vision-preserving hold: level attitude (no horizontal lean), hover collective, and a
         yaw rate clamped to ``yaw_rate_cap`` (0 => hold yaw exactly). Used for the launch anchor and the
-        no-detection coast so we NEVER slew the visible gate out of frame. Holds the LAST heading."""
+        no-detection coast so we NEVER slew the visible gate out of frame. Holds the LAST heading.
+
+        When ``attitude_safe`` (the cold-start settle / launch / no-detection holds), the ROLL/PITCH
+        body-rate command is ALSO clamped (``hold_rp_rate_cap_rps``) and the alt-hold collective is
+        BOUNDED to [hover*lo, hover*hi]. This is the 2026-06-29 attempt-2 BUG B fix: on the cold,
+        mag-free, gravity-aligned-but-still-converging AHRS the attitude/altitude estimate can demand
+        a saturated pitch-over + thrust climb; bounding EVERY axis (not just yaw) keeps the hold from
+        tumbling the drone into the gate while the estimator settles."""
         hold_yaw = self._last_yaw if self._last_yaw is not None else float(nav.yaw)
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
@@ -360,7 +431,34 @@ class GateSeeker:
             launch_ramp=0.0,                # full anti-lean: keep the attitude level while holding
         )
         cmd = self.controller.command(nav, sp)
-        return self._cap_yaw_rate(cmd, yaw_rate_cap)
+        cmd = self._cap_yaw_rate(cmd, yaw_rate_cap)
+        if attitude_safe:
+            cmd = self._cap_rp_rate(cmd, self.config.hold_rp_rate_cap_rps)
+            cmd = self._bound_hold_thrust(cmd)
+        return cmd
+
+    def _cap_rp_rate(self, cmd: ControlCommand, cap_rps: float) -> ControlCommand:
+        """Clamp the ROLL (FRD body-rate X) and PITCH (FRD body-rate Y) command to +/-``cap_rps`` --
+        the cold-AHRS hold's per-axis tumble guard (a bad cold estimate can't demand a saturated lean)."""
+        if cmd.body_rate is None:
+            return cmd
+        import dataclasses
+        br = np.asarray(cmd.body_rate, dtype=np.float64).copy()
+        c = abs(float(cap_rps))
+        br[0] = float(np.clip(br[0], -c, c))
+        br[1] = float(np.clip(br[1], -c, c))
+        return dataclasses.replace(cmd, body_rate=br)
+
+    def _bound_hold_thrust(self, cmd: ControlCommand) -> ControlCommand:
+        """Bound the hold's collective to [hover*lo, hover*hi] so a weak cold z-estimate can't
+        saturate the alt-hold into a climb into the gate (the BUG B thrust-ramp guard)."""
+        if cmd.thrust is None:
+            return cmd
+        import dataclasses
+        hover = float(self.controller.hover_thrust)
+        lo = hover * float(self.config.hold_thrust_lo_frac)
+        hi = hover * float(self.config.hold_thrust_hi_frac)
+        return dataclasses.replace(cmd, thrust=float(np.clip(cmd.thrust, lo, hi)))
 
     @staticmethod
     def _cap_yaw_rate(cmd: ControlCommand, cap_rps: float) -> ControlCommand:
@@ -420,6 +518,7 @@ class GateSeeker:
         self._last_yaw = None
         self._last_frame_id = None
         self._last_pose = None
+        self._consec_detections = 0
 
     # -- internals ----------------------------------------------------------
     def _launch_ramp(self, sim_time_ns: int) -> float | None:
