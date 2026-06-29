@@ -508,3 +508,35 @@ Driven by VQ2-WIRE-RECON `fields_updated=63` = accel+gyro ONLY — no mag/no bar
 **Build plan (3 parallel → 4 serial):** ESKF `update_yaw` scalar pseudo-msmt FD-pinned body-dphi Jacobian; `vision/heading_vp.py`; `vision/floor_height.py` → wire behind `use_gate_bearing_yaw`/`use_vp_yaw`/`use_floor_height` flags threading `RACE_STATUS.active_gate_index` → case-C profile.
 
 🚩 **Footguns:** yaw Jacobian body-dphi vs world-yaw (FD-pin required); angle-wrap innovation; head-on yaw degeneracy (gate in boresight = yaw unobservable from bearing); VP 90° lattice ambiguity (floor grid symmetric → need lane-lines or truss asymmetry to break).
+
+## MANHATTAN-CUES BUILT (eb975a4, 2026-06-29; `src/racer/vision/manhattan_lines.py` + `heading_vp.py` + `floor_height.py`)
+Map-free yaw+z vision sources for the mag-free VQ2 estimator; PURE GEOMETRY, NOT WIRED (the ESKF `update_yaw` pseudo-measurement step owns wiring).
+
+🟢 **CRITICAL RISK RETIRED: VQ2 low-light frames have AMPLE VP line structure.** LSD finds 83–216 segments/frame at mean-gray 11–43, including blur and facing-away frames. The vanishing-point HEADING is the SOLID map-free yaw anchor.
+
+**shared base (`manhattan_lines.py`):** LSD/Hough + homogeneous-line/VP algebra + RANSAC VP solver.
+
+**`heading_vp.py` — `estimate_heading(frame, roll, pitch) → HeadingEstimate`:**
+- `heading_mod90_rad`, `quality[0,1]`, `n_support`, `vp_px`, `horizontality`, `branch_headings_rad[4]`
+- Most-horizontal VP → absolute warehouse yaw via +20° mount + gravity-known roll/pitch.
+- EXPOSES raw mod-90 + 4 branches; does NOT pick a branch (consumer disambiguates via gyro continuity / gate prior).
+- Synthetic GT: yaw mod-90 to <2.5° level / <3° tilt; signs FD-checked vs `frames.py`; recon fires on all frames (46–123 inliers, q 0.41–0.73).
+
+**`floor_height.py` — `estimate_floor_height(...) → FloorHeightEstimate`:**
+- `height_m`, `quality`, `n_support`, `std_m`; cross-course grid spacing → camera height (yaw-INVARIANT; anchor = known `grid_cell_m`).
+- GATED BACKSTOP (ill-conditioned: +20° mount crams floor near horizon; core <2%, full path ~15–25%; recon fires 5/8, 1.1–3.6 m, None on nose-up/facing-away).
+
+Tests: `test_manhattan_cues.py` (32). **NEXT:** ESKF `update_yaw` scalar pseudo-measurement consuming `HeadingEstimate` (+ gate-bearing yaw + floor-height z) behind `use_vp_yaw`/`use_floor_height` flags.
+
+## BLENDER PIPELINE FOUNDATION BUILT (07b25dd, 2026-06-29; `tools/blender_pipeline/`; Blender-FREE parts)
+→ [[project_blender_vq2_data_pipeline]] for full detail.
+
+**Appearance spec** (`extract_appearance.py` → `APPEARANCE_SPEC.md` + `appearance_params.json`): gate emissive core RGB ~(255,56,16) VIVID ORANGE-RED (not pure red; extreme-near (254,59,57)); bloom asymmetric crisp ~3 px / soft ~12–18 px; scene mean-gray ~36/255; lane cyan (222,198,80); floor grid (45,45,48) on (8,8,8) @ ~1 m; ceiling (237,238,238); green markers (80,252,80).
+
+**Harness (renderer-agnostic):** `camera_sampler` (poses R/t_cam_gate, biases near/mid + deliberate far>15 m/oblique>35° to hit the detector's weak spots) → `projector` (reuses `gate_pose.project_gate_corners`, IPPE_SQUARE 0LL/1LR/2UR/3UL + vis flags) → `Renderer` protocol + `MockRenderer` → `dataset` (YOLO-pose labels, reuses `synthetic.to_yolo_pose_label` = byte-identical rows).
+
+🟢 **Round-trip proven:** sample → project → mock-render → `red_glow_detector` → corners match (<6 px head-on, PnP range 8 m ±1.5) = labeling geom + detector + renderer share ONE corner convention.
+
+🆕 **Existing `blender_gen` photoreal pipeline (8-kpt superset)** → VQ2 scene step = RETARGET to `appearance_params.json` + `MockRenderer` interface, NOT from scratch. Blender MCP needs Blender running at localhost:9876 (was NOT connected at build time).
+
+Tests: `test_blender_pipeline.py` (18).
