@@ -1,0 +1,98 @@
+{
+  "_meta": {
+    "source": "handoff/vq2-recon-2026-06-29 (12 curated 640x360 frames + frame_stats_*.json, 3508 frames aggregated)",
+    "track": "Now You See Me, Now You Don't (VQ2, build 1.0.3379)",
+    "extracted": "2026-06-29",
+    "principle": "VQ2 look is FIXED and deterministic. Match this ONE appearance with high fidelity. Do NOT broadly domain-randomize colors/lighting; only jitter pose + small sensor noise.",
+    "units": "RGB channels are 0..255 sRGB unless suffixed _linear (Blender Principled base_color / emission_color want LINEAR)."
+  },
+
+  "camera": {
+    "image_width": 640,
+    "image_height": 360,
+    "fx": 320.0,
+    "fy": 320.0,
+    "cx": 320.0,
+    "cy": 180.0,
+    "mount_pitch_up_deg": 20.0,
+    "hfov_deg": 90.0,
+    "vfov_deg": 58.7,
+    "distortion": "none",
+    "note": "Spec labels '90 deg VFoV' but that is the HORIZONTAL FoV; true vertical FoV ~58.7 deg. Always use fy=320. Camera optical axis pitched +20 deg UP about body-Y. Intrinsics are re-exported canonically from racer.frames.CAMERA_INTRINSICS_K; this block mirrors them for the Blender scene-builder."
+  },
+
+  "gate": {
+    "inner_size_m": 1.5,
+    "outer_size_m": 2.72,
+    "depth_m": 0.26,
+    "corner_order": "IPPE_SQUARE: 0=lower-left, 1=lower-right, 2=upper-right, 3=upper-left (gate Y DOWN). MUST match racer.vision.gate_pose.gate_object_points.",
+    "emission_rgb": [255, 56, 16],
+    "emission_rgb_median": [255, 65, 29],
+    "emission_rgb_extreme_near": [254, 59, 57],
+    "emission_rgb_linear": [1.0, 0.0356, 0.00335],
+    "emission_strength": 8.0,
+    "emission_note": "Saturated emissive core (R>=252, strongly red-dominant) = vivid ORANGE-RED, NOT pure red. Plateau median ~(255,56,16); the higher mean-G/B comes from bloom mixing. At extreme-near range the core blows out toward (254,59,57) (G,B rise as the sensor clips). emission_strength is a starting Blender emission node value to be tuned so the rendered core saturates R>=250 with a ~2-3px crisp edge; calibrate against bloom.* below.",
+    "material": "emissive shadeless ring (the gate frame is a self-lit red square); the inner 1.5m opening is a dark hole. Bar/ring thickness ~0.175 * outer_side in image (recon frame 01: outer ~80px -> inner ~52px)."
+  },
+
+  "bloom": {
+    "model": "asymmetric_glare",
+    "crisp_edge_px": 3,
+    "soft_edge_px": 12,
+    "soft_edge_halfmax_px": 18,
+    "core_threshold_for_labels": 250,
+    "ambient_red_wash_rgb": [46, 40, 32],
+    "note": "The glowing gate has an ASYMMETRIC bloom: one edge falls off crisply (~2-3px to background) and the opposing edge has a soft glow halo extending ~12-18px (half-max). Plus a pervasive low-amplitude red WASH across the upper scene (ceiling + distant gates) ~RGB(46,40,32). IMPLICATION (binding): extract corners off the SATURATED CORE (R>=250), NOT a low red threshold, or the ~12px halo + wash inflate the apparent square -> bias PnP range NEAR. The Blender glare/bloom must reproduce this: strong core, narrow crisp falloff, longer soft tail, plus a faint global red ambient. Mock renderer reproduces a symmetric approximation (crisp core + radial halo) sufficient for the round-trip correctness check."
+  },
+
+  "scene": {
+    "mean_gray": 36.0,
+    "median_gray": 27.0,
+    "p95_gray": 117.0,
+    "frac_dark_lt32": 0.60,
+    "frac_bright_gt224": 0.011,
+    "channel_means_rgb": [35.3, 36.5, 35.3],
+    "channel_note": "Scene is VERY low-light / high-contrast. Per-channel means near-NEUTRAL (R~=G~=B~=35-37) -- the red is LOCALIZED to the gate glow, not a global tint. ~60% of pixels are dark (<32), ~1% bright (>224, the point light sources).",
+    "background_rgb": [10, 10, 10],
+    "dark_structure_rgb": [24, 26, 26],
+    "dark_structure_note": "Near-black warehouse structure (pillars, walls, parked drones, trusses) reads ~RGB(24,26,26) where lit at all; pure background ~(10,10,10).",
+    "ambient_light_level": 0.04,
+    "ambient_note": "Global ambient/world light is very low (~0.04 of full); the scene is lit almost entirely by emissive gates + ceiling light grids + lane lines. Tune world strength so an unlit floor patch reads gray ~10-15 and the overall frame mean_gray lands ~36."
+  },
+
+  "lane_lines": {
+    "color_rgb": [222, 198, 80],
+    "color_rgb_core": [222, 198, 80],
+    "color_rgb_wash": [124, 98, 43],
+    "color_rgb_linear": [0.726, 0.566, 0.0786],
+    "emission_strength": 4.0,
+    "note": "Blue/cyan floor lane-lines converging toward the next gate. The bright lit CORE samples as cyan-warm RGB ~(222,198,80) in the start-pad frame (a teal/cyan line bloomed against orange center-beam); the dimmer line wash is ~(124,98,43). Treated as emissive floor strips. They are TRACK-SPECIFIC guidance, not a detection target -- render them for realism + as the classical detector's blue-clutter negative (red-dominance rejects them)."
+  },
+
+  "floor": {
+    "grid_spacing_m": 1.0,
+    "grid_line_rgb": [45, 45, 48],
+    "floor_base_rgb": [8, 8, 8],
+    "grid_line_strength": 0.0,
+    "note": "Floor is near-black with a faint regular GRID of thin gray lines (~RGB 43-48 where visible, on ~(8,8,8) floor). Grid spacing estimated ~1.0 m (square cells, perspective-consistent with station spacing); refine against a top-down render once Blender is connected. Non-emissive (lit by ambient/bounce); grid_line_strength 0 = pure albedo line, no glow."
+  },
+
+  "structure": {
+    "ceiling_light_rgb": [237, 238, 238],
+    "ceiling_light_strength": 6.0,
+    "ceiling_truss_rgb": [24, 26, 26],
+    "pillar_rgb": [22, 22, 24],
+    "green_marker_rgb": [80, 252, 80],
+    "green_marker_strength": 5.0,
+    "note": "Ceiling = regular grids of bright NEUTRAL-white point lights (~RGB 237-238) on dark trusses; these are the main non-gate bright sources. Pillars/walls/trusses are dark gray (~22-26). Green pole markers ~RGB(80,252,80) flank some gates (emissive green); a few red pole markers too. White text station-number signs (01..20) on pillars. Numbered stations 01-20."
+  },
+
+  "render_defaults": {
+    "engine": "CYCLES_or_EEVEE",
+    "exposure": 0.0,
+    "view_transform": "Standard",
+    "view_transform_note": "Use Standard (NOT Filmic/AgX) so emissive cores clip to a flat saturated plateau like the real low-dynamic-range JPEG stream, preserving the crisp ~3px core edge the detector keys on. Add bloom/glare as a compositor/EEVEE pass tuned to bloom.* above.",
+    "jpeg_quality": 90,
+    "output_format": "JPG_or_PNG_BGR"
+  }
+}
