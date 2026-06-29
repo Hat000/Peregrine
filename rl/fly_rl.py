@@ -1048,6 +1048,16 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     gate_index  = 0
     final_state = "IDLE"
 
+    # --- loop-rate self-report (the 2.3Hz->30Hz confirmation) ---------------------
+    # A1-A6 were judged on a loop choked to ~2.3 Hz by the pre-vectorization VP RANSAC
+    # (281ms/tick) -> thrust oscillation -> floor slam -> free-fall -> AHRS inversion.
+    # We time the WORK per tick (pump->command, excluding the rate-limiter sleep) so a
+    # saturated loop is unambiguous: work_dt > tick means we cannot keep up at --rate.
+    loop_t0      = time.monotonic()
+    n_ticks      = 0
+    worst_work_ms = 0.0
+    n_over_budget = 0
+
     reset_counter0 = int(client.state.reset_counter)
     prev_pos = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
                 if client.state.position_ned is not None else None)
@@ -1113,6 +1123,14 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
         client.send_command(cmd)
 
+        # work time = everything from the post-wait `now` through command send (no sleep)
+        work_ms = (time.monotonic() - now) * 1e3
+        n_ticks += 1
+        if work_ms > worst_work_ms:
+            worst_work_ms = work_ms
+        if work_ms > tick * 1e3:
+            n_over_budget += 1
+
         if now - last_p >= 1.0:
             p = nav_state.position_ned
             br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
@@ -1126,6 +1144,19 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     if final_state == "IDLE":
         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
         print(f"\n  ({final_state.lower()})")
+
+    # --- loop-rate verdict: did we actually realize the 30 Hz loop? ---------------
+    elapsed = max(time.monotonic() - loop_t0, 1e-6)
+    achieved_hz = n_ticks / elapsed
+    over_pct = 100.0 * n_over_budget / max(n_ticks, 1)
+    rate_ok = achieved_hz >= 0.9 * args.rate and over_pct < 5.0
+    print(f"  [loop-rate] {achieved_hz:5.1f} Hz over {n_ticks} ticks "
+          f"(target {args.rate:g}); worst work {worst_work_ms:.0f} ms; "
+          f"{over_pct:.1f}% ticks over budget -> {'OK' if rate_ok else 'CHOKED'}")
+    result["achieved_hz"]       = round(achieved_hz, 2)
+    result["worst_work_ms"]     = round(worst_work_ms, 1)
+    result["loop_over_budget_pct"] = round(over_pct, 1)
+
     result["final_state"] = final_state
     result["gate_index"]  = gate_index
     result["collisions"]  = len(client.collisions) - n_coll0
