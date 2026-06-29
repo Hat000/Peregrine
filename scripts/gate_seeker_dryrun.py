@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from racer.contracts import ControlMode, DroneState, Frame, Gate, GateObservation, NavState
 from racer.deploy_profile import vq2_case_c
 from racer.frames import CAMERA_INTRINSICS_K, R_camera_from_body, R_world_from_body
-from racer.gate_seeker import GateSeeker, GateSeekerConfig
+from racer.gate_seeker import GateSeeker, GateSeekerConfig, make_seeker_controller
 from racer.navigator import NavigatorConfig, Navigator
 
 
@@ -342,6 +342,260 @@ def check_cold_ahrs_launch_stays_bounded(cruise_speed: float) -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# CHECK 5 — MULTI-GATE PURSUIT: the A3 range-flap roll-over (Layer 2a/2b)
+# ---------------------------------------------------------------------------
+def _project_gate_px(gate, drone_pos, R_wb, R_cb, jitter=None):
+    """Project a gate's 4 inner corners to pixels from (drone_pos, R_wb); None if behind the camera."""
+    half = gate.inner_size_m / 2.0
+    corners_gate = np.array([[-half, half, 0.0], [half, half, 0.0],
+                             [half, -half, 0.0], [-half, -half, 0.0]])
+    R_wg = np.asarray(gate.R_world_gate, float)
+    K = CAMERA_INTRINSICS_K
+    px = []
+    for cg in corners_gate:
+        p_world = gate.position_ned + R_wg @ cg
+        p_cam = R_cb @ (np.asarray(R_wb, float).T @ (p_world - np.asarray(drone_pos, float)))
+        if p_cam[2] <= 0.05:
+            return None
+        px.append([K[0, 0] * p_cam[0] / p_cam[2] + K[0, 2],
+                   K[1, 1] * p_cam[1] / p_cam[2] + K[1, 2]])
+    out = np.asarray(px, float)
+    return out if jitter is None else out + jitter
+
+
+class _MultiGateDetector:
+    """Project SEVERAL red gates into the camera each frame -> a multi-candidate detection, like the
+    lit VQ2 course. A CENTERED 'active' gate sits dead ahead at a steady range; off-to-the-SIDE
+    distractor gates have their projected corners SCALE-JITTERED frame-to-frame so their PnP depth
+    OSCILLATES and each intermittently reads NEARER than the active gate -- and they are on OPPOSITE
+    sides, so "pick the closest each frame" flips the chosen gate (and its bearing) side-to-side every
+    tick: the A3 10<->30 m flap that swung the steering bearing and saturated roll. Deterministic."""
+
+    def __init__(self, gates, drone_pos, R_wb):
+        self.gates = list(gates)
+        self.drone_pos = np.asarray(drone_pos, float)
+        self.R_wb = np.asarray(R_wb, float)
+        self._R_cb = R_camera_from_body()
+
+    def detect(self, frame):
+        out = []
+        for i, gate in enumerate(self.gates):
+            base = _project_gate_px(gate, self.drone_pos, self.R_wb, self._R_cb)
+            if base is None:
+                continue
+            if i == 0:                                   # the centered ACTIVE gate: stable (no jitter)
+                px = base
+            else:
+                # opposite-phase scale jitter: distractor i shrinks while i+1 grows -> their PnP ranges
+                # swing in ANTIPHASE so the "closest" flips between the two SIDES tick-to-tick.
+                ctr = base.mean(axis=0)
+                scale = 1.0 + 0.5 * np.sin(0.9 * int(frame.frame_id) + np.pi * i)
+                px = ctr + (base - ctr) * scale
+            out.append(GateObservation(frame_id=frame.frame_id, sim_time_ns=frame.sim_time_ns,
+                                       corners_px=px, corner_ids=np.array([0, 1, 2, 3]),
+                                       corner_confidence=np.ones(4)))
+        return out
+
+
+def _run_multigate(seeker, detector, n_ticks, speed):
+    """Drive the seeker's command_visual over a multi-gate stream from a fixed hover pose; return the
+    per-tick (tracked range, commanded roll rate, heading) so we can score flap vs lock + roll bound.
+    The drone pose is HELD fixed (we test the SEEKER's target selection + steering, not the plant)."""
+    from racer.contracts import NavState
+    drone_pos = np.zeros(3)
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    detector.drone_pos = drone_pos
+    detector.R_wb = R_wb
+    ranges, rolls, yaws = [], [], []
+    for k in range(n_ticks):
+        t_ns = int(k * 0.02 * 1e9)
+        ns = NavState(sim_time_ns=t_ns, position_ned=drone_pos.copy(),
+                      velocity_ned=np.zeros(3), roll=0.0, pitch=0.0, yaw=0.0,
+                      time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+        frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=np.ones((360, 640, 3), np.uint8))
+        cmd = seeker.command_visual(ns, frame, 0)
+        pose = seeker._last_pose
+        ranges.append(pose.range_m if pose is not None else np.nan)
+        rolls.append(float(cmd.body_rate[0]))
+        yaws.append(float(seeker._last_yaw) if seeker._last_yaw is not None else 0.0)
+    return np.array(ranges), np.array(rolls), np.array(yaws)
+
+
+def check_multigate_pursuit_locks_one_gate(cruise_speed: float) -> bool:
+    """Reproduce the A3 Layer-2 roll-over (multi-gate range flap) and prove the fix. A CENTERED active
+    gate + jittering distractors are visible each frame.
+
+      * OLD logic (pick the CLOSEST each frame, no slew/roll cap): the chosen gate's PnP range FLAPS
+        tick-to-tick and the heading swings -> the roll command SATURATES (the roll-over).
+      * NEW logic (temporal track locks one gate + heading slew-limit + roll cap): the tracked range
+        stays SMOOTH, the heading is steady, and the roll command stays BOUNDED (no roll-over).
+
+    Asserts: OLD flaps + saturates roll; NEW range-stable + bounded roll + smooth heading."""
+    active = _gate([20.0, 1.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)         # near-centered (slight off)
+    distractor_a = _gate([14.0, 12.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=1)  # hard LEFT-bearing
+    distractor_b = _gate([14.0, -12.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=2)  # hard RIGHT-bearing
+    gates = [active, distractor_a, distractor_b]
+    cap = make_seeker_controller().max_body_rate_rps
+    n = 60
+
+    # OLD: tracking OFF + no slew/roll cap (cap raised to the controller max so only saturation shows).
+    old_seeker = GateSeeker(
+        config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0,
+                                anchor_release_detections=1, use_gate_track=False,
+                                pursuit_ramp_s=0.0, pursuit_yaw_slew_rps=0.0,
+                                pursuit_roll_rate_cap_rps=0.0, visual_yaw_rate_cap_rps=cap),
+        detector=_MultiGateDetector(gates, np.zeros(3), None))
+    old_r, old_roll, old_yaw = _run_multigate(old_seeker, old_seeker.detector, n, cruise_speed)
+
+    # NEW: tracking ON + heading slew-limit + roll cap (the shipped defaults).
+    new_seeker = GateSeeker(
+        config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0,
+                                anchor_release_detections=1),
+        detector=_MultiGateDetector(gates, np.zeros(3), None))
+    new_r, new_roll, new_yaw = _run_multigate(new_seeker, new_seeker.detector, n, cruise_speed)
+
+    # flap metric: max tick-to-tick jump in the CHOSEN gate's range over the pursuit window.
+    def _flap(r):
+        d = np.abs(np.diff(r[~np.isnan(r)]))
+        return float(d.max()) if d.size else 0.0
+    # roll-SWING metric: the max tick-to-tick change in the commanded roll rate -- the oscillation that
+    # rolled A3 over (a noisy bearing swinging the lean side-to-side). The proximate roll-over signal.
+    def _swing(x):
+        d = np.abs(np.diff(x[~np.isnan(x)]))
+        return float(d.max()) if d.size else 0.0
+    def _yaw_jerk(y):
+        dy = np.abs(np.arctan2(np.sin(np.diff(y)), np.cos(np.diff(y))))
+        return float(dy.max()) if dy.size else 0.0
+
+    old_flap, new_flap = _flap(old_r), _flap(new_r)
+    old_rollswing, new_rollswing = _swing(old_roll), _swing(new_roll)
+    old_rollmax = float(np.nanmax(np.abs(old_roll)))
+    new_rollmax = float(np.nanmax(np.abs(new_roll)))
+    new_yawjerk = _yaw_jerk(new_yaw)
+
+    # OLD: the chosen gate's range FLAPS and the roll command SWINGS hard tick-to-tick (the roll-over
+    # the unbounded servo produced). NEW: range locked smooth, roll bounded + non-oscillating.
+    old_bad = old_flap > 5.0 and old_rollswing > 1.0
+    new_locked = new_flap < 3.0                               # NEW tracked range is smooth (locked one gate)
+    new_roll_bounded = new_rollmax <= GateSeekerConfig().pursuit_roll_rate_cap_rps + 1e-9
+    new_roll_smooth = new_rollswing < 0.5 * old_rollswing     # NEW roll no longer oscillates hard
+    new_yaw_smooth = new_yawjerk < 0.2                        # heading steps stay small (slew-limited)
+    ok = old_bad and new_locked and new_roll_bounded and new_roll_smooth and new_yaw_smooth
+    print(f"  [multigate] OLD flap {old_flap:.1f} m roll_swing {old_rollswing:.2f} roll_max {old_rollmax:.2f}"
+          f"  ->  NEW flap {new_flap:.1f} m roll_swing {new_rollswing:.2f} roll_max {new_rollmax:.2f} "
+          f"yaw_jerk {new_yawjerk:.3f}  bounded={new_roll_bounded} smooth={new_yaw_smooth}"
+          f"  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# CHECK 6 — SPAWN-TILT HOLD: the gate stays in view through the release streak (Layer 1)
+# ---------------------------------------------------------------------------
+def check_spawn_tilt_hold_keeps_gate_in_view(cruise_speed: float) -> bool:
+    """Reproduce the A3 Layer-1 stall (the launch-hold slowly pitches the camera off the gate) and
+    prove the freeze-attitude fix. The drone spawns at a small gravity-aligned PITCH tilt with the
+    gate in view; we run the seeker's settle/anchor hold and a TRUE point-mass attitude integrator
+    that applies the commanded body rate, then re-detect the gate each tick.
+
+      * OLD hold (force-LEVEL, roll/pitch clamped to 0.6 but NONZERO): the controller commands a
+        persistent pitch toward level off the spawn tilt -> the integrated camera attitude DRIFTS, the
+        gate leaves the +20deg view, detections stop, and the 3-streak release STALLS (never reaches 3).
+      * NEW hold (FREEZE attitude, roll/pitch rate = 0): the camera attitude HOLDS, the gate stays in
+        view, and the detection streak completes -> the anchor RELEASES.
+
+    Asserts: OLD streak stalls (gate drifts out) ; NEW streak reaches N and the gate stays centered."""
+    # the start gate sits ~2.5 m ABOVE the spawn (z=-5.0 vs drone -2.5); with the +20deg-up camera the
+    # gate is CENTERED at a small nose-down spawn tilt. The level-hold then drives the tilt toward 0,
+    # pitching the camera so the elevated gate climbs out of the bottom of the frame (the A3 drift-off).
+    pitch0 = np.deg2rad(-6.0)         # a gravity-aligned nose-down spawn tilt; the elevated gate is centered
+    gate = _gate([14.0, 0.0, -5.0], normal=[1.0, 0.0, 0.0], gate_id=0)
+    drone_pos = np.array([0.0, 0.0, -2.5])
+    N = 3
+    R_cb = R_camera_from_body()
+    H, W = 360, 640
+
+    def _centroid_v(pitch):
+        """Vertical image coordinate of the gate centroid at this camera pitch (None if behind)."""
+        R_wb = R_world_from_body(0.0, float(pitch), 0.0)
+        px = _project_gate_px(gate, drone_pos, R_wb, R_cb)
+        return None if px is None else float(px.mean(axis=0)[1])
+
+    # the detector locks the gate only while it is BOTH inside the frame AND its image MOTION between
+    # ticks is small. As the level-hold pitches the camera off the gate, the gate both drifts toward
+    # the edge AND streaks across the frame fast -> the corner detector flickers (the A3 'meanBGR
+    # 27->9, detections vanish'): a fast-drifting gate is NOT cleanly detected. A STATIC (frozen) gate
+    # sits still and is detected every tick.
+    MARGIN, MAX_IMG_MOTION_PX = 12.0, 8.0
+
+    def _detectable(v_now, v_prev):
+        if v_now is None:
+            return False
+        if not (MARGIN <= v_now <= H - MARGIN):
+            return False
+        if v_prev is not None and abs(v_now - v_prev) > MAX_IMG_MOTION_PX:
+            return False                  # too much image motion this tick -> the detector flickers off
+        return True
+
+    class _MotionGatedDetector:
+        """_ProjDetector but returns nothing unless the gate is in-frame AND nearly STILL this tick."""
+        def __init__(self, pitch, detectable):
+            self.pitch, self.detectable = pitch, detectable
+        def detect(self, frame):
+            if not self.detectable:
+                return []
+            R_wb = R_world_from_body(0.0, float(self.pitch), 0.0)
+            return _ProjDetector(gate, drone_pos, R_wb).detect(frame)
+
+    def _run(freeze: bool):
+        seeker = GateSeeker(
+            config=GateSeekerConfig(cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0,
+                                    anchor_release_detections=N, hold_freeze_attitude=freeze),
+            detector=None)
+        pitch = pitch0                # the TRUE camera pitch, integrated from the commanded body rate
+        dt = 0.1
+        released_at = None
+        hold_detectable_ticks = 0     # ticks the gate was detectable WHILE STILL IN THE HOLD (pre-release)
+        v_prev = None
+        for k in range(40):
+            v_now = _centroid_v(pitch)
+            detectable = _detectable(v_now, v_prev)
+            seeker.detector = _MotionGatedDetector(pitch, detectable)
+            t_ns = int(k * dt * 1e9)
+            ns = NavState(sim_time_ns=t_ns, position_ned=drone_pos.copy(), velocity_ned=np.zeros(3),
+                          roll=0.0, pitch=float(pitch), yaw=0.0, time_since_vision_update_s=float("inf"))
+            frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=np.ones((H, W, 3), np.uint8))
+            was = seeker._anchored
+            if not was and detectable:            # measure detectability during the HOLD only (Layer 1)
+                hold_detectable_ticks += 1
+            cmd = seeker.command_visual(ns, frame, 0)
+            if seeker._anchored and not was and released_at is None:
+                released_at = k
+            v_prev = v_now
+            # integrate the TRUE pitch from the commanded pitch-rate. The OLD level-hold commands a
+            # persistent pitch toward level off the spawn tilt; the odo pitch-rate sign (-1) maps a
+            # +body_rate[1] command to a pitch CHANGE that drifts the camera off the gate. The FREEZE
+            # hold commands ZERO roll/pitch -> the camera stays on the gate -> the streak completes.
+            pitch = pitch + (-1.0) * float(cmd.body_rate[1]) * dt
+        return released_at, hold_detectable_ticks
+
+    old_release, old_hold_seen = _run(freeze=False)
+    new_release, new_hold_seen = _run(freeze=True)
+
+    # OLD: the level-hold pitches the camera off the gate -> the gate streaks/leaves the frame -> the
+    # detector flickers, the 3-consecutive streak never completes -> the hold never releases (A3 2.0).
+    old_stalls = old_release is None
+    # NEW: the freeze-attitude hold keeps the camera ON the gate -> detectable every hold tick -> the
+    # streak completes -> the hold RELEASES at tick N-1.
+    new_releases = new_release is not None
+    new_held_gate = new_hold_seen >= N             # the gate stayed detectable through the whole streak
+    ok = old_stalls and new_releases and new_held_gate
+    print(f"  [spawn-tilt] OLD release@{old_release} (stalls={old_stalls}, hold-detectable {old_hold_seen})"
+          f"  ->  NEW release@{new_release} hold-detectable {new_hold_seen} (>=N={N}: {new_held_gate})"
+          f"  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -358,14 +612,19 @@ def main() -> int:
     ok2 = check_casec_estimator_seeker(args.speed)
     ok3 = check_vq2_map_free_anchor_release(args.speed)
     ok4 = check_cold_ahrs_launch_stays_bounded(args.speed)
+    ok5 = check_multigate_pursuit_locks_one_gate(args.speed)
+    ok6 = check_spawn_tilt_hold_keeps_gate_in_view(args.speed)
 
     print()
-    if ok1 and ok2 and ok3 and ok4:
+    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6:
         print("RESULT: PASS — the integrated gate-seeker produces sane, slow, gate-pointing "
               "commands on synthetic data; the self-localized estimate stays bounded; the seeker "
               "RELEASES its launch-hold on its OWN map-free detections (the attempt-2 BUG A, where "
-              "the old tsv signal pins forever); and the cold ~18deg AHRS launch settles to level "
-              "with bounded roll/pitch (the attempt-2 BUG B pitch tumble).")
+              "the old tsv signal pins forever); the cold ~18deg AHRS launch settles with bounded "
+              "roll/pitch (the attempt-2 BUG B); the multi-gate pursuit LOCKS one gate so the range "
+              "stays smooth and the roll stays bounded (the attempt-3 LAYER-2 roll-over); and the "
+              "spawn-tilt hold FREEZES attitude so the gate stays in view and the release streak "
+              "completes (the attempt-3 LAYER-1 stall).")
         return 0
     print("RESULT: FAIL — see the failing check above.")
     return 1

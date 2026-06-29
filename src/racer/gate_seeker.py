@@ -170,6 +170,50 @@ class GateSeekerConfig:
     # the gate out of frame faster than the controller can track it.
     visual_yaw_rate_cap_rps: float = 1.5
 
+    # --- TEMPORAL GATE TRACKING (the 2026-06-29 attempt-3 LAYER-2a fix) ---
+    # A3 (3.0 m/s): with several red gates visible down the lit course the "pick the closest each
+    # frame" selection FLAPPED -- the chosen gate's PnP range jumped 10<->26<->9.6<->30 m tick-to-
+    # tick (a DIFFERENT gate each frame / unstable depth), so the steering bearing swung and the
+    # roll command SATURATED (+3.43 rps) into a roll-over. The fix LOCKS one gate across frames: a
+    # lightweight track of the chosen gate's (range, camera bearing) that each new frame matches the
+    # most-consistent candidate to -- and REJECTS a candidate that jumps implausibly (coast on the
+    # track instead). When tracking is on, ``detect_gate_lever`` returns the TRACKED gate, not the
+    # raw closest. Off => legacy closest-each-frame.
+    use_gate_track: bool = True
+    # FIRST acquisition (no track yet): prefer the most CENTERED gate (smallest camera bearing from
+    # boresight) -- the gate we are flying the line at -- over merely the closest. Once a track
+    # exists, continuity (below) selects, not centring.
+    track_prefer_centered: bool = True
+    # A candidate is consistent with the track when BOTH its range and its camera bearing are within
+    # these of the track's PREDICTED value. A candidate outside EITHER gate is a jump (a different
+    # gate / a PnP-depth flip) and is REJECTED -- the track coasts (no detection this tick) rather
+    # than locking onto the flapper. Generous enough to follow honest closing range between ticks at
+    # the slow cruise; tight enough to reject the 10<->30 m flap.
+    track_max_range_jump_m: float = 6.0
+    track_max_bearing_jump_rad: float = 0.35     # ~20 deg of camera bearing step between frames
+    # The track's range/bearing are smoothed (EMA) so a single noisy-but-accepted PnP depth does not
+    # yank the prediction. 1.0 => snap to the new measurement; small => heavy smoothing.
+    track_ema_alpha: float = 0.5
+    # Drop the track after this many CONSECUTIVE ticks with no consistent candidate (gate genuinely
+    # lost / between gates) so re-acquisition can re-centre on a fresh gate.
+    track_max_coast_ticks: int = 8
+
+    # --- POST-RELEASE PURSUIT RAMP + GUIDANCE RATE LIMIT (the LAYER-2b fix) ---
+    # A short ramp on pursuit authority AFTER the anchor releases, so a noisy FIRST bearing can't
+    # step-saturate roll the instant pursuit begins (A3: the first pursuit tick already commanded
+    # +2.19 roll, the third +3.43 -> roll-over). Over this window the commanded body-rate is scaled
+    # up from a small floor to full, easing into pursuit. 0.0 => no ramp (legacy).
+    pursuit_ramp_s: float = 0.8
+    pursuit_ramp_floor: float = 0.15            # authority scale at the instant of release (>0 so it still steers)
+    # Rate-limit the per-tick CHANGE of the pursuit guidance HEADING (the yaw setpoint the controller
+    # tracks): a noisy bearing can demand a large heading step that the controller turns into a
+    # saturating roll/yaw. Capping the heading slew keeps the steering bearing SMOOTH frame-to-frame
+    # (the proximate fix for the swing that saturated roll). rad per tick-second.
+    pursuit_yaw_slew_rps: float = 1.0
+    # Cap the ROLL (FRD body-rate X) command in pursuit so a residual bearing swing can never
+    # saturate roll into a roll-over (A3's crash axis). Well below the controller's max_body_rate_rps.
+    pursuit_roll_rate_cap_rps: float = 1.5
+
     # --- ANCHOR RELEASE on the seeker's OWN detections (the 2026-06-29 attempt-2 BUG A fix) ---
     # On the LIVE VQ2 wire the navigator is MAP-FREE (gates=[]), so its map-associated fix path
     # never fires and ``nav.time_since_vision_update_s`` stays inf FOREVER -- the old anchor-release
@@ -193,6 +237,17 @@ class GateSeekerConfig:
     # weak/uncorrected cold z-estimate can't saturate the thrust into a climb into the gate.
     hold_thrust_lo_frac: float = 0.6
     hold_thrust_hi_frac: float = 1.4
+    # --- HOLD-ATTITUDE (the 2026-06-29 attempt-3 LAYER-1 fix) ---
+    # FREEZE the spawn attitude during the launch/settle hold instead of force-LEVELLING off it.
+    # A3 (2.0 m/s): the level-hold controller, fed the gravity-aligned SPAWN TILT, commands a
+    # PERSISTENT clamped +0.6 rps pitch to drive the (correctly-estimated) tilt toward level. That
+    # slow pitch-over tilts the +20deg camera OFF the gate -> the detector goes dark (meanBGR 27->9)
+    # and the 3-consecutive-detection release stalls at 2/3 and never fires. The fix: in the hold the
+    # seeker ZEROES its OWN roll/pitch rate command (holds the current camera attitude, keeping the
+    # gate in view), only the alt-hold collective + a clamped yaw remain. We do NOT re-level off the
+    # gate; the gate stays centred so the detection streak completes. (The estimate is gravity-aligned
+    # so the spawn tilt is small; freezing it is safe -- and far safer than a slow pitch off-gate.)
+    hold_freeze_attitude: bool = True
 
 
 @dataclass
@@ -217,6 +272,13 @@ class GateSeeker:
     _last_frame_id: int | None = field(default=None, repr=False)  # detector idempotence across re-feeds
     _last_pose: GatePose | None = field(default=None, repr=False)  # cached detected lever for re-fed frames
     _consec_detections: int = field(default=0, repr=False)     # consecutive own-detection ticks (anchor release)
+    # -- temporal gate track (Layer 2a): the locked gate's smoothed (range, camera-bearing) --
+    _track_range_m: float | None = field(default=None, repr=False)      # tracked gate range, EMA-smoothed
+    _track_bearing: np.ndarray | None = field(default=None, repr=False)  # tracked gate camera bearing (az,el) rad
+    _track_coast_ticks: int = field(default=0, repr=False)     # consecutive ticks with no consistent candidate
+    # -- post-release pursuit ramp (Layer 2b): the sim-time the anchor released --
+    _release_t_ns: int | None = field(default=None, repr=False)
+    _last_pursuit_t_ns: int | None = field(default=None, repr=False)  # last pursuit tick (heading slew dt)
 
     # -- guidance: NavState + active gate -> Setpoint -----------------------
     def plan(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> Setpoint:
@@ -272,19 +334,19 @@ class GateSeeker:
     # =======================================================================
     # MAP-FREE VISUAL SERVO  (the live VQ2 path — chase the gate the camera SEES)
     # =======================================================================
-    def detect_gate_lever(self, frame: Frame | None) -> GatePose | None:
-        """Run the injected detector + PnP on ``frame`` and return the camera-relative pose of the
-        gate to chase (``GatePose.t_cam_gate`` = gate centre in the camera optical frame), or ``None``
-        when nothing usable is seen.
+    @staticmethod
+    def _pose_bearing(pose: GatePose) -> np.ndarray:
+        """Camera bearing (azimuth, elevation) of the gate centre, in radians, from the optical-frame
+        lever. Camera optical frame: +x right, +y down, +z forward. az = atan2(x, z), el = atan2(y, z).
+        This is the gate's ANGULAR position in the image -- the track-continuity coordinate."""
+        t = np.asarray(pose.t_cam_gate, dtype=np.float64)
+        z = max(float(t[2]), 1e-6)
+        return np.array([np.arctan2(float(t[0]), z), np.arctan2(float(t[1]), z)], dtype=np.float64)
 
-        MAP-FREE: no association to any map gate, no self-position — just "which opening is in front
-        of me, and where is it relative to the camera". When several gates are detected we pick the
-        CLOSEST (largest apparent span / smallest PnP range): the active gate is the one we are
-        flying at, so it dominates the frame. Quality-gated by detection score + PnP reproj error."""
-        if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
-            return None
+    def _valid_poses(self, frame: Frame) -> list[GatePose]:
+        """All quality-gated candidate gate poses in ``frame`` (score + reproj + in-front), unsorted."""
         observations: list[GateObservation] = list(self.detector.detect(frame))
-        best: GatePose | None = None
+        out: list[GatePose] = []
         for obs in observations:
             if float(getattr(obs, "score", 1.0)) < self.config.min_detect_score:
                 continue
@@ -295,9 +357,87 @@ class GateSeeker:
                 continue
             if pose.t_cam_gate[2] <= 0.05:      # gate behind / on the image plane -> unusable bearing
                 continue
-            if best is None or pose.range_m < best.range_m:
-                best = pose
-        return best
+            out.append(pose)
+        return out
+
+    def detect_gate_lever(self, frame: Frame | None) -> GatePose | None:
+        """Run the injected detector + PnP on ``frame`` and return the camera-relative pose of the
+        gate to chase (``GatePose.t_cam_gate`` = gate centre in the camera optical frame), or ``None``
+        when nothing usable is seen.
+
+        MAP-FREE: no association to any map gate, no self-position — just "which opening is in front
+        of me, and where is it relative to the camera". Quality-gated by detection score + PnP reproj.
+
+        TEMPORAL TRACK (Layer 2a, default ``use_gate_track``): the active gate is LOCKED across frames
+        rather than re-chosen from scratch each tick. A track of the chosen gate's smoothed (range,
+        camera bearing) is maintained; each new frame the candidate most CONSISTENT with the track's
+        prediction is selected, and a candidate that JUMPS implausibly (range/bearing discontinuity)
+        is REJECTED -- the track coasts (returns ``None`` this tick) instead of locking onto a flapper.
+        On FIRST acquisition the most-CENTERED gate is preferred (the line we fly), not just the
+        closest. This kills the A3 10<->30 m range-flap that swung the bearing and saturated roll.
+
+        With tracking OFF the legacy behaviour returns: pick the CLOSEST (smallest PnP range) gate
+        each frame, no continuity."""
+        if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
+            return None
+        poses = self._valid_poses(frame)
+
+        if not self.config.use_gate_track:
+            best: GatePose | None = None
+            for pose in poses:
+                if best is None or pose.range_m < best.range_m:
+                    best = pose
+            return best
+
+        # --- temporal track: lock one gate across frames -------------------
+        if not poses:
+            self._track_coast_ticks += 1
+            if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                self._track_range_m, self._track_bearing = None, None
+            return None
+
+        if self._track_range_m is None or self._track_bearing is None:
+            # FIRST acquisition: prefer the most CENTERED gate (smallest bearing magnitude), else the
+            # closest. That gate is the active line we fly; once tracked, continuity (not centring)
+            # selects.
+            if self.config.track_prefer_centered:
+                chosen = min(poses, key=lambda p: float(np.linalg.norm(self._pose_bearing(p))))
+            else:
+                chosen = min(poses, key=lambda p: p.range_m)
+        else:
+            # CONTINUITY: pick the candidate nearest the track in (range, bearing); REJECT a jump.
+            pred_r = float(self._track_range_m)
+            pred_b = np.asarray(self._track_bearing, dtype=np.float64)
+
+            def _consistent(p: GatePose) -> bool:
+                return (abs(p.range_m - pred_r) <= self.config.track_max_range_jump_m
+                        and float(np.linalg.norm(self._pose_bearing(p) - pred_b))
+                        <= self.config.track_max_bearing_jump_rad)
+
+            cands = [p for p in poses if _consistent(p)]
+            if not cands:
+                # every candidate jumped -> COAST on the track (do not lock onto a flapper).
+                self._track_coast_ticks += 1
+                if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                    self._track_range_m, self._track_bearing = None, None
+                return None
+            # among the consistent candidates, the one closest to the predicted bearing+range.
+            chosen = min(
+                cands,
+                key=lambda p: float(np.linalg.norm(self._pose_bearing(p) - pred_b))
+                + abs(p.range_m - pred_r) / max(self.config.track_max_range_jump_m, 1e-6),
+            )
+
+        # accept -> update the smoothed track and reset the coast counter.
+        a = float(np.clip(self.config.track_ema_alpha, 0.0, 1.0))
+        b_meas = self._pose_bearing(chosen)
+        if self._track_range_m is None or self._track_bearing is None:
+            self._track_range_m, self._track_bearing = float(chosen.range_m), b_meas
+        else:
+            self._track_range_m = (1.0 - a) * float(self._track_range_m) + a * float(chosen.range_m)
+            self._track_bearing = (1.0 - a) * np.asarray(self._track_bearing, dtype=np.float64) + a * b_meas
+        self._track_coast_ticks = 0
+        return chosen
 
     def command_visual(self, nav: NavState, frame: Frame | None, active_gate_index: int, *,
                        is_final_gate: bool = False) -> ControlCommand:
@@ -350,6 +490,8 @@ class GateSeeker:
         #       signal, retained for the case where a real map IS present.
         if (self._consec_detections >= max(1, int(self.config.anchor_release_detections))
                 or np.isfinite(nav.time_since_vision_update_s)):
+            if not self._anchored:
+                self._release_t_ns = int(nav.sim_time_ns)   # start the post-release pursuit ramp clock
             self._anchored = True
 
         # --- regime 0: POST-ARM SETTLE -> conservative level hold, all rates clamped, thrust bounded ---
@@ -395,21 +537,76 @@ class GateSeeker:
 
         Desired velocity = cruise_speed along the world bearing to the gate, but HOLD ALTITUDE (zero
         the vertical component) so slow flight stays level + blur-free (z is the estimator's weakest
-        axis on VQ2). Yaw centers the gate bearing's horizontal heading; the controller's body-rate is
-        then clamped to the smooth visual cap so a wide bearing turns in steadily, never a slew."""
+        axis on VQ2). Yaw centers the gate bearing's horizontal heading.
+
+        LAYER-2b smoothing (the A3 roll-over fix): the commanded heading is RATE-LIMITED so a noisy
+        bearing can't STEP the yaw setpoint (a heading jump becomes a saturating roll/yaw); a
+        post-release PURSUIT RAMP scales authority up from a small floor over ``pursuit_ramp_s`` so
+        the FIRST pursuit ticks ease in instead of leaning hard on a still-settling bearing; and the
+        ROLL command is capped well below saturation so a residual bearing swing can never roll over."""
         gdir = self._gate_dir_world(nav, pose)
         horiz = np.array([gdir[0], gdir[1], 0.0])
         los = _unit(horiz, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
-        yaw = float(np.arctan2(los[1], los[0]))
+        yaw_des = float(np.arctan2(los[1], los[0]))
+        # RATE-LIMIT the heading slew: cap the per-tick change of the yaw setpoint so the steering
+        # bearing stays SMOOTH (the proximate fix for the swing that saturated roll in A3).
+        yaw = self._slew_heading(yaw_des, int(nav.sim_time_ns))
         self._last_yaw = yaw
+        # PURSUIT RAMP: scale the translational lean authority up from a floor over the first
+        # pursuit_ramp_s after release (a noisy first bearing can't step-saturate roll), composed with
+        # the takeoff launch ramp.
+        ramp = self._pursuit_ramp(int(nav.sim_time_ns))
+        launch = self._launch_ramp(int(nav.sim_time_ns))
+        eff_ramp = ramp if launch is None else min(ramp, launch)
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
             velocity_ned=self.config.cruise_speed * los,    # level pursuit (altitude held by alt-hold)
             yaw=yaw,
-            launch_ramp=self._launch_ramp(int(nav.sim_time_ns)),
+            launch_ramp=eff_ramp,
         )
         cmd = self.controller.command(nav, sp)
-        return self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
+        cmd = self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
+        return self._cap_roll_rate(cmd, self.config.pursuit_roll_rate_cap_rps)
+
+    def _slew_heading(self, yaw_des: float, sim_time_ns: int) -> float:
+        """Rate-limit the commanded heading: step ``_last_yaw`` toward ``yaw_des`` by at most
+        ``pursuit_yaw_slew_rps`` * dt (shortest angular path). Keeps the steering bearing smooth so a
+        noisy bearing can't demand a heading jump the controller turns into a saturating roll/yaw."""
+        last = self._last_yaw if self._last_yaw is not None else yaw_des
+        slew = float(self.config.pursuit_yaw_slew_rps)
+        if slew <= 0.0 or self._last_pursuit_t_ns is None:
+            self._last_pursuit_t_ns = int(sim_time_ns)
+            return yaw_des
+        dt = max((int(sim_time_ns) - self._last_pursuit_t_ns) / 1e9, 0.0)
+        self._last_pursuit_t_ns = int(sim_time_ns)
+        # shortest signed angular error in (-pi, pi]
+        derr = float(np.arctan2(np.sin(yaw_des - last), np.cos(yaw_des - last)))
+        max_step = slew * dt if dt > 0.0 else abs(derr)
+        derr = float(np.clip(derr, -max_step, max_step))
+        return float(np.arctan2(np.sin(last + derr), np.cos(last + derr)))
+
+    def _pursuit_ramp(self, sim_time_ns: int) -> float:
+        """Pursuit authority [floor, 1] ramping over ``pursuit_ramp_s`` from the anchor release, so
+        the first pursuit ticks ease in (a noisy first bearing can't step-saturate roll). 1.0 once the
+        ramp completes / when disabled."""
+        if self.config.pursuit_ramp_s <= 0.0 or self._release_t_ns is None:
+            return 1.0
+        elapsed = (int(sim_time_ns) - self._release_t_ns) / 1e9
+        if elapsed >= self.config.pursuit_ramp_s:
+            return 1.0
+        f = float(np.clip(self.config.pursuit_ramp_floor, 0.0, 1.0))
+        return float(f + (1.0 - f) * np.clip(elapsed / self.config.pursuit_ramp_s, 0.0, 1.0))
+
+    def _cap_roll_rate(self, cmd: ControlCommand, cap_rps: float) -> ControlCommand:
+        """Clamp the ROLL (FRD body-rate X) command to +/-``cap_rps`` -- the pursuit roll-over guard
+        (A3's crash axis: a residual bearing swing must never saturate roll)."""
+        if cmd.body_rate is None or cap_rps <= 0.0:
+            return cmd
+        import dataclasses
+        br = np.asarray(cmd.body_rate, dtype=np.float64).copy()
+        c = abs(float(cap_rps))
+        br[0] = float(np.clip(br[0], -c, c))
+        return dataclasses.replace(cmd, body_rate=br)
 
     def _hold_command(self, nav: NavState, *, yaw_rate_cap: float,
                       attitude_safe: bool = False) -> ControlCommand:
@@ -433,9 +630,30 @@ class GateSeeker:
         cmd = self.controller.command(nav, sp)
         cmd = self._cap_yaw_rate(cmd, yaw_rate_cap)
         if attitude_safe:
-            cmd = self._cap_rp_rate(cmd, self.config.hold_rp_rate_cap_rps)
+            if self.config.hold_freeze_attitude:
+                # LAYER 1 (A3 fix): FREEZE the spawn attitude -- zero the roll/pitch rate command so
+                # the hold does NOT actively re-level off the gravity-aligned spawn TILT. The level-
+                # hold controller, fed the (correct) spawn tilt, otherwise commands a persistent
+                # clamped pitch that slowly tilts the camera OFF the gate -> the detector goes dark
+                # and the release streak stalls. Holding the current attitude keeps the gate in view
+                # so the detection streak completes. (Yaw clamp + bounded thrust still apply below.)
+                cmd = self._zero_rp_rate(cmd)
+            else:
+                cmd = self._cap_rp_rate(cmd, self.config.hold_rp_rate_cap_rps)
             cmd = self._bound_hold_thrust(cmd)
         return cmd
+
+    def _zero_rp_rate(self, cmd: ControlCommand) -> ControlCommand:
+        """Zero the ROLL/PITCH (FRD body-rate X,Y) command -- the LAYER-1 attitude FREEZE: hold the
+        current camera attitude (do not re-level off the gate) so the gate stays in view through the
+        detection streak. Yaw is left untouched (clamped separately)."""
+        if cmd.body_rate is None:
+            return cmd
+        import dataclasses
+        br = np.asarray(cmd.body_rate, dtype=np.float64).copy()
+        br[0] = 0.0
+        br[1] = 0.0
+        return dataclasses.replace(cmd, body_rate=br)
 
     def _cap_rp_rate(self, cmd: ControlCommand, cap_rps: float) -> ControlCommand:
         """Clamp the ROLL (FRD body-rate X) and PITCH (FRD body-rate Y) command to +/-``cap_rps`` --
@@ -519,6 +737,11 @@ class GateSeeker:
         self._last_frame_id = None
         self._last_pose = None
         self._consec_detections = 0
+        self._track_range_m = None
+        self._track_bearing = None
+        self._track_coast_ticks = 0
+        self._release_t_ns = None
+        self._last_pursuit_t_ns = None
 
     # -- internals ----------------------------------------------------------
     def _launch_ramp(self, sim_time_ns: int) -> float | None:

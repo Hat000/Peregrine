@@ -663,6 +663,272 @@ def test_reset_returns_seeker_to_launch_anchor_regime():
     assert abs(float(cmd.body_rate[2])) < 1e-6
 
 
+# ===========================================================================
+# LAYER 2a (2026-06-29 attempt-3): TEMPORAL GATE TRACKING — lock one gate, reject flap
+# ===========================================================================
+class _MultiProjDetector:
+    """Project SEVERAL gates into the camera; the distractors' corners SCALE-JITTER per frame so
+    their PnP depth oscillates (and they read near/far) -- the A3 multi-gate range flap. gate[0] is
+    the stable centered active gate."""
+
+    def __init__(self, gates, drone_pos, R_wb):
+        from racer.frames import R_camera_from_body
+        self.gates, self.drone_pos, self.R_wb = list(gates), np.asarray(drone_pos, float), np.asarray(R_wb, float)
+        self._R_cb = R_camera_from_body()
+
+    def _project(self, gate):
+        from racer.frames import CAMERA_INTRINSICS_K
+        half = gate.inner_size_m / 2.0
+        cg = np.array([[-half, half, 0.0], [half, half, 0.0], [half, -half, 0.0], [-half, -half, 0.0]])
+        R_wg = np.asarray(gate.R_world_gate, float)
+        K = CAMERA_INTRINSICS_K
+        px = []
+        for c in cg:
+            p_cam = self._R_cb @ (self.R_wb.T @ (gate.position_ned + R_wg @ c - self.drone_pos))
+            if p_cam[2] <= 0.05:
+                return None
+            px.append([K[0, 0] * p_cam[0] / p_cam[2] + K[0, 2], K[1, 1] * p_cam[1] / p_cam[2] + K[1, 2]])
+        return np.asarray(px, float)
+
+    def detect(self, frame):
+        out = []
+        for i, gate in enumerate(self.gates):
+            base = self._project(gate)
+            if base is None:
+                continue
+            if i == 0:
+                px = base
+            else:
+                ctr = base.mean(axis=0)
+                scale = 1.0 + 0.5 * np.sin(0.9 * int(frame.frame_id) + np.pi * i)
+                px = ctr + (base - ctr) * scale
+            out.append(GateObservation(frame_id=frame.frame_id, sim_time_ns=frame.sim_time_ns,
+                                       corners_px=px, corner_ids=np.array([0, 1, 2, 3]),
+                                       corner_confidence=np.ones(4)))
+        return out
+
+
+def _drive_multigate(seeker, det, n):
+    """Run command_visual over a multi-gate stream from a fixed hover pose; return (chosen ranges,
+    roll-rate commands). The drone is HELD fixed so this isolates target selection + steering."""
+    from racer.frames import R_world_from_body
+    det.drone_pos, det.R_wb = np.zeros(3), R_world_from_body(0.0, 0.0, 0.0)
+    ranges, rolls = [], []
+    for k in range(40):
+        t_ns = int(k * 0.02 * 1e9)
+        ns = _nav_fix([0, 0, 0], tsv=(0.05 if k > 0 else float("inf")), sim_time_ns=t_ns, yaw=0.0)
+        cmd = seeker.command_visual(ns, _frame(k, t_ns), 0)
+        ranges.append(seeker._last_pose.range_m if seeker._last_pose is not None else np.nan)
+        rolls.append(float(cmd.body_rate[0]))
+    return np.array(ranges), np.array(rolls)
+
+
+def test_temporal_track_locks_one_gate_smooth_range_old_redetect_flaps():
+    """LAYER 2a: with several gates visible and the distractors' PnP range flapping, the NEW temporal
+    track LOCKS the centered active gate so the chosen range stays SMOOTH; the OLD redetect-each-frame
+    (use_gate_track=False) picks the closest each tick and FLAPS. Pins the proximate roll-over cause."""
+    from racer.frames import R_world_from_body
+    gates = [_gate([20.0, 1.0, -2.5], normal=[1, 0, 0], gate_id=0),       # near-centered active
+             _gate([14.0, 12.0, -2.5], normal=[1, 0, 0], gate_id=1),      # hard-left distractor
+             _gate([14.0, -12.0, -2.5], normal=[1, 0, 0], gate_id=2)]     # hard-right distractor
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+
+    old = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
+                                             anchor_release_detections=1, use_gate_track=False),
+                     detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
+    new = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
+                                             anchor_release_detections=1),
+                     detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
+    old_r, _ = _drive_multigate(old, old.detector, 40)
+    new_r, _ = _drive_multigate(new, new.detector, 40)
+
+    def _flap(r):
+        d = np.abs(np.diff(r[~np.isnan(r)]))
+        return float(d.max()) if d.size else 0.0
+    assert _flap(old_r) > 5.0, "old redetect-from-scratch should flap the chosen-gate range"
+    assert _flap(new_r) < 3.0, "temporal track must lock one gate -> smooth range (no flap)"
+
+
+def test_temporal_track_keeps_roll_bounded_old_redetect_swings_it():
+    """LAYER 2a/2b: the locked + slew-limited + roll-capped pursuit keeps the ROLL command bounded and
+    non-oscillating under the multi-gate flap; the OLD unbounded redetect SWINGS the roll hard (the A3
+    roll-over). Pins the crash axis."""
+    from racer.frames import R_world_from_body
+    gates = [_gate([20.0, 1.0, -2.5], normal=[1, 0, 0], gate_id=0),
+             _gate([14.0, 12.0, -2.5], normal=[1, 0, 0], gate_id=1),
+             _gate([14.0, -12.0, -2.5], normal=[1, 0, 0], gate_id=2)]
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    cap = make_seeker_controller().max_body_rate_rps
+
+    old = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
+                                             anchor_release_detections=1, use_gate_track=False,
+                                             pursuit_ramp_s=0.0, pursuit_yaw_slew_rps=0.0,
+                                             pursuit_roll_rate_cap_rps=0.0, visual_yaw_rate_cap_rps=cap),
+                     detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
+    new = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
+                                             anchor_release_detections=1),
+                     detector=_MultiProjDetector(gates, np.zeros(3), R_wb))
+    _, old_roll = _drive_multigate(old, old.detector, 40)
+    _, new_roll = _drive_multigate(new, new.detector, 40)
+
+    def _swing(x):
+        d = np.abs(np.diff(x[~np.isnan(x)]))
+        return float(d.max()) if d.size else 0.0
+    assert _swing(old_roll) > 1.0, "old unbounded redetect should swing the roll command hard"
+    assert np.nanmax(np.abs(new_roll)) <= GateSeekerConfig().pursuit_roll_rate_cap_rps + 1e-9
+    assert _swing(new_roll) < 0.5 * _swing(old_roll), "tracked+capped pursuit must not oscillate roll"
+
+
+def test_track_rejects_a_range_jump_and_coasts():
+    """A candidate that JUMPS implausibly in range from the established track is REJECTED -> the seeker
+    coasts (returns None this tick) instead of locking onto the flapper. Unit-level pin of the gate."""
+    from racer.frames import R_world_from_body
+    gate = _gate([20.0, 0.0, -2.5], normal=[1, 0, 0])
+    seeker = GateSeeker(config=GateSeekerConfig(track_max_range_jump_m=6.0), detector=None)
+    # seed the track at ~20 m, centred bearing.
+    seeker._track_range_m = 20.0
+    seeker._track_bearing = np.zeros(2)
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+
+    class _Jumped:
+        """Returns only a single gate that is 18 m NEARER than the track (a depth flip / wrong gate)."""
+        def detect(self, frame):
+            near = _gate([2.0, 0.0, -2.5], normal=[1, 0, 0])    # range ~2 m, a >15 m jump from 20
+            return _ProjDetector(near, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0)).detect(frame)
+
+    seeker.detector = _Jumped()
+    pose = seeker.detect_gate_lever(_frame(1, 0))
+    assert pose is None, "a candidate that jumps range >max must be rejected (coast), not locked"
+    # a CONSISTENT candidate (near the track) is accepted.
+    seeker.detector = det
+    pose2 = seeker.detect_gate_lever(_frame(2, 0))
+    assert pose2 is not None and abs(pose2.range_m - 20.0) < 6.0
+
+
+def test_track_first_acquisition_prefers_centered_gate():
+    """On FIRST acquisition (no track) the seeker prefers the most CENTERED gate (the active line), not
+    merely the closest -- so it doesn't lock a near side-distractor."""
+    from racer.frames import R_world_from_body
+    # a CLOSE off-axis gate vs a slightly-farther CENTERED gate: prefer the centered one.
+    centered = _gate([18.0, 0.0, -2.5], normal=[1, 0, 0], gate_id=0)
+    close_side = _gate([12.0, 11.0, -2.5], normal=[1, 0, 0], gate_id=1)
+    det = _MultiProjDetector([centered, close_side], np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(track_prefer_centered=True), detector=det)
+    pose = seeker.detect_gate_lever(_frame(0, 0))
+    assert pose is not None
+    # the chosen gate must be the FARTHER, centered one (range ~18), NOT the closer side distractor
+    # (~12.5): centring beat proximity. (Its camera bearing magnitude is also the smaller of the two.)
+    assert pose.range_m > 16.0, "first acquisition should prefer the centered gate over the close side one"
+    # cross-check: the centered gate's bearing is smaller than the side gate's.
+    poses = seeker._valid_poses(_frame(1, 0))
+    bearings = sorted(float(np.linalg.norm(seeker._pose_bearing(p))) for p in poses)
+    assert float(np.linalg.norm(seeker._pose_bearing(pose))) == pytest.approx(bearings[0], abs=1e-9)
+
+
+def test_track_off_is_legacy_closest_each_frame():
+    """With use_gate_track=False the legacy behaviour returns: pick the CLOSEST gate each frame (no
+    continuity). Guards that the new path is opt-in and the old selection is preserved."""
+    from racer.frames import R_world_from_body
+    centered = _gate([18.0, 0.0, -2.5], normal=[1, 0, 0], gate_id=0)
+    close_side = _gate([12.0, 11.0, -2.5], normal=[1, 0, 0], gate_id=1)
+    det = _MultiProjDetector([centered, close_side], np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(use_gate_track=False), detector=det)
+    pose = seeker.detect_gate_lever(_frame(0, 0))
+    assert pose is not None
+    # legacy: the CLOSEST gate wins (the ~12.5 m side gate), not the centered ~18 m one.
+    assert pose.range_m < 17.0
+
+
+# ===========================================================================
+# LAYER 2b (2026-06-29 attempt-3): post-release slew-ramp + guidance rate limit
+# ===========================================================================
+def test_pursuit_heading_is_slew_rate_limited():
+    """LAYER 2b: the commanded pursuit HEADING is rate-limited -- a large bearing step cannot move the
+    yaw setpoint more than pursuit_yaw_slew_rps*dt in a tick, so the steering bearing stays smooth."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 8.0, -2.5], normal=[1, 0, 0])   # a big off-axis bearing
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    slew = 1.0
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
+                                                anchor_release_detections=1, pursuit_yaw_slew_rps=slew),
+                        detector=det)
+    # tick 0 anchors + seeds _last_yaw at 0; tick 1 (10 ms later) would jump the heading to the gate
+    # bearing (~0.6 rad) but the slew limits it to slew*dt = 0.01 rad.
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0, yaw=0.0), _frame(0, 0), 0)
+    y0 = float(seeker._last_yaw)
+    dt_ns = 10_000_000
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=dt_ns, yaw=0.0), _frame(1, dt_ns), 0)
+    y1 = float(seeker._last_yaw)
+    step = abs(float(np.arctan2(np.sin(y1 - y0), np.cos(y1 - y0))))
+    assert step <= slew * (dt_ns / 1e9) + 1e-9, "the pursuit heading must be slew-rate limited"
+
+
+def test_pursuit_ramp_eases_authority_after_release():
+    """LAYER 2b: the post-release pursuit ramp scales the lean authority up from a floor over
+    pursuit_ramp_s, so the FIRST pursuit tick after release cannot lean to full cruise authority."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 6.0, -2.5], normal=[1, 0, 0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0,
+                                                anchor_release_detections=1, pursuit_ramp_s=0.8,
+                                                pursuit_ramp_floor=0.15), detector=det)
+    # release at tick 0 -> _release_t_ns set; the ramp at t=0 is the floor (0.15), at t>=ramp_s it is 1.
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+    assert seeker._pursuit_ramp(0) == pytest.approx(0.15)
+    assert seeker._pursuit_ramp(int(0.4 * 1e9)) == pytest.approx(0.575, abs=0.05)   # mid-ramp
+    assert seeker._pursuit_ramp(int(1.0 * 1e9)) == pytest.approx(1.0)               # complete
+
+
+def test_pursuit_roll_rate_capped():
+    """LAYER 2b: the pursuit roll command is hard-capped below saturation (A3's crash axis)."""
+    import dataclasses
+    seeker = GateSeeker(config=GateSeekerConfig(pursuit_roll_rate_cap_rps=1.5))
+    cmd = ControlCommand(mode=ControlMode.BODY_RATE, body_rate=np.array([5.0, 0.2, 0.1]), thrust=0.3)
+    capped = seeker._cap_roll_rate(cmd, 1.5)
+    assert abs(float(capped.body_rate[0])) <= 1.5 + 1e-9
+    assert capped.body_rate[1] == 0.2 and capped.body_rate[2] == 0.1   # other axes untouched
+
+
+# ===========================================================================
+# LAYER 1 (2026-06-29 attempt-3): the FREEZE-ATTITUDE hold (don't re-level off the gate)
+# ===========================================================================
+def test_hold_freeze_attitude_zeroes_roll_pitch_keeps_gate_in_view():
+    """LAYER 1: with hold_freeze_attitude (default) the launch/settle hold ZEROES the roll/pitch rate
+    command -- it FREEZES the spawn attitude instead of re-levelling off the gate. From a tilted spawn
+    the OLD force-level hold commands a persistent pitch (drifting the camera off the gate, stalling
+    the release streak); the freeze holds the camera on the gate."""
+    cold = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, -2.5]), velocity_ned=np.zeros(3),
+                    roll=np.deg2rad(8.0), pitch=np.deg2rad(-10.0), yaw=0.0,
+                    time_since_vision_update_s=float("inf"))
+    # NEW (freeze): roll/pitch rate command is exactly zero -> the camera does not drift off the gate.
+    new = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, settle_s=0.75, hold_freeze_attitude=True),
+                     detector=None)
+    cmd_new = new.command_visual(cold, _frame(0, 0), 0)
+    assert float(cmd_new.body_rate[0]) == 0.0, "freeze must zero the roll-rate command (hold attitude)"
+    assert float(cmd_new.body_rate[1]) == 0.0, "freeze must zero the pitch-rate command (hold attitude)"
+    # OLD (force-level, freeze off): the level-hold commands a NON-zero pitch toward level off the tilt
+    # -> the persistent pitch that drifts the camera off the gate (clamped, but not zero).
+    old = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, settle_s=0.75, hold_freeze_attitude=False),
+                     detector=None)
+    cmd_old = old.command_visual(cold, _frame(0, 0), 0)
+    assert abs(float(cmd_old.body_rate[1])) > 0.05, "old force-level hold should command a re-levelling pitch"
+
+
+def test_hold_freeze_still_bounds_thrust_and_yaw():
+    """The freeze hold still clamps yaw + bounds the collective (BUG-B guards intact) -- it only frees
+    roll/pitch to HOLD attitude, not the safety bounds."""
+    cold = NavState(sim_time_ns=0, position_ned=np.array([0.0, 0.0, -2.5]), velocity_ned=np.zeros(3),
+                    roll=np.deg2rad(8.0), pitch=np.deg2rad(-10.0), yaw=0.3,
+                    time_since_vision_update_s=float("inf"))
+    seeker = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, settle_s=0.75,
+                                                hold_freeze_attitude=True, anchor_yaw_rate_rps=0.0),
+                        detector=None)
+    cmd = seeker.command_visual(cold, _frame(0, 0), 0)
+    assert abs(float(cmd.body_rate[2])) < 1e-6           # yaw still clamped (anchor cap 0)
+    hover = seeker.controller.hover_thrust
+    assert hover * 0.6 - 1e-6 <= cmd.thrust <= hover * 1.4 + 1e-6   # collective still bounded
+
+
 def test_vq2_case_c_profile_is_map_free_for_steering():
     """The case-C profile carries no given pose; the deploy seeker steers MAP-FREE via the detector —
     a guard against re-introducing an absolute-map steering dependency on the self-localizing path."""
