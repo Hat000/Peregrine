@@ -505,6 +505,9 @@ ESKF attitude source wired into the nav loop behind `NavigatorConfig.use_ahrs` (
 2. 🚩 **COMMAND→REALIZED RATE GAIN ≈ 2.5×.** The policy's commanded rate maps to ~2.5× the observed realized rate. Either calibrate a ~1/2.5 rate-scale factor, or let the closed-loop policy absorb it via training on the real plant. Do NOT assume 1:1 rate mapping.
 3. **Launch-transient:** drone spawns INSIDE the start gate; the Mission `launch_ramp` anticipates this hover transient — do NOT flag spawn-contact as a crash.
 
+### CONTROL UPLINK ALIGNED + CALIBRATED (73e9d9f)
+- `MavlinkClient.cmd_rate_scale` added (default 1.0 = byte-identical); ~0.4 (=1/2.5) compensates the 2.5× command→realized body-rate gain; applied ONLY to BODY_RATE body rates at the uplink boundary; closed-loop policy can absorb the gain via training instead. Deploy body-rate source = `gyro_body`. `tests/test_vq2_control_recipe.py`.
+
 ### OPS facts (prevent wasted ShadowPC runs)
 - **VQ1 vs VQ2 = the MENU EVENT, not the track name.** Both events are named "Now You See Me, Now You Don't". From the main menu: spam DOWN → clamp on R2-TRAINING = VQ2.
 - 🚩 **Visual confirmation: VQ1 = WIREFRAME render; VQ2 = LIT warehouse (glowing-red gates, dark background).** Always confirm the visual before starting a recon run.
@@ -558,6 +561,21 @@ Map-free yaw+z vision sources for the mag-free VQ2 estimator; PURE GEOMETRY, NOT
 - GATED BACKSTOP (ill-conditioned: +20° mount crams floor near horizon; core <2%, full path ~15–25%; recon fires 5/8, 1.1–3.6 m, None on nose-up/facing-away).
 
 Tests: `test_manhattan_cues.py` (32). **NEXT:** ESKF `update_yaw` scalar pseudo-measurement consuming `HeadingEstimate` (+ gate-bearing yaw + floor-height z) behind `use_vp_yaw`/`use_floor_height` flags.
+
+## MAGFREE VISION-YAW/Z WIRED (bf32788, 2026-06-29; all flags default OFF = byte-identical; all require `use_ahrs=True`)
+
+**ESKF.update_yaw:** scalar world-yaw pseudo-measurement (the missing yaw observer; accel update is rank-2 yaw-blind). Jacobian = EXACT atan2-yaw derivative `(R00*dR10−R10*dR00)/(R00²+R10²)`, NOT naive `R^T e_z` (FD-DISPROVED: leaks into roll/pitch at tilt). Angle-wrapped, gimbal-guarded; param `yaw_uncertainty_rad`.
+
+**Navigator flags wired:**
+- `use_vp_yaw`: per-frame VP heading → `update_yaw`; branch-disambiguated to NEAREST gyro-propagated yaw (no silent 90° flip); refreshes AHRS cache so fix hits the same tick's obs.
+- `use_gate_bearing_yaw` (**PRIMARY lock**): world yaw = known-gate world bearing − OBSERVED cam azimuth (`pose.t_cam_gate`, +L lever, NOT PnP rotation); flip-safe + NON-CIRCULAR (fixed a circularity no-op bug); off-boresight gated (skips head-on where yaw leverage vanishes); sigma ~1/|sin(az)|.
+- `use_floor_height`: per-frame floor-grid camera height → anisotropic z fix via `_apply_pos_fix` (tight-z/huge-in-plane); composes with RewindKF (fixed missing `update_position_z`); layered on existing gate-relative vertical fix; gated on quality+std_m.
+
+`RACE_STATUS.active_gate_index` threaded onto `DroneState` (`contracts.py`, additive, default None) to pick the active gate.
+
+🚩 **OFF==byte-identical** (KF x/P + AHRS quat; `test_use_ahrs_wiring` + `test_obs_sign_faithfulness` +L GREEN). ON synthetic: VP-yaw bounds drift <5° (vs >15° open-loop divergence under gyro-z bias); gate-bearing converges off-axis + skips head-on; floor-height reduces z err. `tests/test_vision_yaw_wiring.py` 16/16.
+
+**NEXT:** assemble case-C DEPLOY PROFILE (flip `use_ahrs`+`use_vp_yaw`+`use_gate_bearing_yaw`+`use_floor_height`+`use_gate_relative` ON together) → slow closed-loop lap on live VQ2.
 
 ## BLENDER PIPELINE FOUNDATION BUILT (07b25dd, 2026-06-29; `tools/blender_pipeline/`; Blender-FREE parts)
 → [[project_blender_vq2_data_pipeline]] for full detail.
