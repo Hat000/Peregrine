@@ -157,7 +157,7 @@ EVERY {σ_v × accel-bias} cell in the grid is `p90_clear=false` (v3b re-run). R
 
 ## Advisor-triage open queue
 - 🚩 **ESTIMATOR = CRITICAL PATH** (RewindKF + gate-relative rebuild, gated on estimator report).
-- ① Photoreal detector (Blender/Cycles next).
+- ① ~~Photoreal detector (Blender/Cycles next)~~ — **RETRACTED 2026-06-29**: VQ2 live appearance = glowing-red/low-light, NOT photoreal → the GS/NeRF/Blender-Cycles photoreal-hardening direction is DEPRIORITIZED; re-scope to low-light/red-glow data after recon (see §VQ2 APPEARANCE below).
 - ② ONNX/TRT latency.
 - ⑤⑥ Post-merge: at-speed gate-4 recording + 2-corner PnP + Bayesian-IoU extrinsic + per-gate last-fix distance + sigma_theta refit + yaw-active debug_obs capture.
 - K+L+N PLANNED. REJECTED: HSV pre-filter.
@@ -431,3 +431,23 @@ ESKF attitude source wired into the nav loop behind `NavigatorConfig.use_ahrs` (
 - **Verified:** 77 targeted tests (use_ahrs OFF-byte-id + ON-smoke, +L green, firstcontact/vq2_loadday/mavlink green).
 - 🚩 **GOTCHA CAUGHT:** wiring agent's first cut parsed gyro UNCONDITIONALLY (`msg.xgyro` direct) → crashed 8 tests whose HIGHRES_IMU fakes omit gyro (AttributeError); fixed with the `hasattr` guard.
 - **REMAINING case-C steps:** 5 (case-C deploy profile turning the `use_*` flags ON together) + 6 (dual-Navigator fidelity harness = the actual #37 answer: ESKF case-C obs vs truth-attitude oracle obs).
+
+## VQ2 APPEARANCE (live 2026-06-29) — glowing-red/low-light, NOT photoreal
+
+**CONFIRMED by Fengyou on VQ2 load 2026-06-29.** VQ2 actual visual environment = LOW-LIGHT, HIGH-CONTRAST scene with GLOWING RED (emissive) gates. "Photorealistic" was an overstatement; the BINDING visual reality is dark background + glowing/emissive red gate borders.
+
+**OVERTURNS:** the standing assumption that VQ2 visuals = photorealistic renders (which had justified P5 photoreal detector + GS/NeRF hardening direction). P5 as originally scoped (Blender Cycles photoreal-match, GS/NeRF domain randomization toward daylight renders) is WRONG for this appearance and DEPRIORITIZED until recon confirms otherwise.
+
+**IMPLICATIONS (commander analysis; mark as hypotheses-to-verify-in-recon):**
+- **Detection likely EASIER, not harder:** glowing red on dark background = HIGH-SNR, color-segmentable target. A red-glow segmentation + corner extractor is a strong simple baseline; heavy photoreal modeling may be unnecessary. VERIFY in recon.
+- **GS/NeRF / photoreal-hardening WRONG direction:** do NOT pursue Blender-Cycles/GS/NeRF photoreal rendering until recon confirms it is relevant to this appearance domain.
+- 🚩 **REAL CAVEAT = GLOW BLOOM (geometry-relevant):** emissive gate blooms/saturates → can SMEAR the exact corner pixels. PnP + the bearing-range channel key off the corner SPAN; bloom that inflates the apparent square biases range and pose. **MUST measure bloom extent in recon and re-validate gate-corner→localization→bearing-range chain against it.** This is the primary appearance-specific risk for the estimator.
+- **DETERMINISM helps:** sim is deterministic → this appearance is FIXED and repeatable. Characterize glow/contrast/bloom/motion-blur ONCE and bake it; NO appearance domain randomization needed for VQ2.
+- **Training imagery is OFF-DISTRIBUTION:** current training images rendered as photoreal daylight are wrong-domain for the detector. Re-capture/re-render in the true low-light/glowing-red appearance before any VQ2 detector fine-tune.
+- **What is UNAFFECTED (appearance-agnostic):** plant/distillation, estimator math (EqVIO, bearing-range channel, AHRS), case-C self-localization wiring (`use_ahrs`), RL substrate, obs contract (+L), gate geometry (1.5 m inner square = unchanged).
+
+**OPEN RECON ACTIONS (must verify on VQ2 before acting):**
+1. Measure bloom extent — pixel spread beyond the true gate edge at the emissive intensity.
+2. Test whether a simple HSV/red-channel threshold corners better than YOLO in this appearance (was previously REJECTED for VQ1 appearance — needs fresh eval for VQ2).
+3. Check whether the existing YOLO detector (trained on photoreal) at all detects in the low-light/red-glow scene, or requires full retraining.
+4. Confirm bloom does NOT systematically bias the apparent gate span used by `apparent_range_from_gate_span` (bearing-range channel B1).
