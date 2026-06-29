@@ -625,12 +625,24 @@ Branch `origin/vq2-slowlap-2026-06-29`, FLIGHT.md. Scoreboard: armed YES, 0/6 ga
 
 **Live-reconfirmed VQ2 wire:** `position_ned=None`, `attitude_wxyz=None`, IMU ~95-119 Hz, RACE_STATUS @4 Hz, RTF ~1.0.
 
-**FIX IN PROGRESS (Attempt 2 targets):**
-1. Map-free gate-RELATIVE visual-servo guidance: chase the gate the camera SEES, not an absolute map position.
-2. Launch-anchor: hold/clamp yaw until first vision fix anchors on the visible start gate.
-3. `wait_fresh_go` re-based on RACE_STATUS/IMU liveness (not `position_ned`).
-4. Drop the stale-VQ1-map fallback entirely.
-5. Dry-run updated to model no-map/origin-seed/gate-visible (hostile deployment conditions).
+**FIXED (committed 5c62524):** map-free visual-servo gate-seeker (`command_visual`/`detect_gate_lever` steers off the DETECTED gate's relative lever, no absolute map) + launch-anchor + `wait_fresh_go` re-based + stale-map-fallback guarded; dry-run regression pins old-map slew 3.77 vs new 0.00.
 
 → [[feedback_offline_harness_realism]] for the craft lesson on why the dry-run passed but live failed.
 🚩 **FLY CMD (ShadowPC, live VQ2):** `.venv\Scripts\python.exe rl\fly_rl.py --gate-seeker --label vq2_slow_seeker`
+
+## VQ2 SLOW-LAP ATTEMPT 2 (2026-06-29) — PROGRESS, not flying yet
+Branch `origin/vq2-slowlap-a2-2026-06-29`, FLIGHT.md. Scoreboard: 0/6 gates, ZERO vision fixes accepted, tumbled into start gate ~1.5s post-launch (env collision id 1002).
+
+**Good news:** blind U-turn GONE. Launch-hold worked — drone held level+still ~0.75s; detector saw the gate 18/27 & 14/25 frames → perception/steering inputs FINE. Speed irrelevant (2.0 == 3.0; never left hold).
+
+**TWO new structural bugs:**
+
+**(A) ANCHOR-RELEASE UNREACHABLE ON VQ2:** seeker leaves launch-hold only when `nav.time_since_vision_update_s` goes finite, but that timestamp (`Navigator._last_vision_sim_time_ns`) is stamped ONLY in the gate-MAP-associated fix path (`navigator.py:861`); the map-free VQ2 path (`gates=[]`) never stamps it → `tsv` always `inf` → `_anchored` never flips → pinned in hold forever even with the gate centered. The map-free vision-yaw/floor-height anchors don't stamp it.
+
+**(B) LAUNCH-HOLD NOT ATTITUDE-SAFE:** `_hold_command` (`gate_seeker.py:351`) clamps ONLY yaw; roll/pitch ride a cold AHRS (~18 deg in-gate spawn tilt, no mag, gyro bias unestimated) that diverges ~0.75s → saturated pitch tumble (sustained −3.4 rad/s, peak 4.5–9.7 rps, 33–368 m/s² impacts).
+
+**FIX IN PROGRESS:**
+- (A) Release on the seeker's OWN map-free detection (N consecutive quality `detect_gate_lever` poses), not the nav map-fix timestamp.
+- (B) Gravity-align AHRS at arm (`ahrs_adapter.level_seed_from_accel` on first ingest → start ~0 deg not 18 deg) + post-arm settle + roll/pitch clamp + thrust bound.
+
+🚩 **LESSON reinforced ([[feedback_offline_harness_realism.md]]):** map-free release path was untested — dry-run used a map, so unreachable-release bug shipped.
