@@ -1,0 +1,53 @@
+{
+  "window_s": 8.0,
+  "streamed": false,
+  "real_time_factor": 1.0,
+  "sim_clock_span_s": 7.985,
+  "rate_health": {
+    "HIGHRES_IMU": {
+      "got_hz": 115.0,
+      "baseline_hz": 117.0,
+      "pct_of_baseline": 98.3
+    },
+    "ACTUATOR_OUTPUT_STATUS": {
+      "got_hz": 93.0,
+      "baseline_hz": 95.0,
+      "pct_of_baseline": 97.9
+    },
+    "RACE_STATUS": {
+      "got_hz": 0.0,
+      "baseline_hz": 4.0,
+      "pct_of_baseline": 0.0
+    },
+    "HEARTBEAT": {
+      "got_hz": 9.9,
+      "baseline_hz": 1.0,
+      "pct_of_baseline": 990.0
+    }
+  },
+  "imu_gap_ms": {
+    "n": 919,
+    "mean_ms": 8.69,
+    "p50_ms": 8.78,
+    "p99_ms": 10.15,
+    "max_ms": 34.44
+  },
+  "actuator_gap_ms": {
+    "n": 743,
+    "mean_ms": 10.74,
+    "p50_ms": 10.86,
+    "p99_ms": 12.25,
+    "max_ms": 30.87
+  },
+  "all_rates_hz": {
+    "ACTUATOR_OUTPUT_STATUS": 93.0,
+    "COLLISION": 287.7,
+    "ENCAPSULATED_DATA": 4.0,
+    "HEARTBEAT": 9.9,
+    "HIGHRES_IMU": 115.0
+  },
+  "bad_data": 0,
+  "send_requested_hz": null,
+  "send_achieved_hz": null,
+  "pump_loop_hz": 904.2
+}
