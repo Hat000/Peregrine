@@ -1,0 +1,8678 @@
+{
+  "detector": [
+    {
+      "i": 0,
+      "frame_id": 871,
+      "n_detections": 1
+    },
+    {
+      "i": 1,
+      "frame_id": 872,
+      "n_detections": 1
+    },
+    {
+      "i": 2,
+      "frame_id": 873,
+      "n_detections": 1
+    },
+    {
+      "i": 3,
+      "frame_id": 874,
+      "n_detections": 1
+    },
+    {
+      "i": 4,
+      "frame_id": 875,
+      "n_detections": 1
+    },
+    {
+      "i": 5,
+      "frame_id": 876,
+      "n_detections": 1
+    },
+    {
+      "i": 6,
+      "frame_id": 877,
+      "n_detections": 1
+    },
+    {
+      "i": 7,
+      "frame_id": 878,
+      "n_detections": 0
+    },
+    {
+      "i": 8,
+      "frame_id": 879,
+      "n_detections": 1
+    },
+    {
+      "i": 9,
+      "frame_id": 880,
+      "n_detections": 1
+    },
+    {
+      "i": 10,
+      "frame_id": 881,
+      "n_detections": 1
+    },
+    {
+      "i": 11,
+      "frame_id": 882,
+      "n_detections": 2
+    },
+    {
+      "i": 12,
+      "frame_id": 883,
+      "n_detections": 2
+    },
+    {
+      "i": 13,
+      "frame_id": 884,
+      "n_detections": 1
+    },
+    {
+      "i": 14,
+      "frame_id": 890,
+      "n_detections": 1
+    },
+    {
+      "i": 15,
+      "frame_id": 891,
+      "n_detections": 1
+    },
+    {
+      "i": 16,
+      "frame_id": 892,
+      "n_detections": 2
+    },
+    {
+      "i": 17,
+      "frame_id": 893,
+      "n_detections": 1
+    },
+    {
+      "i": 18,
+      "frame_id": 894,
+      "n_detections": 2
+    },
+    {
+      "i": 19,
+      "frame_id": 895,
+      "n_detections": 2
+    },
+    {
+      "i": 20,
+      "frame_id": 896,
+      "n_detections": 2
+    },
+    {
+      "i": 21,
+      "frame_id": 897,
+      "n_detections": 2
+    },
+    {
+      "i": 22,
+      "frame_id": 908,
+      "n_detections": 2
+    },
+    {
+      "i": 23,
+      "frame_id": 909,
+      "n_detections": 2
+    },
+    {
+      "i": 24,
+      "frame_id": 910,
+      "n_detections": 2
+    },
+    {
+      "i": 25,
+      "frame_id": 911,
+      "n_detections": 2
+    },
+    {
+      "i": 26,
+      "frame_id": 912,
+      "n_detections": 2
+    },
+    {
+      "i": 27,
+      "frame_id": 922,
+      "n_detections": 3
+    },
+    {
+      "i": 28,
+      "frame_id": 923,
+      "n_detections": 2
+    },
+    {
+      "i": 29,
+      "frame_id": 924,
+      "n_detections": 3
+    },
+    {
+      "i": 30,
+      "frame_id": 925,
+      "n_detections": 3
+    },
+    {
+      "i": 31,
+      "frame_id": 926,
+      "n_detections": 2
+    },
+    {
+      "i": 32,
+      "frame_id": 936,
+      "n_detections": 2
+    },
+    {
+      "i": 33,
+      "frame_id": 937,
+      "n_detections": 2
+    },
+    {
+      "i": 34,
+      "frame_id": 938,
+      "n_detections": 2
+    },
+    {
+      "i": 35,
+      "frame_id": 939,
+      "n_detections": 2
+    },
+    {
+      "i": 36,
+      "frame_id": 940,
+      "n_detections": 2
+    },
+    {
+      "i": 37,
+      "frame_id": 951,
+      "n_detections": 1
+    },
+    {
+      "i": 38,
+      "frame_id": 952,
+      "n_detections": 1
+    },
+    {
+      "i": 39,
+      "frame_id": 953,
+      "n_detections": 1
+    },
+    {
+      "i": 40,
+      "frame_id": 954,
+      "n_detections": 1
+    },
+    {
+      "i": 41,
+      "frame_id": 955,
+      "n_detections": 1
+    },
+    {
+      "i": 42,
+      "frame_id": 956,
+      "n_detections": 1
+    },
+    {
+      "i": 43,
+      "frame_id": 966,
+      "n_detections": 1
+    },
+    {
+      "i": 44,
+      "frame_id": 967,
+      "n_detections": 0
+    },
+    {
+      "i": 45,
+      "frame_id": 968,
+      "n_detections": 1
+    },
+    {
+      "i": 46,
+      "frame_id": 969,
+      "n_detections": 0
+    },
+    {
+      "i": 47,
+      "frame_id": 970,
+      "n_detections": 0
+    },
+    {
+      "i": 48,
+      "frame_id": 981,
+      "n_detections": 2
+    },
+    {
+      "i": 49,
+      "frame_id": 982,
+      "n_detections": 2
+    },
+    {
+      "i": 50,
+      "frame_id": 983,
+      "n_detections": 1
+    },
+    {
+      "i": 51,
+      "frame_id": 984,
+      "n_detections": 2
+    },
+    {
+      "i": 52,
+      "frame_id": 985,
+      "n_detections": 2
+    },
+    {
+      "i": 53,
+      "frame_id": 995,
+      "n_detections": 1
+    },
+    {
+      "i": 54,
+      "frame_id": 996,
+      "n_detections": 0
+    },
+    {
+      "i": 55,
+      "frame_id": 997,
+      "n_detections": 0
+    },
+    {
+      "i": 56,
+      "frame_id": 998,
+      "n_detections": 1
+    },
+    {
+      "i": 57,
+      "frame_id": 999,
+      "n_detections": 1
+    },
+    {
+      "i": 58,
+      "frame_id": 1000,
+      "n_detections": 1
+    },
+    {
+      "i": 59,
+      "frame_id": 1010,
+      "n_detections": 1
+    },
+    {
+      "i": 60,
+      "frame_id": 1011,
+      "n_detections": 0
+    },
+    {
+      "i": 61,
+      "frame_id": 1012,
+      "n_detections": 1
+    },
+    {
+      "i": 62,
+      "frame_id": 1013,
+      "n_detections": 1
+    },
+    {
+      "i": 63,
+      "frame_id": 1014,
+      "n_detections": 1
+    },
+    {
+      "i": 64,
+      "frame_id": 1015,
+      "n_detections": 0
+    },
+    {
+      "i": 65,
+      "frame_id": 1025,
+      "n_detections": 1
+    },
+    {
+      "i": 66,
+      "frame_id": 1026,
+      "n_detections": 1
+    },
+    {
+      "i": 67,
+      "frame_id": 1027,
+      "n_detections": 1
+    },
+    {
+      "i": 68,
+      "frame_id": 1028,
+      "n_detections": 1
+    },
+    {
+      "i": 69,
+      "frame_id": 1029,
+      "n_detections": 0
+    },
+    {
+      "i": 70,
+      "frame_id": 1039,
+      "n_detections": 0
+    },
+    {
+      "i": 71,
+      "frame_id": 1040,
+      "n_detections": 0
+    },
+    {
+      "i": 72,
+      "frame_id": 1041,
+      "n_detections": 1
+    },
+    {
+      "i": 73,
+      "frame_id": 1042,
+      "n_detections": 1
+    },
+    {
+      "i": 74,
+      "frame_id": 1043,
+      "n_detections": 1
+    },
+    {
+      "i": 75,
+      "frame_id": 1044,
+      "n_detections": 1
+    },
+    {
+      "i": 76,
+      "frame_id": 1055,
+      "n_detections": 0
+    },
+    {
+      "i": 77,
+      "frame_id": 1056,
+      "n_detections": 1
+    },
+    {
+      "i": 78,
+      "frame_id": 1057,
+      "n_detections": 0
+    },
+    {
+      "i": 79,
+      "frame_id": 1058,
+      "n_detections": 1
+    },
+    {
+      "i": 80,
+      "frame_id": 1059,
+      "n_detections": 1
+    },
+    {
+      "i": 81,
+      "frame_id": 1060,
+      "n_detections": 1
+    },
+    {
+      "i": 82,
+      "frame_id": 1070,
+      "n_detections": 1
+    },
+    {
+      "i": 83,
+      "frame_id": 1071,
+      "n_detections": 1
+    },
+    {
+      "i": 84,
+      "frame_id": 1072,
+      "n_detections": 1
+    },
+    {
+      "i": 85,
+      "frame_id": 1073,
+      "n_detections": 1
+    },
+    {
+      "i": 86,
+      "frame_id": 1074,
+      "n_detections": 2
+    },
+    {
+      "i": 87,
+      "frame_id": 1085,
+      "n_detections": 1
+    },
+    {
+      "i": 88,
+      "frame_id": 1086,
+      "n_detections": 1
+    },
+    {
+      "i": 89,
+      "frame_id": 1087,
+      "n_detections": 1
+    },
+    {
+      "i": 90,
+      "frame_id": 1088,
+      "n_detections": 1
+    },
+    {
+      "i": 91,
+      "frame_id": 1089,
+      "n_detections": 1
+    },
+    {
+      "i": 92,
+      "frame_id": 1099,
+      "n_detections": 1
+    },
+    {
+      "i": 93,
+      "frame_id": 1100,
+      "n_detections": 1
+    },
+    {
+      "i": 94,
+      "frame_id": 1101,
+      "n_detections": 1
+    },
+    {
+      "i": 95,
+      "frame_id": 1102,
+      "n_detections": 1
+    },
+    {
+      "i": 96,
+      "frame_id": 1103,
+      "n_detections": 1
+    },
+    {
+      "i": 97,
+      "frame_id": 1104,
+      "n_detections": 1
+    },
+    {
+      "i": 98,
+      "frame_id": 1114,
+      "n_detections": 1
+    },
+    {
+      "i": 99,
+      "frame_id": 1115,
+      "n_detections": 1
+    },
+    {
+      "i": 100,
+      "frame_id": 1116,
+      "n_detections": 1
+    },
+    {
+      "i": 101,
+      "frame_id": 1117,
+      "n_detections": 1
+    },
+    {
+      "i": 102,
+      "frame_id": 1118,
+      "n_detections": 1
+    },
+    {
+      "i": 103,
+      "frame_id": 1128,
+      "n_detections": 2
+    },
+    {
+      "i": 104,
+      "frame_id": 1129,
+      "n_detections": 2
+    },
+    {
+      "i": 105,
+      "frame_id": 1130,
+      "n_detections": 2
+    },
+    {
+      "i": 106,
+      "frame_id": 1131,
+      "n_detections": 2
+    },
+    {
+      "i": 107,
+      "frame_id": 1132,
+      "n_detections": 2
+    },
+    {
+      "i": 108,
+      "frame_id": 1133,
+      "n_detections": 2
+    },
+    {
+      "i": 109,
+      "frame_id": 1143,
+      "n_detections": 1
+    },
+    {
+      "i": 110,
+      "frame_id": 1144,
+      "n_detections": 1
+    },
+    {
+      "i": 111,
+      "frame_id": 1145,
+      "n_detections": 1
+    },
+    {
+      "i": 112,
+      "frame_id": 1146,
+      "n_detections": 1
+    },
+    {
+      "i": 113,
+      "frame_id": 1147,
+      "n_detections": 1
+    },
+    {
+      "i": 114,
+      "frame_id": 1148,
+      "n_detections": 1
+    },
+    {
+      "i": 115,
+      "frame_id": 1157,
+      "n_detections": 1
+    },
+    {
+      "i": 116,
+      "frame_id": 1158,
+      "n_detections": 1
+    },
+    {
+      "i": 117,
+      "frame_id": 1159,
+      "n_detections": 1
+    },
+    {
+      "i": 118,
+      "frame_id": 1160,
+      "n_detections": 1
+    },
+    {
+      "i": 119,
+      "frame_id": 1161,
+      "n_detections": 1
+    },
+    {
+      "i": 120,
+      "frame_id": 1162,
+      "n_detections": 1
+    },
+    {
+      "i": 121,
+      "frame_id": 1172,
+      "n_detections": 1
+    },
+    {
+      "i": 122,
+      "frame_id": 1173,
+      "n_detections": 1
+    },
+    {
+      "i": 123,
+      "frame_id": 1174,
+      "n_detections": 1
+    },
+    {
+      "i": 124,
+      "frame_id": 1175,
+      "n_detections": 1
+    },
+    {
+      "i": 125,
+      "frame_id": 1176,
+      "n_detections": 1
+    },
+    {
+      "i": 126,
+      "frame_id": 1186,
+      "n_detections": 1
+    },
+    {
+      "i": 127,
+      "frame_id": 1187,
+      "n_detections": 1
+    },
+    {
+      "i": 128,
+      "frame_id": 1188,
+      "n_detections": 1
+    },
+    {
+      "i": 129,
+      "frame_id": 1189,
+      "n_detections": 1
+    },
+    {
+      "i": 130,
+      "frame_id": 1190,
+      "n_detections": 1
+    },
+    {
+      "i": 131,
+      "frame_id": 1191,
+      "n_detections": 1
+    },
+    {
+      "i": 132,
+      "frame_id": 1201,
+      "n_detections": 1
+    },
+    {
+      "i": 133,
+      "frame_id": 1202,
+      "n_detections": 1
+    },
+    {
+      "i": 134,
+      "frame_id": 1203,
+      "n_detections": 1
+    },
+    {
+      "i": 135,
+      "frame_id": 1204,
+      "n_detections": 1
+    },
+    {
+      "i": 136,
+      "frame_id": 1205,
+      "n_detections": 1
+    },
+    {
+      "i": 137,
+      "frame_id": 1215,
+      "n_detections": 2
+    },
+    {
+      "i": 138,
+      "frame_id": 1216,
+      "n_detections": 2
+    },
+    {
+      "i": 139,
+      "frame_id": 1217,
+      "n_detections": 2
+    },
+    {
+      "i": 140,
+      "frame_id": 1218,
+      "n_detections": 2
+    },
+    {
+      "i": 141,
+      "frame_id": 1219,
+      "n_detections": 2
+    },
+    {
+      "i": 142,
+      "frame_id": 1220,
+      "n_detections": 2
+    },
+    {
+      "i": 143,
+      "frame_id": 1229,
+      "n_detections": 2
+    },
+    {
+      "i": 144,
+      "frame_id": 1230,
+      "n_detections": 2
+    },
+    {
+      "i": 145,
+      "frame_id": 1231,
+      "n_detections": 2
+    },
+    {
+      "i": 146,
+      "frame_id": 1232,
+      "n_detections": 2
+    },
+    {
+      "i": 147,
+      "frame_id": 1233,
+      "n_detections": 2
+    },
+    {
+      "i": 148,
+      "frame_id": 1234,
+      "n_detections": 2
+    },
+    {
+      "i": 149,
+      "frame_id": 1243,
+      "n_detections": 3
+    },
+    {
+      "i": 150,
+      "frame_id": 1244,
+      "n_detections": 2
+    },
+    {
+      "i": 151,
+      "frame_id": 1245,
+      "n_detections": 2
+    },
+    {
+      "i": 152,
+      "frame_id": 1246,
+      "n_detections": 3
+    },
+    {
+      "i": 153,
+      "frame_id": 1247,
+      "n_detections": 3
+    },
+    {
+      "i": 154,
+      "frame_id": 1248,
+      "n_detections": 3
+    },
+    {
+      "i": 155,
+      "frame_id": 1257,
+      "n_detections": 0
+    },
+    {
+      "i": 156,
+      "frame_id": 1258,
+      "n_detections": 0
+    },
+    {
+      "i": 157,
+      "frame_id": 1259,
+      "n_detections": 0
+    },
+    {
+      "i": 158,
+      "frame_id": 1260,
+      "n_detections": 0
+    },
+    {
+      "i": 159,
+      "frame_id": 1261,
+      "n_detections": 0
+    },
+    {
+      "i": 160,
+      "frame_id": 1262,
+      "n_detections": 0
+    },
+    {
+      "i": 161,
+      "frame_id": 1271,
+      "n_detections": 0
+    },
+    {
+      "i": 162,
+      "frame_id": 1272,
+      "n_detections": 0
+    },
+    {
+      "i": 163,
+      "frame_id": 1273,
+      "n_detections": 0
+    },
+    {
+      "i": 164,
+      "frame_id": 1274,
+      "n_detections": 0
+    },
+    {
+      "i": 165,
+      "frame_id": 1275,
+      "n_detections": 0
+    },
+    {
+      "i": 166,
+      "frame_id": 1276,
+      "n_detections": 0
+    },
+    {
+      "i": 167,
+      "frame_id": 1285,
+      "n_detections": 0
+    },
+    {
+      "i": 168,
+      "frame_id": 1286,
+      "n_detections": 0
+    },
+    {
+      "i": 169,
+      "frame_id": 1287,
+      "n_detections": 0
+    },
+    {
+      "i": 170,
+      "frame_id": 1288,
+      "n_detections": 0
+    },
+    {
+      "i": 171,
+      "frame_id": 1289,
+      "n_detections": 0
+    },
+    {
+      "i": 172,
+      "frame_id": 1298,
+      "n_detections": 0
+    },
+    {
+      "i": 173,
+      "frame_id": 1299,
+      "n_detections": 0
+    },
+    {
+      "i": 174,
+      "frame_id": 1300,
+      "n_detections": 0
+    },
+    {
+      "i": 175,
+      "frame_id": 1301,
+      "n_detections": 0
+    },
+    {
+      "i": 176,
+      "frame_id": 1302,
+      "n_detections": 0
+    },
+    {
+      "i": 177,
+      "frame_id": 1312,
+      "n_detections": 0
+    },
+    {
+      "i": 178,
+      "frame_id": 1313,
+      "n_detections": 0
+    },
+    {
+      "i": 179,
+      "frame_id": 1314,
+      "n_detections": 0
+    },
+    {
+      "i": 180,
+      "frame_id": 1315,
+      "n_detections": 0
+    },
+    {
+      "i": 181,
+      "frame_id": 1316,
+      "n_detections": 0
+    },
+    {
+      "i": 182,
+      "frame_id": 1319,
+      "n_detections": 0
+    },
+    {
+      "i": 183,
+      "frame_id": 1320,
+      "n_detections": 0
+    },
+    {
+      "i": 184,
+      "frame_id": 1323,
+      "n_detections": 0
+    },
+    {
+      "i": 185,
+      "frame_id": 1326,
+      "n_detections": 0
+    },
+    {
+      "i": 186,
+      "frame_id": 1327,
+      "n_detections": 0
+    },
+    {
+      "i": 187,
+      "frame_id": 1328,
+      "n_detections": 0
+    },
+    {
+      "i": 188,
+      "frame_id": 1329,
+      "n_detections": 0
+    },
+    {
+      "i": 189,
+      "frame_id": 1330,
+      "n_detections": 0
+    }
+  ],
+  "imu_first_6s": [
+    {
+      "t_s": 0.0,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.007,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.021,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.028,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.035,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.042,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.049,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.062,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.069,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.076,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.083,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.09,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.104,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.111,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.118,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.125,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.139,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.146,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.153,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.16,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.167,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.18,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.187,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.194,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.201,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.215,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.222,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.229,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.236,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.243,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.257,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.264,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.271,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.278,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.292,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.299,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.305,
+      "acc_pitch_deg": 17.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.313,
+      "acc_pitch_deg": 20.0,
+      "acc_roll_deg": 0.4,
+      "gyro_rps": [
+        -0.009,
+        -0.011,
+        -0.0
+      ],
+      "amag": 8.9
+    },
+    {
+      "t_s": 0.319,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": -0.3,
+      "gyro_rps": [
+        -0.001,
+        -0.011,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.333,
+      "acc_pitch_deg": 17.0,
+      "acc_roll_deg": 0.2,
+      "gyro_rps": [
+        0.0,
+        -0.004,
+        -0.005
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.34,
+      "acc_pitch_deg": 14.8,
+      "acc_roll_deg": -0.1,
+      "gyro_rps": [
+        -0.002,
+        -0.006,
+        -0.002
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 0.347,
+      "acc_pitch_deg": 12.5,
+      "acc_roll_deg": -0.3,
+      "gyro_rps": [
+        0.004,
+        -0.001,
+        0.0
+      ],
+      "amag": 9.6
+    },
+    {
+      "t_s": 0.354,
+      "acc_pitch_deg": 10.1,
+      "acc_roll_deg": 0.1,
+      "gyro_rps": [
+        -0.002,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.5
+    },
+    {
+      "t_s": 0.368,
+      "acc_pitch_deg": 6.8,
+      "acc_roll_deg": 0.1,
+      "gyro_rps": [
+        -0.001,
+        -0.001,
+        -0.0
+      ],
+      "amag": 9.4
+    },
+    {
+      "t_s": 0.375,
+      "acc_pitch_deg": 5.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        -0.001,
+        -0.0
+      ],
+      "amag": 9.4
+    },
+    {
+      "t_s": 0.382,
+      "acc_pitch_deg": 4.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.001,
+        -0.0,
+        0.0
+      ],
+      "amag": 9.4
+    },
+    {
+      "t_s": 0.389,
+      "acc_pitch_deg": 2.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.4
+    },
+    {
+      "t_s": 0.403,
+      "acc_pitch_deg": 1.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        -0.001,
+        -0.0
+      ],
+      "amag": 9.3
+    },
+    {
+      "t_s": 0.41,
+      "acc_pitch_deg": 0.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        -0.001,
+        0.0
+      ],
+      "amag": 9.3
+    },
+    {
+      "t_s": 0.417,
+      "acc_pitch_deg": 0.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 9.3
+    },
+    {
+      "t_s": 0.423,
+      "acc_pitch_deg": -0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.001,
+        0.003,
+        0.0
+      ],
+      "amag": 9.4
+    },
+    {
+      "t_s": 0.43,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.001,
+        0.005,
+        0.0
+      ],
+      "amag": 9.5
+    },
+    {
+      "t_s": 0.444,
+      "acc_pitch_deg": -0.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.001,
+        0.005,
+        0.0
+      ],
+      "amag": 9.6
+    },
+    {
+      "t_s": 0.451,
+      "acc_pitch_deg": 0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.001,
+        0.004,
+        0.0
+      ],
+      "amag": 9.6
+    },
+    {
+      "t_s": 0.458,
+      "acc_pitch_deg": 0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.001,
+        0.003,
+        0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 0.465,
+      "acc_pitch_deg": 0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.002,
+        0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 0.479,
+      "acc_pitch_deg": 0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.486,
+      "acc_pitch_deg": -0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.493,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.5,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.514,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.521,
+      "acc_pitch_deg": -0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.528,
+      "acc_pitch_deg": 0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.535,
+      "acc_pitch_deg": 0.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.549,
+      "acc_pitch_deg": 0.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.556,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.563,
+      "acc_pitch_deg": 0.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.569,
+      "acc_pitch_deg": -0.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.576,
+      "acc_pitch_deg": 0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.59,
+      "acc_pitch_deg": -0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.597,
+      "acc_pitch_deg": 0.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.604,
+      "acc_pitch_deg": -0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.611,
+      "acc_pitch_deg": -0.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.625,
+      "acc_pitch_deg": 0.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.632,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.639,
+      "acc_pitch_deg": 0.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.646,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.66,
+      "acc_pitch_deg": -8.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 0.667,
+      "acc_pitch_deg": 1.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.674,
+      "acc_pitch_deg": -0.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.681,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.681,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.681,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.681,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.681,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.681,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.001,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.733,
+      "acc_pitch_deg": -78.4,
+      "acc_roll_deg": 0.2,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 419.1
+    },
+    {
+      "t_s": 0.733,
+      "acc_pitch_deg": -78.4,
+      "acc_roll_deg": 0.2,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 419.1
+    },
+    {
+      "t_s": 0.733,
+      "acc_pitch_deg": -78.4,
+      "acc_roll_deg": 0.2,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 419.1
+    },
+    {
+      "t_s": 0.733,
+      "acc_pitch_deg": -78.4,
+      "acc_roll_deg": 0.2,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 419.1
+    },
+    {
+      "t_s": 0.768,
+      "acc_pitch_deg": -77.0,
+      "acc_roll_deg": 0.2,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 208.5
+    },
+    {
+      "t_s": 0.775,
+      "acc_pitch_deg": -1.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.782,
+      "acc_pitch_deg": 1.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 0.796,
+      "acc_pitch_deg": 0.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.803,
+      "acc_pitch_deg": 0.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 0.81,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 0.817,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 0.83,
+      "acc_pitch_deg": 0.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 0.837,
+      "acc_pitch_deg": 0.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 0.844,
+      "acc_pitch_deg": 0.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.4
+    },
+    {
+      "t_s": 0.851,
+      "acc_pitch_deg": 0.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.4
+    },
+    {
+      "t_s": 0.865,
+      "acc_pitch_deg": 0.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.872,
+      "acc_pitch_deg": 0.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.879,
+      "acc_pitch_deg": 0.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.886,
+      "acc_pitch_deg": 0.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.9,
+      "acc_pitch_deg": 0.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.907,
+      "acc_pitch_deg": 0.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.914,
+      "acc_pitch_deg": 0.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.921,
+      "acc_pitch_deg": 0.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.935,
+      "acc_pitch_deg": 1.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.941,
+      "acc_pitch_deg": 0.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.948,
+      "acc_pitch_deg": 1.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.955,
+      "acc_pitch_deg": 0.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.962,
+      "acc_pitch_deg": 1.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.976,
+      "acc_pitch_deg": 0.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.983,
+      "acc_pitch_deg": 1.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 0.99,
+      "acc_pitch_deg": 0.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 0.997,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.011,
+      "acc_pitch_deg": 0.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.018,
+      "acc_pitch_deg": 1.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.025,
+      "acc_pitch_deg": 0.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.032,
+      "acc_pitch_deg": 1.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.046,
+      "acc_pitch_deg": 0.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.053,
+      "acc_pitch_deg": 1.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.06,
+      "acc_pitch_deg": 0.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.067,
+      "acc_pitch_deg": 1.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.073,
+      "acc_pitch_deg": 1.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.088,
+      "acc_pitch_deg": 1.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.094,
+      "acc_pitch_deg": 0.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.101,
+      "acc_pitch_deg": 1.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.108,
+      "acc_pitch_deg": 1.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.122,
+      "acc_pitch_deg": 1.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.129,
+      "acc_pitch_deg": 1.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.136,
+      "acc_pitch_deg": 1.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.143,
+      "acc_pitch_deg": 1.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.15,
+      "acc_pitch_deg": 1.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.164,
+      "acc_pitch_deg": 1.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.171,
+      "acc_pitch_deg": 1.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.178,
+      "acc_pitch_deg": 1.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.185,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.199,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.205,
+      "acc_pitch_deg": 1.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.212,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.219,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.233,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.24,
+      "acc_pitch_deg": 1.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.247,
+      "acc_pitch_deg": 2.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.254,
+      "acc_pitch_deg": 1.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.6
+    },
+    {
+      "t_s": 1.268,
+      "acc_pitch_deg": 2.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.275,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.282,
+      "acc_pitch_deg": 2.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.289,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.303,
+      "acc_pitch_deg": 2.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.31,
+      "acc_pitch_deg": 1.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.317,
+      "acc_pitch_deg": 2.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.323,
+      "acc_pitch_deg": 1.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.337,
+      "acc_pitch_deg": 2.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.344,
+      "acc_pitch_deg": 2.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.351,
+      "acc_pitch_deg": 2.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.358,
+      "acc_pitch_deg": 2.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.365,
+      "acc_pitch_deg": 2.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.379,
+      "acc_pitch_deg": 2.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.386,
+      "acc_pitch_deg": 2.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.393,
+      "acc_pitch_deg": 2.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.4,
+      "acc_pitch_deg": 2.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.414,
+      "acc_pitch_deg": 2.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.421,
+      "acc_pitch_deg": 2.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.428,
+      "acc_pitch_deg": 2.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.435,
+      "acc_pitch_deg": 2.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.442,
+      "acc_pitch_deg": 2.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.455,
+      "acc_pitch_deg": 2.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.462,
+      "acc_pitch_deg": 2.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.469,
+      "acc_pitch_deg": 2.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.476,
+      "acc_pitch_deg": 2.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.49,
+      "acc_pitch_deg": 2.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.497,
+      "acc_pitch_deg": 3.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.504,
+      "acc_pitch_deg": 2.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.511,
+      "acc_pitch_deg": 2.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.525,
+      "acc_pitch_deg": 2.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.532,
+      "acc_pitch_deg": 3.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.539,
+      "acc_pitch_deg": 2.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.546,
+      "acc_pitch_deg": 3.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.56,
+      "acc_pitch_deg": 2.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.567,
+      "acc_pitch_deg": 3.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.573,
+      "acc_pitch_deg": 3.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.581,
+      "acc_pitch_deg": 3.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.594,
+      "acc_pitch_deg": 3.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.601,
+      "acc_pitch_deg": 3.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.608,
+      "acc_pitch_deg": 3.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.615,
+      "acc_pitch_deg": 3.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.622,
+      "acc_pitch_deg": 3.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.636,
+      "acc_pitch_deg": 3.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.643,
+      "acc_pitch_deg": 3.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.65,
+      "acc_pitch_deg": 3.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.657,
+      "acc_pitch_deg": 3.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.671,
+      "acc_pitch_deg": 3.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.678,
+      "acc_pitch_deg": 3.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.685,
+      "acc_pitch_deg": 3.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.4
+    },
+    {
+      "t_s": 1.692,
+      "acc_pitch_deg": 3.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.705,
+      "acc_pitch_deg": 3.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.712,
+      "acc_pitch_deg": 3.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.719,
+      "acc_pitch_deg": 4.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.4
+    },
+    {
+      "t_s": 1.726,
+      "acc_pitch_deg": 3.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.4
+    },
+    {
+      "t_s": 1.733,
+      "acc_pitch_deg": 3.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.4
+    },
+    {
+      "t_s": 1.747,
+      "acc_pitch_deg": 4.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.4
+    },
+    {
+      "t_s": 1.754,
+      "acc_pitch_deg": 3.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.761,
+      "acc_pitch_deg": 3.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.5
+    },
+    {
+      "t_s": 1.768,
+      "acc_pitch_deg": 4.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 1.782,
+      "acc_pitch_deg": 4.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.789,
+      "acc_pitch_deg": 4.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.796,
+      "acc_pitch_deg": 4.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.803,
+      "acc_pitch_deg": 4.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 1.817,
+      "acc_pitch_deg": 4.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 1.824,
+      "acc_pitch_deg": 4.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 1.831,
+      "acc_pitch_deg": 5.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 1.838,
+      "acc_pitch_deg": 4.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.851,
+      "acc_pitch_deg": 4.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.858,
+      "acc_pitch_deg": 4.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.865,
+      "acc_pitch_deg": 4.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.872,
+      "acc_pitch_deg": 4.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.879,
+      "acc_pitch_deg": 4.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.893,
+      "acc_pitch_deg": 4.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.9,
+      "acc_pitch_deg": 4.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.907,
+      "acc_pitch_deg": 4.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.914,
+      "acc_pitch_deg": 4.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.928,
+      "acc_pitch_deg": 4.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.935,
+      "acc_pitch_deg": 5.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.942,
+      "acc_pitch_deg": 4.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 1.949,
+      "acc_pitch_deg": 5.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 1.963,
+      "acc_pitch_deg": 5.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 1.97,
+      "acc_pitch_deg": 5.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 1.976,
+      "acc_pitch_deg": 5.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 1.983,
+      "acc_pitch_deg": 5.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 1.99,
+      "acc_pitch_deg": 5.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.004,
+      "acc_pitch_deg": 5.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.011,
+      "acc_pitch_deg": 5.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.018,
+      "acc_pitch_deg": 5.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.025,
+      "acc_pitch_deg": 5.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.039,
+      "acc_pitch_deg": 5.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.046,
+      "acc_pitch_deg": 5.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.053,
+      "acc_pitch_deg": 5.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.06,
+      "acc_pitch_deg": 5.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.074,
+      "acc_pitch_deg": 5.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.081,
+      "acc_pitch_deg": 5.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.088,
+      "acc_pitch_deg": 5.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.095,
+      "acc_pitch_deg": 5.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.108,
+      "acc_pitch_deg": 5.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.115,
+      "acc_pitch_deg": 6.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.122,
+      "acc_pitch_deg": 5.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.129,
+      "acc_pitch_deg": 6.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.136,
+      "acc_pitch_deg": 6.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.15,
+      "acc_pitch_deg": 6.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.157,
+      "acc_pitch_deg": 6.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.164,
+      "acc_pitch_deg": 6.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.171,
+      "acc_pitch_deg": 6.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.185,
+      "acc_pitch_deg": 6.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.192,
+      "acc_pitch_deg": 6.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.199,
+      "acc_pitch_deg": 6.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.206,
+      "acc_pitch_deg": 6.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.213,
+      "acc_pitch_deg": 6.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.226,
+      "acc_pitch_deg": 6.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.233,
+      "acc_pitch_deg": 6.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.24,
+      "acc_pitch_deg": 6.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.3
+    },
+    {
+      "t_s": 2.247,
+      "acc_pitch_deg": 6.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.261,
+      "acc_pitch_deg": 6.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.268,
+      "acc_pitch_deg": 6.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.275,
+      "acc_pitch_deg": 6.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.282,
+      "acc_pitch_deg": 7.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.289,
+      "acc_pitch_deg": 6.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.303,
+      "acc_pitch_deg": 6.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.31,
+      "acc_pitch_deg": 6.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.317,
+      "acc_pitch_deg": 7.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.324,
+      "acc_pitch_deg": 7.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.338,
+      "acc_pitch_deg": 7.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.345,
+      "acc_pitch_deg": 7.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.352,
+      "acc_pitch_deg": 7.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.1
+    },
+    {
+      "t_s": 2.358,
+      "acc_pitch_deg": 7.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.372,
+      "acc_pitch_deg": 7.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.379,
+      "acc_pitch_deg": 7.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.386,
+      "acc_pitch_deg": 7.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.393,
+      "acc_pitch_deg": 7.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.407,
+      "acc_pitch_deg": 7.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.414,
+      "acc_pitch_deg": 7.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.421,
+      "acc_pitch_deg": 7.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.428,
+      "acc_pitch_deg": 7.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.435,
+      "acc_pitch_deg": 7.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.449,
+      "acc_pitch_deg": 7.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.456,
+      "acc_pitch_deg": 7.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.463,
+      "acc_pitch_deg": 7.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.47,
+      "acc_pitch_deg": 7.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.483,
+      "acc_pitch_deg": 7.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.49,
+      "acc_pitch_deg": 7.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.497,
+      "acc_pitch_deg": 7.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.504,
+      "acc_pitch_deg": 7.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.518,
+      "acc_pitch_deg": 8.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.525,
+      "acc_pitch_deg": 7.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.532,
+      "acc_pitch_deg": 8.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.539,
+      "acc_pitch_deg": 8.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.553,
+      "acc_pitch_deg": 8.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.56,
+      "acc_pitch_deg": 7.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.567,
+      "acc_pitch_deg": 8.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.574,
+      "acc_pitch_deg": 8.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.581,
+      "acc_pitch_deg": 8.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.595,
+      "acc_pitch_deg": 8.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.602,
+      "acc_pitch_deg": 8.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.608,
+      "acc_pitch_deg": 8.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.615,
+      "acc_pitch_deg": 8.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.629,
+      "acc_pitch_deg": 8.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.636,
+      "acc_pitch_deg": 8.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.643,
+      "acc_pitch_deg": 8.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.65,
+      "acc_pitch_deg": 8.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.664,
+      "acc_pitch_deg": 8.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.671,
+      "acc_pitch_deg": 8.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.678,
+      "acc_pitch_deg": 8.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.685,
+      "acc_pitch_deg": 8.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.692,
+      "acc_pitch_deg": 8.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.706,
+      "acc_pitch_deg": 8.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.713,
+      "acc_pitch_deg": 8.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.72,
+      "acc_pitch_deg": 9.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.727,
+      "acc_pitch_deg": 9.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.74,
+      "acc_pitch_deg": 8.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.748,
+      "acc_pitch_deg": 9.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.754,
+      "acc_pitch_deg": 8.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.761,
+      "acc_pitch_deg": 9.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.775,
+      "acc_pitch_deg": 9.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.782,
+      "acc_pitch_deg": 9.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.789,
+      "acc_pitch_deg": 9.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.796,
+      "acc_pitch_deg": 9.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.81,
+      "acc_pitch_deg": 9.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.817,
+      "acc_pitch_deg": 9.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.824,
+      "acc_pitch_deg": 9.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.831,
+      "acc_pitch_deg": 9.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.838,
+      "acc_pitch_deg": 9.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.852,
+      "acc_pitch_deg": 9.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.859,
+      "acc_pitch_deg": 9.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.866,
+      "acc_pitch_deg": 9.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.872,
+      "acc_pitch_deg": 9.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.886,
+      "acc_pitch_deg": 9.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.893,
+      "acc_pitch_deg": 9.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.9,
+      "acc_pitch_deg": 9.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.907,
+      "acc_pitch_deg": 9.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.921,
+      "acc_pitch_deg": 9.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.928,
+      "acc_pitch_deg": 9.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.935,
+      "acc_pitch_deg": 9.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.942,
+      "acc_pitch_deg": 9.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.956,
+      "acc_pitch_deg": 9.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.963,
+      "acc_pitch_deg": 9.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.97,
+      "acc_pitch_deg": 10.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.977,
+      "acc_pitch_deg": 10.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.984,
+      "acc_pitch_deg": 10.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 2.997,
+      "acc_pitch_deg": 10.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.004,
+      "acc_pitch_deg": 10.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.011,
+      "acc_pitch_deg": 10.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.018,
+      "acc_pitch_deg": 10.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.032,
+      "acc_pitch_deg": 10.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.039,
+      "acc_pitch_deg": 10.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.046,
+      "acc_pitch_deg": 10.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.053,
+      "acc_pitch_deg": 10.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.067,
+      "acc_pitch_deg": 10.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.074,
+      "acc_pitch_deg": 10.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.081,
+      "acc_pitch_deg": 10.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.088,
+      "acc_pitch_deg": 10.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.102,
+      "acc_pitch_deg": 10.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.108,
+      "acc_pitch_deg": 10.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.115,
+      "acc_pitch_deg": 10.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.122,
+      "acc_pitch_deg": 10.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.129,
+      "acc_pitch_deg": 10.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.143,
+      "acc_pitch_deg": 10.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.15,
+      "acc_pitch_deg": 10.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.157,
+      "acc_pitch_deg": 10.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.164,
+      "acc_pitch_deg": 10.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.178,
+      "acc_pitch_deg": 10.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.185,
+      "acc_pitch_deg": 10.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.192,
+      "acc_pitch_deg": 10.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.199,
+      "acc_pitch_deg": 10.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.206,
+      "acc_pitch_deg": 10.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.22,
+      "acc_pitch_deg": 11.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.227,
+      "acc_pitch_deg": 11.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.234,
+      "acc_pitch_deg": 10.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.241,
+      "acc_pitch_deg": 11.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.254,
+      "acc_pitch_deg": 11.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.261,
+      "acc_pitch_deg": 11.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.268,
+      "acc_pitch_deg": 11.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.275,
+      "acc_pitch_deg": 11.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.282,
+      "acc_pitch_deg": 11.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.296,
+      "acc_pitch_deg": 11.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.303,
+      "acc_pitch_deg": 11.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.31,
+      "acc_pitch_deg": 11.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.317,
+      "acc_pitch_deg": 11.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.331,
+      "acc_pitch_deg": 11.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.338,
+      "acc_pitch_deg": 11.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.345,
+      "acc_pitch_deg": 11.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.352,
+      "acc_pitch_deg": 11.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.366,
+      "acc_pitch_deg": 11.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.372,
+      "acc_pitch_deg": 11.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.379,
+      "acc_pitch_deg": 11.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.386,
+      "acc_pitch_deg": 11.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.4,
+      "acc_pitch_deg": 11.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.407,
+      "acc_pitch_deg": 11.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.414,
+      "acc_pitch_deg": 11.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.421,
+      "acc_pitch_deg": 11.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.428,
+      "acc_pitch_deg": 11.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.442,
+      "acc_pitch_deg": 11.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.449,
+      "acc_pitch_deg": 11.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.456,
+      "acc_pitch_deg": 11.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.463,
+      "acc_pitch_deg": 11.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.477,
+      "acc_pitch_deg": 11.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.484,
+      "acc_pitch_deg": 12.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.491,
+      "acc_pitch_deg": 11.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.497,
+      "acc_pitch_deg": 12.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.511,
+      "acc_pitch_deg": 12.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.518,
+      "acc_pitch_deg": 12.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.525,
+      "acc_pitch_deg": 12.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.532,
+      "acc_pitch_deg": 12.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.546,
+      "acc_pitch_deg": 12.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.553,
+      "acc_pitch_deg": 12.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.56,
+      "acc_pitch_deg": 12.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.567,
+      "acc_pitch_deg": 12.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.574,
+      "acc_pitch_deg": 12.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.588,
+      "acc_pitch_deg": 12.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.595,
+      "acc_pitch_deg": 12.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.602,
+      "acc_pitch_deg": 12.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.609,
+      "acc_pitch_deg": 12.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.623,
+      "acc_pitch_deg": 12.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.629,
+      "acc_pitch_deg": 12.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.636,
+      "acc_pitch_deg": 12.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.643,
+      "acc_pitch_deg": 12.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.657,
+      "acc_pitch_deg": 12.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.664,
+      "acc_pitch_deg": 12.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.671,
+      "acc_pitch_deg": 12.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.678,
+      "acc_pitch_deg": 12.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.685,
+      "acc_pitch_deg": 12.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.699,
+      "acc_pitch_deg": 12.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.706,
+      "acc_pitch_deg": 12.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.713,
+      "acc_pitch_deg": 12.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.72,
+      "acc_pitch_deg": 12.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 10.2
+    },
+    {
+      "t_s": 3.734,
+      "acc_pitch_deg": 13.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.741,
+      "acc_pitch_deg": 13.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 3.748,
+      "acc_pitch_deg": 13.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 3.755,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 3.768,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 3.775,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 3.782,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 3.789,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 3.803,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.7
+    },
+    {
+      "t_s": 3.81,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 3.817,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 3.824,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 3.831,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 3.845,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 3.852,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.8
+    },
+    {
+      "t_s": 3.859,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.866,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.879,
+      "acc_pitch_deg": 13.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.886,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.893,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.9,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.914,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.921,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.928,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.935,
+      "acc_pitch_deg": 13.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.942,
+      "acc_pitch_deg": 13.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.956,
+      "acc_pitch_deg": 13.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.963,
+      "acc_pitch_deg": 13.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.97,
+      "acc_pitch_deg": 13.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.977,
+      "acc_pitch_deg": 13.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.991,
+      "acc_pitch_deg": 13.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 3.998,
+      "acc_pitch_deg": 13.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.005,
+      "acc_pitch_deg": 13.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.011,
+      "acc_pitch_deg": 13.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        -0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.025,
+      "acc_pitch_deg": 13.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.032,
+      "acc_pitch_deg": 13.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.039,
+      "acc_pitch_deg": 13.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.046,
+      "acc_pitch_deg": 13.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.06,
+      "acc_pitch_deg": 13.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.067,
+      "acc_pitch_deg": 14.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.074,
+      "acc_pitch_deg": 14.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.081,
+      "acc_pitch_deg": 14.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.095,
+      "acc_pitch_deg": 14.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.102,
+      "acc_pitch_deg": 14.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.109,
+      "acc_pitch_deg": 14.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.116,
+      "acc_pitch_deg": 14.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.123,
+      "acc_pitch_deg": 14.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.136,
+      "acc_pitch_deg": 14.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.143,
+      "acc_pitch_deg": 14.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.15,
+      "acc_pitch_deg": 14.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.157,
+      "acc_pitch_deg": 14.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.171,
+      "acc_pitch_deg": 14.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.178,
+      "acc_pitch_deg": 14.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.185,
+      "acc_pitch_deg": 14.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.192,
+      "acc_pitch_deg": 14.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.206,
+      "acc_pitch_deg": 14.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.213,
+      "acc_pitch_deg": 14.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.22,
+      "acc_pitch_deg": 14.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.227,
+      "acc_pitch_deg": 14.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.234,
+      "acc_pitch_deg": 14.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 9.9
+    },
+    {
+      "t_s": 4.248,
+      "acc_pitch_deg": 14.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.255,
+      "acc_pitch_deg": 14.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.262,
+      "acc_pitch_deg": 14.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.268,
+      "acc_pitch_deg": 14.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.282,
+      "acc_pitch_deg": 14.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.29,
+      "acc_pitch_deg": 14.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.296,
+      "acc_pitch_deg": 14.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.303,
+      "acc_pitch_deg": 14.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.31,
+      "acc_pitch_deg": 14.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.324,
+      "acc_pitch_deg": 14.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.331,
+      "acc_pitch_deg": 14.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.338,
+      "acc_pitch_deg": 14.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.345,
+      "acc_pitch_deg": 14.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.359,
+      "acc_pitch_deg": 14.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.366,
+      "acc_pitch_deg": 14.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.373,
+      "acc_pitch_deg": 14.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.38,
+      "acc_pitch_deg": 14.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.393,
+      "acc_pitch_deg": 14.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.4,
+      "acc_pitch_deg": 14.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.407,
+      "acc_pitch_deg": 14.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.414,
+      "acc_pitch_deg": 14.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.428,
+      "acc_pitch_deg": 14.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.435,
+      "acc_pitch_deg": 14.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.442,
+      "acc_pitch_deg": 14.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.449,
+      "acc_pitch_deg": 14.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.463,
+      "acc_pitch_deg": 14.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.47,
+      "acc_pitch_deg": 14.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.477,
+      "acc_pitch_deg": 14.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.484,
+      "acc_pitch_deg": 14.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.491,
+      "acc_pitch_deg": 14.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.505,
+      "acc_pitch_deg": 14.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.512,
+      "acc_pitch_deg": 14.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.519,
+      "acc_pitch_deg": 15.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.525,
+      "acc_pitch_deg": 14.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.539,
+      "acc_pitch_deg": 15.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.546,
+      "acc_pitch_deg": 15.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.553,
+      "acc_pitch_deg": 15.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.56,
+      "acc_pitch_deg": 15.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.567,
+      "acc_pitch_deg": 15.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.581,
+      "acc_pitch_deg": 15.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.588,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.595,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.602,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.616,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.623,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.63,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.637,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.643,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.657,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.664,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.671,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.678,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.692,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.699,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.706,
+      "acc_pitch_deg": 15.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.713,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.727,
+      "acc_pitch_deg": 15.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.734,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.741,
+      "acc_pitch_deg": 15.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.748,
+      "acc_pitch_deg": 15.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.755,
+      "acc_pitch_deg": 15.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.769,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.775,
+      "acc_pitch_deg": 15.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.782,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.789,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.803,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.81,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.817,
+      "acc_pitch_deg": 15.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.824,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.838,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.845,
+      "acc_pitch_deg": 15.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.852,
+      "acc_pitch_deg": 15.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.859,
+      "acc_pitch_deg": 15.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.873,
+      "acc_pitch_deg": 15.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.88,
+      "acc_pitch_deg": 15.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.887,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.894,
+      "acc_pitch_deg": 15.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.901,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.914,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.921,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.928,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.935,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.949,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.956,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.963,
+      "acc_pitch_deg": 15.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.97,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.984,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.991,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 4.998,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.005,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.012,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.025,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.032,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.039,
+      "acc_pitch_deg": 15.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.046,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.06,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.067,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.074,
+      "acc_pitch_deg": 15.7,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.081,
+      "acc_pitch_deg": 15.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.095,
+      "acc_pitch_deg": 15.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.102,
+      "acc_pitch_deg": 15.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.109,
+      "acc_pitch_deg": 15.8,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.116,
+      "acc_pitch_deg": 15.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.13,
+      "acc_pitch_deg": 15.8,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.137,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.144,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.151,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.158,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.171,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.178,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.185,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.192,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.206,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.213,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.22,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.227,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.241,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.248,
+      "acc_pitch_deg": 15.9,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.255,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.262,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.276,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.283,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.29,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.296,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.303,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.317,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.324,
+      "acc_pitch_deg": 16.0,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.331,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.338,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.352,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.359,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.366,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.373,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.387,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.394,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.401,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.408,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.415,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.428,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.435,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.442,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.449,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.463,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.47,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.477,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.484,
+      "acc_pitch_deg": 16.1,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.498,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.505,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.512,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.519,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.526,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.54,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.547,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.554,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.56,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.574,
+      "acc_pitch_deg": 16.2,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.581,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.588,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.595,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.602,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.616,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.623,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.63,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.637,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.651,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.658,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.665,
+      "acc_pitch_deg": 16.3,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.672,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.686,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.692,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.699,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.706,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.713,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.727,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.734,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.741,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.748,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.762,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.769,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.776,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.783,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.797,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.804,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.81,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.818,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.825,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.838,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.845,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.853,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.859,
+      "acc_pitch_deg": 16.4,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.873,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.88,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.887,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.894,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.908,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.915,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.922,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.929,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.943,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.949,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.957,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.963,
+      "acc_pitch_deg": 16.5,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.97,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.984,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.991,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": -0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    },
+    {
+      "t_s": 5.998,
+      "acc_pitch_deg": 16.6,
+      "acc_roll_deg": 0.0,
+      "gyro_rps": [
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "amag": 10.0
+    }
+  ]
+}

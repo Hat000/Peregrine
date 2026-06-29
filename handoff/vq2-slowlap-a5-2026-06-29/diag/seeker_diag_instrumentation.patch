@@ -1,0 +1,64 @@
+diff --git a/rl/fly_rl.py b/rl/fly_rl.py
+index 3c19b8b..54e8a59 100644
+--- a/rl/fly_rl.py
++++ b/rl/fly_rl.py
+@@ -65,6 +65,7 @@ from __future__ import annotations
+ import argparse
+ import ctypes
+ import json
++import os
+ import sys
+ import threading
+ import time
+@@ -1113,12 +1114,46 @@ def _fly_gate_seeker(client, args, flight_idx: int,
+         cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
+         client.send_command(cmd)
+ 
+-        if now - last_p >= 1.0:
+-            p = nav_state.position_ned
++        # --- DIAG (uncommitted, attempt-5 egress + bounded-pitch + sustained-approach capture) ---
++        def _regime():
++            if seeker._in_settle(int(s.sim_time_ns)):
++                return "settle"
++            if not seeker._anchored:
++                return "anchor"
++            if seeker._in_egress(int(s.sim_time_ns)):
++                return "egress"
++            return "pursuit" if seeker._last_pose is not None else "reacq"
++        _diag_path = os.environ.get("SEEKER_DIAG_CSV")
++        if _diag_path:
++            br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
++            anchored = bool(seeker._anchored)
++            consec = int(seeker._consec_detections)
++            det = seeker._last_pose is not None
++            det_rng = float(seeker._last_pose.range_m) if seeker._last_pose is not None else -1.0
++            trk_rng = float(seeker._track_range_m) if seeker._track_range_m is not None else -1.0
++            tb = seeker._track_bearing
++            trk_az = float(tb[0]) if tb is not None else 0.0
++            trk_el = float(tb[1]) if tb is not None else 0.0
++            coast = int(seeker._track_coast_ticks)
++            regime = _regime()
++            if not os.path.exists(_diag_path):
++                with open(_diag_path, "w") as f:
++                    f.write("t_s,regime,anchored,consec_det,det,det_range_m,trk_range_m,trk_az,trk_el,"
++                            "coast,est_roll,est_pitch,est_yaw,thr,cmd_roll_rps,cmd_pitch_rps,cmd_yaw_rps,tsv_s\n")
++            with open(_diag_path, "a") as f:
++                f.write(f"{s.sim_time_ns/1e9:.3f},{regime},{int(anchored)},{consec},"
++                        f"{int(det)},{det_rng:.2f},{trk_rng:.2f},{trk_az:+.3f},{trk_el:+.3f},{coast},"
++                        f"{nav_state.roll:+.4f},{nav_state.pitch:+.4f},{nav_state.yaw:+.4f},"
++                        f"{cmd.thrust:.3f},{br[0]:+.3f},{br[1]:+.3f},{br[2]:+.3f},"
++                        f"{nav_state.time_since_vision_update_s:.3f}\n")
++
++        if now - last_p >= 0.5:
+             br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
+-            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} "
+-                  f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) "
+-                  f"thr={cmd.thrust:.3f} rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
++            trk = seeker._track_range_m
++            trks = f"{trk:.1f}m" if trk is not None else "--"
++            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} [{_regime()} d={seeker._consec_detections} "
++                  f"trkR={trks}] estP={nav_state.pitch:+.2f} thr={cmd.thrust:.3f} "
++                  f"rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
+                   f"tsv={nav_state.time_since_vision_update_s:.2f}s   ",
+                   end="\r", flush=True)
+             last_p = now
