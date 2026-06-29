@@ -340,6 +340,13 @@ class NavigatorConfig:
     vp_yaw_noise_std: float = float(np.deg2rad(5.0))   # 1-sigma (rad) of the VP yaw pseudo-measurement
     vp_yaw_branch_max_rad: float = float(np.deg2rad(35.0))  # reject if the nearest branch is > this from
                                                             # the current yaw estimate (ambiguous -> skip)
+    vp_yaw_ransac_iters: int = 256   # RANSAC iters for the VP fit. 256 is the 30Hz-budget point: on the
+                                     # real VQ2 recon frames the heading is within 0.081deg of the iters=2000
+                                     # fit (most frames exactly 0.000) while estimate_heading drops ~3.5x
+                                     # (230-325ms -> 61-91ms). 2000 was arbitrary overkill (a 2-pt minimal
+                                     # sample is statistically saturated by ~256 even at low inlier ratio).
+                                     # This is THE 2.3Hz->30Hz fix: at 2000 the loop choked and slammed the
+                                     # floor -> free-fall -> AHRS inversion -> backflip.
     # (a) PRIMARY yaw lock: gate-bearing yaw to the KNOWN active-gate world position. Flip-SAFE -- it uses
     # the well-conditioned +L lever/bearing DIRECTION (R_w2b @ (gate - p_KF)), NOT the noisy planar-PnP
     # rotation R_cam_gate. Yaw leverage collapses head-on (the gate centres on boresight), so it is gated
@@ -644,7 +651,7 @@ class Navigator:
         if frame is None or frame.image_bgr is None:
             return R_wb
         roll, pitch, yaw_hat = self._current_true_rpy()
-        est = estimate_heading(frame.image_bgr, roll, pitch)
+        est = estimate_heading(frame.image_bgr, roll, pitch, ransac_iters=self.config.vp_yaw_ransac_iters)
         if est is None or est.quality < self.config.vp_yaw_min_quality:
             self.vision_diag.n_vp_yaw_rejected += 1
             return R_wb
