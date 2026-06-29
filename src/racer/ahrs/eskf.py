@@ -126,6 +126,31 @@ def _normalize_quat(q: np.ndarray) -> np.ndarray:
     return q / n if n > 1e-12 else np.array([1., 0., 0., 0.])
 
 
+def _wrap_angle(a: float) -> float:
+    """Wrap an angle into (-pi, pi]. Used by the yaw pseudo-measurement innovation so a near-2*pi
+    raw difference (e.g. measured +179 deg vs estimated -179 deg) is the small +2 deg correction it
+    physically is, NOT a catastrophic ~358 deg yank."""
+    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _yaw_jacobian_dphi(R_wb: np.ndarray) -> np.ndarray:
+    """EXACT sensitivity of the aerospace ZYX world yaw to the ESKF body-frame error delta_phi.
+
+    With ``psi = atan2(R_wb[1,0], R_wb[0,0])`` and the right/body perturbation ``dR = R_wb @ skew(e_i)``:
+        d(psi)/d(delta_phi_i) = (R00 * dR[1,0] - R10 * dR[0,0]) / (R00^2 + R10^2).
+    Returns the (3,) row vector (zeros at the gimbal-lock degeneracy ``R00^2+R10^2 -> 0``, |pitch|->90deg).
+    Shared by ``ESKFAHRS.update_yaw`` (the measurement Jacobian) and ``yaw_uncertainty_rad`` so they
+    agree exactly. FD-pinned in tests/test_vision_yaw_wiring.py."""
+    R_wb = np.asarray(R_wb, dtype=np.float64)
+    c = R_wb[0, 0] ** 2 + R_wb[1, 0] ** 2
+    h = np.zeros(3)
+    if c > 1e-12:
+        for i in range(3):
+            dR = R_wb @ _skew(np.eye(3)[i])
+            h[i] = (R_wb[0, 0] * dR[1, 0] - R_wb[1, 0] * dR[0, 0]) / c
+    return h
+
+
 @dataclass
 class ESKFAHRS:
     """Error-State Kalman Filter attitude estimator.
@@ -178,6 +203,21 @@ class ESKFAHRS:
     def attitude_uncertainty_rad(self) -> float:
         """1-sigma attitude uncertainty: sqrt(trace(P[:3,:3]) / 3) in radians."""
         return float(np.sqrt(np.trace(self._P[:3, :3]) / 3.0))
+
+    @property
+    def yaw_uncertainty_rad(self) -> float:
+        """1-sigma uncertainty of the WORLD-yaw (about-gravity) attitude error, in radians.
+
+        VQ2 has no magnetometer, so the accel update is yaw-blind (``H = -skew(g_hat)`` has a
+        zero column on the gravity/yaw axis, eskf.py:301) and the yaw-axis attitude error grows
+        UNBOUNDED on gyro-z bias until a vision yaw pseudo-measurement (``update_yaw``) lands.
+        This reports that yaw-axis 1-sigma SEPARATELY from the roll/pitch (``attitude_uncertainty_rad``
+        averages all three and hides the runaway): project the body-frame attitude covariance
+        ``P[:3,:3]`` through the SAME exact yaw Jacobian ``update_yaw`` uses, giving
+        ``sqrt(h P_phi h^T)``. Useful for gating / for a confidence channel that must know when yaw is
+        unobserved."""
+        h = _yaw_jacobian_dphi(_quat_to_R_wxyz(self._q))   # (3,) world-yaw sensitivity to body delta_phi
+        return float(np.sqrt(max(h @ self._P[:3, :3] @ h, 0.0)))
 
     def reset(self, q_init: Optional[np.ndarray] = None) -> None:
         """Reset to initial state. q_init: (w,x,y,z) or None for identity."""
@@ -359,6 +399,49 @@ class ESKFAHRS:
         H[0, 2] = 1.0
 
         R_meas = np.array([[self.mag_noise_std**2]])
+        self._apply_eskf_update(innovation, H, R_meas)
+
+    # -- Vision yaw pseudo-measurement (mag-free VQ2 yaw lock) ------------------
+
+    def update_yaw(self, yaw_meas_world: float, yaw_noise_std: float) -> None:
+        """Scalar pseudo-measurement on the WORLD yaw (about gravity) — the mag-free yaw lock.
+
+        VQ2 carries no magnetometer, so the accel tilt update is rank-2 (yaw-blind) and yaw is a
+        free integrator on gyro-z bias. This injects an EXTERNAL absolute/relative world-yaw datum
+        (from vision: a vanishing-point heading or a gate-bearing yaw) as the missing yaw observer,
+        bounding the otherwise-unbounded yaw drift. It is the single shared injection point for ALL
+        vision yaw sources; the CALLER disambiguates a mod-90 vanishing-point branch to the current
+        estimate BEFORE calling (this method just consumes an unwrapped absolute yaw datum).
+
+        Measurement model. The measured quantity is the aerospace 3-2-1 world yaw
+        ``psi = atan2(R_wb[1,0], R_wb[0,0])`` (``euler_from_quat(q)[2]``). Its sensitivity to the ESKF's
+        BODY-frame error ``delta_phi`` (injection convention ``q <- q * exp(delta_phi)``, a RIGHT/body
+        perturbation ``R' = R_wb @ exp([delta_phi]x)``) is the EXACT atan2 derivative — NOT the naive
+        ``(R_wb^T e_z_world)`` shortcut, which is only correct at zero tilt and FIGHTS roll/pitch
+        otherwise. With ``dR = R_wb @ [delta_phi]x``:
+            d(psi)/d(delta_phi_i) = (R00 * dR[1,0] - R10 * dR[0,0]) / (R00^2 + R10^2)
+        Near level ``R_wb -> I`` this reduces to the ``H[0,2]=1`` shortcut the dormant ``_update_mag``
+        uses; the full form here is exact at all tilts. **FD-pinned** in tests/test_vision_yaw_wiring.py.
+
+        Innovation is the WRAPPED angle difference (an unwrapped ~2*pi error injects a catastrophic
+        correction). ``yaw_noise_std`` is the 1-sigma (rad) of the vision yaw datum (large => weak,
+        e.g. a near-head-on gate-bearing yaw with little leverage); a non-positive std is a no-op.
+
+        Gated/additive: nothing in the default ESKF/AHRS path calls this, so it changes NOTHING unless
+        a consumer (the case-C Navigator behind ``use_vp_yaw`` / ``use_gate_bearing_yaw``) invokes it.
+        """
+        if not np.isfinite(yaw_meas_world) or yaw_noise_std <= 0.0:
+            return
+        R_wb = _quat_to_R_wxyz(self._q)
+        yaw_hat = float(Rotation.from_matrix(R_wb).as_euler("ZYX")[0])
+        # Wrapped scalar innovation (-pi, pi].
+        innovation = np.array([_wrap_angle(float(yaw_meas_world) - yaw_hat)])
+        # H (1 x 6): EXACT atan2-yaw sensitivity to the body-frame delta_phi; zero on the bias block.
+        H = np.zeros((1, 6))
+        H[0, :3] = _yaw_jacobian_dphi(R_wb)
+        if not np.any(H[0, :3]):           # gimbal-locked (|pitch|->90 deg): yaw undefined, skip
+            return
+        R_meas = np.array([[float(yaw_noise_std) ** 2]])
         self._apply_eskf_update(innovation, H, R_meas)
 
     # -- Core ESKF update ------------------------------------------------------

@@ -98,6 +98,13 @@ class DroneState:
     armed: bool = False
     status_flags: int = 0
 
+    # The current TARGET gate index from RACE_STATUS.active_gate_index (ENCAPSULATED_DATA, 4 Hz; the
+    # gate-ordering signal on the VQ2 wire). None until a RACE_STATUS arrives. Threaded onto the snapshot
+    # (additive, like gyro_body) so the case-C Navigator's gate-bearing yaw lock (use_gate_bearing_yaw)
+    # knows which mapped gate is the active target. Indexes the ORDERED gate list; consumers map it to a
+    # gate_id. Unused by the VQ1 / case-A path -> default None is byte-identical.
+    active_gate_index: int | None = None
+
     # Bumped by the sim (ODOMETRY.reset_counter) when its epoch restarts; a change means the
     # estimator should reinitialise rather than integrate across the discontinuity.
     reset_counter: int = 0

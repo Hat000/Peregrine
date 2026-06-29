@@ -51,6 +51,7 @@ from racer.contracts import DroneState, Frame, Gate, GateObservation, GatePose, 
 from racer.frames import (
     ATTITUDE_NOISE_STD_RAD,
     ODO_QUAT_TRUE_CONJ_WXYZ,
+    R_camera_from_body,
     R_world_from_body,
     R_world_from_odo_quat_wxyz,
     euler_from_quat_wxyz,
@@ -88,8 +89,23 @@ from racer.vision.association import (
     range_consistent,
 )
 from racer.vision.gate_pose import GATE_INNER_SIZE_M, estimate_gate_pose
+# Map-free vision yaw/z anchors (magfree-vision-yaw-scope.md). CONSUMED behind use_vp_yaw / use_floor_height;
+# imported here (cheap, pure-numpy module-level) so the gated code path is a straight call. The OFF path never
+# invokes them, so they cannot perturb the byte-identical default.
+from racer.vision.floor_height import estimate_floor_height
+from racer.vision.heading_vp import estimate_heading
 
 _WORLD_DOWN = np.array([0.0, 0.0, 1.0])   # NED down
+
+
+def _wrap_pi(a: float) -> float:
+    """Wrap an angle into (-pi, pi] — used by the mag-free yaw-correction branch disambiguation."""
+    return float((a + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+# Deliberately-huge in-plane 1-sigma for the floor-height z fix -> the 3-DOF KF update is effectively
+# 1-DOF (world-down z) only. Mirrors localization.GATE_RANGE_INPLANE_STD's intent for the range channel.
+_FLOOR_INPLANE_STD = 1000.0   # m
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +322,43 @@ class NavigatorConfig:
     ahrs_gyro_noise_std: float = 0.01      # rad/s, ESKF gyro white-noise 1-sigma (bench-validated default)
     ahrs_accel_gate_alpha: float = 10.0    # ESKF high-g accel-gating sharpness (bench-validated default)
 
+    # --- Mag-free vision YAW + Z corrections into the ESKF/KF (magfree-vision-yaw-scope.md, Option B) ---
+    # VQ2 has NO magnetometer + NO barometer, so the ESKF accel update is yaw-blind (eskf.py:301) and
+    # double-integrated accel z drifts: BOTH yaw and z MUST be pinned by vision. These three flags wire
+    # the just-built MAP-FREE vision anchors (vision/heading_vp.py vanishing-point heading,
+    # vision/floor_height.py floor-grid height) + a gate-bearing yaw lock into the existing ESKF + C2
+    # chain (NOT a full EqVIO swap). ALL default OFF -> the navigator (KF state x/P + obs) is byte-identical
+    # to the use_ahrs build; each requires use_ahrs=True to do anything (they correct the ESKF, which only
+    # exists under use_ahrs). No new RNG on any path.
+    #
+    # (b) ABSOLUTE yaw backstop: vanishing-point / lane-line heading from the Manhattan warehouse. Runs
+    # PER FRAME even with NO gate associated (the no-gate-in-view yaw anchor). The estimator reports an
+    # ABSOLUTE warehouse yaw mod 90 deg (the lattice ambiguity); the navigator disambiguates the 4 branches
+    # to the gyro-propagated yaw estimate (nearest branch) before injecting -> never a 90-deg flip.
+    use_vp_yaw: bool = False
+    vp_yaw_min_quality: float = 0.30      # gate the VP heading update on HeadingEstimate.quality
+    vp_yaw_noise_std: float = float(np.deg2rad(5.0))   # 1-sigma (rad) of the VP yaw pseudo-measurement
+    vp_yaw_branch_max_rad: float = float(np.deg2rad(35.0))  # reject if the nearest branch is > this from
+                                                            # the current yaw estimate (ambiguous -> skip)
+    # (a) PRIMARY yaw lock: gate-bearing yaw to the KNOWN active-gate world position. Flip-SAFE -- it uses
+    # the well-conditioned +L lever/bearing DIRECTION (R_w2b @ (gate - p_KF)), NOT the noisy planar-PnP
+    # rotation R_cam_gate. Yaw leverage collapses head-on (the gate centres on boresight), so it is gated
+    # on the off-boresight bearing angle (skip when too near head-on) and weighted by it.
+    use_gate_bearing_yaw: bool = False
+    gate_bearing_yaw_noise_std: float = float(np.deg2rad(4.0))   # base 1-sigma (rad) off-axis
+    gate_bearing_min_offaxis_rad: float = float(np.deg2rad(8.0))  # skip when the gate bearing is within
+                                                                  # this of boresight (no yaw leverage)
+    # Z: map-free floor-plane height channel (vision/floor_height.py) -> a z (world-down) KF correction,
+    # layered ON TOP of the existing gate-relative vertical fix. Gated HARD on quality + std_m (the floor
+    # is ill-conditioned near the horizon / nose-up). Tight in z, ~infinite in-plane -> effectively 1-DOF.
+    use_floor_height: bool = False
+    floor_height_min_quality: float = 0.30     # gate the floor-height z update on FloorHeightEstimate.quality
+    floor_height_max_std_m: float = 0.50       # reject when the floor-height std_m exceeds this (near-horizon)
+    floor_height_extra_std_m: float = 0.20     # extra z 1-sigma added in quadrature (model/mount systematics)
+    floor_grid_cell_m: float = 2.0             # known warehouse floor-grid cell size (metric anchor; calibrate)
+    floor_camera_height_ref_m: float = 0.0     # world-down z of the FLOOR plane (NED). camera z = floor_z -
+                                               # height_above_floor (camera sits ABOVE the floor => smaller z).
+
 
 @dataclass
 class _VisionDiag:
@@ -327,6 +380,15 @@ class _VisionDiag:
     last_d2_rel: float = float("nan")   # last gate-relative in-plane innovation statistic (C2)
     last_range_span_m: float = float("nan")   # last span-derived (B1) range to the gate
     last_d2_range: float = float("nan")       # last along-track range-channel innovation statistic (B1)
+    n_vp_yaw_applied: int = 0                  # vanishing-point yaw pseudo-measurements applied (mag-free)
+    n_vp_yaw_rejected: int = 0                 # VP yaw skipped (low quality / ambiguous branch / no VP)
+    n_floor_z_applied: int = 0                 # floor-height z corrections applied (mag-free, map-free)
+    n_floor_z_rejected: int = 0                # floor-height skipped (low quality / large std / no floor)
+    n_gate_bearing_yaw_applied: int = 0        # gate-bearing yaw locks applied (primary, flip-safe)
+    n_gate_bearing_yaw_rejected: int = 0       # gate-bearing yaw skipped (head-on / no active gate)
+    last_vp_yaw_rad: float = float("nan")      # last VP absolute heading injected (post branch-disambig)
+    last_floor_height_m: float = float("nan")  # last floor-derived camera height above the floor
+    last_gate_bearing_yaw_rad: float = float("nan")  # last gate-bearing-implied world yaw injected
 
 
 @dataclass
@@ -346,6 +408,11 @@ class Navigator:
     initialized: bool = field(default=False, repr=False)
     n_vision_fixes: int = field(default=0, repr=False)
     n_vision_rejected: int = field(default=0, repr=False)
+    # Cumulative mag-free vision yaw/z corrections applied over the run (the per-tick counts live on
+    # vision_diag, which resets each frame). Diagnostics only; do not affect the estimate.
+    n_vp_yaw_total: int = field(default=0, repr=False)
+    n_floor_z_total: int = field(default=0, repr=False)
+    n_gate_bearing_yaw_total: int = field(default=0, repr=False)
     vision_diag: _VisionDiag = field(default_factory=_VisionDiag, repr=False)
 
     _last_sim_time_ns: int = field(default=0, repr=False)
@@ -368,6 +435,9 @@ class Navigator:
     _ahrs: object | None = field(default=None, repr=False)
     _ahrs_odo_quat: np.ndarray | None = field(default=None, repr=False)   # TRUE attitude re-encoded
     _ahrs_odo_rate: np.ndarray | None = field(default=None, repr=False)   # to the ODOMETRY-wire convention
+    # Mag-free gate-bearing yaw lock: the latest RACE_STATUS active gate index (from ds.active_gate_index),
+    # refreshed each update(). None until a RACE_STATUS arrives -> the gate-bearing yaw lock no-ops.
+    _active_gate_index: int | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._gates_by_id = {g.gate_id: g for g in self.gates}
@@ -444,6 +514,9 @@ class Navigator:
     # -- per-tick -----------------------------------------------------------
     def update(self, ds: DroneState, frame: Frame | None = None) -> NavState:
         """Advance the estimate with one telemetry snapshot (+ optional camera frame)."""
+        # Refresh the active-gate target (RACE_STATUS) for the mag-free gate-bearing yaw lock. Pure
+        # bookkeeping: read-only on the OFF path (the lock no-ops), so the default path is unaffected.
+        self._active_gate_index = ds.active_gate_index
         if not self.initialized:
             self._initialize(ds)
             return self._nav_state(ds)
@@ -531,6 +604,163 @@ class Navigator:
         self._ahrs_odo_rate = -rate_true_frd
         return self._ahrs.R_wb
 
+    def _refresh_ahrs_attitude_cache(self) -> np.ndarray:
+        """Recompute the cached ODOMETRY-convention attitude quat + the TRUE R_wb from the ESKF's
+        CURRENT nominal quaternion, AFTER an in-tick vision yaw correction (``ESKFAHRS.update_yaw``).
+
+        A ``use_vp_yaw`` / ``use_gate_bearing_yaw`` update mutates the ESKF attitude IN PLACE; the
+        ``_ahrs_odo_quat`` cache (read by ``_nav_state`` -> obs[6:9]) and the local ``R_wb`` (used by
+        the rest of the vision loop + the next predict) were snapshotted in ``_step_ahrs`` BEFORE the
+        correction, so they must be refreshed or the corrected yaw never reaches the obs/KF this tick.
+        The body RATE is unchanged by a yaw update (the bias correction is sub-tick and folded next
+        step) so ``_ahrs_odo_rate`` is left as-is. Returns the refreshed TRUE FRD->NED R_wb."""
+        assert self._ahrs is not None
+        q_true = np.asarray(self._ahrs.q_wxyz, dtype=np.float64)
+        self._ahrs_odo_quat = q_true * ODO_QUAT_TRUE_CONJ_WXYZ
+        return self._ahrs.R_wb
+
+    # -- mag-free vision yaw / z corrections (case-C; magfree-vision-yaw-scope §4) -------------
+    def _current_true_rpy(self) -> tuple[float, float, float]:
+        """TRUE (roll, pitch, yaw) of the CURRENT ESKF/AHRS attitude estimate, radians.
+
+        The roll/pitch feed the vision modules (gravity-known tilt, needed to back-project a VP /
+        floor pixel) and the yaw is the gyro-propagated current estimate the VP branch-disambiguation
+        snaps to. Read straight off the AHRS' TRUE attitude (NOT the ODOMETRY-convention cache)."""
+        assert self._ahrs is not None
+        return euler_from_quat_wxyz(np.asarray(self._ahrs.q_wxyz, dtype=np.float64))
+
+    def _apply_vp_yaw(self, frame: Frame, R_wb: np.ndarray) -> np.ndarray:
+        """(b) ABSOLUTE yaw backstop: vanishing-point heading -> ESKF yaw pseudo-measurement.
+
+        Map-free + gate-free: runs every frame on the Manhattan structure. The estimator returns an
+        absolute warehouse yaw MOD 90 deg (the lattice ambiguity) plus the four 90-deg branch headings;
+        we DISAMBIGUATE by snapping to the branch NEAREST the gyro-propagated current yaw estimate
+        (never a silent 90-deg flip), reject if even the nearest branch is implausibly far (ambiguous),
+        else inject it via ``ESKFAHRS.update_yaw`` and REFRESH the attitude cache + R_wb so the
+        correction reaches this tick's obs + downstream vision. Returns the (possibly refreshed) R_wb.
+        Gated OFF / no use_ahrs -> immediate return of the input R_wb (byte-identical)."""
+        if not (self.config.use_vp_yaw and self._ahrs is not None):
+            return R_wb
+        if frame is None or frame.image_bgr is None:
+            return R_wb
+        roll, pitch, yaw_hat = self._current_true_rpy()
+        est = estimate_heading(frame.image_bgr, roll, pitch)
+        if est is None or est.quality < self.config.vp_yaw_min_quality:
+            self.vision_diag.n_vp_yaw_rejected += 1
+            return R_wb
+        # Disambiguate the mod-90 lattice: pick the branch nearest the current (gyro) yaw estimate.
+        branches = np.asarray(est.branch_headings_rad, dtype=np.float64)
+        diffs = np.array([_wrap_pi(b - yaw_hat) for b in branches])
+        k = int(np.argmin(np.abs(diffs)))
+        if abs(diffs[k]) > self.config.vp_yaw_branch_max_rad:
+            self.vision_diag.n_vp_yaw_rejected += 1
+            return R_wb
+        yaw_meas = float(branches[k])
+        self._ahrs.eskf.update_yaw(yaw_meas, self.config.vp_yaw_noise_std)
+        self.vision_diag.n_vp_yaw_applied += 1
+        self.n_vp_yaw_total += 1
+        self.vision_diag.last_vp_yaw_rad = yaw_meas
+        return self._refresh_ahrs_attitude_cache()
+
+    def _apply_floor_height(self, frame: Frame, R_wb: np.ndarray, t_fix_ns: int) -> None:
+        """Z: map-free floor-grid camera height -> a world-down (z) KF correction.
+
+        Backstop for the gate-relative vertical fix during no-gate / wrong-map stretches. The floor
+        channel is ill-conditioned near the horizon, so it is gated HARD on quality + std_m. The
+        recovered height is the camera's metres above the floor; world-down z = floor_z - height (the
+        camera sits ABOVE the floor, so a larger height => a smaller/negative NED z). It is applied as a
+        3-DOF world-position fix that is TIGHT in z (world-down) and ~infinite in-plane (the in-plane
+        innovation is ~0 by construction since z's in-plane components are the current KF position), so
+        it acts as an effective 1-DOF z correction that does not fight the in-plane gate-relative fix.
+        Routed through ``_apply_pos_fix`` so it composes with BOTH the bare KF and the RewindKF (no
+        ``update_position_z``); applied at the current time -> in-place for the OOSM path. Gated OFF /
+        no use_ahrs -> no-op (byte-identical)."""
+        if not (self.config.use_floor_height and self._ahrs is not None):
+            return
+        if frame is None or frame.image_bgr is None:
+            return
+        roll, pitch, _ = self._current_true_rpy()
+        est = estimate_floor_height(frame.image_bgr, roll, pitch,
+                                    grid_cell_m=self.config.floor_grid_cell_m)
+        if (est is None or est.quality < self.config.floor_height_min_quality
+                or est.std_m > self.config.floor_height_max_std_m):
+            self.vision_diag.n_floor_z_rejected += 1
+            return
+        z_world = float(self.config.floor_camera_height_ref_m) - float(est.height_m)
+        var_z = float(est.std_m) ** 2 + float(self.config.floor_height_extra_std_m) ** 2
+        p = self.kf.position
+        z_ned = np.array([p[0], p[1], z_world])                  # in-plane == current => 1-DOF in z
+        cov = np.diag([_FLOOR_INPLANE_STD ** 2, _FLOOR_INPLANE_STD ** 2, var_z])
+        self._apply_pos_fix(z_ned, cov, t_fix_ns)
+        self.vision_diag.n_floor_z_applied += 1
+        self.n_floor_z_total += 1
+        self.vision_diag.last_floor_height_m = float(est.height_m)
+
+    def _apply_gate_bearing_yaw(self, pose: GatePose, gate: Gate) -> None:
+        """(a) PRIMARY yaw lock: gate-bearing yaw to the KNOWN active-gate world position.
+
+        FLIP-SAFE + NON-CIRCULAR. The world yaw is recovered by comparing TWO bearings to the active
+        gate that DO NOT both depend on the current yaw estimate:
+          * the WORLD bearing from the KNOWN gate position vs the KF position:
+                bearing_world = atan2(dE, dN)   of (gate - p_KF)         # yaw-INDEPENDENT
+          * the CAMERA-frame gate direction from the OBSERVATION (``pose.t_cam_gate``, the well-
+            conditioned +L lever direction -- NOT the noisy planar-PnP rotation R_cam_gate), rotated to
+            the body frame and de-tilted with the gravity-known roll/pitch into a YAW-ONLY world frame:
+                d_level = Ry(pitch) Rx(roll) @ R_camera_from_body()^T @ (t_cam_gate / |t_cam_gate|)
+                az_obs  = atan2(d_level_y, d_level_x)                    # observed gate azimuth, yaw-FREE
+          * the drone world yaw is then ``bearing_world - az_obs`` (the rotation that maps the observed
+            gate azimuth onto the true world bearing). This is INDEPENDENT of the ESKF yaw estimate, so
+            it genuinely CORRECTS drift (deriving it from ``R_wb`` would be circular -- it would always
+            return the current estimate and never correct anything).
+        Yaw leverage collapses head-on (``az_obs -> 0``): gate on the off-boresight azimuth, and weight
+        the datum sigma by ``1/|sin(az_obs)|`` so a near-head-on sighting barely tightens yaw. Only fires
+        for the ACTIVE gate (RACE_STATUS.active_gate_index). Gated OFF / no active gate / no use_ahrs ->
+        no-op."""
+        if not (self.config.use_gate_bearing_yaw and self._ahrs is not None):
+            return
+        active = self._active_gate()
+        if active is None or active.gate_id != gate.gate_id:
+            return
+        # OBSERVED gate azimuth in a yaw-only world frame (from the camera-frame lever direction).
+        t = np.asarray(pose.t_cam_gate, dtype=np.float64)
+        nt = float(np.linalg.norm(t))
+        if nt < 1e-6:
+            self.vision_diag.n_gate_bearing_yaw_rejected += 1
+            return
+        roll, pitch, _ = self._current_true_rpy()
+        d_body = R_camera_from_body().T @ (t / nt)
+        d_level = Rotation.from_euler("YX", [float(pitch), float(roll)]).as_matrix() @ d_body
+        az_obs = float(np.arctan2(d_level[1], d_level[0]))      # observed azimuth (yaw-free)
+        if abs(az_obs) < self.config.gate_bearing_min_offaxis_rad:
+            self.vision_diag.n_gate_bearing_yaw_rejected += 1
+            return
+        # WORLD bearing to the KNOWN gate from the KF position (yaw-independent).
+        delta = np.asarray(gate.position_ned, dtype=np.float64) - self.kf.position
+        if float(np.hypot(delta[0], delta[1])) < 1e-3:
+            self.vision_diag.n_gate_bearing_yaw_rejected += 1
+            return
+        bearing_world = float(np.arctan2(delta[1], delta[0]))
+        yaw_meas = _wrap_pi(bearing_world - az_obs)
+        # Weight: leverage ~ |sin(az_obs)|; inflate sigma as it collapses toward head-on.
+        lev = max(abs(np.sin(az_obs)), 1e-3)
+        sigma = float(self.config.gate_bearing_yaw_noise_std) / lev
+        self._ahrs.eskf.update_yaw(yaw_meas, sigma)
+        self.vision_diag.n_gate_bearing_yaw_applied += 1
+        self.n_gate_bearing_yaw_total += 1
+        self.vision_diag.last_gate_bearing_yaw_rad = yaw_meas
+        # Refresh the cache so the corrected yaw reaches this tick's obs.
+        self._refresh_ahrs_attitude_cache()
+
+    def _active_gate(self) -> Gate | None:
+        """The Gate the RACE_STATUS active_gate_index points at (ordered-list index), or None.
+
+        ``active_gate_index`` is threaded onto ``DroneState`` (contracts.py). It indexes the ORDERED
+        gate list; out-of-range / unset -> None (the gate-bearing yaw lock then no-ops)."""
+        idx = self._active_gate_index
+        if idx is None or idx < 0 or idx >= len(self.gates):
+            return None
+        return self.gates[idx]
+
     # -- vision -------------------------------------------------------------
     def _maybe_run_vision(self, ds: DroneState, frame: Frame | None, R_wb: np.ndarray) -> None:
         """Detect -> PnP -> associate -> innovation-gated KF position update, once per frame_id."""
@@ -553,6 +783,14 @@ class Navigator:
                 int(frame.sim_time_ns) - int(ds.sim_time_ns)
                 - (int(frame.recv_monotonic_ns) - int(ds.recv_monotonic_ns))
             )
+        # Mag-free vision attitude/z anchors (magfree-vision-yaw-scope §4). These run PER FRAME,
+        # independent of gate detection/association (the no-gate-in-view backstops): the VP heading
+        # corrects the ESKF yaw (refreshing R_wb for the rest of this tick), and the floor-grid height
+        # corrects the KF z. Both are OFF by default + require use_ahrs (they correct the ESKF/KF the
+        # AHRS path owns); the OFF path skips them entirely -> byte-identical.
+        R_wb = self._apply_vp_yaw(frame, R_wb)
+        self._apply_floor_height(frame, R_wb, int(ds.sim_time_ns))
+
         observations = self.detector.detect(frame)
         self.vision_diag.n_detections = len(observations)
         if not observations:
@@ -621,6 +859,11 @@ class Navigator:
         self.vision_diag.n_applied += 1
         # P0-b: stamp the fix on the IMU master clock (NOT the raw camera/server epoch obs.sim).
         self._last_vision_sim_time_ns = t_fix_ns
+        # (a) PRIMARY mag-free yaw lock: gate-bearing yaw to the KNOWN active-gate world position, on an
+        # ACCEPTED fix (the same acceptance the absolute fix passed). Flip-safe (bearing, not PnP rotation);
+        # skipped near head-on. OFF by default + requires use_ahrs -> byte-identical when gated off.
+        if self.config.use_gate_bearing_yaw:
+            self._apply_gate_bearing_yaw(pose, gate)
         # C2 gate-relative in-plane +L AUGMENT (BLUEPRINT §1.2/§1.3): a SECOND in-plane-only correction
         # applied AFTER the absolute fix, gated on its OWN relative-innovation test (the in-plane
         # backstop for depth-flips the absolute Maha + reproj gates pass).
