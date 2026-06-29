@@ -474,12 +474,43 @@ ESKF attitude source wired into the nav loop behind `NavigatorConfig.use_ahrs` (
 - @95Hz, 4 motor outputs; idle 0.05.
 - DISTILL pillar can identify the inner-loop plant from REAL (actuator→IMU accel/gyro) sim data, not only synthetic.
 
-### 🚩 OPEN BLOCKER — CONTROL-MODE HANDSHAKE (CRITICAL PATH)
-- `SET_POSITION_TARGET_LOCAL_NED` velocity setpoints in sim default ACRO mode → drone tumbled + env COLLISIONs id=1002.
-- ARM accepted (MAV_CMD 400 result 0). Controllable angle/position mode needs a mode-switch/handshake (possibly TIMESYNC-only no-heartbeat regime). **UNRESOLVED; needs focused ShadowPC investigation. BLOCKS all closed-loop VQ2 flight.**
+### 🟢 CONTROL-MODE HANDSHAKE SOLVED (2026-06-29) — see §VQ2-CONTROL-HANDSHAKE-2026-06-29 below
+- RECIPE: ARM (MAV_CMD 400, p1=1, ACCEPTED) → stream `SET_ATTITUDE_TARGET` BODY-RATE (type_mask=0b10000000) at ≥30Hz with FRD body rates + normalized collective thrust [0,1]. Sim default = ACRO = CTBR. Earlier tumble = WRONG MESSAGE (`SET_POSITION_TARGET_LOCAL_NED` tumbles in ACRO; attitude-QUAT also ignored in ACRO). `fly_rl.py` already drives this path — TRANSFERS DIRECTLY.
 
 ### docs/first_contact.md now STALE
 - Describes VQ1 pose+map wire; VQ2 has neither. Do NOT use as VQ2 wire reference.
+
+## VQ2-CONTROL-HANDSHAKE-2026-06-29 (SOLVED — live verified, build 1.0.3379, R2-TRAINING)
+
+### Working recipe (confidence HIGH)
+1. **ARM:** `MAV_CMD_COMPONENT_ARM_DISARM` (id=400), p1=1.0 — ACCEPTED (result 0), no bypass needed.
+2. **Command loop:** stream `SET_ATTITUDE_TARGET` at ≥30Hz (100Hz fine; deploy 30Hz works) with:
+   - `type_mask = 0b10000000` (BODY_RATE mode — ignore attitude quaternion, use body rates)
+   - FRD body rates [roll_rate, pitch_rate, yaw_rate] rad/s
+   - `thrust` normalized [0,1] collective
+3. **Why it works:** sim default mode = ACRO = `ControlMode.BODY_RATE`. `fly_rl.py` already drives exactly this path — TRANSFERS DIRECTLY to VQ2 with no mode-switch needed.
+
+### Root cause of earlier failure
+- `SET_POSITION_TARGET_LOCAL_NED` velocity setpoints are IGNORED in ACRO mode → sim defaults to hover/tumble → COLLISIONs id=1002.
+- Attitude-QUAT setpoints (`SET_ATTITUDE_TARGET` with type_mask ignoring rates) are also IGNORED in ACRO.
+- CTBR body-rate IS the correct and only uplink in ACRO.
+
+### Evidence (live VQ2 sim)
+- **Hover test:** zero body rates + balanced thrust → 4 motors equalize, gyro nulls, 0 collisions. RTF~1.00.
+- **Pitch test:** +0.4 rad/s pitch_rate → symmetric motor differential, bounded ~1.0 rad/s, recoverable.
+- **Rates:** HIGHRES_IMU ~119Hz, ACTUATOR ~96Hz, RACE_STATUS 4Hz, HEARTBEAT 10Hz. Max jitter ~10.5ms, 0 dropped. RTF~1.00 under 100Hz control.
+
+### Deploy deltas (beyond the existing fly_rl.py CTBR path)
+1. 🚩 **Use `DroneState.gyro_body` (raw HIGHRES_IMU xgyro/ygyro/zgyro), NOT `angular_rate_body`** (`angular_rate_body` sources ODOMETRY rate = VQ2-BLOCKED). The `use_ahrs` wiring (da280e2) already adds `gyro_body`; confirm it is threaded to the rate-feedback path.
+2. 🚩 **COMMAND→REALIZED RATE GAIN ≈ 2.5×.** The policy's commanded rate maps to ~2.5× the observed realized rate. Either calibrate a ~1/2.5 rate-scale factor, or let the closed-loop policy absorb it via training on the real plant. Do NOT assume 1:1 rate mapping.
+3. **Launch-transient:** drone spawns INSIDE the start gate; the Mission `launch_ramp` anticipates this hover transient — do NOT flag spawn-contact as a crash.
+
+### OPS facts (prevent wasted ShadowPC runs)
+- **VQ1 vs VQ2 = the MENU EVENT, not the track name.** Both events are named "Now You See Me, Now You Don't". From the main menu: spam DOWN → clamp on R2-TRAINING = VQ2.
+- 🚩 **Visual confirmation: VQ1 = WIREFRAME render; VQ2 = LIT warehouse (glowing-red gates, dark background).** Always confirm the visual before starting a recon run.
+- **Crash → menu freeze + wire freeze:** after a crash the menu re-appears and the wire freezes (RACE_STATUS=0, RTF≪1). LIVE CHECK: RACE_STATUS@4Hz + RTF~1.0 = live; RACE_STATUS=0 + RTF≪1 = frozen.
+- 🚩 **MAV_CMD 31000 does NOT reset a VQ2 episode** (works on VQ1 only). After a crash: RELAUNCH the sim to reset.
+- The live recon data WAS genuine VQ2 (lit/glowing-red confirmed) — not invalidated by the earlier handshake failure.
 
 ## VQ2 RED-GLOW DETECTOR BUILT (5f7d842, 2026-06-29; `src/racer/vision/red_glow_detector.py`)
 Classical no-model detector for glowing-red VQ2 gates; additive/opt-in; emits the SAME `GateObservation` contract as `detector.py` (corners_px/corner_ids/conf/score/bbox, IPPE_SQUARE order 0=LL,1=LR,2=UR,3=UL) → drop-in for gate_pose/localization; YOLO path untouched + default.
