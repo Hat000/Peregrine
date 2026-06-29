@@ -731,6 +731,134 @@ def check_spawn_gate_egress_clears_gate0(cruise_speed: float) -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# CHECK 9 — VERTICAL ALIGNMENT: descend/climb onto the gate-opening centre (A5 BLOCKER 1)
+# ---------------------------------------------------------------------------
+def check_vertical_alignment_threads_offset_opening(cruise_speed: float) -> bool:
+    """Reproduce the A5 close-range clip and prove the vertical-alignment fix. The gate OPENING sits
+    BELOW the drone's held altitude (run4: the drone rode too HIGH and CLIPPED THE GATE TOP BAR at
+    2.78 m). We hold the drone laterally on-axis + anchored with the gate seen, and over a pursuit
+    window integrate ONLY the vertical kinematics under the seeker's commanded vertical-velocity target
+    (vz_t), tracking the world vertical offset between the flight path and the gate-opening centre.
+
+      * OLD (use_vertical_align=False): the seeker holds a FIXED altitude -> the vertical offset stays
+        at its initial value -> the drone rides above the opening and CLIPS the top bar.
+      * NEW (use_vertical_align=True): the seeker commands a bounded vertical velocity that drives the
+        offset toward ~0 -> the drone descends onto the opening centre and THREADS it; vz stays BOUNDED.
+
+    The +20deg mount is faithfully in the loop: the detector projects through R_camera_from_body() and
+    the seeker recovers the offset via the body->world rotation, so this exercises the real geometry.
+
+    Asserts: OLD leaves a large residual vertical offset (clips); NEW drives it toward ~0 (threads) with
+    a BOUNDED commanded vz."""
+    # the drone flies at z=-2.5 (NED); the gate OPENING centre sits ~1.0 m BELOW (z=-1.5) -- the run4
+    # geometry (the opening below the held path). 1.0 m > the gate's 0.75 m opening HALF-width, so a
+    # FIXED-altitude hold leaves the drone clipping the top bar; the fix must drive the offset INSIDE the
+    # opening. The detector projects from the TRUE (descending) drone height so the recovered world
+    # vertical offset is the genuine drone-vs-opening gap as the loop closes.
+    drone_z = -2.5
+    gate = _gate([16.0, 0.0, -1.5], normal=[1.0, 0.0, 0.0], gate_id=0)
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    speed_cap = GateSeekerConfig().vertical_align_speed_cap_mps
+    opening_half_m = gate.inner_size_m / 2.0                  # 0.75 m -- thread if |residual| < this
+
+    def _run(align: bool):
+        # the detector projects the gate from the drone's CURRENT (integrated) height each tick, so the
+        # offset closes as the drone descends (a faithful closed loop on the vertical channel).
+        drone_pos = np.array([0.0, 0.0, drone_z])
+        seeker = GateSeeker(config=GateSeekerConfig(
+            cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+            use_spawn_egress=False, use_vertical_align=align, vertical_align_ramp_s=0.0),
+            detector=_ProjDetector(gate, drone_pos, R_wb))
+        z = drone_z
+        vz = 0.0
+        dt = 0.05
+        max_vz_cmd = 0.0
+        offset0 = None
+        for k in range(80):
+            t_ns = int(k * dt * 1e9)
+            # re-point the detector at the drone's current height so the seen offset reflects the descent.
+            seeker.detector = _ProjDetector(gate, np.array([0.0, 0.0, z]), R_wb)
+            ns = NavState(sim_time_ns=t_ns, position_ned=np.array([0.0, 0.0, z]),
+                          velocity_ned=np.array([0.0, 0.0, vz]), roll=0.0, pitch=0.0, yaw=0.0,
+                          time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+            frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=np.ones((360, 640, 3), np.uint8))
+            seeker.command_visual(ns, frame, 0)
+            pose = seeker._last_pose
+            if pose is not None:
+                off = float(seeker._gate_lever_world(ns, pose)[2])    # world vertical offset (NED Z)
+                if offset0 is None:
+                    offset0 = off
+                # the seeker's commanded vz target (Z-only velocity setpoint) drives the descent.
+                vz_cmd = seeker._vertical_align_vz(ns, pose)
+                max_vz_cmd = max(max_vz_cmd, abs(vz_cmd))
+                # integrate the vertical kinematics directly under the commanded vz (the alt-hold tracks
+                # vz_t; here we model that tracking as vz -> vz_cmd so the offset closes as it would fly).
+                vz = vz_cmd
+                z = z + vz * dt
+        # final residual offset (re-evaluate at the last height)
+        seeker.detector = _ProjDetector(gate, np.array([0.0, 0.0, z]), R_wb)
+        return offset0, (gate.position_ned[2] - z), max_vz_cmd  # (initial offset, final residual, max vz)
+
+    new_off0, new_resid, new_maxvz = _run(align=True)
+    old_off0, old_resid, _ = _run(align=False)
+
+    # NEW: the descent drives the residual INSIDE the opening half-width (threads the hole) and the
+    # commanded vz stayed bounded. OLD: fixed-altitude hold keeps the full ~1.0 m offset (> the 0.75 m
+    # half-opening) -> rides above the opening and CLIPS the top bar. NEW must also close MOST of the gap.
+    new_threads = abs(new_resid) < opening_half_m            # inside the opening -> threads
+    new_closed_most = abs(new_resid) < 0.5 * abs(new_off0)   # closed > half the initial offset
+    new_vz_bounded = new_maxvz <= speed_cap + 1e-9           # the commanded vz stayed bounded
+    old_clips = abs(old_resid) > opening_half_m              # fixed hold left an offset bigger than the opening
+    started_offset = abs(new_off0) > opening_half_m and abs(old_off0) > opening_half_m  # both began outside the opening
+    ok = new_threads and new_closed_most and new_vz_bounded and old_clips and started_offset
+    print(f"  [vert-align] OLD residual {old_resid:+.2f} m (clips: {old_clips})  ->  "
+          f"NEW residual {new_resid:+.2f} m (threads: {new_threads}) max|vz| {new_maxvz:.2f} m/s "
+          f"(cap {speed_cap:g}: bounded={new_vz_bounded})  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# CHECK 10 — NEAREST-GATE SELECTION: lock the near gate, not the far off-axis one (A5 BLOCKER 2)
+# ---------------------------------------------------------------------------
+def check_nearest_gate_first_acquisition(cruise_speed: float) -> bool:
+    """Reproduce the A5 far-gate lock and prove the nearest-gate fix. TWO gates are visible at spawn: a
+    NEAR centered start-line gate (~9 m, dead ahead) and a FAR off-axis downrange gate (~37 m, +18deg).
+
+      * OLD (prefer_nearest=False, prefer_centered only): picks the most-CENTERED gate. With the near
+        start gate slightly OFF-axis and a FAR gate dead-ahead (more centered), prefer-centered locks the
+        FAR gate -- exactly the A5 trap (a 37 m off-line lock starving the N-detection release).
+      * NEW (prefer_nearest=True): rejects the far (>max_acquire_range_m) gate and scores by range +
+        bearing, so it LOCKS the NEAR start-line gate -- the one it must fly first.
+
+    Asserts: NEW locks the NEAR gate (range < ~12 m); OLD locks the FAR gate (range > ~30 m)."""
+    # the near start gate is slightly OFF-axis (the racing line isn't dead-centre at spawn); the FAR
+    # downrange gate happens to sit MORE centered. prefer-centered alone then prefers the far one -- the
+    # A5 far-gate trap. (Range disambiguates: the near gate is the one to fly first.)
+    near = _gate([9.0, 2.6, -2.5], normal=[1.0, 0.0, 0.0], gate_id=0)            # near, slightly off-axis (~9 m)
+    far = _gate([35.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0], gate_id=1)            # far, dead-ahead (~35 m, centered)
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    gates = [near, far]
+
+    new_seeker = GateSeeker(config=GateSeekerConfig(prefer_nearest=True),
+                            detector=_MultiGateDetector(gates, np.zeros(3), R_wb))
+    new_pose = new_seeker.detect_gate_lever(Frame(frame_id=0, sim_time_ns=0,
+                                                  image_bgr=np.ones((360, 640, 3), np.uint8)))
+    old_seeker = GateSeeker(config=GateSeekerConfig(prefer_nearest=False, track_prefer_centered=True),
+                            detector=_MultiGateDetector(gates, np.zeros(3), R_wb))
+    old_pose = old_seeker.detect_gate_lever(Frame(frame_id=0, sim_time_ns=0,
+                                                  image_bgr=np.ones((360, 640, 3), np.uint8)))
+
+    new_locks_near = new_pose is not None and new_pose.range_m < 12.0
+    old_locks_far = old_pose is not None and old_pose.range_m > 30.0
+    ok = new_locks_near and old_locks_far
+    nr = -1.0 if new_pose is None else new_pose.range_m
+    orr = -1.0 if old_pose is None else old_pose.range_m
+    print(f"  [near-gate] OLD locked range {orr:.1f} m (far: {old_locks_far})  ->  "
+          f"NEW locked range {nr:.1f} m (near: {new_locks_near})  -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -751,9 +879,11 @@ def main() -> int:
     ok6 = check_spawn_tilt_hold_keeps_gate_in_view(args.speed)
     ok7 = check_mapfree_pursuit_pitch_bounded(args.speed)
     ok8 = check_spawn_gate_egress_clears_gate0(args.speed)
+    ok9 = check_vertical_alignment_threads_offset_opening(args.speed)
+    ok10 = check_nearest_gate_first_acquisition(args.speed)
 
     print()
-    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8:
+    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and ok10:
         print("RESULT: PASS — the integrated gate-seeker produces sane, slow, gate-pointing "
               "commands on synthetic data; the self-localized estimate stays bounded; the seeker "
               "RELEASES its launch-hold on its OWN map-free detections (the attempt-2 BUG A, where "
@@ -763,8 +893,12 @@ def main() -> int:
               "spawn-tilt hold FREEZES attitude so the gate stays in view and the release streak "
               "completes (the attempt-3 LAYER-1 stall); the map-free pursuit commands forward motion "
               "as a BOUNDED FEEDFORWARD tilt so the PITCH stays bounded with no velocity observability "
-              "(the attempt-4 pitch windup); and the SPAWN-GATE EGRESS clears gate 0 along the start "
-              "normal before the downrange re-aim (the attempt-4 start-gate contact).")
+              "(the attempt-4 pitch windup); the SPAWN-GATE EGRESS clears gate 0 along the start "
+              "normal before the downrange re-aim (the attempt-4 start-gate contact); the VERTICAL "
+              "ALIGNMENT descends/climbs onto the gate-opening centre (bounded vz) instead of holding "
+              "altitude and clipping the top bar (the attempt-5 BLOCKER 1 close-range clip); and the "
+              "NEAREST-GATE first acquisition locks the near start-line gate over a far off-axis one "
+              "(the attempt-5 BLOCKER 2 far-gate lock).")
         return 0
     print("RESULT: FAIL — see the failing check above.")
     return 1

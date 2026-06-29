@@ -184,6 +184,26 @@ class GateSeekerConfig:
     # boresight) -- the gate we are flying the line at -- over merely the closest. Once a track
     # exists, continuity (below) selects, not centring.
     track_prefer_centered: bool = True
+    # --- NEAREST-GATE FIRST ACQUISITION (the 2026-06-29 attempt-5 BLOCKER 2 fix) ---
+    # A5 (2.0 m/s): "prefer-centered" alone locked a DISTANT off-axis gate (trk_range 37-60 m,
+    # trk_az +0.32 = +18deg) over the NEAR start-line gate dead ahead -- the far gate's intermittent
+    # detections starved the N=3 release and the frozen spawn-tilt drifted the drone into gate 0. The
+    # near gate is the one we must fly FIRST, so first-acquisition must bias toward the NEAREST
+    # plausible gate, not merely the most-centered. THE FIX: (1) REJECT any candidate beyond
+    # ``max_acquire_range_m`` (a distant downrange gate is never the next gate to fly); (2) among the
+    # admissible candidates, score by a blend of range AND bearing so the NEAR-and-reasonably-centered
+    # gate wins over a far-but-perfectly-centered one. ``prefer_nearest`` gates the whole behaviour;
+    # OFF => the legacy pure prefer-centered (or closest) selection.
+    prefer_nearest: bool = True
+    # First-acquisition candidates farther than this are REJECTED (not the next gate to fly). The near
+    # start-line gate sits ~10 m at spawn; a 37-60 m lock is the far-gate trap. Generous enough to keep
+    # an honest next gate, tight enough to reject the distant off-axis downrange gate.
+    max_acquire_range_m: float = 22.0
+    # First-acquisition score = range_m + nearest_bearing_weight_m_per_rad * |bearing|. The bearing
+    # penalty is in METRES per radian so it trades off directly against range: at the default a 0.32 rad
+    # (~18deg) off-axis gate carries a +6.4 m penalty, so the 9 m near gate (small bearing) beats the
+    # 37 m far gate decisively. Larger => more centring weight; 0 => pure nearest.
+    nearest_bearing_weight_m_per_rad: float = 20.0
     # A candidate is consistent with the track when BOTH its range and its camera bearing are within
     # these of the track's PREDICTED value. A candidate outside EITHER gate is a jump (a different
     # gate / a PnP-depth flip) and is REJECTED -- the track coasts (no detection this tick) rather
@@ -255,6 +275,50 @@ class GateSeekerConfig:
     egress_s: float = 0.8
     # The egress forward demand (m/s^2): a gentle straight creep out of the spawn gate. Small.
     egress_accel_mps2: float = 1.0
+    # --- DISTANCE-BASED EGRESS (the 2026-06-29 attempt-5 BLOCKER 3 fix) ---
+    # A5: the fixed-time 0.8 s egress did not reliably clear the gate-0 frame the drone spawns inside
+    # (run4 contacted structure at close range). THE FIX: make the egress end on DISTANCE travelled out
+    # of the spawn gate, not a wall-clock timer -- creep along the frozen spawn heading until clear of
+    # the gate-0 frame by roughly the gate depth. We have no absolute self-position map-free, so we
+    # integrate the seeker's OWN bounded forward demand (egress_accel_mps2, ramped) into a dead-reckoned
+    # along-heading distance and end egress once it exceeds ``egress_clear_distance_m``. ``egress_s``
+    # remains a hard UPPER bound (a timeout) so egress can never run forever. use_distance_egress gates
+    # it; OFF => the legacy pure time-based egress.
+    use_distance_egress: bool = True
+    # Clear the spawn gate by this along-heading distance before transitioning to pursuit. ~the gate
+    # depth + a margin so the chassis is fully past the gate-0 frame plane it spawned in.
+    egress_clear_distance_m: float = 1.5
+    # --- VERTICAL ALIGNMENT to the gate-opening centre (the 2026-06-29 attempt-5 BLOCKER 1 fix) ---
+    # A5 (3.0 m/s, the closest-approach failure): the seeker held a FIXED ALTITUDE while pursuing, but
+    # the gate OPENING sits BELOW the held path (run4: the tracked-gate camera elevation trk_el drifted
+    # +0.057 -> -0.064 as it closed). The drone rode too HIGH and CLIPPED THE GATE TOP BAR at 2.78 m
+    # instead of threading the opening. THE FIX: during pursuit, drive the gate-opening vertical offset
+    # toward ~zero -- descend/climb so the opening is centred on the flight path -- instead of holding
+    # altitude. The offset is the VERTICAL (world-NED Z) component of the gate-centre lever
+    # ``R_world_from_body @ R_camera_from_body().T @ t_cam_gate`` (the seen gate centre relative to the
+    # drone, rotated body->world via the estimator's gravity-known attitude). This ACCOUNTS FOR THE
+    # +20deg CAMERA MOUNT: R_camera_from_body() carries the mount tilt, so we do NOT naively null the
+    # camera-frame trk_el (the camera points 20deg up); we null the TRUE world vertical offset. We
+    # command it as a BOUNDED vertical VELOCITY target (vz_t in the alt-hold), proportional to the
+    # offset, capped + ramped -- the same bounded/ramped discipline as the forward feedforward (never a
+    # position step, never unbounded). ``use_vertical_align`` gates it; OFF => the legacy fixed-altitude
+    # hold (z_t = current estimator z).
+    use_vertical_align: bool = True
+    # Proportional gain (1/s): commanded vertical velocity vz_t = clip(vertical_align_kp * offset_z_world,
+    # +/-vertical_align_speed_cap). NED Z+ = down, so a gate BELOW the drone (offset_z_world > 0) -> a
+    # positive (descend) vz_t -> the alt-hold reduces thrust to sink toward the opening. Gentle so the
+    # descent is smooth at the slow cruise.
+    vertical_align_kp: float = 0.8
+    # Cap the commanded vertical velocity (m/s) so the descent/climb stays SLOW + bounded (mirrors the
+    # forward speed cap). Small -- this is the slow-lap, we ease onto the opening height, never dive.
+    vertical_align_speed_cap_mps: float = 1.0
+    # A deadband (m) on the vertical offset: within this the opening is "centred enough" and no vertical
+    # correction is commanded (avoids hunting on estimator noise near alignment).
+    vertical_align_deadband_m: float = 0.1
+    # Ramp the vertical-align authority in from zero over this window from the anchor release (mirrors
+    # the forward-demand ramp), so the first pursuit ticks don't step to a full descent command. 0.0 =>
+    # applied at full from tick 1.
+    vertical_align_ramp_s: float = 1.0
 
     # --- ANCHOR RELEASE on the seeker's OWN detections (the 2026-06-29 attempt-2 BUG A fix) ---
     # On the LIVE VQ2 wire the navigator is MAP-FREE (gates=[]), so its map-associated fix path
@@ -323,6 +387,11 @@ class GateSeeker:
     _last_pursuit_t_ns: int | None = field(default=None, repr=False)  # last pursuit tick (heading slew dt)
     # -- spawn-gate egress (A4 fix): the heading frozen at release = the direction OUT of the start gate --
     _spawn_heading: float | None = field(default=None, repr=False)
+    # -- distance-based egress (A5 BLOCKER 3): dead-reckoned along-heading distance crept since release --
+    _egress_dist_m: float = field(default=0.0, repr=False)
+    _egress_v: float = field(default=0.0, repr=False)                 # dead-reckoned egress creep speed
+    _last_egress_t_ns: int | None = field(default=None, repr=False)   # last egress tick (for the dt integral)
+    _egress_done: bool = field(default=False, repr=False)             # distance target reached -> egress complete
 
     # -- guidance: NavState + active gate -> Setpoint -----------------------
     def plan(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> Setpoint:
@@ -441,13 +510,14 @@ class GateSeeker:
             return None
 
         if self._track_range_m is None or self._track_bearing is None:
-            # FIRST acquisition: prefer the most CENTERED gate (smallest bearing magnitude), else the
-            # closest. That gate is the active line we fly; once tracked, continuity (not centring)
-            # selects.
-            if self.config.track_prefer_centered:
-                chosen = min(poses, key=lambda p: float(np.linalg.norm(self._pose_bearing(p))))
-            else:
-                chosen = min(poses, key=lambda p: p.range_m)
+            # FIRST acquisition: choose the gate we must fly FIRST. (A5 BLOCKER 2) Pure prefer-centered
+            # locked a DISTANT off-axis gate over the NEAR start-line gate; the near gate is the next one
+            # to fly, so bias toward the NEAREST plausible gate. REJECT candidates beyond
+            # ``max_acquire_range_m`` (a distant downrange gate is never the next gate); among the rest,
+            # score by range + a bearing penalty so a near-and-reasonably-centered gate beats a
+            # far-but-perfectly-centered one. Falls back to the legacy selection when prefer_nearest is
+            # off (or when every candidate is beyond the acquire range -> don't reject them all).
+            chosen = self._first_acquisition(poses)
         else:
             # CONTINUITY: pick the candidate nearest the track in (range, bearing); REJECT a jump.
             pred_r = float(self._track_range_m)
@@ -482,6 +552,29 @@ class GateSeeker:
             self._track_bearing = (1.0 - a) * np.asarray(self._track_bearing, dtype=np.float64) + a * b_meas
         self._track_coast_ticks = 0
         return chosen
+
+    def _first_acquisition(self, poses: list[GatePose]) -> GatePose:
+        """Pick the gate to LOCK on first acquisition (no track yet). (A5 BLOCKER 2 fix.)
+
+        With ``prefer_nearest`` (default): REJECT candidates beyond ``max_acquire_range_m`` (a distant
+        downrange gate is never the next gate to fly -- the A5 far-gate trap), then among the admissible
+        ones minimise ``range_m + nearest_bearing_weight_m_per_rad * |bearing|`` so a NEAR,
+        reasonably-centered gate beats a far-but-perfectly-centered one. If EVERY candidate is beyond the
+        acquire range we do NOT reject them all (keep the nearest admissible-by-fallback); the score then
+        still favours the nearest. ``prefer_nearest`` off => the legacy prefer-centered / closest select.
+        """
+        if not self.config.prefer_nearest:
+            if self.config.track_prefer_centered:
+                return min(poses, key=lambda p: float(np.linalg.norm(self._pose_bearing(p))))
+            return min(poses, key=lambda p: p.range_m)
+        # reject the distant downrange gates; if that empties the set, fall back to ALL (never reject
+        # every candidate -> we must still lock something to make progress).
+        admissible = [p for p in poses if p.range_m <= self.config.max_acquire_range_m]
+        if not admissible:
+            admissible = poses
+        w = float(self.config.nearest_bearing_weight_m_per_rad)
+        return min(admissible,
+                   key=lambda p: p.range_m + w * float(np.linalg.norm(self._pose_bearing(p))))
 
     def command_visual(self, nav: NavState, frame: Frame | None, active_gate_index: int, *,
                        is_final_gate: bool = False) -> ControlCommand:
@@ -589,6 +682,48 @@ class GateSeeker:
         R_wb = R_world_from_body(float(nav.roll), float(nav.pitch), float(nav.yaw))
         return _unit(R_wb @ d_body, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
 
+    def _gate_lever_world(self, nav: NavState, pose: GatePose) -> np.ndarray:
+        """FULL (non-unit) world-NED vector from the drone to the DETECTED gate centre, from the lever.
+
+        Same body->world rotation as :meth:`_gate_dir_world` but keeps the MAGNITUDE: the gate centre's
+        position RELATIVE to the drone in world NED (metres). Its Z component (NED Z+ = down) is the true
+        VERTICAL OFFSET between the drone's flight path and the gate-opening centre -- positive = the
+        opening is BELOW the drone (descend), negative = ABOVE (climb). Because ``R_camera_from_body()``
+        carries the +20deg mount tilt and ``R_wb`` is the estimator's gravity-known attitude, this is the
+        TRUE world vertical offset, NOT the raw camera-frame elevation (the camera points 20deg up, so
+        nulling the camera-frame trk_el would leave a residual world offset). [A5 BLOCKER 1]"""
+        t_cam = np.asarray(pose.t_cam_gate, dtype=np.float64)
+        v_body = R_camera_from_body().T @ t_cam
+        R_wb = R_world_from_body(float(nav.roll), float(nav.pitch), float(nav.yaw))
+        return R_wb @ v_body
+
+    def _vertical_align_vz(self, nav: NavState, pose: GatePose) -> float:
+        """Bounded vertical VELOCITY target (m/s, NED Z+ = down) that nulls the gate-opening vertical
+        offset, ramped in from release. (A5 BLOCKER 1.)
+
+        ``vz_t = clip(vertical_align_kp * offset_z_world, +/-cap) * ramp``, with a deadband so a
+        near-aligned opening commands no correction (no hunting on estimator noise). offset_z_world is
+        the world-NED Z of the gate-centre lever (:meth:`_gate_lever_world`): a gate BELOW the drone
+        (offset > 0) yields a positive (descend) vz_t, which the controller's alt-hold turns into reduced
+        thrust to sink toward the opening height. Bounded + ramped (NEVER a position step) -- the same
+        discipline as the forward feedforward, so the vertical command can't lurch."""
+        if not self.config.use_vertical_align:
+            return 0.0
+        offset_z = float(self._gate_lever_world(nav, pose)[2])
+        if abs(offset_z) <= self.config.vertical_align_deadband_m:
+            return 0.0
+        cap = abs(float(self.config.vertical_align_speed_cap_mps))
+        vz = float(np.clip(self.config.vertical_align_kp * offset_z, -cap, cap))
+        return vz * self._vertical_align_ramp(int(nav.sim_time_ns))
+
+    def _vertical_align_ramp(self, sim_time_ns: int) -> float:
+        """Vertical-align authority ramp [0,1] over ``vertical_align_ramp_s`` from the anchor release, so
+        the first pursuit ticks don't step to a full descent command (mirrors the forward-demand ramp)."""
+        if self.config.vertical_align_ramp_s <= 0.0 or self._release_t_ns is None:
+            return 1.0
+        elapsed = (int(sim_time_ns) - self._release_t_ns) / 1e9
+        return float(np.clip(elapsed / self.config.vertical_align_ramp_s, 0.0, 1.0))
+
     def _visual_pursuit_command(self, nav: NavState, pose: GatePose) -> ControlCommand:
         """Build the slow pursuit CTBR from the SEEN gate's relative bearing (no map, no abs position).
 
@@ -621,10 +756,13 @@ class GateSeeker:
         if self.config.use_feedforward_forward:
             # BOUNDED FEEDFORWARD forward tilt toward the seen gate: a fixed forward accel demand
             # (ramped), NO velocity term to wind up. Cross-track centering is owned by the yaw (the
-            # heading points at the gate, so "forward" == toward the opening).
+            # heading points at the gate, so "forward" == toward the opening). VERTICAL ALIGNMENT (A5
+            # BLOCKER 1): a bounded vertical-velocity target nulls the gate-opening vertical offset so
+            # the drone descends/climbs onto the opening centre instead of holding altitude and clipping.
+            vz = self._vertical_align_vz(nav, pose)
             return self._feedforward_command(nav, los, yaw, eff_ramp,
                                               self.config.forward_accel_mps2,
-                                              self._forward_accel_ramp(int(nav.sim_time_ns)))
+                                              self._forward_accel_ramp(int(nav.sim_time_ns)), vz_cmd=vz)
         # LEGACY: a desired-velocity setpoint (the controller closes it with a velocity-error term).
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
@@ -639,17 +777,29 @@ class GateSeeker:
 
     def _feedforward_command(self, nav: NavState, los: np.ndarray, yaw: float,
                              launch_ramp: float | None, accel_mps2: float,
-                             demand_ramp: float) -> ControlCommand:
+                             demand_ramp: float, vz_cmd: float = 0.0) -> ControlCommand:
         """Shared bounded-feedforward forward-tilt CTBR (pursuit + egress). Commands a horizontal
         acceleration ``accel_mps2 * demand_ramp`` along the unit world heading ``los`` via
         ``Setpoint.accel_ned`` -- the controller adds it as PURE feedforward (no velocity-error term
         that could wind up map-free) and turns it into a tilt. The pursuit/launch authority ramp,
         yaw cap, roll cap and PITCH cap are then applied so the forward lean is bounded + rate-limited
-        + ramped and can NEVER saturate pitch (the A4 crash). Altitude is held by the alt-hold."""
+        + ramped and can NEVER saturate pitch (the A4 crash).
+
+        VERTICAL (A5 BLOCKER 1): when ``vz_cmd`` != 0 a bounded vertical-velocity target is carried in
+        ``Setpoint.velocity_ned`` (HORIZONTAL components ZERO -- only Z), so the controller's altitude
+        hold tracks the commanded sink/climb rate (vz_t) toward the gate-opening height while the
+        horizontal accel feedforward owns the forward/cross-track tilt. The horizontal velocity error
+        the controller derives from velocity_ned[0:2]=0 is ~zero map-free (vel~0), so it does not
+        disturb the forward feedforward; vz_cmd=0 leaves the legacy fixed-altitude hold (velocity_ned
+        stays None -> vz_t=0 -> hold current z)."""
         a_fwd = float(max(accel_mps2, 0.0)) * float(np.clip(demand_ramp, 0.0, 1.0))
+        velocity_ned = None
+        if abs(float(vz_cmd)) > 0.0:
+            velocity_ned = np.array([0.0, 0.0, float(vz_cmd)], dtype=np.float64)  # VERTICAL target only
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
             accel_ned=a_fwd * np.asarray(los, dtype=np.float64),   # bounded feedforward forward tilt
+            velocity_ned=velocity_ned,                             # bounded vertical-align vz_t (Z only)
             yaw=yaw,
             launch_ramp=launch_ramp,
         )
@@ -659,15 +809,27 @@ class GateSeeker:
         return self._cap_pitch_rate(cmd, self.config.pursuit_pitch_rate_cap_rps)
 
     def _in_egress(self, sim_time_ns: int) -> bool:
-        """True during the SPAWN-GATE EGRESS window: the first ``egress_s`` after the anchor releases.
-        A brief straight creep along the frozen spawn heading clears the start gate (the drone spawns
-        inside gate 0) before normal downrange pursuit. Off when ``use_spawn_egress`` is False / not
-        yet released."""
+        """True during the SPAWN-GATE EGRESS window: a straight creep along the frozen spawn heading that
+        clears the start gate (the drone spawns inside gate 0) before normal downrange pursuit. Off when
+        ``use_spawn_egress`` is False / not yet released.
+
+        END CONDITION (A5 BLOCKER 3): with ``use_distance_egress`` the egress ends on DISTANCE crept out
+        of the gate (``egress_clear_distance_m``, dead-reckoned from the seeker's own bounded forward
+        demand) rather than a fixed timer -- the 0.8 s timer didn't reliably clear the gate-0 frame.
+        ``egress_s`` remains a hard UPPER bound (timeout) so egress can never run forever. With
+        ``use_distance_egress`` off it is the legacy pure time window (< ``egress_s``)."""
         if not self.config.use_spawn_egress or self.config.egress_s <= 0.0:
             return False
         if self._release_t_ns is None or self._spawn_heading is None:
             return False
-        return (int(sim_time_ns) - self._release_t_ns) / 1e9 < self.config.egress_s
+        elapsed = (int(sim_time_ns) - self._release_t_ns) / 1e9
+        if elapsed >= self.config.egress_s:        # hard timeout (also the legacy end condition)
+            return False
+        if self.config.use_distance_egress:
+            # distance-based: still egressing until we've crept the clear distance out of the gate.
+            if self._egress_done or self._egress_dist_m >= self.config.egress_clear_distance_m:
+                return False
+        return True
 
     def _egress_command(self, nav: NavState) -> ControlCommand:
         """SPAWN-GATE EGRESS: a small CAPPED forward creep along the FROZEN spawn heading (the
@@ -685,8 +847,33 @@ class GateSeeker:
             demand_ramp = float(np.clip(elapsed / self.config.egress_s, 0.0, 1.0))
         else:
             demand_ramp = 1.0
+        # DEAD-RECKON the along-heading distance crept since release (A5 BLOCKER 3): integrate the
+        # seeker's OWN bounded forward demand (a = egress_accel * ramp) into a velocity then a distance
+        # (v += a*dt ; dist += v*dt). Map-free we have no absolute self-position, so this is the only
+        # observable "how far out of the gate am I" signal; _in_egress ends the phase once dist exceeds
+        # egress_clear_distance_m. Bounded by construction (the forward demand is the same capped creep).
+        if self.config.use_distance_egress:
+            self._advance_egress_distance(int(nav.sim_time_ns), demand_ramp)
         return self._feedforward_command(nav, los, yaw0, launch,
                                          self.config.egress_accel_mps2, demand_ramp)
+
+    def _advance_egress_distance(self, sim_time_ns: int, demand_ramp: float) -> None:
+        """Integrate the dead-reckoned along-heading egress distance from the seeker's own bounded
+        forward demand. Double-integrates a = egress_accel_mps2 * demand_ramp (the capped creep) over
+        the tick dt: ``self._egress_v`` is folded into ``self._egress_dist_m``. Latches ``_egress_done``
+        once the clear distance is reached so the phase can't re-enter. [A5 BLOCKER 3]"""
+        if self._last_egress_t_ns is None:
+            self._last_egress_t_ns = int(sim_time_ns)
+            return
+        dt = max((int(sim_time_ns) - self._last_egress_t_ns) / 1e9, 0.0)
+        self._last_egress_t_ns = int(sim_time_ns)
+        a = float(max(self.config.egress_accel_mps2, 0.0)) * float(np.clip(demand_ramp, 0.0, 1.0))
+        # simple forward kinematics: v += a*dt, dist += v*dt (the creep speed grows under the bounded
+        # accel). The speed accumulates on the instance across ticks.
+        self._egress_v = self._egress_v + a * dt
+        self._egress_dist_m += self._egress_v * dt
+        if self._egress_dist_m >= self.config.egress_clear_distance_m:
+            self._egress_done = True
 
     def _forward_accel_ramp(self, sim_time_ns: int) -> float:
         """Forward-demand ramp [0,1] over ``forward_ramp_s`` from the anchor release, so the forward
@@ -886,6 +1073,10 @@ class GateSeeker:
         self._release_t_ns = None
         self._last_pursuit_t_ns = None
         self._spawn_heading = None
+        self._egress_dist_m = 0.0
+        self._egress_v = 0.0
+        self._last_egress_t_ns = None
+        self._egress_done = False
 
     # -- internals ----------------------------------------------------------
     def _launch_ramp(self, sim_time_ns: int) -> float | None:

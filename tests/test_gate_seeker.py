@@ -992,10 +992,19 @@ def test_pursuit_pitch_rate_capped():
 
 def test_pursuit_forward_is_feedforward_accel_not_velocity_setpoint():
     """The bounded-feedforward pursuit sends a Setpoint with accel_ned (pure feedforward the controller
-    adds, no wind-up) and NO velocity_ned -- the structural fix. With feedforward ON the seeker's
-    setpoint to the controller carries accel and not velocity; with it OFF (legacy) it carries velocity."""
+    adds, no wind-up) and NO HORIZONTAL velocity_ned -- the structural A4 fix. The FORWARD/cross-track
+    demand is pure accel feedforward; the only velocity_ned the seeker may carry is a Z-ONLY
+    vertical-align target (A5 BLOCKER 1), which is NOT a horizontal velocity setpoint and cannot wind up
+    the pitch. With feedforward ON the setpoint carries accel + (at most) a Z-only velocity; with it OFF
+    (legacy) it carries a full velocity setpoint.
+
+    Here the active gate sits at the SAME height as the drone (zero vertical offset), so vertical-align
+    is in its deadband and commands no vz -> velocity_ned is None; the A5 vertical case is covered by its
+    own dedicated test below."""
     from racer.frames import R_world_from_body
-    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    # gate at the drone's spawn HEIGHT (drone_pos defaults to [0,0,0] in _ProjDetector, gate z=0) so the
+    # world vertical offset is ~0 -> vertical-align deadband -> no vz target -> velocity_ned stays None.
+    gate = _gate([12.0, 0.0, 0.0], normal=[1.0, 0.0, 0.0])
     captured = {}
 
     class _SpyController:
@@ -1098,6 +1107,235 @@ def test_spawn_egress_off_goes_straight_to_pursuit():
     seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t1, yaw=0.0), _frame(1, t1), 0)
     # no egress -> the heading immediately slews toward the off-side gate (the legacy re-aim).
     assert float(seeker._last_yaw) > 0.0
+
+
+# ===========================================================================
+# A5 (2026-06-29 attempt-5) BLOCKER 1: VERTICAL ALIGNMENT to the gate-opening centre
+# ===========================================================================
+def test_vertical_align_offset_sign_and_mount_handling():
+    """The vertical-align offset is the TRUE world-NED Z of the gate-centre lever (NOT the raw camera-
+    frame elevation): the +20deg mount is rotated out via R_camera_from_body() before reading Z. A gate
+    BELOW the drone (world +Z) yields a positive (descend) vz; a gate ABOVE yields a negative (climb)."""
+    from racer.frames import R_world_from_body
+    # gate 1.0 m BELOW the camera (detector drone_pos z=0, gate z=+1.0 in world NED): opening is below.
+    below = _gate([12.0, 0.0, 1.0], normal=[1.0, 0.0, 0.0])
+    det_b = _ProjDetector(below, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, vertical_align_ramp_s=0.0,
+                                                vertical_align_deadband_m=0.05), detector=det_b)
+    pose_b = seeker.detect_gate_lever(_frame(0, 0))
+    ns = _nav_fix([0, 0, 0], tsv=0.05)
+    off_b = float(seeker._gate_lever_world(ns, pose_b)[2])
+    assert off_b > 0.5, "a gate below the drone must read a positive (down) world vertical offset"
+    assert seeker._vertical_align_vz(ns, pose_b) > 0.0, "below -> descend (positive vz, NED z+ down)"
+    # gate 1.0 m ABOVE: world Z negative -> climb (negative vz).
+    seeker.reset()
+    above = _gate([12.0, 0.0, -1.0], normal=[1.0, 0.0, 0.0])
+    seeker.detector = _ProjDetector(above, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    pose_a = seeker.detect_gate_lever(_frame(1, 0))
+    assert float(seeker._gate_lever_world(ns, pose_a)[2]) < -0.5
+    assert seeker._vertical_align_vz(ns, pose_a) < 0.0, "above -> climb (negative vz)"
+
+
+def test_vertical_align_vz_is_bounded_and_ramped():
+    """The commanded vz is CAPPED to the speed cap (never a dive) and RAMPED in from release (the first
+    pursuit ticks don't step to a full descent), mirroring the forward-feedforward discipline."""
+    from racer.frames import R_world_from_body
+    # a big vertical offset so the raw kp*offset would exceed the cap -> the cap must hold.
+    gate = _gate([12.0, 0.0, 5.0], normal=[1.0, 0.0, 0.0])    # ~5 m below
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    cap = 1.0
+    seeker = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, vertical_align_speed_cap_mps=cap,
+                                                vertical_align_ramp_s=0.0), detector=det)
+    pose = seeker.detect_gate_lever(_frame(0, 0))
+    ns = _nav_fix([0, 0, 0], tsv=0.05)
+    assert abs(seeker._vertical_align_vz(ns, pose)) <= cap + 1e-9, "vz must be capped (no dive)"
+    # ramp: at release the vz is ~0, growing to full over the ramp window.
+    seeker2 = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, vertical_align_speed_cap_mps=cap,
+                                                 vertical_align_ramp_s=1.0), detector=det)
+    seeker2._release_t_ns = 0
+    seeker2.detector = det
+    p2 = seeker2.detect_gate_lever(_frame(1, 0))
+    vz_t0 = abs(seeker2._vertical_align_vz(_nav_fix([0, 0, 0], tsv=0.05, sim_time_ns=0), p2))
+    vz_t1 = abs(seeker2._vertical_align_vz(_nav_fix([0, 0, 0], tsv=0.05, sim_time_ns=int(1.0 * 1e9)), p2))
+    assert vz_t0 < vz_t1, "the vertical-align authority must ramp in from release"
+
+
+def test_vertical_align_deadband_no_command_when_centered():
+    """Within the deadband (the opening is centred enough) NO vertical correction is commanded -- avoids
+    hunting on estimator noise near alignment."""
+    from racer.frames import R_world_from_body
+    # gate at the SAME height as the detector drone (z=0): world vertical offset ~0 -> inside deadband.
+    gate = _gate([12.0, 0.0, 0.0], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, vertical_align_ramp_s=0.0,
+                                                vertical_align_deadband_m=0.1), detector=det)
+    pose = seeker.detect_gate_lever(_frame(0, 0))
+    assert seeker._vertical_align_vz(_nav_fix([0, 0, 0], tsv=0.05), pose) == 0.0
+
+
+def test_vertical_align_off_holds_altitude_legacy():
+    """With use_vertical_align=False the seeker commands NO vertical velocity (the legacy fixed-altitude
+    hold) even with a big offset -- the opt-in guard."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, 2.0], normal=[1.0, 0.0, 0.0])   # 2 m below
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, use_vertical_align=False), detector=det)
+    pose = seeker.detect_gate_lever(_frame(0, 0))
+    assert seeker._vertical_align_vz(_nav_fix([0, 0, 0], tsv=0.05), pose) == 0.0
+
+
+def test_vertical_align_pursuit_setpoint_carries_z_only_velocity():
+    """In pursuit with a vertical offset the seeker's Setpoint to the controller carries a Z-ONLY
+    velocity_ned (the vertical-align vz_t) alongside the horizontal accel feedforward -- the horizontal
+    velocity components are ZERO (no horizontal velocity windup, the A4 invariant preserved)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, 1.5], normal=[1.0, 0.0, 0.0])   # below -> a real vz target
+    captured = {}
+
+    class _Spy:
+        def __init__(self, inner):
+            self.inner = inner
+            self.max_body_rate_rps = inner.max_body_rate_rps
+            self.hover_thrust = inner.hover_thrust
+        def command(self, nav, sp):
+            captured["sp"] = sp
+            return self.inner.command(nav, sp)
+
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, vertical_align_ramp_s=0.0), detector=det)
+    seeker.controller = _Spy(seeker.controller)
+    # nav drone height matched to the detector (z=0) so the seen offset is the real 1.5 m gap.
+    seeker.command_visual(_nav_fix([0, 0, 0], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+    captured.clear()
+    t1 = int(0.5 * 1e9)
+    seeker.command_visual(_nav_fix([0, 0, 0], tsv=0.05, sim_time_ns=t1), _frame(1, t1), 0)
+    sp = captured["sp"]
+    assert sp.velocity_ned is not None, "vertical-align must carry a velocity_ned (vz_t)"
+    assert sp.velocity_ned[0] == 0.0 and sp.velocity_ned[1] == 0.0, \
+        "the vertical-align velocity must be Z-ONLY (no horizontal velocity setpoint -> no windup)"
+    assert sp.velocity_ned[2] > 0.0, "a below-gate offset -> a positive (descend) vz_t"
+    assert sp.accel_ned is not None, "the forward feedforward tilt is still an accel demand"
+
+
+# ===========================================================================
+# A5 (2026-06-29 attempt-5) BLOCKER 2: NEAREST-GATE first acquisition
+# ===========================================================================
+def test_nearest_gate_locks_near_over_far_off_axis():
+    """THE A5 BLOCKER 2 fix: a NEAR slightly-off-axis start gate and a FAR dead-ahead gate are both
+    visible. OLD prefer-centered locks the FAR (more centered) gate -- the A5 far-gate trap that starved
+    the release. NEW prefer_nearest locks the NEAR start-line gate (the one to fly first)."""
+    from racer.frames import R_world_from_body
+    near = _gate([9.0, 2.6, -2.5], normal=[1, 0, 0], gate_id=0)     # near, slightly off-axis (~9.4 m)
+    far = _gate([35.0, 0.0, -2.5], normal=[1, 0, 0], gate_id=1)     # far, dead-ahead (~35 m, centered)
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    # NEW: prefer_nearest -> the near gate.
+    new = GateSeeker(config=GateSeekerConfig(prefer_nearest=True),
+                     detector=_MultiProjDetector([near, far], np.zeros(3), R_wb))
+    new_pose = new.detect_gate_lever(_frame(0, 0))
+    assert new_pose is not None and new_pose.range_m < 12.0, "NEW must lock the NEAR start-line gate"
+    # OLD: prefer-centered only -> the far (more centered) gate.
+    old = GateSeeker(config=GateSeekerConfig(prefer_nearest=False, track_prefer_centered=True),
+                     detector=_MultiProjDetector([near, far], np.zeros(3), R_wb))
+    old_pose = old.detect_gate_lever(_frame(0, 0))
+    assert old_pose is not None and old_pose.range_m > 30.0, \
+        "OLD prefer-centered should lock the far dead-ahead gate (the A5 far-gate trap)"
+
+
+def test_nearest_gate_rejects_candidate_beyond_acquire_range():
+    """A candidate beyond max_acquire_range_m is REJECTED on first acquisition (a distant downrange gate
+    is never the next gate to fly) -- so a lone far gate + a near gate locks the near; but if EVERY
+    candidate is beyond range, we do NOT reject them all (must still lock something)."""
+    from racer.frames import R_world_from_body
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    # gates near the detector's boresight height (drone_pos z=0) so PnP is well-conditioned at close range.
+    near = _gate([10.0, 0.0, 0.0], normal=[1, 0, 0], gate_id=0)
+    far = _gate([40.0, 1.0, 0.0], normal=[1, 0, 0], gate_id=1)
+    seeker = GateSeeker(config=GateSeekerConfig(prefer_nearest=True, max_acquire_range_m=22.0),
+                        detector=_MultiProjDetector([near, far], np.zeros(3), R_wb))
+    pose = seeker.detect_gate_lever(_frame(0, 0))
+    assert pose is not None and pose.range_m < 15.0, "the far (>22 m) gate must be rejected; lock the near"
+    # ALL-far: every candidate beyond the acquire range -> fall back, lock the nearest of them (not None).
+    far_only = GateSeeker(config=GateSeekerConfig(prefer_nearest=True, max_acquire_range_m=22.0),
+                          detector=_MultiProjDetector(
+                              [_gate([30.0, 0.0, 0.0], normal=[1, 0, 0], gate_id=0),
+                               _gate([40.0, 0.0, 0.0], normal=[1, 0, 0], gate_id=1)], np.zeros(3), R_wb))
+    pose2 = far_only.detect_gate_lever(_frame(0, 0))
+    assert pose2 is not None and pose2.range_m < 35.0, \
+        "when all candidates are beyond range, lock the nearest (don't reject everything)"
+
+
+def test_prefer_nearest_off_is_legacy_prefer_centered():
+    """With prefer_nearest=False the legacy prefer-centered selection is preserved (opt-in guard)."""
+    from racer.frames import R_world_from_body
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    near_off = _gate([9.0, 3.0, -2.5], normal=[1, 0, 0], gate_id=0)    # near but off-axis
+    far_centered = _gate([30.0, 0.0, -2.5], normal=[1, 0, 0], gate_id=1)  # far but centered
+    seeker = GateSeeker(config=GateSeekerConfig(prefer_nearest=False, track_prefer_centered=True),
+                        detector=_MultiProjDetector([near_off, far_centered], np.zeros(3), R_wb))
+    pose = seeker.detect_gate_lever(_frame(0, 0))
+    # legacy prefer-centered: the centered (far) gate wins.
+    assert pose is not None and pose.range_m > 25.0
+
+
+# ===========================================================================
+# A5 (2026-06-29 attempt-5) BLOCKER 3: DISTANCE-BASED spawn-gate egress
+# ===========================================================================
+def test_distance_egress_ends_on_distance_not_only_time():
+    """THE A5 BLOCKER 3 fix: with use_distance_egress the egress ends once the dead-reckoned along-
+    heading distance exceeds egress_clear_distance_m -- not just the fixed timer. A short clear distance
+    ends egress EARLY (before egress_s); a long one keeps egressing until the distance is crept (up to
+    the egress_s timeout)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    # a SMALL clear distance: egress should end after only a little creep (well before the egress_s cap).
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=True, use_distance_egress=True, egress_s=2.0,
+        egress_clear_distance_m=0.3, egress_accel_mps2=1.0), detector=det)
+    ended_at = None
+    for k in range(40):
+        t_ns = int(k * 0.05 * 1e9)
+        seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_ns), _frame(k, t_ns), 0)
+        if ended_at is None and not seeker._in_egress(t_ns) and seeker._egress_done:
+            ended_at = t_ns / 1e9
+            break
+    assert ended_at is not None, "distance-based egress must end once the clear distance is crept"
+    assert ended_at < 2.0, "the small clear distance must end egress BEFORE the egress_s timeout"
+    assert seeker._egress_dist_m >= 0.3 - 1e-6, "egress must have crept at least the clear distance"
+
+
+def test_distance_egress_timeout_bounds_egress():
+    """egress_s remains a hard UPPER bound: even if the (large) clear distance is never reached, egress
+    ends at the egress_s timeout so it can never run forever."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=True, use_distance_egress=True, egress_s=0.4,
+        egress_clear_distance_m=1000.0, egress_accel_mps2=0.5), detector=det)  # unreachable distance
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+    # inside the timeout window: still egressing (distance not yet reached).
+    assert seeker._in_egress(int(0.2 * 1e9))
+    # past the timeout: egress ends regardless of the (unreached) distance.
+    assert not seeker._in_egress(int(0.5 * 1e9)), "egress must end at the egress_s timeout (bounded)"
+
+
+def test_distance_egress_off_is_legacy_time_based():
+    """With use_distance_egress=False the legacy pure time-based egress is preserved: it ends only at
+    egress_s, regardless of distance crept (the opt-in guard)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=True, use_distance_egress=False, egress_s=0.8), detector=det)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+    assert seeker._in_egress(int(0.5 * 1e9))          # still in the time window
+    assert not seeker._in_egress(int(0.9 * 1e9))      # past egress_s -> done (pure time-based)
 
 
 def test_pipeline_smoke_off_path_navigator_still_constructs():
