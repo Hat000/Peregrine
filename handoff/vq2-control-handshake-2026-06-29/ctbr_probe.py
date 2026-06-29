@@ -33,9 +33,10 @@ import argparse
 import json
 import math
 import os
+import statistics
 import sys
 import time
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
 
 os.environ.setdefault("MAVLINK20", "1")
@@ -87,6 +88,28 @@ def main() -> None:
     outp.parent.mkdir(parents=True, exist_ok=True)
 
     client = MavlinkClient(args.endpoint)
+
+    # Wire-health tap: count inbound types + capture HIGHRES_IMU sim-clock vs wall arrival so we
+    # can report the real-time factor + inter-arrival jitter DURING the flight (is the control
+    # wire keeping up, decoupled from display lag?). Only active between the markers set below.
+    _health = {"counts": defaultdict(int), "imu_sim_us": [], "imu_wall": [],
+               "imu_gaps": [], "_last_imu": None, "on": False}
+
+    def _health_tap(msg):
+        if not _health["on"]:
+            return
+        t = msg.get_type()
+        _health["counts"][t] += 1
+        if t == "HIGHRES_IMU":
+            now = time.perf_counter()
+            _health["imu_sim_us"].append(int(msg.time_usec))
+            _health["imu_wall"].append(now)
+            if _health["_last_imu"] is not None:
+                _health["imu_gaps"].append(now - _health["_last_imu"])
+            _health["_last_imu"] = now
+
+    client.on_message = _health_tap
+
     # Keepalive regime ---------------------------------------------------------
     if args.regime == "acro":
         client.send_heartbeats = True       # heartbeat -> ACRO (the hypothesis)
@@ -141,6 +164,7 @@ def main() -> None:
 
     print(f"[probe] streaming {('CTBR' if use_ctbr else 'ATTITUDE')} thrust={args.thrust} "
           f"for {total:.1f}s (settle={args.settle} hold={args.hold} step={args.step})")
+    _health["on"] = True   # start measuring wire health for the flight window only
     while True:
         now = time.monotonic()
         t = now - t0
@@ -187,6 +211,7 @@ def main() -> None:
             })
         time.sleep(0.001)
 
+    _health["on"] = False
     # disarm to leave a clean state
     try:
         client.disarm()
@@ -194,6 +219,24 @@ def main() -> None:
         pass
 
     new_coll = client.collisions[n_collisions_before:]
+
+    # ---- wire health DURING the flight window ----
+    health_window = max(total, 1e-6)
+    rates_hz = {t: round(c / health_window, 1) for t, c in sorted(_health["counts"].items())}
+    rtf = None
+    sim_us, wall = _health["imu_sim_us"], _health["imu_wall"]
+    if len(sim_us) > 10 and (wall[-1] - wall[0]) > 0:
+        rtf = round(((sim_us[-1] - sim_us[0]) / 1e6) / (wall[-1] - wall[0]), 3)
+    imu_gap_ms = None
+    if _health["imu_gaps"]:
+        gms = sorted(x * 1000.0 for x in _health["imu_gaps"])
+        imu_gap_ms = {"mean": round(statistics.mean(gms), 2),
+                      "p50": round(statistics.median(gms), 2),
+                      "p99": round(gms[int(len(gms) * 0.99)], 2),
+                      "max": round(gms[-1], 2)}
+    health = {"real_time_factor": rtf, "imu_hz": rates_hz.get("HIGHRES_IMU", 0.0),
+              "actuator_hz": rates_hz.get("ACTUATOR_OUTPUT_STATUS", 0.0),
+              "imu_gap_ms": imu_gap_ms, "rates_hz": rates_hz}
 
     # ---- verdict ----
     def _phase_rows(p):
@@ -255,6 +298,7 @@ def main() -> None:
         "had_motors": any(r["motors"] is not None for r in samples),
         "autopilot": client.autopilot,
         "custom_mode": client.custom_mode,
+        "wire_health": health,
     }
     # frozen-episode guard: a crashed VQ2 episode returns to menu but the wire keeps
     # replaying the last state -> accel is byte-constant and motors never move. Flag it so

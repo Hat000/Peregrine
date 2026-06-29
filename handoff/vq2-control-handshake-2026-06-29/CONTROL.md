@@ -96,7 +96,19 @@ thrust 0.35, hover then **+0.4 rad/s pitch** step, **0 collisions**, `live:True`
 - ODOMETRY `angular_rate_body` stays 0.0 (blocked in VQ2); **raw HIGHRES_IMU `gyro_body` responds**
   — use `DroneState.gyro_body` for rate feedback in VQ2, not `angular_rate_body`.
 
-### 3. Lift confirmed
+### 3. Wire is real-time DURING active flight — not lagging (`logs/vq2_flight_health.json`)
+Measured by [`telem_health.py`](telem_health.py) and re-confirmed inline by `ctbr_probe.py`
+(`wire_health`) *during* a live climbing + pitch-step VQ2 flight (display/GPU lag the operator
+sees is decoupled from this):
+- **real-time factor = 1.00** (sim clock tracks wall-clock; idle 1.000, under 100 Hz control 1.001,
+  during active flight 1.001) → physics is **not** running slow.
+- full message rates: HIGHRES_IMU ~117–119 Hz, ACTUATOR_OUTPUT_STATUS ~95–96 Hz, RACE_STATUS 4 Hz
+  (RACE_STATUS present ⇒ genuinely active race, not a frozen replay).
+- IMU inter-arrival: mean 8.3 ms, p99 ~10 ms, **max ~10–11 ms** under load/flight → negligible
+  jitter, no stalls; 0 BAD_DATA; our 100 Hz command stream delivered at exactly 100.0 Hz.
+- ⇒ lag is NOT a cause of the crashes; those are environmental (start-gate spawn / ceiling).
+
+### 4. Lift confirmed
 With thrust ≥0.4 the drone climbs (accel net > g); at 0.6 the motors balance at 0.60 and it climbs
 straight up until it hits the warehouse ceiling/next gate (~1 s) and crashes. The climb itself is
 clean (balanced motors, gyro ≈0) — the crash is geometry, not control.
