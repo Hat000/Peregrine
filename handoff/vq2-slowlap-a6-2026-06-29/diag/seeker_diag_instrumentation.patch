@@ -1,0 +1,91 @@
+diff --git a/rl/fly_rl.py b/rl/fly_rl.py
+index 3c19b8b..1247158 100644
+--- a/rl/fly_rl.py
++++ b/rl/fly_rl.py
+@@ -1052,6 +1052,24 @@ def _fly_gate_seeker(client, args, flight_idx: int,
+     prev_pos = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
+                 if client.state.position_ned is not None else None)
+ 
++    # DIAG (uncommitted, attempt-6 pass/acquire capture): buffer per-tick rows in MEMORY (no per-tick
++    # disk I/O so the already-slow ~2Hz loop is not perturbed); flush once at loop exit. Env-gated.
++    import os as _os
++    _diag_path = _os.environ.get("SEEKER_DIAG_CSV")
++    _diag_rows = []
++    _last_tick_t = None
++
++    def _regime_of(_seek, _t_ns, _pose):
++        if _seek._in_settle(_t_ns):
++            return "settle"
++        if not _seek._anchored:
++            return "anchor"
++        if _seek._in_egress(_t_ns):
++            return "egress"
++        if _seek._passing:
++            return "passing" if _seek._in_pass_dead_reckon(_t_ns) else "acquire"
++        return "reacq" if _pose is None else "pursuit"
++
+     while time.monotonic() < deadline:
+         while time.monotonic() < next_t:
+             client.pump()
+@@ -1109,23 +1127,58 @@ def _fly_gate_seeker(client, args, flight_idx: int,
+         # the live frame, steers to center + fly through the SEEN opening, and HOLDS (no blind slew)
+         # until the estimator records its first vision fix (launch anchor) or when no gate is detected.
+         # NO absolute map / NO absolute self-position drives steering (the 2026-06-29 blind-launch fix).
++        _t_nav0 = time.monotonic()
+         nav_state = nav.update(s, frame)
++        _nav_ms = (time.monotonic() - _t_nav0) * 1e3
+         cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
+         client.send_command(cmd)
+ 
++        # DIAG: buffer one row per tick (regime incl. new passing/acquire; loop dt + nav time).
++        if _diag_path:
++            _tick_dt_ms = (now - _last_tick_t) * 1e3 if _last_tick_t is not None else 0.0
++            _last_tick_t = now
++            br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
++            trk = seeker._track_range_m
++            tb = seeker._track_bearing
++            _diag_rows.append((
++                s.sim_time_ns / 1e9, _regime_of(seeker, int(s.sim_time_ns), seeker._last_pose),
++                int(seeker._anchored), int(seeker._pass_armed), int(seeker._passing),
++                int(gate_index), int(seeker._consec_detections),
++                (float(seeker._last_pose.range_m) if seeker._last_pose is not None else -1.0),
++                (float(trk) if trk is not None else -1.0),
++                (float(tb[0]) if tb is not None else 0.0), (float(tb[1]) if tb is not None else 0.0),
++                nav_state.roll, nav_state.pitch, nav_state.yaw, cmd.thrust,
++                br[0], br[1], br[2], nav_state.time_since_vision_update_s,
++                _tick_dt_ms, _nav_ms,
++            ))
++
+         if now - last_p >= 1.0:
+             p = nav_state.position_ned
+             br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
+-            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} "
+-                  f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) "
++            reg = _regime_of(seeker, int(s.sim_time_ns), seeker._last_pose) if _diag_path else ""
++            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} [{reg}] "
+                   f"thr={cmd.thrust:.3f} rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
+-                  f"tsv={nav_state.time_since_vision_update_s:.2f}s   ",
++                  f"estP={nav_state.pitch:+.2f} tsv={nav_state.time_since_vision_update_s:.2f}s "
++                  f"navMs={_nav_ms:.0f}   ",
+                   end="\r", flush=True)
+             last_p = now
+ 
+     if final_state == "IDLE":
+         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
+         print(f"\n  ({final_state.lower()})")
++    # DIAG: flush the buffered per-tick rows once (no per-tick disk I/O during flight).
++    if _diag_path and _diag_rows:
++        with open(_diag_path, "w") as _f:
++            _f.write("t_s,regime,anchored,pass_armed,passing,gi,consec_det,det_range_m,trk_range_m,"
++                     "trk_az,trk_el,est_roll,est_pitch,est_yaw,thr,cmd_roll_rps,cmd_pitch_rps,"
++                     "cmd_yaw_rps,tsv_s,tick_dt_ms,nav_ms\n")
++            for r in _diag_rows:
++                _f.write(",".join(f"{v:.4f}" if isinstance(v, float) else str(v) for v in r) + "\n")
++        _navs = [r[-1] for r in _diag_rows]
++        _dts = [r[-2] for r in _diag_rows[1:]]
++        _hz = (1000.0 / (sum(_dts) / len(_dts))) if _dts else 0.0
++        print(f"  [diag] wrote {len(_diag_rows)} ticks -> {_diag_path}  "
++              f"(loop ~{_hz:.1f}Hz, nav mean {sum(_navs)/len(_navs):.0f}ms)")
+     result["final_state"] = final_state
+     result["gate_index"]  = gate_index
+     result["collisions"]  = len(client.collisions) - n_coll0
