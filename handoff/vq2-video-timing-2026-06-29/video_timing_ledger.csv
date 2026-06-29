@@ -1,0 +1,5 @@
+session,verdict,kept,expected,dropped,drop_pct,eff_fps,burst_fps,recv_dt_p95_ms,recv_dt_max_ms,longest_gap,n_surges
+20260629_200914_vq2_slow_seeker_a5_f1,FAIL,190,460,270,58.7,12.3,82.2,432.4,479.9,10,36
+20260629_201133_vq2_slow_seeker_a5_r2_f1,FAIL,46,109,63,57.8,12.5,59.9,426.4,444.2,10,8
+20260629_201327_vq2_slow_seeker_a5_s3_f1,FAIL,41,95,54,56.8,12.8,61.3,431.7,433.2,10,8
+20260629_201525_vq2_slow_seeker_a5_s3r2_f1,FAIL,62,136,74,54.4,13.6,72.3,425.7,441.3,10,10

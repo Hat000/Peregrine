@@ -1,0 +1,30 @@
+
+=== 20260629_200914_vq2_slow_seeker_a5_f1  [FAIL] ===
+  frames kept   : 190 of 460 sent  -> DROPPED 270 (58.7%)   longest hole 10 frames
+  effective fps : 12.3  (sender nominal 28.6)   burst fps 82.2   over 15.31s
+  recv dt (ms)  : p50=12.2 p95=432.4 max=479.9 std=147.2   (sim dt p50=34.7)
+  surges (>60ms holes): 36   gaps in frame_id: 33
+    surge @frame-idx(dt ms): [(10, 453.9), (19, 434.6), (25, 406.0), (29, 432.4), (35, 441.4), (40, 429.3), (45, 439.7), (50, 437.6), (56, 426.6), (61, 281.1), (62, 165.2), (67, 256.8)]
+
+=== 20260629_201133_vq2_slow_seeker_a5_r2_f1  [FAIL] ===
+  frames kept   : 46 of 109 sent  -> DROPPED 63 (57.8%)   longest hole 10 frames
+  effective fps : 12.5  (sender nominal 28.6)   burst fps 59.9   over 3.6s
+  recv dt (ms)  : p50=16.7 p95=426.4 max=444.2 std=146.7   (sim dt p50=34.7)
+  surges (>60ms holes): 8   gaps in frame_id: 7
+    surge @frame-idx(dt ms): [(7, 444.2), (12, 65.4), (13, 372.4), (18, 426.4), (23, 417.9), (28, 428.2), (34, 415.3), (38, 435.6)]
+
+=== 20260629_201327_vq2_slow_seeker_a5_s3_f1  [FAIL] ===
+  frames kept   : 41 of 95 sent  -> DROPPED 54 (56.8%)   longest hole 10 frames
+  effective fps : 12.8  (sender nominal 28.6)   burst fps 61.3   over 3.13s
+  recv dt (ms)  : p50=16.3 p95=431.7 max=433.2 std=134.9   (sim dt p50=34.7)
+  surges (>60ms holes): 8   gaps in frame_id: 7
+    surge @frame-idx(dt ms): [(5, 193.6), (6, 278.6), (10, 431.7), (15, 429.4), (20, 433.1), (25, 178.1), (26, 262.1), (31, 433.2)]
+
+=== 20260629_201525_vq2_slow_seeker_a5_s3r2_f1  [FAIL] ===
+  frames kept   : 62 of 136 sent  -> DROPPED 74 (54.4%)   longest hole 10 frames
+  effective fps : 13.6  (sender nominal 28.6)   burst fps 72.3   over 4.5s
+  recv dt (ms)  : p50=13.8 p95=425.7 max=441.3 std=139.8   (sim dt p50=34.7)
+  surges (>60ms holes): 10   gaps in frame_id: 12
+    surge @frame-idx(dt ms): [(8, 441.3), (14, 422.9), (20, 431.2), (26, 425.7), (31, 439.4), (36, 82.7), (37, 362.2), (42, 422.1), (47, 301.2), (52, 406.5)]
+
+  ledger -> handoff/vq2-video-timing-2026-06-29/video_timing_ledger.csv
