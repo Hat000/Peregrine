@@ -1,0 +1,101 @@
+[detector] 64 frames
+  f 0 id=991 dets=1 meanBGR=(35,36,35)
+  f 1 id=992 dets=2 meanBGR=(36,37,35)
+  f 2 id=993 dets=1 meanBGR=(39,38,35)
+  f 3 id=994 dets=1 meanBGR=(47,44,35)
+  f 4 id=995 dets=1 meanBGR=(54,49,35)
+  f 5 id=996 dets=0 meanBGR=(56,51,35)
+  f 6 id=997 dets=0 meanBGR=(56,51,35)
+  f 7 id=998 dets=1 meanBGR=(55,50,35)
+  f 8 id=999 dets=1 meanBGR=(52,48,35)
+  f 9 id=1000 dets=0 meanBGR=(49,46,35)
+  f10 id=1001 dets=1 meanBGR=(47,44,35)
+  f11 id=1003 dets=1 meanBGR=(44,42,36)
+  f12 id=1012 dets=2 meanBGR=(39,38,35)
+  f13 id=1013 dets=2 meanBGR=(39,38,36)
+  f14 id=1014 dets=2 meanBGR=(38,37,35)
+  f15 id=1015 dets=2 meanBGR=(37,37,36)
+  f16 id=1016 dets=2 meanBGR=(36,37,36)
+  f17 id=1027 dets=2 meanBGR=(25,30,35)
+  f18 id=1028 dets=2 meanBGR=(25,30,35)
+  f19 id=1029 dets=2 meanBGR=(27,31,35)
+  f20 id=1030 dets=2 meanBGR=(29,33,35)
+  f21 id=1031 dets=2 meanBGR=(31,34,35)
+  f22 id=1042 dets=2 meanBGR=(27,27,25)
+  f23 id=1043 dets=0 meanBGR=(27,26,24)
+  f24 id=1044 dets=0 meanBGR=(26,25,23)
+  f25 id=1045 dets=0 meanBGR=(24,24,22)
+  f26 id=1046 dets=0 meanBGR=(23,23,21)
+  f27 id=1047 dets=0 meanBGR=(22,21,19)
+  f28 id=1057 dets=0 meanBGR=(14,14,14)
+  f29 id=1058 dets=0 meanBGR=(14,14,14)
+  f30 id=1059 dets=0 meanBGR=(13,13,13)
+  f31 id=1060 dets=0 meanBGR=(13,13,13)
+  f32 id=1061 dets=0 meanBGR=(13,13,13)
+  f33 id=1062 dets=0 meanBGR=(12,13,13)
+  f34 id=1063 dets=0 meanBGR=(12,12,12)
+  f35 id=1072 dets=0 meanBGR=(9,10,10)
+  f36 id=1073 dets=0 meanBGR=(9,9,9)
+  f37 id=1074 dets=0 meanBGR=(9,9,9)
+  f38 id=1075 dets=0 meanBGR=(9,9,9)
+  f39 id=1076 dets=0 meanBGR=(9,9,9)
+  f40 id=1077 dets=0 meanBGR=(9,9,9)
+  f41 id=1086 dets=0 meanBGR=(8,8,8)
+  f42 id=1087 dets=0 meanBGR=(8,9,9)
+  f43 id=1088 dets=0 meanBGR=(8,8,8)
+  f44 id=1089 dets=0 meanBGR=(8,8,9)
+  f45 id=1090 dets=0 meanBGR=(8,8,8)
+  f46 id=1091 dets=0 meanBGR=(8,8,8)
+  f47 id=1097 dets=0 meanBGR=(7,7,7)
+  f48 id=1098 dets=0 meanBGR=(7,7,7)
+  f49 id=1099 dets=0 meanBGR=(7,7,7)
+  f50 id=1100 dets=0 meanBGR=(7,7,7)
+  f51 id=1101 dets=0 meanBGR=(6,6,6)
+  f52 id=1102 dets=0 meanBGR=(6,6,6)
+  f53 id=1103 dets=0 meanBGR=(6,6,6)
+  f54 id=1104 dets=0 meanBGR=(6,6,6)
+  f55 id=1108 dets=0 meanBGR=(6,6,6)
+  f56 id=1109 dets=0 meanBGR=(6,6,6)
+  f57 id=1110 dets=0 meanBGR=(5,6,6)
+  f58 id=1111 dets=0 meanBGR=(5,5,5)
+  f59 id=1112 dets=0 meanBGR=(5,5,5)
+  f60 id=1113 dets=0 meanBGR=(5,5,5)
+  f61 id=1122 dets=0 meanBGR=(8,8,73)
+  f62 id=1123 dets=0 meanBGR=(9,10,78)
+  f63 id=1124 dets=0 meanBGR=(7,7,75)
+[detector] frames with >=1 detection: 20/64
+[tlog] HIGHRES_IMU samples first 4s: 468
+  t=0.000 acc_tilt(r,p)=(-0,+18)deg gyro=[0.0, 0.0, -0.0] |a|=9.8
+  t=0.125 acc_tilt(r,p)=(-0,+18)deg gyro=[0.0, 0.0, -0.0] |a|=9.8
+  t=0.250 acc_tilt(r,p)=(-0,+18)deg gyro=[0.0, 0.0, -0.0] |a|=9.8
+  t=0.382 acc_tilt(r,p)=(+0,+0)deg gyro=[0.0, 0.003, 0.0] |a|=9.5
+  t=0.507 acc_tilt(r,p)=(-0,+0)deg gyro=[0.0, 0.001, -0.0] |a|=9.9
+  t=0.639 acc_tilt(r,p)=(+0,+0)deg gyro=[0.0, 0.0, -0.0] |a|=9.9
+  t=0.764 acc_tilt(r,p)=(-0,+1)deg gyro=[0.0, 0.0, -0.0] |a|=9.9
+  t=0.896 acc_tilt(r,p)=(-0,+1)deg gyro=[-0.018, -0.576, 0.0] |a|=10.6
+  t=1.021 acc_tilt(r,p)=(-0,+1)deg gyro=[-0.018, -0.586, -0.0] |a|=10.6
+  t=1.153 acc_tilt(r,p)=(-0,+1)deg gyro=[-0.018, -0.592, 0.0] |a|=10.6
+  t=1.278 acc_tilt(r,p)=(-0,+1)deg gyro=[-0.018, -0.596, -0.0] |a|=10.7
+  t=1.410 acc_tilt(r,p)=(-0,+1)deg gyro=[-0.025, -0.598, -0.0] |a|=10.7
+  t=1.535 acc_tilt(r,p)=(+0,+1)deg gyro=[-0.025, -0.599, 0.0] |a|=10.7
+  t=1.667 acc_tilt(r,p)=(-0,+1)deg gyro=[-0.026, -0.6, -0.0] |a|=10.7
+  t=1.792 acc_tilt(r,p)=(-0,+0)deg gyro=[-0.04, -0.602, 0.0] |a|=11.2
+  t=1.924 acc_tilt(r,p)=(-0,+0)deg gyro=[-0.083, -0.605, 0.0] |a|=13.4
+  t=2.049 acc_tilt(r,p)=(-0,-0)deg gyro=[-0.083, -0.603, -0.0] |a|=13.3
+  t=2.181 acc_tilt(r,p)=(-0,-0)deg gyro=[-0.084, -0.602, -0.0] |a|=13.1
+  t=2.306 acc_tilt(r,p)=(-0,-0)deg gyro=[-0.084, -0.601, 0.0] |a|=13.0
+  t=2.438 acc_tilt(r,p)=(-0,-0)deg gyro=[-0.167, -0.605, -0.0] |a|=15.7
+  t=2.563 acc_tilt(r,p)=(-0,-1)deg gyro=[-0.167, -0.602, 0.0] |a|=15.2
+  t=2.695 acc_tilt(r,p)=(-0,-1)deg gyro=[-0.167, -0.601, 0.0] |a|=14.5
+  t=2.820 acc_tilt(r,p)=(-0,-1)deg gyro=[-0.658, -0.6, 0.0] |a|=14.0
+  t=2.952 acc_tilt(r,p)=(-0,-2)deg gyro=[-0.586, -0.6, 0.0] |a|=13.0
+  t=3.077 acc_tilt(r,p)=(-0,-3)deg gyro=[-0.592, -0.599, -0.0] |a|=12.2
+  t=3.209 acc_tilt(r,p)=(+0,-3)deg gyro=[-0.595, -0.599, 0.0] |a|=11.3
+  t=3.341 acc_tilt(r,p)=(+0,-4)deg gyro=[-0.597, -0.599, 0.0] |a|=10.2
+  t=3.466 acc_tilt(r,p)=(+1,-5)deg gyro=[-0.598, -0.599, -0.0] |a|=9.1
+  t=3.598 acc_tilt(r,p)=(+2,-6)deg gyro=[-0.598, -0.599, 0.0] |a|=8.1
+  t=3.723 acc_tilt(r,p)=(+3,-7)deg gyro=[-0.02, -0.599, 0.0] |a|=6.9
+  t=3.855 acc_tilt(r,p)=(+3,-8)deg gyro=[-0.005, -0.599, 0.0] |a|=5.6
+  t=3.980 acc_tilt(r,p)=(+2,-12)deg gyro=[-0.0, -0.598, -0.0] |a|=4.2
+[tlog] peak |gyro| @t=0.806s -> [-0.02, -0.664, 0.0] rps
+wrote handoff\vq2-slowlap-a3-2026-06-29\run2_speed2_diag\frames\analysis.json

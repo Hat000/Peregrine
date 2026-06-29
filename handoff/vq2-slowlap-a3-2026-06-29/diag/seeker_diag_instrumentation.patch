@@ -1,0 +1,50 @@
+diff --git a/rl/fly_rl.py b/rl/fly_rl.py
+index 3c19b8b..f669909 100644
+--- a/rl/fly_rl.py
++++ b/rl/fly_rl.py
+@@ -65,6 +65,7 @@ from __future__ import annotations
+ import argparse
+ import ctypes
+ import json
++import os
+ import sys
+ import threading
+ import time
+@@ -1113,11 +1114,34 @@ def _fly_gate_seeker(client, args, flight_idx: int,
+         cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
+         client.send_command(cmd)
+ 
+-        if now - last_p >= 1.0:
++        # --- DIAG (uncommitted, attempt-3 launch->pursuit transition capture) ---
++        _diag_path = os.environ.get("SEEKER_DIAG_CSV")
++        if _diag_path:
++            br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
++            in_settle = seeker._in_settle(int(s.sim_time_ns))
++            anchored = bool(seeker._anchored)
++            consec = int(seeker._consec_detections)
++            det = seeker._last_pose is not None
++            rng = float(seeker._last_pose.range_m) if seeker._last_pose is not None else -1.0
++            regime = "settle" if in_settle else ("anchor" if not anchored else ("pursuit" if det else "reacq"))
++            if not os.path.exists(_diag_path):
++                with open(_diag_path, "w") as f:
++                    f.write("t_s,regime,in_settle,anchored,consec_det,det,det_range_m,"
++                            "est_roll,est_pitch,est_yaw,thr,cmd_roll_rps,cmd_pitch_rps,cmd_yaw_rps,tsv_s\n")
++            with open(_diag_path, "a") as f:
++                f.write(f"{s.sim_time_ns/1e9:.3f},{regime},{int(in_settle)},{int(anchored)},{consec},"
++                        f"{int(det)},{rng:.2f},{nav_state.roll:+.4f},{nav_state.pitch:+.4f},"
++                        f"{nav_state.yaw:+.4f},{cmd.thrust:.3f},{br[0]:+.3f},{br[1]:+.3f},{br[2]:+.3f},"
++                        f"{nav_state.time_since_vision_update_s:.3f}\n")
++
++        if now - last_p >= 0.5:
+             p = nav_state.position_ned
+             br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
+-            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} "
+-                  f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) "
++            in_settle = seeker._in_settle(int(s.sim_time_ns))
++            regime = "settle" if in_settle else ("anchor" if not seeker._anchored
++                     else ("pursuit" if seeker._last_pose is not None else "reacq"))
++            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} [{regime} dets={seeker._consec_detections}] "
++                  f"estRPY=({nav_state.roll:+.2f},{nav_state.pitch:+.2f},{nav_state.yaw:+.2f}) "
+                   f"thr={cmd.thrust:.3f} rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
+                   f"tsv={nav_state.time_since_vision_update_s:.2f}s   ",
+                   end="\r", flush=True)
