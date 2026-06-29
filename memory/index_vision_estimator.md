@@ -480,3 +480,31 @@ ESKF attitude source wired into the nav loop behind `NavigatorConfig.use_ahrs` (
 
 ### docs/first_contact.md now STALE
 - Describes VQ1 pose+map wire; VQ2 has neither. Do NOT use as VQ2 wire reference.
+
+## VQ2 RED-GLOW DETECTOR BUILT (5f7d842, 2026-06-29; `src/racer/vision/red_glow_detector.py`)
+Classical no-model detector for glowing-red VQ2 gates; additive/opt-in; emits the SAME `GateObservation` contract as `detector.py` (corners_px/corner_ids/conf/score/bbox, IPPE_SQUARE order 0=LL,1=LR,2=UR,3=UL) → drop-in for gate_pose/localization; YOLO path untouched + default.
+
+**Approach:** segment SATURATED CORE (R≥250 & R−G≥80 & R−B≥80, NOT a low red threshold) → morph-close bloom notches → contour + reject clutter by red-dominance (blue chevrons/lane-lines, green markers, white truss/grid) + shape/aspect (orange floor beams); extract inner-square corners from red ring's inner HOLE (primary), outer-quad-inset fallback (×0.7 conf) when hole fragmented; DROP blow-outs + border-clipped (no fabricated pose → final approach dead-reckons on IMU). Multi-gate: all returned, primary = highest score (size × squareness).
+
+**Validation on recon frames:** near 01/02 DETECT (PnP 10.4/9.3 m, reproj ≤0.5 px); no-gate 07/08/10 REJECT; blow-out 06/09 graceful 0.
+
+🚩 **CORE-vs-NAIVE span inflation +31% (f01)/+17% (f02):** a low threshold biases PnP range ~31% NEAR; core threshold avoids it.
+
+🚩 **RANGE FLOOR ~15 m:** far gates (>~15 m) have NO saturated core → detection dead zone far side; <1 s lookahead at speed; may need a far-gate centroid/bearing channel later.
+
+Tests: `test_red_glow_detector.py` (9 tests) + fixtures `tests/fixtures/vq2_recon/`.
+
+## MAG-FREE VISION-YAW/Z DESIGN (f1fd597, 2026-06-29; `docs/reactivation-2026-06-27/magfree-vision-yaw-scope.md`)
+Driven by VQ2-WIRE-RECON `fields_updated=63` = accel+gyro ONLY — no mag/no baro → yaw+z MUST come from vision.
+
+**Root cause:** ESKF accel update is RANK-2 YAW-BLIND (`eskf.py:301`, H=−skew(g_hat), zero yaw column) → yaw drifts on gyro-z bias. ESKF/AHRS demotes to a roll/pitch leveler.
+
+**Yaw fix:** from the WELL-CONDITIONED gate bearing/+L lever, NOT PnP rotation R_cam_gate (resolves the square-flip tension). Map-free ABSOLUTE backstop = **Manhattan-world VANISHING POINTS** (floor grid/ceiling truss/blue lane-lines → drift-free heading with NO gate in view). 🚩 gate-bearing-yaw needs a SELF-BUILT local gate map (wire gives only active_gate_index, no positions) → VP-yaw is the true map-free anchor.
+
+**Z fix:** existing gate-relative vertical fix + new floor-plane height channel.
+
+**Architecture = Option C (ship B, hold C as escalation):** SHIP Option B = light vision-yaw + vision-z scalar corrections into existing ESKF+C2 chain, composes with `use_ahrs` seam, byte-identical OFF. HOLD full `EqVIOJointEKF` (`eqvio.py:552`) as gated escalation if B's budget fails (3–5× cost).
+
+**Build plan (3 parallel → 4 serial):** ESKF `update_yaw` scalar pseudo-msmt FD-pinned body-dphi Jacobian; `vision/heading_vp.py`; `vision/floor_height.py` → wire behind `use_gate_bearing_yaw`/`use_vp_yaw`/`use_floor_height` flags threading `RACE_STATUS.active_gate_index` → case-C profile.
+
+🚩 **Footguns:** yaw Jacobian body-dphi vs world-yaw (FD-pin required); angle-wrap innovation; head-on yaw degeneracy (gate in boresight = yaw unobservable from bearing); VP 90° lattice ambiguity (floor grid symmetric → need lane-lines or truss asymmetry to break).
