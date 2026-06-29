@@ -391,6 +391,168 @@ def test_pipeline_smoke_casec_navigator_to_seeker_bounded_and_slow():
     assert nav.n_vision_fixes > 0, "no vision fixes applied -> the localization path did not run"
 
 
+# ===========================================================================
+# MAP-FREE VISUAL SERVO (the live VQ2 path — the 2026-06-29 blind-launch fix)
+# ===========================================================================
+class _ProjDetector:
+    """Project a gate's inner corners into the camera from a TRUE pose -> a clean detection the
+    seeker's own PnP solves into a relative lever (t_cam_gate). Model-free, deterministic."""
+
+    def __init__(self, gate: Gate, drone_pos, R_wb):
+        from racer.frames import R_camera_from_body
+        self.gate = gate
+        self.drone_pos = np.asarray(drone_pos, float)
+        self.R_wb = np.asarray(R_wb, float)
+        self._R_cb = R_camera_from_body()
+
+    def detect(self, frame):
+        from racer.frames import CAMERA_INTRINSICS_K
+        half = self.gate.inner_size_m / 2.0
+        corners_gate = np.array([[-half, half, 0.0], [half, half, 0.0],
+                                 [half, -half, 0.0], [-half, -half, 0.0]])
+        R_wg = np.asarray(self.gate.R_world_gate, float)
+        K = CAMERA_INTRINSICS_K
+        px = []
+        for cg in corners_gate:
+            p_world = self.gate.position_ned + R_wg @ cg
+            p_cam = self._R_cb @ (self.R_wb.T @ (p_world - self.drone_pos))
+            if p_cam[2] <= 0.05:
+                return []
+            px.append([K[0, 0] * p_cam[0] / p_cam[2] + K[0, 2],
+                       K[1, 1] * p_cam[1] / p_cam[2] + K[1, 2]])
+        return [GateObservation(frame_id=frame.frame_id, sim_time_ns=frame.sim_time_ns,
+                                corners_px=np.asarray(px, float), corner_ids=np.array([0, 1, 2, 3]),
+                                corner_confidence=np.ones(4))]
+
+
+def _frame(fid=0, sim_time_ns=0):
+    return Frame(frame_id=fid, sim_time_ns=sim_time_ns,
+                 image_bgr=np.ones((360, 640, 3), dtype=np.uint8))
+
+
+def _nav_fix(position, *, tsv, sim_time_ns=0, yaw=0.0, velocity=(0.0, 0.0, 0.0)):
+    """A NavState carrying a vision-fix age: tsv=inf => not anchored (launch); finite => anchored."""
+    return NavState(sim_time_ns=sim_time_ns, position_ned=np.asarray(position, float),
+                    velocity_ned=np.asarray(velocity, float), yaw=yaw,
+                    time_since_vision_update_s=tsv)
+
+
+def test_launch_anchor_holds_yaw_until_first_fix_no_blind_slew():
+    """THE core 2026-06-29 fix: at launch (no accepted vision fix yet, tsv=inf) the map-free seeker
+    HOLDS — it commands ~zero yaw rate even with the gate plainly in view, so it never slews the
+    visible start gate out of frame before the estimator can anchor."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0), detector=det)
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=float("inf")), _frame(), 0)
+    assert cmd.mode is ControlMode.BODY_RATE
+    assert abs(float(cmd.body_rate[2])) < 1e-6        # yaw HELD (anchor clamp default 0)
+    assert np.linalg.norm(cmd.body_rate) < 0.5        # no slew of any axis
+    assert 0.05 <= cmd.thrust <= 0.6                  # holds a hover collective
+
+
+def test_after_anchor_pursues_the_seen_gate_with_forward_velocity():
+    """Once anchored (a vision fix landed, tsv finite) the map-free seeker pursues the SEEN gate:
+    a sane bounded BODY_RATE that turns toward + leans into the gate the camera sees, NOT a slew."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0), detector=det)
+    # first tick anchors the latch (tsv finite); a fresh frame_id each call so the detector re-runs.
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0), _frame(0, 0), 0)
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=10_000_000),
+                                _frame(1, 10_000_000), 0)
+    assert cmd.mode is ControlMode.BODY_RATE
+    assert np.all(np.isfinite(cmd.body_rate)) and np.isfinite(cmd.thrust)
+    assert np.linalg.norm(cmd.body_rate) <= seeker.controller.max_body_rate_rps + 1e-9
+    # the seen gate is dead ahead -> the recovered world bearing points north (forward progress).
+    gdir = seeker._gate_dir_world(_nav_fix([0, 0, -2.5], tsv=0.05), seeker._last_pose)
+    assert gdir[0] > 0.5
+
+
+def test_off_axis_seen_gate_yaws_toward_it_not_away():
+    """A gate seen OFF to one side: after anchoring the seeker yaws TOWARD it (sign-correct), bounded
+    by the smooth visual yaw cap — never a saturated slew, never the wrong direction."""
+    from racer.frames import R_world_from_body
+    # gate to the north-EAST: the world bearing has a +east (+y) component -> yaw should be > 0.
+    gate = _gate([12.0, 6.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0,
+                                                visual_yaw_rate_cap_rps=1.5), detector=det)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=0, yaw=0.0), _frame(0, 0), 0)
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=10_000_000, yaw=0.0),
+                                _frame(1, 10_000_000), 0)
+    assert abs(float(cmd.body_rate[2])) <= 1.5 + 1e-9         # smooth cap holds
+    gdir = seeker._gate_dir_world(_nav_fix([0, 0, -2.5], tsv=0.05, yaw=0.0), seeker._last_pose)
+    assert gdir[1] > 0.0                                       # bearing points east (toward the gate)
+
+
+def test_no_detection_holds_heading_no_blind_slew():
+    """When the detector returns nothing (between gates / momentarily lost), the seeker HOLDS heading
+    and coasts level — a clamped, gentle command, never a blind large slew."""
+    class _Blind:
+        def detect(self, frame):
+            return []
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0), detector=_Blind())
+    # anchored, but nothing in view this tick.
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, yaw=0.3), _frame(), 0)
+    assert cmd.mode is ControlMode.BODY_RATE
+    assert abs(float(cmd.body_rate[2])) < 1e-6        # heading held (reacquire clamp default 0)
+    assert np.linalg.norm(cmd.body_rate) < 0.5        # no lean/slew
+
+
+def test_no_detector_always_holds():
+    """With NO detector injected, command_visual can never see -> it always HOLDS (safe default)."""
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0))
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05), _frame(), 0)
+    assert np.linalg.norm(cmd.body_rate) < 0.5
+
+
+def test_regression_old_absolute_map_command_would_blind_slew_new_visual_does_not():
+    """REGRESSION pinning the 2026-06-29 bug: handed the ORIGIN-seeded estimator + a WRONG/STALE map
+    gate (the VQ1 fallback at world (-23.3,-0.4,0)), the OLD absolute-map command() produces a near-
+    saturated launch yaw slew (the U-turn that lost the start gate). The NEW map-free command_visual,
+    on the SAME origin seed with the true gate VISIBLE, commands ~zero launch yaw. This must never
+    silently regress."""
+    from racer.frames import R_world_from_body
+    cap = make_seeker_controller().max_body_rate_rps
+    # OLD path: absolute-map command to the WRONG gate at origin seed, yaw 0 -> demands a ~180 slew.
+    wrong_gate = _gate([-23.3, -0.4, 0.0], normal=[-1.0, 0.0, 0.0])
+    old_cmd = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0)).command(
+        _nav([0.0, 0.0, 0.0], yaw=0.0), wrong_gate, 0)
+    assert abs(float(old_cmd.body_rate[2])) > 0.9 * cap, "old map path should slew hard at launch"
+    # NEW path: the true start gate is visible; the map-free seeker HOLDS at launch (no slew).
+    true_gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(true_gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    new_seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0), detector=det)
+    new_cmd = new_seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=float("inf"), yaw=0.0), _frame(), 0)
+    assert abs(float(new_cmd.body_rate[2])) < 0.5, "new visual servo must not slew at launch"
+
+
+def test_reset_returns_seeker_to_launch_anchor_regime():
+    """After reset the seeker is back in the launch-anchor regime (re-holds until re-anchored)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([12.0, 0.0, -2.5], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=3.0, launch_ramp_s=0.0), detector=det)
+    seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05), _frame(0, 0), 0)   # anchor
+    assert seeker._anchored is True
+    seeker.reset()
+    assert seeker._anchored is False and seeker._last_pose is None
+    # immediately after reset, even with the gate in view, it HOLDS (tsv inf again).
+    cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=float("inf")), _frame(1, 0), 0)
+    assert abs(float(cmd.body_rate[2])) < 1e-6
+
+
+def test_vq2_case_c_profile_is_map_free_for_steering():
+    """The case-C profile carries no given pose; the deploy seeker steers MAP-FREE via the detector —
+    a guard against re-introducing an absolute-map steering dependency on the self-localizing path."""
+    p = vq2_case_c()
+    assert p.self_localizing is True
+    assert p.nav_config.use_given_position is False     # no absolute self-position to steer from
+
+
 def test_pipeline_smoke_off_path_navigator_still_constructs():
     """Control: the legacy (vq1_case_a) profile config builds a Navigator that runs on a GIVEN pose
     with NO AHRS -- the byte-identical legacy path is unaffected by the new modules."""

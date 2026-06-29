@@ -51,6 +51,33 @@ Guidance law (transparent, bounded)
 This is an ALTERNATIVE control source to the RL policy: same uplink (BODY_RATE), different brain.
 It reuses the flight-proven decoupled :class:`Controller` geometry + sim-sign compensation, so no
 new CTBR math is introduced — only the slow, gate-pointing SETPOINT on top of it.
+
+MAP-FREE VISUAL SERVO (the VQ2 live path — 2026-06-29 slow-lap fix)
+------------------------------------------------------------------
+The map-based :meth:`plan` / :meth:`command` above steer to an ABSOLUTE world gate position
+(``gate.position_ned``) using the estimator's self-position. On the live VQ2 wire that is FATAL
+at launch: VQ2 broadcasts NO gate map (fly_rl fell back to a stale VQ1 map whose gate 0 sat at
+world ``(-23.3, -0.4, 0)``) and the estimator SEEDS at the origin with NO vision fix yet, so the
+first tick demanded a ~180deg yaw U-turn — spinning the start gate (which the camera ALREADY saw
+at spawn) out of frame before the estimator could anchor. See ``handoff/vq2-slowlap-2026-06-29``.
+
+:meth:`command_visual` is the fix: it chases the gate the CAMERA SEES, never an absolute map
+position. It runs the injected detector + PnP on the live frame to recover the active gate's
+RELATIVE lever ``t_cam_gate`` (gate centre in the camera optical frame), rotates that bearing into
+the body/world frame with the estimator's gravity-known attitude, and steers heading + velocity to
+CENTER and fly THROUGH the seen opening at the slow cap. NO absolute gate map and NO absolute
+self-position enter the steering. Two safety behaviours guard the blind-launch failure:
+
+  * **Launch anchor.** Until the estimator records its FIRST accepted vision fix
+    (``nav.time_since_vision_update_s`` finite) the seeker HOLDS attitude and CLAMPS the yaw rate
+    to a small value — it never maneuvers blind and never slews the visible start gate out of
+    frame. Normal pursuit begins only after the first fix (the estimator is anchored).
+  * **No detection.** When the detector returns nothing this tick (between gates / momentarily
+    lost) the seeker HOLDS heading and coasts level — never a blind large slew. It re-acquires
+    when the gate re-enters frame.
+
+The map-based path is retained UNCHANGED for the offline dry-run's kinematic check and the unit
+tests (which use a consistent synthetic map); only the LIVE VQ2 deploy uses ``command_visual``.
 """
 from __future__ import annotations
 
@@ -58,8 +85,19 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from racer.contracts import ControlCommand, ControlMode, Gate, NavState, Setpoint
+from racer.contracts import (
+    ControlCommand,
+    ControlMode,
+    Frame,
+    Gate,
+    GateObservation,
+    GatePose,
+    NavState,
+    Setpoint,
+)
 from racer.controller import Controller
+from racer.frames import R_camera_from_body, R_world_from_body
+from racer.vision.gate_pose import estimate_gate_pose
 
 
 def _unit(v: np.ndarray, fallback: np.ndarray | None = None) -> np.ndarray:
@@ -109,6 +147,24 @@ class GateSeekerConfig:
     launch_ramp_s: float = 0.6         # ease the takeoff->cruise tilt over this long (anti-tumble)
     yaw_mode: str = "carrot"           # "carrot" faces the line-of-sight; "course" faces the gate normal
 
+    # --- MAP-FREE visual servo (the live VQ2 path; command_visual) ---
+    # Before the estimator's FIRST accepted vision fix the seeker is in the LAUNCH-ANCHOR phase:
+    # it holds attitude and clamps the yaw rate to this small value so it never slews the visible
+    # start gate out of frame (the 2026-06-29 blind-launch failure). 0.0 => hold yaw exactly.
+    anchor_yaw_rate_rps: float = 0.0
+    # When NO gate is detected this tick (between gates / momentarily lost) the seeker coasts level
+    # and holds heading. The yaw rate is clamped to this (small) value so a re-acquire slew is gentle
+    # and never spins the next gate out of frame.
+    reacquire_yaw_rate_rps: float = 0.0
+    # Minimum detection score + maximum PnP reproj error for a detection to drive the visual servo
+    # (reject weak / mis-localised gates -> treat as "no detection" -> hold).
+    min_detect_score: float = 0.0
+    max_reproj_px: float = 12.0
+    # Cap the per-tick yaw-rate command in the visual-servo pursuit phase so a large bearing error
+    # (gate at the edge of frame) is turned toward smoothly, never a saturated slew that would spin
+    # the gate out of frame faster than the controller can track it.
+    visual_yaw_rate_cap_rps: float = 1.5
+
 
 @dataclass
 class GateSeeker:
@@ -121,8 +177,16 @@ class GateSeeker:
 
     config: GateSeekerConfig = field(default_factory=GateSeekerConfig)
     controller: Controller = field(default_factory=make_seeker_controller)
+    # Injected gate detector for the MAP-FREE visual servo (anything with
+    # ``.detect(frame) -> [GateObservation]``; the live VQ2 path passes RedGlowGateDetector). None
+    # => command_visual cannot see and always holds (the map-based plan/command path is unaffected).
+    detector: object | None = field(default=None, repr=False)
     _t0_sim_ns: int | None = field(default=None, repr=False)   # first-command sim time (launch clock)
     _last_index: int | None = field(default=None, repr=False)  # last seen active_gate_index
+    _anchored: bool = field(default=False, repr=False)         # first accepted vision fix seen?
+    _last_yaw: float | None = field(default=None, repr=False)  # last commanded heading (no-detection hold)
+    _last_frame_id: int | None = field(default=None, repr=False)  # detector idempotence across re-feeds
+    _last_pose: GatePose | None = field(default=None, repr=False)  # cached detected lever for re-fed frames
 
     # -- guidance: NavState + active gate -> Setpoint -----------------------
     def plan(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> Setpoint:
@@ -175,6 +239,140 @@ class GateSeeker:
         sp = self.plan(nav, gate, is_final_gate=is_final_gate)
         return self.controller.command(nav, sp)
 
+    # =======================================================================
+    # MAP-FREE VISUAL SERVO  (the live VQ2 path — chase the gate the camera SEES)
+    # =======================================================================
+    def detect_gate_lever(self, frame: Frame | None) -> GatePose | None:
+        """Run the injected detector + PnP on ``frame`` and return the camera-relative pose of the
+        gate to chase (``GatePose.t_cam_gate`` = gate centre in the camera optical frame), or ``None``
+        when nothing usable is seen.
+
+        MAP-FREE: no association to any map gate, no self-position — just "which opening is in front
+        of me, and where is it relative to the camera". When several gates are detected we pick the
+        CLOSEST (largest apparent span / smallest PnP range): the active gate is the one we are
+        flying at, so it dominates the frame. Quality-gated by detection score + PnP reproj error."""
+        if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
+            return None
+        observations: list[GateObservation] = list(self.detector.detect(frame))
+        best: GatePose | None = None
+        for obs in observations:
+            if float(getattr(obs, "score", 1.0)) < self.config.min_detect_score:
+                continue
+            pose = estimate_gate_pose(obs, compute_covariance=False)
+            if pose is None or not np.isfinite(pose.t_cam_gate).all():
+                continue
+            if float(pose.reproj_error_px) > self.config.max_reproj_px:
+                continue
+            if pose.t_cam_gate[2] <= 0.05:      # gate behind / on the image plane -> unusable bearing
+                continue
+            if best is None or pose.range_m < best.range_m:
+                best = pose
+        return best
+
+    def command_visual(self, nav: NavState, frame: Frame | None, active_gate_index: int, *,
+                       is_final_gate: bool = False) -> ControlCommand:
+        """MAP-FREE visual-servo command: steer to CENTER + fly THROUGH the gate the camera SEES.
+
+        The live VQ2 entry point (replaces the absolute-map :meth:`command` on the wire). Never reads
+        an absolute gate map or absolute self-position for steering; every command is derived from the
+        DETECTED gate's relative bearing plus the estimator's gravity-known attitude. Three regimes:
+
+          1. **Launch anchor** (no accepted vision fix yet): HOLD attitude, clamp yaw rate small. We
+             never maneuver blind, so the visible start gate stays in frame until the estimator
+             anchors on it (the 2026-06-29 blind-launch fix). A detection arriving here STILL only
+             gently centers (no saturated slew) — see the anchor yaw clamp.
+          2. **No detection** (between gates / momentarily lost): coast level, hold the last heading,
+             gentle re-acquire — never a blind large slew.
+          3. **Pursuit** (anchored + gate seen): build a desired velocity toward the seen opening at
+             the slow cap and a yaw that centers its bearing, capped so the turn is smooth.
+        """
+        if self._t0_sim_ns is None:
+            self._t0_sim_ns = int(nav.sim_time_ns)
+        self._last_index = int(active_gate_index)
+        if self._last_yaw is None:
+            self._last_yaw = float(nav.yaw)
+
+        # The estimator is ANCHORED once it has accepted at least one vision fix (tsv finite). Latch it
+        # (a momentary coast back to tsv=inf must not drop us back into the launch-hold).
+        if np.isfinite(nav.time_since_vision_update_s):
+            self._anchored = True
+
+        # Detect the gate to chase (idempotent across re-feeds of the same frame_id; a re-fed frame
+        # keeps the cached bearing decision rather than re-running the detector).
+        if frame is not None and frame.frame_id != self._last_frame_id:
+            self._last_frame_id = int(frame.frame_id)
+            self._last_pose = self.detect_gate_lever(frame)
+        pose = self._last_pose
+
+        # --- regime 1: LAUNCH ANCHOR (no accepted fix yet) -> hold attitude, clamp yaw rate small ---
+        if not self._anchored:
+            return self._hold_command(nav, yaw_rate_cap=self.config.anchor_yaw_rate_rps)
+
+        # --- regime 2: NO DETECTION -> coast level on the last heading, gentle re-acquire ---
+        if pose is None:
+            return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps)
+
+        # --- regime 3: PURSUIT -> velocity toward the SEEN opening + centering yaw, smoothly capped ---
+        return self._visual_pursuit_command(nav, pose)
+
+    def _gate_dir_world(self, nav: NavState, pose: GatePose) -> np.ndarray:
+        """Unit world-NED direction from the drone to the DETECTED gate centre, from the relative lever.
+
+        ``pose.t_cam_gate`` is the gate centre in the camera optical frame. Rotate it into the body
+        frame (the fixed camera mount), then into world NED with the estimator's gravity-known
+        attitude (roll/pitch from the AHRS accel-levelled tilt, yaw from the vision-pinned heading).
+        NO absolute self-position enters — only the DIRECTION to the seen gate."""
+        d_cam = _unit(np.asarray(pose.t_cam_gate, dtype=np.float64))
+        d_body = R_camera_from_body().T @ d_cam
+        R_wb = R_world_from_body(float(nav.roll), float(nav.pitch), float(nav.yaw))
+        return _unit(R_wb @ d_body, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
+
+    def _visual_pursuit_command(self, nav: NavState, pose: GatePose) -> ControlCommand:
+        """Build the slow pursuit CTBR from the SEEN gate's relative bearing (no map, no abs position).
+
+        Desired velocity = cruise_speed along the world bearing to the gate, but HOLD ALTITUDE (zero
+        the vertical component) so slow flight stays level + blur-free (z is the estimator's weakest
+        axis on VQ2). Yaw centers the gate bearing's horizontal heading; the controller's body-rate is
+        then clamped to the smooth visual cap so a wide bearing turns in steadily, never a slew."""
+        gdir = self._gate_dir_world(nav, pose)
+        horiz = np.array([gdir[0], gdir[1], 0.0])
+        los = _unit(horiz, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
+        yaw = float(np.arctan2(los[1], los[0]))
+        self._last_yaw = yaw
+        sp = Setpoint(
+            sim_time_ns=int(nav.sim_time_ns),
+            velocity_ned=self.config.cruise_speed * los,    # level pursuit (altitude held by alt-hold)
+            yaw=yaw,
+            launch_ramp=self._launch_ramp(int(nav.sim_time_ns)),
+        )
+        cmd = self.controller.command(nav, sp)
+        return self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
+
+    def _hold_command(self, nav: NavState, *, yaw_rate_cap: float) -> ControlCommand:
+        """A SAFE, vision-preserving hold: level attitude (no horizontal lean), hover collective, and a
+        yaw rate clamped to ``yaw_rate_cap`` (0 => hold yaw exactly). Used for the launch anchor and the
+        no-detection coast so we NEVER slew the visible gate out of frame. Holds the LAST heading."""
+        hold_yaw = self._last_yaw if self._last_yaw is not None else float(nav.yaw)
+        sp = Setpoint(
+            sim_time_ns=int(nav.sim_time_ns),
+            velocity_ned=np.zeros(3),       # no horizontal lean -> level hover
+            yaw=hold_yaw,
+            launch_ramp=0.0,                # full anti-lean: keep the attitude level while holding
+        )
+        cmd = self.controller.command(nav, sp)
+        return self._cap_yaw_rate(cmd, yaw_rate_cap)
+
+    @staticmethod
+    def _cap_yaw_rate(cmd: ControlCommand, cap_rps: float) -> ControlCommand:
+        """Clamp the yaw (FRD body-rate Z) component of a CTBR command to +/-``cap_rps`` (the launch /
+        re-acquire / smooth-pursuit yaw clamp). Returns a new command; non-BODY_RATE pass through."""
+        if cmd.body_rate is None:
+            return cmd
+        import dataclasses
+        br = np.asarray(cmd.body_rate, dtype=np.float64).copy()
+        br[2] = float(np.clip(br[2], -abs(cap_rps), abs(cap_rps)))
+        return dataclasses.replace(cmd, body_rate=br)
+
     # -- advance logic ------------------------------------------------------
     def should_advance(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> bool:
         """RANGE/geometry backstop for advancing to the next gate (the wire's
@@ -212,9 +410,16 @@ class GateSeeker:
         return self._last_index is not None and int(active_gate_index) > self._last_index
 
     def reset(self) -> None:
-        """Drop the launch clock + advance baseline (e.g. on a sim epoch restart)."""
+        """Drop the launch clock + advance baseline + visual-servo state (e.g. on a sim epoch restart).
+
+        After a reset the seeker is back in the LAUNCH-ANCHOR regime (``_anchored`` False), so it
+        re-holds until the estimator re-anchors on the visible gate — exactly the boot behaviour."""
         self._t0_sim_ns = None
         self._last_index = None
+        self._anchored = False
+        self._last_yaw = None
+        self._last_frame_id = None
+        self._last_pose = None
 
     # -- internals ----------------------------------------------------------
     def _launch_ramp(self, sim_time_ns: int) -> float | None:

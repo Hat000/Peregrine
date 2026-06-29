@@ -785,16 +785,29 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
         client.pump()
         s  = client.state
         rs = client.race_status
-        live = s.position_ned is not None and s.sim_time_ns > 0
+        # F-D / VQ2 (live-confirmed 2026-06-29): a self-localizing wire DENIES raw position_ned (and
+        # attitude). Liveness must NOT gate on wire position -- the sim is "live" whenever its master
+        # clock is advancing (sim_time_ns > 0). RACE_STATUS (started + active_gate_index) is the
+        # start-line authority; the drone-at-origin distance guards only apply when a position exists.
+        have_pos = s.position_ned is not None
+        live = s.sim_time_ns > 0
         now  = time.monotonic()
         if rs and rs["started"] and live:
             to_go = rs["race_start_boot_time_ms"] - rs["sim_boot_time_ms"]
             fresh = rs["race_start_boot_time_ms"] >= 0 and to_go > -2000.0
             if fresh and to_go <= -margin_ms:
-                pos_off = float(np.linalg.norm(s.position_ned))
-                if pos_off > 5.0:
+                # Stale-GO-by-distance is only knowable WITH a position; on a position-denied wire fall
+                # back to the RACE_STATUS gate-0 check below (a fresh countdown that just elapsed at
+                # gate 0 is a genuine GO). pos_off=0.0 when position is denied -> never spuriously stale.
+                pos_off = float(np.linalg.norm(s.position_ned)) if have_pos else 0.0
+                gi0 = rs.get("active_gate_index")
+                at_start = gi0 is None or int(gi0) == 0
+                if have_pos and pos_off > 5.0:
                     print(f"\n  stale GO: drone {pos_off:.0f} m from origin — waiting on.",
                           file=sys.stderr)
+                elif not have_pos and not at_start:
+                    print(f"\n  stale GO: position-denied wire already past gate 0 (gi={gi0}) "
+                          "— waiting on.", file=sys.stderr)
                 else:
                     print(f"\n  GO!  pos_off={pos_off:.2f} m.  {telemetry_summary(client)}")
                     return True
@@ -813,7 +826,9 @@ def wait_fresh_go(client, args, auto_reset: bool) -> bool:
                 gi = rs.get("active_gate_index")
                 at_gate0 = gi is None or int(gi) == 0
                 not_finished = not rs.get("finished")
-                pos_off = float(np.linalg.norm(s.position_ned))
+                # position-denied wire (VQ2): pos_off unknown -> 0.0, and the gate-0 + not-finished
+                # RACE_STATUS check is the start-line authority on its own.
+                pos_off = float(np.linalg.norm(s.position_ned)) if have_pos else 0.0
                 if at_gate0 and not_finished and pos_off <= 5.0:
                     print(f"\n  LATE-JOIN GO!  to_go={to_go/1000:+.2f}s  pos_off={pos_off:.2f} m"
                           f"  gi={gi}.  {telemetry_summary(client)}")
@@ -953,7 +968,10 @@ def _build_casec_seeker(args, gates):
         from racer.vision.detector import GateDetector
         detector = GateDetector.load(args.checkpoint)   # weights path (artifact-pipe); opt-in
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
-    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=args.seeker_speed))
+    # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
+    # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
+    # steer to the absolute map position (the 2026-06-29 blind-launch fix).
+    seeker = GateSeeker(config=GateSeekerConfig(cruise_speed=args.seeker_speed), detector=detector)
     return nav, seeker, profile
 
 
@@ -968,16 +986,34 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     as the RL loop (collision / sim-reset / finish / sim-stall guards). The deploy profile's
     ``cmd_rate_scale`` was applied to ``client`` at construction (main()).
 
-    Needs the gate map (``client.track_gates`` from TRACK_INFO, or the ``--map`` JSON). Without it
-    the loop aborts cleanly (NO_MAP) rather than flying blind."""
+    The MAP-FREE visual servo (``GateSeeker.command_visual``) steers from the SEEN gate's relative
+    bearing, so STEERING needs no absolute map. The case-C Navigator still consumes a gate map for
+    its world-frame SUPPORT fixes (gate-bearing yaw, gate-relative +L), but a STALE / wrong map there
+    is dangerous (it injects bad yaw/position fixes), so a self-localizing profile NEVER silently
+    falls back to the default ``--map``: it uses the live TRACK_INFO when present, else flies MAP-FREE
+    (empty gate list -> the navigator's map-dependent fixes no-op; vision yaw/z + visual servo carry
+    the lap). A NON-self-localizing (case-A / VQ1) profile keeps the explicit ``--map`` fallback."""
     from racer.contracts import Frame
+    from racer.deploy_profile import get_profile
     from racer.navigator import gates_from_track_records, load_track_map
 
-    # --- gate map: prefer the live TRACK_INFO; fall back to the --map JSON ---
+    profile = get_profile(args.deploy_profile)
+
+    # --- gate map: prefer the live TRACK_INFO; otherwise map handling depends on the profile ---
+    # GUARD (2026-06-29 blind-launch fix): the stale-VQ1-map fallback that drove the blind launch
+    # U-turn is REMOVED for self-localizing (VQ2 case-C) profiles. The seeker is map-free; the
+    # navigator runs map-free (its gate-map fixes simply don't fire without gates).
     if client.track_gates:
         gates = gates_from_track_records(client.track_gates, corner_to_center=True)
+        print(f"  [gate-seeker] gate map from live TRACK_INFO ({len(gates)} gates).")
+    elif profile.self_localizing:
+        gates = []
+        print("  [gate-seeker] no live TRACK_INFO + self-localizing profile -> MAP-FREE flight "
+              "(visual servo + vision yaw/z; NO absolute map). The stale --map is IGNORED.",
+              file=sys.stderr)
     elif args.map and Path(args.map).exists():
         gates = load_track_map(args.map, corner_to_center=True)
+        print(f"  [gate-seeker] gate map from --map {args.map} ({len(gates)} gates).")
     else:
         print("  [gate-seeker] no gate map (no TRACK_INFO, no --map) -> cannot fly. abort.",
               file=sys.stderr)
@@ -985,7 +1021,7 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         return result
     n_gates = len(gates)
 
-    nav, seeker, profile = _build_casec_seeker(args, gates)
+    nav, seeker, _ = _build_casec_seeker(args, gates)
     print(f"\n[gate-seeker] profile={profile.name} self_localizing={profile.self_localizing} "
           f"cmd_rate_scale={client.cmd_rate_scale:g} detector={args.seeker_detector} "
           f"cruise={args.seeker_speed:g} m/s  gates={n_gates}  max={args.max_seconds:g}s ...")
@@ -1045,8 +1081,10 @@ def _fly_gate_seeker(client, args, flight_idx: int,
               if rs and rs.get("active_gate_index") is not None else gate_index)
         if gi > gate_index:
             print(f"\n  [gate-seeker] gate {gate_index} PASSED -> targeting {gi}", flush=True)
-        gate_index = min(max(gi, 0), n_gates - 1)
-        is_final = gate_index >= n_gates - 1
+        # the wire index drives the navigator's active-gate yaw lock + the advance bookkeeping; the
+        # MAP-FREE seeker steers off the SEEN gate, so it does NOT need the gate to exist in any map.
+        gate_index = max(gi, 0)
+        is_final = n_gates > 0 and gate_index >= n_gates - 1
 
         # --- perception: read the freshest frame the video thread published (non-blocking) ---
         # The video thread owns the single UDP receiver and stashes the latest reassembled Frame
@@ -1054,9 +1092,13 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         # _maybe_run_vision is itself frame_id-idempotent, so re-feeding the same frame is a no-op).
         frame: Frame | None = getattr(client, "_latest_frame", None)
 
-        # --- estimate (case-C self-localizing) then command the slow pursuit ---
+        # --- estimate (case-C self-localizing) then command the MAP-FREE visual servo ---
+        # The seeker chases the gate the CAMERA SEES (command_visual): it runs its own detect+PnP on
+        # the live frame, steers to center + fly through the SEEN opening, and HOLDS (no blind slew)
+        # until the estimator records its first vision fix (launch anchor) or when no gate is detected.
+        # NO absolute map / NO absolute self-position drives steering (the 2026-06-29 blind-launch fix).
         nav_state = nav.update(s, frame)
-        cmd = seeker.command(nav_state, gates[gate_index], gate_index, is_final_gate=is_final)
+        cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
         client.send_command(cmd)
 
         if now - last_p >= 1.0:
