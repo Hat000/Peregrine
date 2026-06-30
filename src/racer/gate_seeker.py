@@ -288,6 +288,31 @@ class GateSeekerConfig:
     # Clear the spawn gate by this along-heading distance before transitioning to pursuit. ~the gate
     # depth + a margin so the chassis is fully past the gate-0 frame plane it spawned in.
     egress_clear_distance_m: float = 1.5
+    # --- EGRESS THRUST FLOOR (the 2026-06-29 A7 close-range thrust-collapse fix) ---
+    # A7 (n=3, speed-independent): the drone SPAWNS INSIDE gate 0, point-blank. The seeker's alt-hold
+    # collective bottoms out at the controller floor ``alt_thrust_lo`` (0.05) -- a near-zero thrust ->
+    # the drone FREE-FALLS at spawn (tlog |a|=0.1 m/s^2) and tumbles into the gate frame. (A6's 2.3 Hz
+    # loop drifted clear before it could cut thrust; A7's 30 Hz loop cuts it immediately at t=0, so the
+    # perf fix EXPOSED this latent collapse.) THE FIX: during the SPAWN-GATE EGRESS the collective is
+    # FLOORED to at least hover-equivalent (``hover_thrust * egress_thrust_floor_frac``), so the drone
+    # can only HOLD or CLIMB out of the spawn gate along the start normal -- it can never descend /
+    # free-fall while egressing. Floor = 1.0 -> exactly hover (no sink); >1.0 -> a gentle climb out.
+    # Bounds only the egress collective; once past egress the controller's own alt-hold owns thrust
+    # (so post-egress flight is byte-identical to today). ``use_egress_thrust_floor`` gates it.
+    use_egress_thrust_floor: bool = True
+    egress_thrust_floor_frac: float = 1.0
+    # --- POINT-BLANK ELEVATION GUARD (the 2026-06-29 A7 close-range descent fix) ---
+    # A7 root cause: at spawn the start gate is POINT-BLANK (range ~1 m). At that range the PnP lever is
+    # degenerate and ``trk_el`` is garbage -- it read NEGATIVE (gate appears below boresight), so the
+    # vertical-align channel commanded a DESCENT off a gate that is essentially on top of us, which cut
+    # the alt-hold thrust to the floor (the free-fall above). THE FIX: the elevation/vertical-align
+    # channel is only TRUSTWORTHY beyond a minimum range; below ``min_trust_elevation_range_m`` the
+    # seeker commands NO vertical correction (vz_t=0 -> the alt-hold holds the current height) rather
+    # than chasing a point-blank gate's garbage elevation down into the floor. Normal downrange pursuit
+    # acquires gates well beyond this range, so post-egress flight is byte-identical (the guard only
+    # fires at the point-blank spawn). ``use_min_trust_elevation`` gates it; OFF => legacy (trust any range).
+    use_min_trust_elevation: bool = True
+    min_trust_elevation_range_m: float = 2.0
     # --- VERTICAL ALIGNMENT to the gate-opening centre (the 2026-06-29 attempt-5 BLOCKER 1 fix) ---
     # A5 (3.0 m/s, the closest-approach failure): the seeker held a FIXED ALTITUDE while pursuing, but
     # the gate OPENING sits BELOW the held path (run4: the tracked-gate camera elevation trk_el drifted
@@ -900,6 +925,14 @@ class GateSeeker:
         discipline as the forward feedforward, so the vertical command can't lurch."""
         if not self.config.use_vertical_align:
             return 0.0
+        # POINT-BLANK ELEVATION GUARD (A7): below the min-trust range the PnP elevation is degenerate
+        # (a point-blank spawn gate read trk_el<0 and drove a descent into the thrust floor -> free-fall).
+        # Command NO vertical correction there -- the alt-hold holds the current height instead of chasing
+        # a garbage elevation. Normal pursuit gates sit well beyond this range, so this never fires in
+        # downrange flight (post-egress byte-identity preserved).
+        if (self.config.use_min_trust_elevation
+                and float(pose.range_m) < self.config.min_trust_elevation_range_m):
+            return 0.0
         offset_z = float(self._gate_lever_world(nav, pose)[2])
         if abs(offset_z) <= self.config.vertical_align_deadband_m:
             return 0.0
@@ -1045,8 +1078,27 @@ class GateSeeker:
         # egress_clear_distance_m. Bounded by construction (the forward demand is the same capped creep).
         if self.config.use_distance_egress:
             self._advance_egress_distance(int(nav.sim_time_ns), demand_ramp)
-        return self._feedforward_command(nav, los, yaw0, launch,
-                                         self.config.egress_accel_mps2, demand_ramp)
+        cmd = self._feedforward_command(nav, los, yaw0, launch,
+                                        self.config.egress_accel_mps2, demand_ramp)
+        # EGRESS THRUST FLOOR (A7): clamp the collective to at least hover-equivalent so the drone can
+        # only HOLD or CLIMB out of the spawn gate -- it can never descend / free-fall while egressing
+        # (the point-blank close-range thrust collapse). Only the egress command is floored; pursuit's
+        # alt-hold owns thrust unchanged.
+        return self._floor_egress_thrust(cmd)
+
+    def _floor_egress_thrust(self, cmd: ControlCommand) -> ControlCommand:
+        """Floor the egress collective to at least ``hover_thrust * egress_thrust_floor_frac`` (A7): a
+        point-blank spawn gate can drive the alt-hold to the controller's 0.05 floor -> free-fall; the
+        egress must HOLD or CLIMB out of the start gate, never descend. ``use_egress_thrust_floor`` off
+        => the legacy egress collective passes through."""
+        if (not self.config.use_egress_thrust_floor or cmd.thrust is None
+                or self.config.egress_thrust_floor_frac <= 0.0):
+            return cmd
+        import dataclasses
+        floor = float(self.controller.hover_thrust) * float(self.config.egress_thrust_floor_frac)
+        if cmd.thrust >= floor:
+            return cmd
+        return dataclasses.replace(cmd, thrust=float(min(floor, 1.0)))
 
     def _advance_egress_distance(self, sim_time_ns: int, demand_ramp: float) -> None:
         """Integrate the dead-reckoned along-heading egress distance from the seeker's own bounded

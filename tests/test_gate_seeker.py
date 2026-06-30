@@ -1606,6 +1606,147 @@ def test_default_config_enables_pass_dead_reckon():
     assert cfg.pass_arm_range_m == 3.0 and cfg.pass_degenerate_range_m == 2.5
 
 
+# ===========================================================================
+# A7 (2026-06-29): SPAWN THRUST-COLLAPSE — point-blank start gate must not free-fall
+# ===========================================================================
+def test_pointblank_elevation_guard_suppresses_descent_old_collapses_thrust():
+    """THE A7 fix (root cause): the drone SPAWNS INSIDE gate 0, point-blank. At ~1 m range the PnP
+    elevation is garbage (trk_el<0 -> the gate reads BELOW boresight), so the OLD vertical-align
+    commands a DESCENT, which cuts the alt-hold collective to the 0.05 floor -> free-fall. The NEW
+    point-blank elevation guard commands NO vertical correction below min_trust_elevation_range_m, so
+    the alt-hold holds height (no thrust collapse)."""
+    from racer.frames import R_world_from_body
+    # point-blank (slant range ~1.4 m) and ~0.4 m BELOW boresight -> a positive (descend) world vertical
+    # offset. The detector drone is at z=-2.5; gate at z=-2.1 (0.4 m below) and 1.3 m ahead.
+    gate = _gate([1.3, 0.0, -2.1], normal=[1.0, 0.0, 0.0])
+    det = _ProjDetector(gate, np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+    ns = _nav_fix([0, 0, -2.5], tsv=0.05)
+
+    # OLD (guard off): the point-blank gate reads a descent demand -> a positive vz_t.
+    old = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, vertical_align_ramp_s=0.0,
+                                             use_min_trust_elevation=False), detector=det)
+    pose_old = old.detect_gate_lever(_frame(0, 0))
+    assert pose_old is not None and pose_old.range_m < 2.0          # point-blank
+    assert old._vertical_align_vz(ns, pose_old) > 0.0, "OLD: point-blank gate must command a descent (the bug)"
+
+    # NEW (guard on, default): below the min-trust range -> NO vertical correction (no descent).
+    new = GateSeeker(config=GateSeekerConfig(launch_ramp_s=0.0, vertical_align_ramp_s=0.0,
+                                             min_trust_elevation_range_m=2.0), detector=det)
+    pose_new = new.detect_gate_lever(_frame(0, 0))
+    assert new._vertical_align_vz(ns, pose_new) == 0.0, \
+        "NEW: a point-blank gate's garbage elevation must command NO descent (the A7 guard)"
+
+
+def test_pointblank_thrust_does_not_collapse_to_floor_in_pursuit():
+    """End-to-end vertical loop: spawning point-blank below the gate, the NEW seeker's commanded
+    collective stays at hover (no descent demand -> the alt-hold holds height) instead of collapsing to
+    the 0.05 floor and free-falling (the A7 collapse)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([1.2, 0.0, -1.9], normal=[1.0, 0.0, 0.0])
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    # egress + pass-dead-reckon off to isolate the PURSUIT vertical-align channel (the collapse path).
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=False, use_pass_dead_reckon=False, vertical_align_ramp_s=0.0),
+        detector=_ProjDetector(gate, np.zeros(3), R_wb))
+    hover = seeker.controller.hover_thrust
+    z, vz, dt = -2.5, 0.0, 0.03
+    min_thr = np.inf
+    for k in range(12):
+        t_ns = int(k * dt * 1e9)
+        seeker.detector = _ProjDetector(gate, np.array([0.0, 0.0, z]), R_wb)
+        ns = NavState(sim_time_ns=t_ns, position_ned=np.array([0.0, 0.0, z]),
+                      velocity_ned=np.array([0.0, 0.0, vz]), roll=0.0, pitch=0.0, yaw=0.0,
+                      time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+        cmd = seeker.command_visual(ns, _frame(k, t_ns), 0)
+        min_thr = min(min_thr, float(cmd.thrust))
+        az = 9.80665 * (1.0 - float(cmd.thrust) / hover)
+        vz += az * dt
+        z += vz * dt
+    assert min_thr >= hover - 1e-6, "the point-blank pursuit must hold >= hover thrust (no free-fall)"
+    assert abs(z - (-2.5)) < 0.05, "the drone must HOLD its height at point-blank (no sink)"
+
+
+def test_egress_thrust_floor_holds_hover_even_if_alt_hold_would_cut():
+    """The egress THRUST FLOOR (invariant 1): during the spawn-gate egress the collective is floored to
+    at least hover-equivalent, so even a (hypothetical) alt-hold command below hover is lifted -> the
+    drone can only HOLD/CLIMB out of spawn, never free-fall."""
+    import dataclasses
+    seeker = GateSeeker(config=GateSeekerConfig(use_egress_thrust_floor=True, egress_thrust_floor_frac=1.0))
+    hover = seeker.controller.hover_thrust
+    # a command whose collective dipped to the controller floor (the collapse the A7 free-fall rode).
+    low = ControlCommand(mode=ControlMode.BODY_RATE, body_rate=np.zeros(3), thrust=0.05)
+    floored = seeker._floor_egress_thrust(low)
+    assert floored.thrust == pytest.approx(hover), "egress must floor the collective to hover (no free-fall)"
+    # a command already at/above hover is left untouched (the floor never SUPPRESSES a needed climb).
+    high = ControlCommand(mode=ControlMode.BODY_RATE, body_rate=np.zeros(3), thrust=0.5)
+    assert seeker._floor_egress_thrust(high).thrust == pytest.approx(0.5)
+    # off => legacy pass-through (the opt-in guard).
+    off = GateSeeker(config=GateSeekerConfig(use_egress_thrust_floor=False))
+    assert off._floor_egress_thrust(low).thrust == pytest.approx(0.05)
+
+
+def test_egress_command_thrust_is_at_least_hover():
+    """In the live egress phase every commanded collective is >= hover (the spawn drone holds/climbs out
+    of gate 0, never descends)."""
+    from racer.frames import R_world_from_body
+    gate = _gate([1.5, 0.0, -2.4], normal=[1.0, 0.0, 0.0])   # point-blank, near level
+    det = _ProjDetector(gate, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+    seeker = GateSeeker(config=GateSeekerConfig(
+        cruise_speed=2.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+        use_spawn_egress=True, egress_s=0.8), detector=det)
+    hover = seeker.controller.hover_thrust
+    for k in range(8):
+        t_ns = int(k * 0.05 * 1e9)
+        seeker.detector = _ProjDetector(gate, np.array([0.0, 0.0, -2.5]), R_world_from_body(0.0, 0.0, 0.0))
+        cmd = seeker.command_visual(_nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_ns), _frame(k, t_ns), 0)
+        assert seeker._in_egress(t_ns)
+        assert cmd.thrust >= hover - 1e-6, "egress collective must stay >= hover (no spawn free-fall)"
+        assert cmd.thrust <= 1.0
+
+
+def test_post_egress_downrange_pursuit_is_byte_identical_to_pre_a7():
+    """REGRESSION / byte-identity: the A7 guards must change ONLY the point-blank spawn behaviour. For a
+    NORMAL downrange gate (range well beyond min_trust_elevation_range_m), the seeker's commands are
+    BYTE-IDENTICAL with the guards ON vs OFF -- the elevation guard never fires and the egress floor is a
+    no-op once the alt-hold sits at/above hover. Pins that post-egress flight is unchanged."""
+    from racer.frames import R_world_from_body
+    # a normal downrange gate ~12 m ahead + ~1 m below: vertical-align is ACTIVE (a real vz) and the
+    # range is far beyond the 2 m guard, so the guard must NOT alter the command.
+    gate = _gate([12.0, 1.0, -1.5], normal=[1.0, 0.0, 0.0])
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+
+    def _run(guards_on: bool):
+        det = _ProjDetector(gate, np.zeros(3), R_wb)
+        seeker = GateSeeker(config=GateSeekerConfig(
+            cruise_speed=3.0, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+            use_spawn_egress=False, vertical_align_ramp_s=0.0,
+            use_egress_thrust_floor=guards_on, use_min_trust_elevation=guards_on), detector=det)
+        rates, thrusts = [], []
+        for k in range(8):
+            t_ns = int(k * 0.05 * 1e9)
+            ns = _nav_fix([0, 0, -2.5], tsv=0.05, sim_time_ns=t_ns, yaw=0.0)
+            cmd = seeker.command_visual(ns, _frame(k, t_ns), 0)
+            rates.append(np.asarray(cmd.body_rate, float).copy())
+            thrusts.append(float(cmd.thrust))
+        return np.array(rates), np.array(thrusts)
+
+    r_on, t_on = _run(guards_on=True)
+    r_off, t_off = _run(guards_on=False)
+    np.testing.assert_array_equal(r_on, r_off)   # BYTE-identical body rates downrange
+    np.testing.assert_array_equal(t_on, t_off)   # BYTE-identical collective downrange
+    # sanity: vertical-align really was active here (a non-trivial vz would have moved thrust off a flat
+    # hover) -- so the byte-identity is a real test of the guard not firing, not a vacuous all-hover run.
+    assert t_on.std() > 0.0 or r_on.std() > 0.0
+
+
+def test_a7_config_defaults_on():
+    """The A7 guards ship ON by default (the slow-lap deploy needs them); self-defaulting, no flag."""
+    cfg = GateSeekerConfig()
+    assert cfg.use_egress_thrust_floor is True and cfg.egress_thrust_floor_frac == 1.0
+    assert cfg.use_min_trust_elevation is True and cfg.min_trust_elevation_range_m == 2.0
+
+
 def test_pipeline_smoke_off_path_navigator_still_constructs():
     """Control: the legacy (vq1_case_a) profile config builds a Navigator that runs on a GIVEN pose
     with NO AHRS -- the byte-identical legacy path is unaffected by the new modules."""

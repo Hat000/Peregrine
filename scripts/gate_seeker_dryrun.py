@@ -996,6 +996,89 @@ def check_dead_reckon_through_pass_no_pitch_up(cruise_speed: float) -> bool:
     return ok
 
 
+# ---------------------------------------------------------------------------
+# CHECK 12 — SPAWN THRUST-COLLAPSE: point-blank start gate must NOT free-fall (A7)
+# ---------------------------------------------------------------------------
+def check_spawn_thrust_collapse_no_freefall(cruise_speed: float) -> bool:
+    """Reproduce the A7 spawn thrust-collapse + free-fall and prove the fix. The drone SPAWNS INSIDE
+    gate 0: the start gate is POINT-BLANK on tick 1 (range ~1 m). At that range the PnP elevation is
+    garbage -- it reads trk_el < 0 (gate appears BELOW boresight) -- so the OLD vertical-align channel
+    commands a DESCENT off the point-blank gate, which cuts the alt-hold collective to the 0.05 floor ->
+    the drone FREE-FALLS at spawn (A7 tlog |a|=0.1 m/s^2) and tumbles into the gate frame. (A6's 2.3 Hz
+    loop drifted clear before it could cut thrust; A7's 30 Hz loop cuts it immediately at t=0 -- the perf
+    fix exposed this latent collapse.)
+
+    TWO coupled invariants, both wired into the SPAWN-GATE EGRESS phase:
+      (1) EGRESS THRUST FLOOR: while egressing the collective is floored to at least hover-equivalent,
+          so the drone can only HOLD/CLIMB out of the spawn gate -- it can never free-fall.
+      (2) POINT-BLANK ELEVATION GUARD: a gate closer than ``min_trust_elevation_range_m`` gives garbage
+          elevation, so the vertical-align commands NO descent off it.
+
+    We drive a closed vertical loop from the point-blank spawn (the gate point-blank + slightly below
+    boresight so the OLD vertical-align wants to descend) and integrate the height under the commanded
+    thrust. Asserts: OLD free-falls (thrust collapses to the floor, the drone sinks); NEW holds (thrust
+    >= hover through egress, no sink, no descent command at point-blank)."""
+    # the start gate is POINT-BLANK (range ~1.2 m) and ~0.6 m BELOW boresight (trk_el<0 -> a descent
+    # demand): exactly the A7 spawn geometry (the drone sits inside gate 0, gate just below + ahead).
+    gate = _gate([1.2, 0.0, -1.9], normal=[1.0, 0.0, 0.0], gate_id=0)
+    drone_pos0 = np.array([0.0, 0.0, -2.5])
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+
+    def _run(fix: bool):
+        # Isolate the vertical-align collapse: egress + pass-dead-reckon OFF so the seeker reaches the
+        # PURSUIT vertical-align channel that actually collapses the thrust (the egress hold would
+        # otherwise mask it by holding hover). OLD (fix=False): point-blank elevation untrusted -> a
+        # descent demand -> thrust floor -> free-fall. NEW (fix=True): the point-blank elevation guard
+        # commands no descent -> the alt-hold holds height (no collapse). (The egress thrust floor is the
+        # second, belt-and-braces invariant -- exercised directly in the unit tests.)
+        seeker = GateSeeker(config=GateSeekerConfig(
+            cruise_speed=cruise_speed, launch_ramp_s=0.0, settle_s=0.0, anchor_release_detections=1,
+            vertical_align_ramp_s=0.0, use_spawn_egress=False, use_pass_dead_reckon=False,
+            use_egress_thrust_floor=fix, use_min_trust_elevation=fix),
+            detector=_ProjDetector(gate, drone_pos0, R_wb))
+        hover = seeker.controller.hover_thrust
+        z = -2.5
+        vz = 0.0
+        dt = 0.03
+        min_thrust = np.inf
+        any_descent_cmd = False
+        for k in range(16):
+            t_ns = int(k * dt * 1e9)
+            # re-point the detector at the drone's CURRENT height so the seen geometry is faithful.
+            seeker.detector = _ProjDetector(gate, np.array([0.0, 0.0, z]), R_wb)
+            ns = NavState(sim_time_ns=t_ns, position_ned=np.array([0.0, 0.0, z]),
+                          velocity_ned=np.array([0.0, 0.0, vz]), roll=0.0, pitch=0.0, yaw=0.0,
+                          time_since_vision_update_s=(0.05 if k > 0 else float("inf")))
+            frame = Frame(frame_id=k, sim_time_ns=t_ns, image_bgr=np.ones((360, 640, 3), np.uint8))
+            cmd = seeker.command_visual(ns, frame, 0)
+            pose = seeker._last_pose
+            if pose is not None and seeker._vertical_align_vz(ns, pose) > 1e-6:
+                any_descent_cmd = True            # a positive vz_t == a commanded DESCENT off the gate
+            min_thrust = min(min_thrust, float(cmd.thrust))
+            # integrate the vertical kinematics under the commanded collective: az = g*(1 - thrust/hover)
+            # is the world-down accel (thrust<hover -> sink). The free-fall shows as a growing +z (down).
+            az = 9.80665 * (1.0 - float(cmd.thrust) / hover)
+            vz = vz + az * dt
+            z = z + vz * dt
+        sink = z - (-2.5)                          # net descent (NED z+ down): >0 == sank below spawn
+        return float(min_thrust), sink, any_descent_cmd, hover
+
+    old_min_thr, old_sink, old_descent, hover = _run(fix=False)
+    new_min_thr, new_sink, new_descent, _ = _run(fix=True)
+
+    # OLD: the point-blank vertical-align commands a descent, the thrust collapses to the floor, the
+    # drone SINKS (free-fall). NEW: no descent command at point-blank, the egress floors thrust >= hover,
+    # the drone HOLDS (no sink).
+    old_collapses = old_min_thr <= 0.1 and old_descent and old_sink > 0.1
+    new_holds = (new_min_thr >= hover - 1e-6) and (not new_descent) and abs(new_sink) < 0.05
+    ok = old_collapses and new_holds
+    print(f"  [spawn-thrust] OLD min-thr {old_min_thr:.3f} sink {old_sink:+.2f} m descent-cmd {old_descent} "
+          f"(free-fall: {old_collapses})  ->  NEW min-thr {new_min_thr:.3f} (>=hover {hover:.3f}) "
+          f"sink {new_sink:+.2f} m descent-cmd {new_descent} (holds: {new_holds})  "
+          f"-> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1019,9 +1102,11 @@ def main() -> int:
     ok9 = check_vertical_alignment_threads_offset_opening(args.speed)
     ok10 = check_nearest_gate_first_acquisition(args.speed)
     ok11 = check_dead_reckon_through_pass_no_pitch_up(args.speed)
+    ok12 = check_spawn_thrust_collapse_no_freefall(args.speed)
 
     print()
-    if ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and ok10 and ok11:
+    if (ok1 and ok2 and ok3 and ok4 and ok5 and ok6 and ok7 and ok8 and ok9 and ok10 and ok11
+            and ok12):
         print("RESULT: PASS — the integrated gate-seeker produces sane, slow, gate-pointing "
               "commands on synthetic data; the self-localized estimate stays bounded; the seeker "
               "RELEASES its launch-hold on its OWN map-free detections (the attempt-2 BUG A, where "
@@ -1039,7 +1124,9 @@ def main() -> int:
               "(the attempt-5 BLOCKER 2 far-gate lock); and the DEAD-RECKON-THROUGH-PASS holds a "
               "bounded level forward coast through the gate opening instead of re-levelling into a "
               "pitch-up (the A5-footage post-pass backside-clip) and HANDS OFF to the next gate "
-              "instead of drifting forever.")
+              "instead of drifting forever; and the SPAWN-GATE EGRESS floors the collective to hover "
+              "and ignores a POINT-BLANK start gate's garbage elevation, so the drone HOLDS out of "
+              "spawn instead of free-falling into gate 0 (the A7 close-range thrust collapse).")
         return 0
     print("RESULT: FAIL — see the failing check above.")
     return 1
