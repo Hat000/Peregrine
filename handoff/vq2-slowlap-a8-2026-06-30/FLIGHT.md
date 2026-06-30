@@ -17,8 +17,8 @@ tests pass (78/78).
 | Question | Result |
 |---|---|
 | **Spawn crash (A7) fixed?** | **YES ✓✓ (n=2).** The egress thrust floor + point-blank elevation guard work — the drone **clears the start gate and climbs out** (brief thr=0.05 dip at spawn, but the floor catches it → altitude goes UP, not the A7 free-fall). |
-| Gates passed? | **0** — but it now flies **~110 m down the course** before crashing (A7 died at the start gate in <1.5 m). |
-| New failure mode | **Runaway forward speed + altitude instability → flies BELOW the gates → dives into the environment at ~110 m.** |
+| Gates passed? | **0** — it approaches gate 0 briefly, then pitches up and flies AWAY (see corrected failure below). |
+| New failure mode | **Attitude/self-localization estimate INVERTS → the drone pitches NOSE-UP, throttle up, and flies UP + BACKWARD into the back wall/ceiling.** (NOT a forward dive — that was my error trusting the diverged estimator; corrected from the user's direct view of the video + the onboard camera.) |
 | Loop rate (live, real sample) | **~16 Hz over 94–95 ticks** — the FIRST steady-state live samples (flights survived 5–6 s, not A7's 15 cold-start ticks). Still CHOKED vs 30 Hz. |
 | Frame drops | **0.0%** (both runs, 30 fps) — perf fix still holds. |
 
@@ -33,27 +33,41 @@ tlog: `min|a|=0.1 @t+0.3s` (a brief spawn thrust dip survives) then `|a|=22` (fo
 floor recovered the dip instead of letting it free-fall into the gate. **A7 recommendation #2 landed and
 is verified.**
 
-## ❌ New failure: forward-speed runaway + altitude dive (flies under the gates)
-Past egress, the drone accelerates forward UNBOUNDED at full feedforward thrust (0.372) and loses altitude.
-run1 (NED): the clean dive; run2 (RESTART): porpoising, same end.
-```
-run1:  t+2  x= 9.3  z=+0.3      run2:  t+2  x= 9.3  z=+1.5
-       t+3  x=31.9  z=+4.0             t+3  x=31.3  z=+6.0
-       t+4  x=66.8  z=+12.7            t+4  x=64.8  z=-7.3   (porpoise)
-       t+5  x=111.3 z=+28.4  CRASH     t+5  x=109.4 z=+2.6   CRASH
-```
-- **Forward speed runs away to ~40–45 m/s** (Δx ≈ 44 m in the last second) — NOT the 3 m/s cruise. The
-  forward feedforward is not velocity-limited in pursuit, so it just keeps tilting/accelerating.
-- **Altitude is not held.** run1 tlog realized pitch marches nose-DOWN: `-2 -> -8 -> -15 -> -21 -> -34deg`
-  — a deepening dive — until impact at ~110 m (`|a|=1101`, roll flips to 179deg inverted, peak gyro 68 rps).
-- **gates=0 despite flying 110 m down the course:** the drone is sinking below / overshooting the gate
-  openings at 40 m/s, so it never registers a pass (env contacts 1002 only, no gate 1001). It flies UNDER
-  or PAST the gates and hits the floor/wall.
+## ❌ New failure: attitude/estimate INVERSION → drone pitches UP and flies UP + BACKWARD
+**This section is corrected.** My first write-up called it a "nose-down forward dive into the floor at
+110 m." That was WRONG — it trusted the onboard NED position, which on a position-denied VQ2 wire is the
+**self-localization estimator's belief, not ground truth.** The user watched the video (and the onboard
+camera confirms it): the drone **pitches NOSE-UP, runs the throttle up, and flies UP + BACKWARD** — run1
+goes up-and-back, run2 (a touch of spawn sag first) pitches up HARD, holds the angle, and goes mostly
+BACKWARD (less up than run1). It crashes into the back wall / ceiling, not the floor.
 
-**Read:** the A7 fix peeled back the spawn layer and exposed the **pursuit speed/altitude controller** as
-the next blocker. The drone can now leave the start gate and acquire the course visually (the onboard
-frames clearly show the red gate ahead with the cyan lead-in lines), but it dives through the floor at
-runaway speed instead of cruising at 3 m/s and holding the gate-opening height.
+**Onboard-camera proof (run1, the only trustworthy onboard signal):** the red gate is acquired and grows
+as the drone approaches (frames ~300→460, gate large & close), then its glow slides DOWN the frame
+(y-centroid 174→246) and **vanishes** as the camera tilts up — by frame ~500 the camera is staring
+straight at the **warehouse ceiling grid** (gate gone, red-pixels=0). Camera pitched up = nose up. ✓
+
+**The estimator reported the INVERSE of reality:**
+```
+                 estimator said        reality (user + camera)
+  forward/back   +111 m FORWARD    ->  actually BACKWARD
+  vertical       +28 m DOWN        ->  actually UP (camera ends on the ceiling)
+  pitch          (I mislabeled it "nose-down -34deg"; the same accel solution is NOSE-UP)
+```
+So BOTH the along-track and vertical estimates are sign-inverted relative to truth. The diverged attitude
+then (a) feeds the controller backwards — it thrusts up-and-back believing it is driving forward — and
+(b) integrates into the bogus "forward+down dive" telemetry I first reported. The real impact spike
+(`|a|=1101`, roll→179°, peak gyro 68 rps) is hitting the back wall/ceiling while inverted, not the floor.
+
+**Candidate root causes (commander's call):**
+1. **Attitude-estimate (AHRS/ESKF) pitch inversion** in the self-localization — the most likely single
+   cause, since it explains the wrong-way control AND the inverted position integration at once. Connects
+   to the A6/A7 "attitude inverts" theme; may start inverted or flip right after egress.
+2. A **pitch-command / body-rate sign error** in pursuit (gyro_y rode the +1.50 rps cap from the first
+   tick — if that sign is wrong the nose goes up when chasing a gate ahead).
+Either way the drone is driven the WRONG WAY, so gates=0 is a direction failure, not a speed/altitude one.
+
+**Retraction:** ignore the earlier "runaway forward speed to 44 m/s / altitude dive" framing — that Δx was
+the diverged estimator, not real ground speed. The verified failure is the inversion above.
 
 ## Loop rate — first real LIVE steady-state read: ~16 Hz
 With flights now surviving 5–6 s, the `[loop-rate]` self-report has a meaningful sample:
@@ -65,23 +79,23 @@ Context vs the campaign: **A6 ~2.3 Hz -> A8 ~16 Hz (~7x).** Frame drops 0% (perf
 the clean 30 Hz the offline vision-core timing (33 ms) predicted: the **full live tick is ~62 ms**
 (16 Hz), i.e. the rest of `nav.update` (ESKF + PnP + KF + gate-bearing yaw) + the seeker + live sim load
 on this VM adds ~30 ms on top of the 33 ms VP/detect core. The VP RANSAC is no longer the bottleneck — to
-reach 30 Hz the *non-VP* path needs profiling. (Note: at 16 Hz and 40 m/s the drone travels ~2.5 m between
-commands, which itself worsens the dive — the speed runaway and the sub-30 Hz loop compound.)
+reach 30 Hz the *non-VP* path needs profiling.
 
 ## Recommended next steps (flight-stack — commander's call; stack NOT touched)
-1. **Cap forward speed to the cruise setpoint.** The pursuit forward feedforward runs away to ~44 m/s; it
-   must saturate at `--seeker-speed` (3 m/s). This is the #1 cause of both the dive and the gate misses.
-2. **Hold altitude / track the gate-opening height in pursuit.** Realized pitch marches to -34deg with no
-   restoring vertical command — the drone needs to hold height (or follow `trk_el` to the gate centre)
-   rather than trading all thrust for forward tilt. Together with (1) this should let it fly THROUGH a gate.
-3. **Then re-check gate registration:** once it flies at gate height and 3 m/s, confirm a pass increments
-   gi (it flew 110 m past the line of gates at 40 m/s with gates=0 — partly geometry, possibly also a
-   pass-detection range/speed gate worth checking).
-4. **(Lower priority) profile the non-VP nav tick** to claw back the last ~16->30 Hz; the VP fix already
+1. **Find the attitude/estimate inversion (the #1 blocker).** The drone flies UP+BACK while the estimate
+   says forward+down — verify the AHRS/ESKF pitch sign and the body-rate (gyro_y) command sign on the live
+   VQ2 wire. A bench check: at egress, does the estimated attitude match the realized accel tilt, or is it
+   sign-flipped? Until the drone is driven toward the gate it sees, speed/altitude tuning is moot.
+2. **Then (downstream of the inversion) re-check pursuit speed + altitude hold.** Only meaningful once the
+   drone heads the right way; the "44 m/s runaway / -34deg" figures were the diverged estimator and can't be
+   trusted as control targets until (1) is resolved.
+3. **(Lower priority) profile the non-VP nav tick** to claw back the last ~16->30 Hz; the VP fix already
    did its job (0% drops, 33 ms core).
 
 ## Artifacts (this dir)
-- `crash_analysis.py` — tlog realized IMU/attitude reconstruction (the nose-down dive). `python crash_analysis.py <session>`.
+- `crash_analysis.py` — tlog realized IMU/attitude reconstruction. NOTE its `acc_pitch` sign reads nose-up
+  as negative — the run1 "-34deg" is NOSE-UP. Cross-check against the onboard camera (frame ~500 = ceiling).
+- `onboard_run1_frame500_ceiling.png` — camera staring at the ceiling = nose-up proof of the inversion.
 - `navtime.py` — offline navigator timing (carried from A7; the 33 ms vision core).
 - `timing_run1.txt` — `video_timing_report` (0% drops). `onboard_run1_frame303.png` — the VQ2 lit-warehouse proof frame.
 - Recordings (gitignored, on ShadowPC): `data/runs/20260630_005945_*` (run1, fresh GO),
