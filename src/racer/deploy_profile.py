@@ -98,6 +98,8 @@ def vq2_case_c() -> DeployProfile:
         use_vision=True,
         # --- self-estimated attitude from IMU (ODOMETRY blocked) ---
         use_ahrs=True,
+        ahrs_accel_motion_reject=True,   # A8 fix: reject accel-leveling under sustained linear accel
+                                         # (|a|~=g but tilted) — the nose-up-and-retreat divergence
         # --- map-free vision yaw + z (no mag / no baro) ---
         use_vp_yaw=True,
         use_gate_bearing_yaw=True,

@@ -321,6 +321,9 @@ class NavigatorConfig:
     use_ahrs: bool = False
     ahrs_gyro_noise_std: float = 0.01      # rad/s, ESKF gyro white-noise 1-sigma (bench-validated default)
     ahrs_accel_gate_alpha: float = 10.0    # ESKF high-g accel-gating sharpness (bench-validated default)
+    ahrs_accel_motion_reject: bool = False # ESKF accel rejection under SUSTAINED linear accel (the A8 fix:
+                                           # |a|~=g but direction tilted -> magnitude gate misses it). OFF =
+                                           # byte-identical; vq2_case_c turns it ON. → eskf.use_accel_motion_reject
 
     # --- Mag-free vision YAW + Z corrections into the ESKF/KF (magfree-vision-yaw-scope.md, Option B) ---
     # VQ2 has NO magnetometer + NO barometer, so the ESKF accel update is yaw-blind (eskf.py:301) and
@@ -497,7 +500,8 @@ class Navigator:
             from racer.ahrs.eskf import ESKFAHRS
             self._ahrs = AHRSAttitudeSource(
                 eskf=ESKFAHRS(gyro_noise_std=self.config.ahrs_gyro_noise_std,
-                              accel_gate_alpha=self.config.ahrs_accel_gate_alpha)
+                              accel_gate_alpha=self.config.ahrs_accel_gate_alpha,
+                              use_accel_motion_reject=self.config.ahrs_accel_motion_reject)
             )
             self._ahrs.seed(AHRSAttitudeSource.level_seed_from_accel(ds.accel_body))
             self._ahrs_odo_quat = None
