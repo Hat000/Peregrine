@@ -987,6 +987,94 @@ def _build_casec_seeker(args, gates):
     return nav, seeker, profile
 
 
+# ---------------------------------------------------------------------------
+# Nav-estimate logging helpers (per-flight nav_estimate.jsonl).
+# NOTE: on the VQ2 wire position_ned is DEAD-RECKONED (no GPS/NED truth) so
+# the logged position is the KF integrated estimate, not ground truth.
+# ---------------------------------------------------------------------------
+
+def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: int) -> dict:
+    """Build one JSONL record from the current tick's navigator output + command.
+
+    All numpy arrays are converted to plain Python lists (.tolist()) so
+    ``json.dumps`` can serialise them directly. Fields that are absent or not
+    yet available on the nav/nav_state object are logged as null rather than
+    raising (a logging bug must NEVER crash a flight).
+    """
+    rec: dict = {}
+    try:
+        rec["sim_time_ns"] = int(s.sim_time_ns)
+    except Exception:
+        rec["sim_time_ns"] = None
+    rec["tick_index"] = tick_index
+    rec["gate_index"] = gate_index
+
+    # --- estimator attitude ---
+    # Try the AHRS true quaternion first (available when use_ahrs is ON), then
+    # fall back to the ODOMETRY-convention quat cached on the navigator.  If
+    # neither is present log null; the NavState roll/pitch/yaw are always there.
+    try:
+        ahrs = getattr(nav, "_ahrs", None)
+        if ahrs is not None:
+            q_true = np.asarray(ahrs.q_wxyz, dtype=np.float64)
+            rec["ahrs_quat_wxyz"] = q_true.tolist()
+        else:
+            rec["ahrs_quat_wxyz"] = None
+    except Exception:
+        rec["ahrs_quat_wxyz"] = None
+
+    try:
+        rec["roll_rad"]  = float(nav_state.roll)
+        rec["pitch_rad"] = float(nav_state.pitch)
+        rec["yaw_rad"]   = float(nav_state.yaw)
+    except Exception:
+        rec["roll_rad"] = rec["pitch_rad"] = rec["yaw_rad"] = None
+
+    # --- estimator position (dead-reckoned on VQ2) ---
+    try:
+        rec["position_ned"] = np.asarray(nav_state.position_ned, dtype=np.float64).tolist()
+    except Exception:
+        rec["position_ned"] = None
+
+    # --- time since last vision fix ---
+    try:
+        tsv = float(nav_state.time_since_vision_update_s)
+        rec["time_since_vision_s"] = None if (tsv != tsv or tsv == float("inf")) else tsv
+    except Exception:
+        rec["time_since_vision_s"] = None
+
+    # --- commanded control ---
+    try:
+        br = cmd.body_rate
+        rec["body_rate"] = np.asarray(br, dtype=np.float64).tolist() if br is not None else None
+    except Exception:
+        rec["body_rate"] = None
+    try:
+        rec["thrust"] = float(cmd.thrust) if cmd.thrust is not None else None
+    except Exception:
+        rec["thrust"] = None
+
+    return rec
+
+
+def _write_nav_estimate_jsonl(records: list, session_dir: "Path | None") -> None:
+    """Write the in-memory record list to ``<session_dir>/nav_estimate.jsonl``.
+
+    One JSON object per line, written in a single pass at loop exit.  Errors
+    are printed but not re-raised (a write failure must NEVER crash the flight
+    result bookkeeping that follows).
+    """
+    if session_dir is None or not records:
+        return
+    out = Path(session_dir) / "nav_estimate.jsonl"
+    try:
+        lines = "\n".join(json.dumps(r) for r in records) + "\n"
+        out.write_text(lines, encoding="utf-8")
+        print(f"  [nav-log] wrote {len(records)} ticks -> {out}")
+    except Exception as exc:
+        print(f"  [nav-log] WARNING: failed to write nav_estimate.jsonl: {exc}")
+
+
 def _fly_gate_seeker(client, args, flight_idx: int,
                      session_dir: Path | None, result: dict) -> dict:
     """SLOW GATE-SEEKER deploy loop on the case-C self-localizing stack (--gate-seeker).
@@ -1062,6 +1150,13 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     prev_pos = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
                 if client.state.position_ned is not None else None)
 
+    # --- nav-estimate log (in-memory buffer; written ONCE at loop exit) -------
+    # No per-tick I/O: we collect small dicts here and flush them in a single
+    # write after the loop exits.  At <=30 Hz for <=30 s that is <=~900 rows.
+    # Guard on session_dir so runs without a recording dir are byte-identical.
+    _nav_log: list = []   # populated only when session_dir is not None
+    _nav_log_errors: int = 0
+
     while time.monotonic() < deadline:
         while time.monotonic() < next_t:
             client.pump()
@@ -1123,6 +1218,14 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
         client.send_command(cmd)
 
+        # --- nav-estimate log: append one dict to the in-memory buffer (no I/O) ---
+        if session_dir is not None:
+            try:
+                _nav_log.append(_nav_estimate_record(
+                    nav_state, nav, s, cmd, gate_index, n_ticks))
+            except Exception:
+                _nav_log_errors += 1
+
         # work time = everything from the post-wait `now` through command send (no sleep)
         work_ms = (time.monotonic() - now) * 1e3
         n_ticks += 1
@@ -1144,6 +1247,13 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     if final_state == "IDLE":
         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
         print(f"\n  ({final_state.lower()})")
+
+    # --- nav-estimate log: single write after ALL exit paths -------------------
+    # Written here (not inside each break) so every break/timeout/crash path is
+    # covered in one place.  _write_nav_estimate_jsonl swallows errors internally.
+    _write_nav_estimate_jsonl(_nav_log, session_dir)
+    if _nav_log_errors:
+        print(f"  [nav-log] WARNING: {_nav_log_errors} per-tick record errors (logging bug, not flight bug)")
 
     # --- loop-rate verdict: did we actually realize the 30 Hz loop? ---------------
     elapsed = max(time.monotonic() - loop_t0, 1e-6)
