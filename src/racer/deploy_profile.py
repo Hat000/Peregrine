@@ -38,12 +38,15 @@ from racer.navigator import NavigatorConfig
 # a commanded body rate realizes at ~2.5x on the wire, so the uplink pre-scales by 1/2.5.
 VQ2_CMD_RATE_SCALE = 0.4   # = 1 / 2.5 ; multiplies the FRD body rates at MavlinkClient.send_command
 
-# LIVE-WIRE gyro-sign correction (live-confirmed sim build 1.0.3379, 2026-06-29): the VQ2
-# HIGHRES_IMU gyro PITCH axis (y) is INVERTED vs the code's FRD assumption (3/3 A9 runs:
-# commanded +1.5 reads -1.4 while the nose physically pitches UP). Applied at the wire
-# (MavlinkClient.gyro_sign) before the AHRS. x (roll) and z (yaw) are UNCONFIRMED -- a roll/yaw
-# probe is pending -- so they stay +1; the single tuple makes extending it a one-value change.
-VQ2_GYRO_SIGN = (1.0, -1.0, 1.0)   # (roll +, PITCH FLIPPED, yaw +)
+# LIVE-WIRE gyro-sign correction (live-confirmed sim build 1.0.3379, 2026-06-30): the VQ2
+# HIGHRES_IMU gyro is FULLY SIGN-NEGATED on ALL THREE rate axes vs the code's FRD assumption.
+# Single-axis probe (estimator-independent, cmd-vs-raw-gyro): commanded +1.0 rad/s realized raw
+# gyro ~-2.1 on roll, pitch AND yaw; clean diagonal response (each cmd axis drives only its own
+# gyro axis, negated; no coupling, no axis swap). So it is a GLOBAL handedness/convention mismatch
+# (gyro_reported ~= -|gain|*omega), NOT y-only and NOT FRD<->FLU (which leaves roll un-inverted).
+# Magnitude (the ~2.1x) is the known command->realized rate gain, handled separately by cmd_rate_scale;
+# only the SIGN is corrected here. Applied at the wire (MavlinkClient.gyro_sign) before the AHRS.
+VQ2_GYRO_SIGN = (-1.0, -1.0, -1.0)   # full angular-rate sign negation (roll, pitch, yaw all flipped)
 
 
 @dataclass(frozen=True)

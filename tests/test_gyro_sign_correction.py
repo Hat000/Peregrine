@@ -60,6 +60,7 @@ def test_gyro_sign_none_when_message_omits_gyro():
 
 
 def test_profile_gyro_sign_values():
-    """vq2_case_c carries the confirmed pitch flip; vq1_case_a stays identity."""
-    assert tuple(get_profile("vq2_case_c").gyro_sign) == (1.0, -1.0, 1.0)
+    """vq2_case_c carries the probe-confirmed FULL sign negation (roll+pitch+yaw all
+    inverted on the live VQ2 wire, 2026-06-30); vq1_case_a stays identity."""
+    assert tuple(get_profile("vq2_case_c").gyro_sign) == (-1.0, -1.0, -1.0)
     assert tuple(get_profile("vq1_case_a").gyro_sign) == (1.0, 1.0, 1.0)
