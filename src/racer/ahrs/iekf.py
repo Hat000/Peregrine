@@ -164,15 +164,29 @@ class LeftInvariantEKF:
     accel_chi2_thresh: float = 7.815
     accel_freefall_tol_lo: float = 0.75   # reject when |a| < g*(1-0.75) = 0.25 g  (free-fall)
     accel_freefall_tol_hi: float = 9.0    # reject when |a| > g*(1+9.0)  = 10 g    (extreme high-g)
+    # Acceleration-aware accel rejection (the A8 sustained-accel fix). MIRRORS ESKFAHRS exactly so the
+    # ESKF<->IEKF cross-validation stays bit-for-bit equivalent. Under sustained linear acceleration the
+    # specific force keeps |a| ~ g (passes the magnitude band) but its DIRECTION tilts off -g, leveling
+    # the estimate to a false tilt. The discriminating signal is the linear-accel residual w.r.t. the
+    # current attitude estimate: a_lin = R_hat @ f_body + g_ned (~0 at equilibrium, grows under powered
+    # tilted flight). Down-weight R_accel by (1 + (|a_lin|/scale)^2). OFF by default -> byte-identical.
+    # See eskf.py for the full rationale.
+    use_accel_motion_reject: bool = False
+    accel_motion_scale: float = 0.1       # m/s^2 at which R_accel doubles (mirrors ESKFAHRS; see there)
+    accel_motion_anchor_thr: float = 0.3  # m/s^2; re-anchor the gyro reference at/below this |a_lin|
+    accel_motion_max_inflate: float = 1e4 # inflation ceiling (numerical guard)
 
     _R: np.ndarray = field(default_factory=lambda: np.eye(3))
     _b_g: np.ndarray = field(default_factory=lambda: np.zeros(3))
     _P: np.ndarray = field(default_factory=lambda: np.diag([1e-2]*3 + [1e-6]*3))
+    # Gyro-anchored reference rotation for the acceleration-aware reject (see eskf.py for rationale).
+    _R_ref: np.ndarray = field(default_factory=lambda: np.eye(3))
 
     def __post_init__(self) -> None:
         self._R = np.eye(3)
         self._b_g = np.zeros(3, dtype=np.float64)
         self._P = np.diag([1e-2]*3 + [1e-6]*3).astype(np.float64)
+        self._R_ref = self._R.copy()
 
     # -- Public interface -------------------------------------------------------
 
@@ -196,6 +210,7 @@ class LeftInvariantEKF:
             self._R = np.eye(3)
         self._b_g = np.zeros(3)
         self._P = np.diag([1e-2]*3 + [1e-6]*3).astype(np.float64)
+        self._R_ref = self._R.copy()
 
     def step(
         self,
@@ -215,6 +230,9 @@ class LeftInvariantEKF:
     def _predict(self, gyro: np.ndarray, dt: float) -> None:
         omega = gyro - self._b_g
         self._R = self._R @ _Exp_so3(omega * dt)
+        # Gyro-anchored reference for the acceleration-aware reject (gyro-only; never accel-corrected).
+        if self.use_accel_motion_reject:
+            self._R_ref = self._R_ref @ _Exp_so3(omega * dt)
 
         F = np.eye(6)
         F[:3, :3] = np.eye(3) - _skew(omega) * dt
@@ -232,6 +250,23 @@ class LeftInvariantEKF:
             return 1.0
         deviation = (accel_mag - GRAVITY) / GRAVITY
         return float(np.exp(-self.accel_gate_alpha * deviation**2))
+
+    def _accel_motion_inflation(self, accel: np.ndarray) -> float:
+        """Covariance-inflation factor (>=1) for acceleration-aware accel rejection (mirrors ESKFAHRS).
+
+        a_lin_world = R_ref @ f_body + g_ned (~0 at equilibrium; grows under powered tilted flight),
+        anchored to the GYRO reference (not the live estimate) so the accel cannot hide the drag.
+        Re-anchors R_ref to the estimate at/below accel_motion_anchor_thr. Returns
+        1 + (|a_lin|/accel_motion_scale)^2, clamped; 1.0 (no-op) when disabled. g_ned = [0,0,+g]."""
+        if not self.use_accel_motion_reject:
+            return 1.0
+        a_lin = self._R_ref @ accel + GRAVITY * G_DOWN_W   # g_ned = [0,0,+g]; ~0 at equilibrium
+        a_lin_mag = float(np.linalg.norm(a_lin))
+        if a_lin_mag < self.accel_motion_anchor_thr:
+            self._R_ref = self._R.copy()
+        scale = max(self.accel_motion_scale, 1e-9)
+        factor = 1.0 + (a_lin_mag / scale) ** 2
+        return float(min(factor, self.accel_motion_max_inflate))
 
     def _accel_magnitude_in_band(self, accel_mag: float) -> bool:
         """Free-fall / high-|a| magnitude guard (identical to ESKFAHRS). True iff |a| ~ g."""
@@ -264,7 +299,7 @@ class LeftInvariantEKF:
         H[:, :3] = _skew(y_hat)
 
         sigma_a = self.accel_noise_std / GRAVITY
-        R_meas = (sigma_a**2 / gate) * np.eye(3)
+        R_meas = (sigma_a**2 / gate) * self._accel_motion_inflation(accel) * np.eye(3)
 
         S = H @ self._P @ H.T + R_meas
         if self.accel_chi2_thresh > 0.0:

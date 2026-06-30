@@ -204,6 +204,59 @@ class ESKFAHRS:
     # tol_lo<0 or tol_hi<0 disables that side. A no-op band (very loose) leaves behaviour identical.
     accel_freefall_tol_lo: float = 0.75   # reject when |a| < g*(1-0.75) = 0.25 g  (free-fall)
     accel_freefall_tol_hi: float = 9.0    # reject when |a| > g*(1+9.0)  = 10 g    (extreme high-g)
+    # ----------------------------------------------------------------------------------------------
+    # Acceleration-aware accel rejection (the VQ2 A8 climb-and-retreat fix, 2026-06-30).
+    # ----------------------------------------------------------------------------------------------
+    # The MIDDLE regime the magnitude band CANNOT see: under SUSTAINED LINEAR ACCELERATION the
+    # specific-force vector keeps |a| ~ g (so it sails through _accel_magnitude_in_band) while its
+    # DIRECTION tilts away from -g. The accel then levels the estimate to a TILTED reference -> false
+    # pitch -> the controller "corrects" the wrong way -> more accel -> more tilt -> a divergent loop
+    # (A8: accel-apparent pitch drifted -23.6 deg over 4 s while the gyro integrated only -0.8 deg).
+    #
+    # The discriminating signal is the LINEAR-ACCELERATION RESIDUAL relative to a GYRO-ANCHORED
+    # reference attitude (NOT the live estimate):
+    #     a_lin_world = R_ref @ f_body + g_ned        (== true world kinematic accel, 0 at equilibrium)
+    # |a_lin| ~ 0 when hovering/coasting (the accel IS the gravity reference -> trust it); |a_lin| grows
+    # during powered tilted flight (the accel is contaminated -> distrust it). This is the Mahony/
+    # complementary-filter principle (the accel may only correct SLOW gyro drift): when the accel-implied
+    # gravity direction moves but the GYRO says the body did not rotate, the accel is lying.
+    #
+    # WHY A GYRO-ANCHORED REFERENCE (the subtle, load-bearing part). If a_lin were computed against the
+    # LIVE estimate R_hat, the A8 divergence is INVISIBLE: the accel slowly drags R_hat to follow the
+    # tilting specific force, so R_hat @ f_body + g_ned stays ~0 even as the estimate walks 23 deg off
+    # true. The fix MUST anchor to something the accel cannot drag -- the GYRO. ``_R_ref`` is propagated
+    # by the bias-corrected gyro ONLY (never accel-corrected). When the gyro is flat (the A8 segment),
+    # R_ref holds level and a_lin reveals the FULL contamination (0 -> ~4 m/s^2); for a GENUINE rotation
+    # R_ref turns with the gyro and a_lin stays ~0 (the accel honestly tracks -> not rejected). R_ref is
+    # RE-ANCHORED to the live estimate every step the gate is inert (|a_lin| below accel_motion_anchor_thr),
+    # so it tracks the trusted estimate at equilibrium and only "remembers the gyro truth" across a suspect
+    # powered window -- bounding the gyro-bias drift it would otherwise accumulate.
+    #
+    # We DOWN-WEIGHT (not hard-cliff) the accel update by inflating R_accel proportional to |a_lin|^2:
+    #     R_accel <- R_accel * (1 + (|a_lin| / accel_motion_scale)^2)
+    # Graceful so it composes with the smooth gate weight + the chi2 gate + the free-fall band. At
+    # equilibrium (|a_lin| ~ 0) the factor is 1.0 -> BYTE-IDENTICAL to today. The gate is OFF by default
+    # (use_accel_motion_reject=False) so existing behaviour + the ESKF<->IEKF cross-validation are
+    # untouched until a deployment opts in. FD/divergence pinned in tests/test_accel_motion_reject.py.
+    use_accel_motion_reject: bool = False
+    accel_motion_scale: float = 0.1       # m/s^2; |a_lin| at which R_accel DOUBLES. Tight by design: a
+                                          # pure graceful (∝|a_lin|^2) inflation settles to an EQUILIBRIUM
+                                          # tilt (accel pull vs gyro hold), so the knee must be tight enough
+                                          # that sustained contamination is decisively distrusted (a_lin~0.3
+                                          # -> 10x, the A8 ~2-4 m/s^2 -> 400-1600x = effectively a skip).
+                                          # Crucially this is INERT where it must be: true equilibrium and
+                                          # GENUINE rotation both give |a_lin| ~ 0 (the accel honestly tracks
+                                          # the gyro reference) -> factor ~ 1, so it never starves the bias
+                                          # correction in normal slow flight; it only bites when the body is
+                                          # truly LINEARLY accelerating (when the accel is genuinely lying).
+    accel_motion_anchor_thr: float = 0.3  # m/s^2; re-anchor the gyro reference to the live estimate when
+                                          # |a_lin| is below this (the trusted/equilibrium regime). Above it
+                                          # the reference free-runs on the gyro to expose sustained accel.
+                                          # 0.3 (~0.03 g) sits above the static accel-noise floor (~0.09
+                                          # m/s^2 at accel_noise_std=0.05) but well below the A8 sustained
+                                          # contamination, so normal slow flight keeps re-anchoring cleanly.
+    accel_motion_max_inflate: float = 1e4 # ceiling on the inflation factor (numerical guard; a huge
+                                          # |a_lin| effectively skips the update without a hard branch).
     mag_ned: Optional[np.ndarray] = None
     mag_noise_std: float = 0.1          # normalised
 
@@ -211,11 +264,15 @@ class ESKFAHRS:
     _q: np.ndarray = field(default_factory=lambda: np.array([1., 0., 0., 0.]))
     _b_g: np.ndarray = field(default_factory=lambda: np.zeros(3))
     _P: np.ndarray = field(default_factory=lambda: np.eye(6) * 1e-2)
+    # Gyro-anchored reference rotation (body->world) for the acceleration-aware reject. Propagated by
+    # the bias-corrected gyro only; re-anchored to the estimate at equilibrium. Identity until used.
+    _R_ref: np.ndarray = field(default_factory=lambda: np.eye(3))
 
     def __post_init__(self) -> None:
         self._q = np.array([1., 0., 0., 0.], dtype=np.float64)
         self._b_g = np.zeros(3, dtype=np.float64)
         self._P = np.diag([1e-2]*3 + [1e-6]*3).astype(np.float64)
+        self._R_ref = _quat_to_R_wxyz(self._q)
         if self.mag_ned is not None:
             self.mag_ned = np.asarray(self.mag_ned, dtype=np.float64)
 
@@ -259,6 +316,7 @@ class ESKFAHRS:
         )
         self._b_g = np.zeros(3)
         self._P = np.diag([1e-2]*3 + [1e-6]*3).astype(np.float64)
+        self._R_ref = _quat_to_R_wxyz(self._q)
 
     def step(
         self,
@@ -296,6 +354,12 @@ class ESKFAHRS:
         # Propagate nominal quaternion
         dq = _omega_exp_wxyz(omega_corrected, dt)
         self._q = _normalize_quat(_quat_multiply_wxyz(self._q, dq))
+
+        # Propagate the GYRO-ANCHORED reference by the SAME bias-corrected rotation increment (gyro
+        # ONLY -- never accel-corrected). Cheap, and only consulted when use_accel_motion_reject is on.
+        # It is re-anchored to the live estimate at equilibrium inside _accel_motion_inflation.
+        if self.use_accel_motion_reject:
+            self._R_ref = self._R_ref @ _quat_to_R_wxyz(dq)
 
         # Linearised error-state transition
         #   delta_phi_{k+1} = (I - [omega_corr] * dt) * delta_phi - dt * delta_b_g
@@ -344,6 +408,34 @@ class ESKFAHRS:
             if accel_mag > hi:
                 return False
         return True
+
+    def _accel_motion_inflation(self, accel: np.ndarray) -> float:
+        """Covariance-inflation factor (>=1) for the acceleration-aware accel rejection.
+
+        The linear-acceleration residual w.r.t. the GYRO-ANCHORED reference (NOT the live estimate):
+            a_lin_world = R_ref @ f_body + g_ned     (== true world kinematic accel, ~0 at equilibrium)
+        At hover/coast |a_lin| ~ 0 (the accel IS gravity -> trust it, factor 1.0); under sustained
+        powered tilted flight with the gyro flat (the A8 signature) the accel direction tilts while
+        R_ref holds, so |a_lin| grows (the accel is contaminated by LINEAR accel, not rotation ->
+        distrust it). Returns ``1 + (|a_lin| / accel_motion_scale)^2`` clamped to accel_motion_max_inflate.
+        Returns 1.0 (no-op, byte-identical) when the gate is disabled.
+
+        R_ref must anchor to the GYRO, not the estimate: the accel slowly drags R_hat to follow the
+        tilting specific force, hiding the contamination if measured against R_hat (the A8 divergence is
+        then invisible). When |a_lin| is small (the trusted regime) R_ref is RE-ANCHORED to the live
+        estimate so it does not accumulate gyro-bias drift; it only free-runs on the gyro across a
+        suspect powered window. g_ned = [0,0,+g] adds the gravity reaction back."""
+        if not self.use_accel_motion_reject:
+            return 1.0
+        a_lin = self._R_ref @ accel + G_NED          # kinematic accel implied by the GYRO reference
+        a_lin_mag = float(np.linalg.norm(a_lin))
+        # Re-anchor the reference to the trusted estimate while at/near equilibrium (keeps the gyro
+        # reference from drifting on bias when there is nothing to reject).
+        if a_lin_mag < self.accel_motion_anchor_thr:
+            self._R_ref = _quat_to_R_wxyz(self._q)
+        scale = max(self.accel_motion_scale, 1e-9)
+        factor = 1.0 + (a_lin_mag / scale) ** 2
+        return float(min(factor, self.accel_motion_max_inflate))
 
     def _update_accel(self, accel: np.ndarray) -> None:
         """Tilt update using accelerometer; gated by high-g weighting.
@@ -401,9 +493,13 @@ class ESKFAHRS:
         H = np.zeros((3, 6))
         H[:, :3] = -_skew(g_hat)
 
-        # Effective measurement noise: R_meas / gate (larger noise when gate small = high-g)
+        # Effective measurement noise: R_meas / gate (larger noise when gate small = high-g),
+        # then FURTHER inflated by the acceleration-aware motion factor (A8 sustained-accel fix):
+        # |a_lin| ~ 0 -> factor 1.0 (byte-identical); powered tilted flight -> factor >> 1 (the accel
+        # leveling is starved before it can drag the attitude off true). Applied BEFORE the chi2 gate
+        # so the gate's S reflects the down-weighted trust too.
         sigma_a = self.accel_noise_std / GRAVITY  # normalised units
-        R_meas = (sigma_a**2 / gate) * np.eye(3)
+        R_meas = (sigma_a**2 / gate) * self._accel_motion_inflation(accel) * np.eye(3)
 
         # Direction-aware innovation gate (Mahalanobis / chi-square consistency test).
         # Magnitude gating cannot reject a near-g-magnitude disturbance whose DIRECTION
