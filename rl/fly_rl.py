@@ -1276,6 +1276,25 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     result["worst_work_ms"]     = round(worst_work_ms, 1)
     result["loop_over_budget_pct"] = round(over_pct, 1)
 
+    # --- A13 seeker diagnostics: pose-None breakdown + hold-last-demand bridge coverage -----------
+    # Logging only (no behaviour change): the seeker tallies per-tick command regimes in memory
+    # (no per-tick I/O, mirrors the buffered nav_estimate.jsonl pattern); we emit a single summary
+    # line here at loop exit + stash the counts in result. This tells the next fly WHETHER/WHICH gate
+    # is the dominant pose-gap source (track-continuity vs valid-poses-empty) so A14 can relax it with
+    # data, and whether the hold-last-demand bridge actually made the per-tick command continuous.
+    dc = getattr(seeker, "diag_counts", None)
+    if isinstance(dc, dict) and dc:
+        none_tot = max(int(dc.get("none_total", 0)), 0)
+        cmd_tot = int(dc.get("pursuit", 0)) + none_tot
+        bridged_pct = 100.0 * int(dc.get("bridged", 0)) / max(none_tot, 1)
+        print(f"  [seeker-diag] cmds={cmd_tot} pursuit={dc.get('pursuit', 0)} "
+              f"none={none_tot} (valid_empty={dc.get('none_valid_poses_empty', 0)} "
+              f"continuity={dc.get('none_continuity_reject', 0)} "
+              f"first_acq={dc.get('none_first_acq_reject', 0)} other={dc.get('none_other', 0)}) "
+              f"-> bridged={dc.get('bridged', 0)} ({bridged_pct:.0f}% of none) "
+              f"held_legacy={dc.get('held_legacy', 0)}")
+        result["seeker_diag"] = dict(dc)
+
     result["final_state"] = final_state
     result["gate_index"]  = gate_index
     result["collisions"]  = len(client.collisions) - n_coll0

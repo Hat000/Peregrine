@@ -353,6 +353,22 @@ class GateSeekerConfig:
     # applied at full from tick 1.
     vertical_align_ramp_s: float = 1.0
 
+    # --- HOLD-LAST-DEMAND BRIDGE (the 2026-06-30 A13 polygonal-motion fix) ---
+    # A13: on the slow VQ2 cruise the detection->pose stage drops a USABLE pose on ~75% of ticks
+    # (the track-continuity flap rejects a candidate whose PnP range/bearing jumps vs the EMA track,
+    # plus the _valid_poses reproj/behind filters + the first-acquisition acquire-range reject). Each
+    # such tick routes into regime 2 -> _hold_command, which ZEROES all body rates and re-levels (a
+    # silent zero-coast). The result is POLYGONAL motion: a real pursuit command on ~25% of ticks with
+    # 0.5-1.2 s zero/hold coasts between. THE FIX: bridge short pose gaps -- for this long after the
+    # last USABLE pose, re-issue the LAST pursuit demand (the cached forward lean + frozen heading)
+    # instead of regime-2's all-axes-zero re-level, so control is CONTINUOUS per tick (no zero-coast).
+    # 0.0 == OFF == legacy (byte-identical: regime-2 falls straight through to _hold_command).
+    hold_last_demand_s: float = 0.0
+    # Over the hold window, scale the held forward-accel demand full->0 linearly (decay/level at the
+    # end rather than cutting), so a genuinely-lost gate is not rammed forever -- the bridge eases the
+    # forward lean out over the window. Only active when hold_last_demand_s > 0.
+    hold_last_demand_decay: bool = True
+
     # --- ANCHOR RELEASE on the seeker's OWN detections (the 2026-06-29 attempt-2 BUG A fix) ---
     # On the LIVE VQ2 wire the navigator is MAP-FREE (gates=[]), so its map-associated fix path
     # never fires and ``nav.time_since_vision_update_s`` stays inf FOREVER -- the old anchor-release
@@ -475,6 +491,25 @@ class GateSeeker:
     _pass_t_ns: int | None = field(default=None, repr=False)         # sim time the pass dead-reckon began
     _pass_heading: float | None = field(default=None, repr=False)    # FROZEN pre-pass pursuit heading (coast direction)
     _pass_index: int | None = field(default=None, repr=False)        # active_gate_index at the moment the pass armed
+    # -- hold-last-demand bridge (A13): cache the last good pursuit demand so a pose-None tick can
+    #    re-issue it (continuous per-tick command) instead of regime-2's zero-coast hold --
+    _last_demand_los: np.ndarray | None = field(default=None, repr=False)   # last pursuit world heading unit vec
+    _last_demand_yaw: float | None = field(default=None, repr=False)        # last pursuit slewed yaw
+    _last_demand_accel: float | None = field(default=None, repr=False)      # last pursuit effective forward accel
+    _last_demand_t_ns: int | None = field(default=None, repr=False)         # sim time of the last pursuit demand
+    # -- A13 instrumentation: per-flight pose-None breakdown + bridge coverage counters (logging only,
+    #    no behaviour change). Accumulated in memory; fly_rl emits a one-line summary at loop exit. --
+    _last_none_reason: str | None = field(default=None, repr=False)         # why detect_gate_lever returned None
+    diag_counts: dict = field(default_factory=lambda: {
+        "pursuit": 0,            # regime 3: real pose -> pursuit command
+        "none_total": 0,         # pose=None ticks (after launch, post-settle/anchor)
+        "none_valid_poses_empty": 0,   # no candidate survived _valid_poses
+        "none_continuity_reject": 0,   # candidates existed but all dropped at the track-continuity gate
+        "none_first_acq_reject": 0,    # first-acquisition acquire-range reject (no admissible candidate)
+        "none_other": 0,         # pose=None for some other reason (no detector / no frame / coast-drop)
+        "bridged": 0,            # pose=None ticks bridged by hold-last-demand
+        "held_legacy": 0,        # pose=None ticks fallen through to the legacy zeroed hold
+    }, repr=False)
 
     # -- guidance: NavState + active gate -> Setpoint -----------------------
     def plan(self, nav: NavState, gate: Gate, *, is_final_gate: bool = False) -> Setpoint:
@@ -575,6 +610,7 @@ class GateSeeker:
         With tracking OFF the legacy behaviour returns: pick the CLOSEST (smallest PnP range) gate
         each frame, no continuity."""
         if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
+            self._last_none_reason = "other"     # no detector / no frame -> nothing to localize
             return None
         poses = self._valid_poses(frame)
 
@@ -583,10 +619,12 @@ class GateSeeker:
             for pose in poses:
                 if best is None or pose.range_m < best.range_m:
                     best = pose
+            self._last_none_reason = None if best is not None else "valid_poses_empty"
             return best
 
         # --- temporal track: lock one gate across frames -------------------
         if not poses:
+            self._last_none_reason = "valid_poses_empty"   # no candidate survived score/reproj/in-front
             self._track_coast_ticks += 1
             if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                 self._track_range_m, self._track_bearing = None, None
@@ -614,6 +652,7 @@ class GateSeeker:
             cands = [p for p in poses if _consistent(p)]
             if not cands:
                 # every candidate jumped -> COAST on the track (do not lock onto a flapper).
+                self._last_none_reason = "continuity_reject"   # the dominant A13 pose=None source
                 self._track_coast_ticks += 1
                 if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                     self._track_range_m, self._track_bearing = None, None
@@ -634,6 +673,7 @@ class GateSeeker:
             self._track_range_m = (1.0 - a) * float(self._track_range_m) + a * float(chosen.range_m)
             self._track_bearing = (1.0 - a) * np.asarray(self._track_bearing, dtype=np.float64) + a * b_meas
         self._track_coast_ticks = 0
+        self._last_none_reason = None    # a usable pose this tick (clear the stale reason)
         return chosen
 
     def _first_acquisition(self, poses: list[GatePose]) -> GatePose:
@@ -781,11 +821,21 @@ class GateSeeker:
         # (Not during a pass: a pass-time gate loss is handled by the dead-reckon coast above, which
         # holds the forward lean instead of re-levelling into a pitch-up.)
         if pose is None:
+            self._count_none_tick()    # A13 instrumentation: pose=None breakdown by reason
+            # HOLD-LAST-DEMAND BRIDGE (A13): re-issue the last pursuit demand across a short pose gap
+            # (continuous per-tick command) instead of regime-2's all-axes-zero re-level zero-coast.
+            # Default OFF (hold_last_demand_s=0.0 -> None -> legacy hold == byte-identical).
+            bridged = self._maybe_hold_last_demand(nav)
+            if bridged is not None:
+                self.diag_counts["bridged"] += 1
+                return bridged
+            self.diag_counts["held_legacy"] += 1
             return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
                                       attitude_safe=True)
 
         # --- regime 3: PURSUIT -> bounded feedforward forward tilt toward the SEEN opening +
         # centering yaw, pitch + roll capped, forward demand ramped (never a velocity setpoint) ---
+        self.diag_counts["pursuit"] += 1
         return self._visual_pursuit_command(nav, pose)
 
     # =======================================================================
@@ -887,6 +937,68 @@ class GateSeeker:
         # full forward authority for the coast (we are committed to the glide); no vertical-align.
         return self._feedforward_command(nav, los, yaw0, launch,
                                          self.config.pass_coast_accel_mps2, 1.0, vz_cmd=0.0)
+
+    # =======================================================================
+    # HOLD-LAST-DEMAND BRIDGE  (the A13 polygonal-motion fix)
+    # =======================================================================
+    def _record_last_demand(self, los: np.ndarray, yaw: float, accel: float,
+                            sim_time_ns: int) -> None:
+        """Cache the LAST good pursuit demand (slewed heading + yaw + effective forward accel + sim
+        time) so a subsequent pose-None tick can re-issue it via :meth:`_maybe_hold_last_demand`
+        instead of regime-2's zero-coast hold. Written ONLY on a fresh pursuit tick (regime 3); never
+        cleared on a pose-None tick, so it persists across the gap (only ``reset`` drops it)."""
+        self._last_demand_los = np.asarray(los, dtype=np.float64).copy()
+        self._last_demand_yaw = float(yaw)
+        self._last_demand_accel = float(accel)
+        self._last_demand_t_ns = int(sim_time_ns)
+
+    def _maybe_hold_last_demand(self, nav: NavState) -> ControlCommand | None:
+        """Bridge a short pose gap: if ``hold_last_demand_s > 0`` AND a cached pursuit demand exists
+        AND we are still within the hold window since that demand, RE-ISSUE the last pursuit demand
+        (cached forward lean on the frozen heading) so control is CONTINUOUS per tick -- no regime-2
+        zero-coast. Returns the bridged :class:`ControlCommand`, or ``None`` to fall through to the
+        legacy zeroed hold (OFF, no cache, or window expired).
+
+        The held forward accel is scaled full->0 linearly over the window when ``hold_last_demand_decay``
+        (decay/level out rather than ram a genuinely-lost gate forever). The bridge reuses the SAME
+        capped ``_feedforward_command`` (yaw/roll/pitch caps) so it is bounded + safe; vertical-align is
+        OFF (no fresh elevation lever during a gap, the lever is stale). The yaw is the cached (frozen)
+        pursuit heading, so the camera is not slewed during the gap."""
+        if (self.config.hold_last_demand_s <= 0.0 or self._last_demand_t_ns is None
+                or self._last_demand_los is None or self._last_demand_yaw is None
+                or self._last_demand_accel is None):
+            return None
+        elapsed = (int(nav.sim_time_ns) - int(self._last_demand_t_ns)) / 1e9
+        if elapsed < 0.0 or elapsed >= self.config.hold_last_demand_s:
+            return None    # window expired (or a stale/negative clock) -> legacy zeroed hold
+        decay_scale = (1.0 - elapsed / self.config.hold_last_demand_s
+                       if self.config.hold_last_demand_decay else 1.0)
+        yaw0 = float(self._last_demand_yaw)
+        self._last_yaw = yaw0                     # keep the heading frozen across the bridge
+        launch = self._launch_ramp(int(nav.sim_time_ns))
+        # Re-issue the cached forward demand on the frozen heading; demand_ramp=1.0 (the accel was
+        # already the EFFECTIVE post-ramp value at cache time), decayed over the window. vz_cmd=0.0:
+        # vertical-align OFF during the gap (the gate lever is stale -> no fresh elevation correction).
+        return self._feedforward_command(
+            nav, self._last_demand_los, yaw0, launch,
+            float(self._last_demand_accel) * float(decay_scale), 1.0, vz_cmd=0.0)
+
+    def _count_none_tick(self) -> None:
+        """A13 instrumentation: tally a regime-2 (pose=None) tick by the REASON detect_gate_lever
+        recorded (``_last_none_reason``). Logging only -- no behaviour change. The reason split tells
+        the next fly which gate (track-continuity vs valid-poses) is the dominant gap source so A14 can
+        relax it with data. ``valid_poses_empty`` = no candidate survived score/reproj/in-front;
+        ``continuity_reject`` = candidates existed but all jumped the track gate (the suspected
+        dominant source); ``first_acq_reject`` = the acquire-range reject (rarely a None source since
+        first-acquisition falls back rather than rejecting all); ``other`` = no detector/frame/coast."""
+        self.diag_counts["none_total"] += 1
+        reason = self._last_none_reason
+        key = {
+            "valid_poses_empty": "none_valid_poses_empty",
+            "continuity_reject": "none_continuity_reject",
+            "first_acq_reject": "none_first_acq_reject",
+        }.get(reason, "none_other")
+        self.diag_counts[key] += 1
 
     def _in_settle(self, sim_time_ns: int) -> bool:
         """True while within ``settle_s`` of the launch clock arming (the post-arm cold-AHRS settle)."""
@@ -992,9 +1104,18 @@ class GateSeeker:
             # BLOCKER 1): a bounded vertical-velocity target nulls the gate-opening vertical offset so
             # the drone descends/climbs onto the opening centre instead of holding altitude and clipping.
             vz = self._vertical_align_vz(nav, pose)
+            fwd_ramp = self._forward_accel_ramp(int(nav.sim_time_ns))
+            # HOLD-LAST-DEMAND BRIDGE (A13): cache this fresh pursuit demand so a subsequent pose-None
+            # tick can re-issue it (continuous per-tick command) instead of regime-2's zero-coast. We
+            # cache the slewed world heading + yaw + the EFFECTIVE forward accel (forward_accel * the
+            # combined authority/forward ramps) + the demand sim time. Written ONLY on a fresh pursuit
+            # tick; never cleared on a pose-None tick (so it persists across the gap).
+            self._record_last_demand(los, yaw,
+                                     self.config.forward_accel_mps2 * float(eff_ramp) * float(fwd_ramp),
+                                     int(nav.sim_time_ns))
             return self._feedforward_command(nav, los, yaw, eff_ramp,
                                               self.config.forward_accel_mps2,
-                                              self._forward_accel_ramp(int(nav.sim_time_ns)), vz_cmd=vz)
+                                              fwd_ramp, vz_cmd=vz)
         # LEGACY: a desired-velocity setpoint (the controller closes it with a velocity-error term).
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
@@ -1342,6 +1463,15 @@ class GateSeeker:
         self._pass_t_ns = None
         self._pass_heading = None
         self._pass_index = None
+        # hold-last-demand bridge (A13): drop the cached demand + the pose-None reason; zero the
+        # per-flight diagnostic counters so a fresh epoch starts clean.
+        self._last_demand_los = None
+        self._last_demand_yaw = None
+        self._last_demand_accel = None
+        self._last_demand_t_ns = None
+        self._last_none_reason = None
+        for k in self.diag_counts:
+            self.diag_counts[k] = 0
 
     # -- internals ----------------------------------------------------------
     def _launch_ramp(self, sim_time_ns: int) -> float | None:

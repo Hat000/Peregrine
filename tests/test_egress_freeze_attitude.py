@@ -93,10 +93,12 @@ def test_egress_freeze_on_zeroes_roll_pitch_keeps_yaw_and_thrust():
 def test_deploy_profile_seeker_overrides_wires_the_freeze():
     """vq2_case_c carries the freeze via the new DeployProfile.seeker_overrides seam; vq1_case_a leaves
     it None (explicit, to pin VQ1 byte-identity)."""
-    assert get_profile("vq2_case_c").seeker_overrides == {"egress_freeze_attitude": True}
+    # the freeze is carried (exact-equality would be brittle: vq2_case_c now also carries the A13
+    # hold_last_demand_s bridge override -- assert the freeze KEY is present + ON instead).
+    assert get_profile("vq2_case_c").seeker_overrides.get("egress_freeze_attitude") is True
     assert get_profile("vq1_case_a").seeker_overrides is None
     # the constructors agree with the named lookup
-    assert vq2_case_c().seeker_overrides == {"egress_freeze_attitude": True}
+    assert vq2_case_c().seeker_overrides.get("egress_freeze_attitude") is True
     assert vq1_case_a().seeker_overrides is None
 
 

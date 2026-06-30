@@ -151,7 +151,11 @@ def vq2_case_c() -> DeployProfile:
         gyro_sign=VQ2_GYRO_SIGN,   # live-confirmed HIGHRES_IMU PITCH-axis flip (x/z unconfirmed -> +1)
         # A10 acquisition-trap fix: freeze the spawn attitude through egress so the +20deg camera
         # stays ON the spawn gate while forward demand ramps from ~0 (no saturated nose-up re-level).
-        seeker_overrides={"egress_freeze_attitude": True},
+        # A13 hold-last-demand bridge (2026-06-30): the slow VQ2 cruise drops a usable pose on ~75% of
+        # ticks (track-continuity flap), each previously a regime-2 zero-coast -> POLYGONAL motion. Hold
+        # the last pursuit demand for 0.6 s across these gaps so control is CONTINUOUS per tick. (The
+        # track-continuity gate widening is DEFERRED to A14 -- tune with the instrumentation data.)
+        seeker_overrides={"egress_freeze_attitude": True, "hold_last_demand_s": 0.6},
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
         # the egress->pursuit HANDOFF (held ~-18deg nose-down vs ~-5deg cruise = ~13deg error) commands
