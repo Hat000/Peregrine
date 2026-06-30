@@ -1,0 +1,26 @@
+[
+  {
+    "axis": "pitch",
+    "cmd_sign": "+",
+    "realized_gyro_sign": "-",
+    "mean_gyro_rad_s": -2.177,
+    "inverted": "YES (inverted)",
+    "n": 19
+  },
+  {
+    "axis": "roll",
+    "cmd_sign": "+",
+    "realized_gyro_sign": "-",
+    "mean_gyro_rad_s": -2.198,
+    "inverted": "YES (inverted)",
+    "n": 19
+  },
+  {
+    "axis": "yaw",
+    "cmd_sign": "+",
+    "realized_gyro_sign": "-",
+    "mean_gyro_rad_s": -2.02,
+    "inverted": "YES (inverted)",
+    "n": 19
+  }
+]
