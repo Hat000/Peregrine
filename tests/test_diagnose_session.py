@@ -261,9 +261,12 @@ def test_no_meta_no_tlog_is_ungradeable_attention(tmp_path):
 # Real recorded bundle (only if present in this checkout) -- end-to-end smoke
 # ---------------------------------------------------------------------------------------------
 _REAL = ROOT / "handoff/shadowpc-postfix-dataset-2026-06-12/extracted"
+# The 2026-06-27 handoff-slimming purge removed the debug_obs.jsonl artifacts but left the empty
+# dir shell, so guard on actual bundle presence (the glob the test consumes), not just the dir.
+_REAL_BUNDLES = sorted(_REAL.glob("*/debug_obs.jsonl")) if _REAL.is_dir() else []
 
 
-@pytest.mark.skipif(not _REAL.is_dir(), reason="real recorded bundles not present in this checkout")
+@pytest.mark.skipif(not _REAL_BUNDLES, reason="real recorded bundles not present in this checkout")
 def test_real_bundles_diagnose_end_to_end():
     bundles = sorted(p for p in _REAL.iterdir() if (p / "debug_obs.jsonl").exists())
     assert bundles, "expected at least one real bundle with debug_obs.jsonl"
