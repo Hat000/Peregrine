@@ -1,0 +1,2 @@
+  [loop-rate]  12.7 Hz over 130 ticks (target 30); worst work 99 ms; 100.0% ticks over budget -> CHOKED
+  [seeker-diag] cmds=118 pursuit=13 none=105 (valid_empty=96 continuity=9 first_acq=0 other=0) -> bridged=30 (29% of none) held_legacy=75
