@@ -301,6 +301,14 @@ class GateSeekerConfig:
     # (so post-egress flight is byte-identical to today). ``use_egress_thrust_floor`` gates it.
     use_egress_thrust_floor: bool = True
     egress_thrust_floor_frac: float = 1.0
+    # --- EGRESS ATTITUDE FREEZE (the 2026-06-30 A10 acquisition-trap fix) ---
+    # Hold (do not re-level) the frozen spawn pitch/roll during egress. The egress forward demand
+    # ramps from ~0, so a frozen spawn tilt would otherwise drive a saturated nose-UP re-level that
+    # points the +20deg camera OFF the spawn gate (the A10 acquisition trap: camera leaves frame ->
+    # detector dark -> pursuit never acquires a pose). With this ON, egress zeroes its OWN roll/pitch
+    # rate command (exactly like the hold's hold_freeze_attitude) so the camera stays on the gate;
+    # only yaw(=frozen) + thrust-floor + forward feedforward remain. OFF (default) == today's egress.
+    egress_freeze_attitude: bool = False
     # --- POINT-BLANK ELEVATION GUARD (the 2026-06-29 A7 close-range descent fix) ---
     # A7 root cause: at spawn the start gate is POINT-BLANK (range ~1 m). At that range the PnP lever is
     # degenerate and ``trk_el`` is garbage -- it read NEGATIVE (gate appears below boresight), so the
@@ -1080,6 +1088,14 @@ class GateSeeker:
             self._advance_egress_distance(int(nav.sim_time_ns), demand_ramp)
         cmd = self._feedforward_command(nav, los, yaw0, launch,
                                         self.config.egress_accel_mps2, demand_ramp)
+        # EGRESS ATTITUDE FREEZE (A10): hold the frozen spawn pitch/roll -- zero the egress' OWN
+        # roll/pitch rate command (like hold_freeze_attitude) so the +20deg camera stays ON the spawn
+        # gate while forward demand ramps from ~0. Without this the level-target-vs-tilted-current
+        # delta saturates the pitch-rate cap into a nose-UP re-level that points the camera off the
+        # gate -> detector dark -> pursuit never acquires a pose (the acquisition trap). Yaw (frozen)
+        # + thrust-floor + forward feedforward remain. OFF (default) == legacy egress.
+        if self.config.egress_freeze_attitude:
+            cmd = self._zero_rp_rate(cmd)
         # EGRESS THRUST FLOOR (A7): clamp the collective to at least hover-equivalent so the drone can
         # only HOLD or CLIMB out of the spawn gate -- it can never descend / free-fall while egressing
         # (the point-blank close-range thrust collapse). Only the egress command is floored; pursuit's

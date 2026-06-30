@@ -976,11 +976,16 @@ def _build_casec_seeker(args, gates):
     # AHRS gravity-aligns before any lean. anchor_release_detections is the map-free anchor-release
     # streak (BUG A fix): release the launch-hold on the seeker's OWN consecutive detections, since on
     # the live VQ2 wire the navigator runs map-free and nav.time_since_vision_update_s never goes finite.
+    # Thread the profile's GateSeekerConfig overrides (e.g. vq2_case_c -> egress_freeze_attitude=True,
+    # the A10 acquisition-trap fix) through the seeker construction seam. None == no overrides ==
+    # byte-identical seeker config (VQ1 / case-A). The explicit hardcoded kwargs above are the CLI-
+    # driven knobs; there is no key collision with the profile overrides today.
     seeker = GateSeeker(
         config=GateSeekerConfig(
             cruise_speed=args.seeker_speed,
             settle_s=args.seeker_settle,
             anchor_release_detections=args.seeker_anchor_dets,
+            **(profile.seeker_overrides or {}),
         ),
         detector=detector,
     )

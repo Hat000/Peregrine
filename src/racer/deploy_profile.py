@@ -54,7 +54,9 @@ class DeployProfile:
     """A named flight preset: the estimator config + the uplink rate-scale + a label.
 
     ``nav_config`` -> ``Navigator(config=...)``; ``cmd_rate_scale`` -> ``MavlinkClient(cmd_rate_scale=...)``;
-    ``gyro_sign`` -> ``MavlinkClient(gyro_sign=...)`` (live-wire per-axis gyro convention correction).
+    ``gyro_sign`` -> ``MavlinkClient(gyro_sign=...)`` (live-wire per-axis gyro convention correction);
+    ``seeker_overrides`` -> ``GateSeekerConfig(**seeker_overrides)`` at the seeker construction seam
+    (None == no overrides == today's seeker behaviour).
     ``self_localizing`` is True when the profile carries NO given position (case-C) — the deploy
     entry uses it to decide whether to thread a ground-truth seed (it must NOT in case-C).
     """
@@ -67,6 +69,11 @@ class DeployProfile:
     # (no change; VQ1 + every offline path byte-identical). vq2_case_c flips PITCH (the live-confirmed
     # HIGHRES_IMU convention mismatch). Default keeps existing callers / pickles forward-compatible.
     gyro_sign: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    # Optional GateSeekerConfig field overrides, splatted as ``GateSeekerConfig(**seeker_overrides)``
+    # at the seeker construction seam (make_seeker). None == no overrides == today's seeker behaviour
+    # (VQ1 / case-A byte-identical). vq2_case_c sets egress_freeze_attitude=True (the A10 acquisition-
+    # trap fix). Default keeps existing callers / pickles forward-compatible.
+    seeker_overrides: dict | None = None
 
 
 def vq1_case_a() -> DeployProfile:
@@ -80,6 +87,7 @@ def vq1_case_a() -> DeployProfile:
         cmd_rate_scale=1.0,             # identity uplink (no rate scaling)
         self_localizing=False,
         gyro_sign=(1.0, 1.0, 1.0),     # identity gyro (no live-wire correction)
+        seeker_overrides=None,          # no seeker overrides (byte-identical seeker config)
     )
 
 
@@ -132,6 +140,9 @@ def vq2_case_c() -> DeployProfile:
         cmd_rate_scale=VQ2_CMD_RATE_SCALE,
         self_localizing=True,
         gyro_sign=VQ2_GYRO_SIGN,   # live-confirmed HIGHRES_IMU PITCH-axis flip (x/z unconfirmed -> +1)
+        # A10 acquisition-trap fix: freeze the spawn attitude through egress so the +20deg camera
+        # stays ON the spawn gate while forward demand ramps from ~0 (no saturated nose-up re-level).
+        seeker_overrides={"egress_freeze_attitude": True},
     )
 
 
