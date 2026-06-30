@@ -1,0 +1,58 @@
+############################################################
+== 20260630_005945_vq2_slow_seeker_a8_f1 ==
+IMU 2381 | seed@t=14.51s(rest pitch +0.1deg,|a|=10.3) | launch@t=14.55s | crash@t=20.16s
+
+ t-lnch   |a|  ygyro  accel_p gyro_intp    m0   m1   m2   m3  sumM
+------------------------------------------------------------------
+  -0.04  10.3  +0.00     +0.1      +0.1  0.05 0.05 0.05 0.05  0.20
+   0.00  14.6  +0.00     -0.1      +0.1  0.34 0.34 0.34 0.34  1.38
+   0.90  10.1  -0.01     +1.9     -13.2  0.22 0.22 0.22 0.22  0.86
+   1.80  15.6  -0.01     -0.2     -44.1  0.37 0.37 0.37 0.37  1.49
+   2.71  12.8  -0.00     -4.7     -44.2  0.37 0.37 0.37 0.37  1.49
+   3.62  11.1  -0.00    -12.3     -44.2  0.37 0.37 0.37 0.37  1.49
+   4.52  10.3  -0.00    -19.1     -44.2  0.37 0.37 0.37 0.37  1.49
+   5.42  10.0  -0.00    -22.9     -44.2  0.37 0.37 0.37 0.37  1.49
+   5.601101.7 -20.93    -33.7     -23.4  0.44 0.46 0.35 0.44  1.69
+
+DECISIVE METRIC over the longest sustained gyro-quiet, throttle-on segment [t+1.4s .. t+5.6s] (4.2s):
+  accel-apparent pitch drift  = -23.6 deg
+  gyro-integrated pitch drift = -0.8 deg   (max|ygyro| 0.089 rad/s -> QUIET (no rotation))
+  mean |a| over segment = 12.0 m/s^2   (g=9.8; ~g => magnitude accel-gate is EVADED)
+
+  Q1: over this segment the accel-apparent pitch DRIFTS -24 deg while the gyro-integrated pitch barely moves (-1 deg): the gyro reads ~0, so the drift is LINEAR-ACCEL CONTAMINATION, not rotation.
+  Q2: estimator pitch not logged (VQ2 blocks ATTITUDE); inferred - a gyro-quiet accel drift toward
+      nose-down is exactly what makes the controller command nose-up (matches the footage up+back).
+  Q3: ACTUATOR thrust proxy sumM rises to ~2.4 and holds (throttle up),
+      i.e. sustained thrust -> sustained linear accel -> the accel contamination above.
+
+  VERDICT: (a) ACCEL-LEVELING BIAS under sustained linear accel. The apparent-pitch divergence develops while the gyro reads ~0 and |a|~=g, so a magnitude-gated accel-leveler is fooled by a tilted-but-g-magnitude specific force. (b) is REFUTED: a zero gyro has no polarity to corrupt.
+
+############################################################
+== 20260630_010404_vq2_slow_seeker_a8_f1 ==
+IMU 727 | seed@t=0.36s(rest pitch +0.2deg,|a|=10.2) | launch@t=0.41s | crash@t=6.17s
+
+ t-lnch   |a|  ygyro  accel_p gyro_intp    m0   m1   m2   m3  sumM
+------------------------------------------------------------------
+  -0.05  10.2  +0.00     +0.2      +0.2  0.05 0.05 0.05 0.05  0.20
+   0.00  14.8  +0.00     +0.1      +0.2  0.35 0.35 0.35 0.35  1.39
+   0.90   1.2  -1.37    +17.7     -21.5  0.15 0.15 0.06 0.06  0.41
+   1.81  15.7  -0.01     -0.7     -43.8  0.37 0.37 0.37 0.37  1.49
+   2.71  13.1  -0.00     -5.3     -43.9  0.37 0.37 0.37 0.37  1.49
+   3.61  11.2  -0.00    -13.0     -43.9  0.37 0.37 0.37 0.37  1.49
+   4.52  10.4  -0.00    -19.4     -43.9  0.37 0.37 0.37 0.37  1.49
+   5.43  10.0  -0.00    -22.9     -43.9  0.37 0.37 0.37 0.37  1.49
+   5.76 608.0 -31.55    +10.3      -0.3  0.30 0.44 0.54 0.39  1.66
+
+DECISIVE METRIC over the longest sustained gyro-quiet, throttle-on segment [t+1.2s .. t+5.7s] (4.5s):
+  accel-apparent pitch drift  = -23.6 deg
+  gyro-integrated pitch drift = -1.1 deg   (max|ygyro| 0.085 rad/s -> QUIET (no rotation))
+  mean |a| over segment = 12.3 m/s^2   (g=9.8; ~g => magnitude accel-gate is EVADED)
+
+  Q1: over this segment the accel-apparent pitch DRIFTS -24 deg while the gyro-integrated pitch barely moves (-1 deg): the gyro reads ~0, so the drift is LINEAR-ACCEL CONTAMINATION, not rotation.
+  Q2: estimator pitch not logged (VQ2 blocks ATTITUDE); inferred - a gyro-quiet accel drift toward
+      nose-down is exactly what makes the controller command nose-up (matches the footage up+back).
+  Q3: ACTUATOR thrust proxy sumM rises to ~2.1 and holds (throttle up),
+      i.e. sustained thrust -> sustained linear accel -> the accel contamination above.
+
+  VERDICT: (a) ACCEL-LEVELING BIAS under sustained linear accel. The apparent-pitch divergence develops while the gyro reads ~0 and |a|~=g, so a magnitude-gated accel-leveler is fooled by a tilted-but-g-magnitude specific force. (b) is REFUTED: a zero gyro has no polarity to corrupt.
+
