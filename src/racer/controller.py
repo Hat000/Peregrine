@@ -162,6 +162,38 @@ class Controller:
     # ~1 m sideways). Instead: desired_vel = clip(kp_pos*err, max_speed); a_h = kd_vel*(des_vel -
     # vel) -- strong position tracking at a bounded speed. None => legacy PD. [teammate red-team]
     max_speed: float | None = None
+    # BODY-RATE SLEW-RATE LIMIT (rad/s^2): cap how fast the COMMANDED body-rate vector may change
+    # per tick, |omega - omega_prev| <= slew * dt PER AXIS (dt from the setpoint sim-time delta). The
+    # slow, choked (~12 Hz), sparse-detection VQ2 bring-up makes the egress->pursuit HANDOFF a STEP:
+    # the held nose-down attitude vs the new level-cruise target is a ~13deg error that, at kp_att,
+    # slams the pursuit pitch-rate cap in ONE tick -> overshoot past level into nose-UP -> the gate
+    # whips out of frame (the A11 handoff overshoot + the 15/18 bang-bang clip). Ramping the command
+    # over a few ticks de-whips it. None => OFF == no limit == byte-identical (VQ1 / case-A); the
+    # first tick (no prev) passes through unclamped. STATEFUL: the Controller instance owns prev. The
+    # slew is the LAST step on the body-rate path (after kp_att/kd_att/ff_gain/clip/sign), so it
+    # bounds the exact vector sent to the wire. [VQ2 A11 control-softening, 2026-06-30]
+    body_rate_slew_max_rps2: float | None = None
+    _prev_body_rate: np.ndarray | None = field(default=None, repr=False, compare=False)
+    _prev_slew_t_ns: int | None = field(default=None, repr=False, compare=False)
+
+    def _apply_body_rate_slew(self, omega: np.ndarray, sim_time_ns: int) -> np.ndarray:
+        """Per-axis slew-rate limit on the commanded body rate (anti-bang-bang). Clamps
+        ``|omega - prev| <= slew * dt`` per axis where ``dt`` is the sim-time delta since the last
+        command, then stores the (clamped) command as the new prev. OFF (slew None/<=0) or no prior
+        command / non-positive dt => pass omega through unchanged + just latch it (byte-identical)."""
+        slew = self.body_rate_slew_max_rps2
+        if slew is None or slew <= 0.0:
+            return omega                                    # OFF: byte-identical, no state kept
+        out = np.asarray(omega, dtype=np.float64).copy()
+        if self._prev_body_rate is not None and self._prev_slew_t_ns is not None:
+            dt = (int(sim_time_ns) - int(self._prev_slew_t_ns)) / 1e9
+            if dt > 0.0:                                    # bound the per-tick change to slew*dt
+                max_step = float(slew) * dt
+                delta = np.clip(out - self._prev_body_rate, -max_step, max_step)
+                out = self._prev_body_rate + delta
+        self._prev_body_rate = out.copy()
+        self._prev_slew_t_ns = int(sim_time_ns)
+        return out
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -245,6 +277,7 @@ class Controller:
             omega = omega - self.kd_att * np.asarray(nav.angular_rate_body, dtype=np.float64)
         omega = _clip_norm(omega, self.max_body_rate_rps)
         omega = omega * np.asarray(self.body_rate_sign, dtype=np.float64)   # -> sim actuation convention
+        omega = self._apply_body_rate_slew(omega, sp.sim_time_ns)   # anti-bang-bang (None => off)
         return ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=sp.sim_time_ns,
@@ -332,6 +365,7 @@ class Controller:
         omega = (self.kp_att * rotvec - self.kd_att * rate) / max(self.ff_gain, 1e-6)
         omega = _clip_norm(omega, self.max_body_rate_rps)
         omega = omega * np.asarray(self.body_rate_sign, dtype=np.float64)
+        omega = self._apply_body_rate_slew(omega, sp.sim_time_ns)   # anti-bang-bang (None => off)
         return ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=sp.sim_time_ns,

@@ -57,6 +57,8 @@ class DeployProfile:
     ``gyro_sign`` -> ``MavlinkClient(gyro_sign=...)`` (live-wire per-axis gyro convention correction);
     ``seeker_overrides`` -> ``GateSeekerConfig(**seeker_overrides)`` at the seeker construction seam
     (None == no overrides == today's seeker behaviour).
+    ``controller_overrides`` -> ``make_seeker_controller(**controller_overrides)`` at the seeker's
+    controller construction seam (None == no overrides == today's controller gains).
     ``self_localizing`` is True when the profile carries NO given position (case-C) — the deploy
     entry uses it to decide whether to thread a ground-truth seed (it must NOT in case-C).
     """
@@ -74,6 +76,12 @@ class DeployProfile:
     # (VQ1 / case-A byte-identical). vq2_case_c sets egress_freeze_attitude=True (the A10 acquisition-
     # trap fix). Default keeps existing callers / pickles forward-compatible.
     seeker_overrides: dict | None = None
+    # Optional Controller field overrides, splatted as ``make_seeker_controller(**controller_overrides)``
+    # at the seeker's controller construction seam. None == no overrides == today's controller gains
+    # (VQ1 / case-A byte-identical). vq2_case_c SOFTENS the attitude loop (kp_att 10->4 + a body-rate
+    # slew limit) to de-saturate the A11 egress->pursuit handoff overshoot + the bang-bang clip.
+    # Default keeps existing callers / pickles forward-compatible.
+    controller_overrides: dict | None = None
 
 
 def vq1_case_a() -> DeployProfile:
@@ -88,6 +96,7 @@ def vq1_case_a() -> DeployProfile:
         self_localizing=False,
         gyro_sign=(1.0, 1.0, 1.0),     # identity gyro (no live-wire correction)
         seeker_overrides=None,          # no seeker overrides (byte-identical seeker config)
+        controller_overrides=None,      # no controller overrides (byte-identical controller gains)
     )
 
 
@@ -143,6 +152,17 @@ def vq2_case_c() -> DeployProfile:
         # A10 acquisition-trap fix: freeze the spawn attitude through egress so the +20deg camera
         # stays ON the spawn gate while forward demand ramps from ~0 (no saturated nose-up re-level).
         seeker_overrides={"egress_freeze_attitude": True},
+        # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
+        # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
+        # the egress->pursuit HANDOFF (held ~-18deg nose-down vs ~-5deg cruise = ~13deg error) commands
+        # ~2.3 rad/s, clips to 1.5, and OVERSHOOTS past level into nose-UP -> gate whips out of frame
+        # (plus 15/18 bang-bang clip bursts). SOFTEN it for vq2_case_c only:
+        #   * kp_att 10 -> 4: max non-saturating attitude error = cap/kp = 1.5/4 ~= 0.375 rad ~= 21.5deg
+        #     (vs 8.6deg at kp=10), so the ~13deg handoff no longer saturates + corrections are gentler.
+        #   * body_rate_slew_max_rps2 = 8.0: at ~12 Hz (dt~=0.083 s) the per-tick body-rate change is
+        #     bounded to 8.0*0.083 ~= 0.66 rad/s, so a step (handoff, or a big correction after a
+        #     detection gap) ramps 0->1.5 over ~2-3 ticks instead of whipping the camera in ONE tick.
+        controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0},
     )
 
 

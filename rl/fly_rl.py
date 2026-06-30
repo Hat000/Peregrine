@@ -956,7 +956,7 @@ def _build_casec_seeker(args, gates):
     (use_ahrs + vision yaw/z + gate-relative chain, NO given position) with an opt-in detector;
     the seeker is the transparent slow pursuit controller. No torch / no RL checkpoint needed."""
     from racer.deploy_profile import get_profile
-    from racer.gate_seeker import GateSeeker, GateSeekerConfig
+    from racer.gate_seeker import GateSeeker, GateSeekerConfig, make_seeker_controller
     from racer.navigator import Navigator
 
     profile = get_profile(args.deploy_profile)
@@ -980,6 +980,9 @@ def _build_casec_seeker(args, gates):
     # the A10 acquisition-trap fix) through the seeker construction seam. None == no overrides ==
     # byte-identical seeker config (VQ1 / case-A). The explicit hardcoded kwargs above are the CLI-
     # driven knobs; there is no key collision with the profile overrides today.
+    # Thread the profile's CONTROLLER overrides the EXACT parallel way (vq2_case_c -> kp_att=4.0 +
+    # body_rate_slew_max_rps2=8.0, the A11 control-softening fix that de-saturates the egress->pursuit
+    # handoff). None == no overrides == today's controller gains (VQ1 / case-A byte-identical).
     seeker = GateSeeker(
         config=GateSeekerConfig(
             cruise_speed=args.seeker_speed,
@@ -987,6 +990,7 @@ def _build_casec_seeker(args, gates):
             anchor_release_detections=args.seeker_anchor_dets,
             **(profile.seeker_overrides or {}),
         ),
+        controller=make_seeker_controller(**(profile.controller_overrides or {})),
         detector=detector,
     )
     return nav, seeker, profile
