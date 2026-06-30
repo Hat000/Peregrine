@@ -139,8 +139,28 @@ class MavlinkClient:
     TIMESYNC_HZ = 10   # the reference client's keepalive rate (no heartbeat)
 
     def __init__(self, endpoint: str = "udp:127.0.0.1:14550",
-                 cmd_rate_scale: float = 1.0):
+                 cmd_rate_scale: float = 1.0,
+                 gyro_sign: tuple[float, float, float] | np.ndarray = (1.0, 1.0, 1.0)):
         self.endpoint = endpoint
+        # LIVE-WIRE gyro-sign correction (VQ2 gyro convention mismatch, 2026-06-29). Applied
+        # ELEMENTWISE to the gyro parsed from the live HIGHRES_IMU into DroneState.gyro_body,
+        # BEFORE the AHRS sees it. On the live VQ2 sim (build 1.0.3379) the HIGHRES_IMU gyro
+        # PITCH axis (y) is INVERTED vs the code's FRD assumption (3/3 A9 runs: commanded
+        # pitch-rate +1.5 reads -1.4 on the raw gyro while the nose physically pitches UP =
+        # nose-up reading negative = inverted polarity on the wire). Left the AHRS to integrate
+        # pitch backward -> nose-down belief -> runaway to ceiling. ``gyro_sign`` flips it at the
+        # wire so EVERY downstream consumer (AHRS predict, eskf accel-reject gyro reference, the
+        # re-encoded obs body-rate, and the controller's kd_att damping loop -- all ride the SAME
+        # corrected gyro_body) becomes correctly-signed at once.
+        # DEFAULT (1,1,1) == NO change: gyro_body is NUMERICALLY IDENTICAL to before, so the VQ1
+        # path AND every message-fake test (test_mavlink_client, test_firstcontact, test_vq2_loadday)
+        # are byte-identical, and offline tests that build DroneState directly never see this seam.
+        # vq2_case_c sets (1,-1,1) (the confirmed pitch flip); x/z stay +1 (UNCONFIRMED -- a
+        # roll/yaw probe is pending; the single tuple makes extending it a one-value change).
+        # SIGN-ONLY, NOT a permutation: a standard FRD<->FLU handedness mismatch is pure sign flips
+        # on y,z (x unchanged) and a single-axis error is one sign, so a 3-sign vector covers both
+        # likely cases. Axis PERMUTATION (unlikely for a standard IMU) is deliberately NOT modeled.
+        self.gyro_sign = np.asarray(gyro_sign, dtype=np.float64)
         # COMMAND->REALIZED body-rate calibration (VQ2 control handshake, 2026-06-29). On the VQ2
         # sim (build 1.0.3379) a commanded body rate realizes at ~2.5x on the wire, so the policy's
         # demanded rate is over-applied. ``cmd_rate_scale`` multiplies the BODY_RATE command's body
@@ -246,12 +266,14 @@ class MavlinkClient:
                 accel_body=np.array([msg.xacc, msg.yacc, msg.zacc], dtype=np.float64),
                 # RAW HIGHRES_IMU gyro (rad/s, body FRD; same convention as accel_body). The
                 # non-blocked gyro source for the VQ2 AHRS (case-C). Distinct from the ODOMETRY-
-                # derived angular_rate_body (blocked in VQ2). No sign change -- TRUE FRD.
+                # derived angular_rate_body (blocked in VQ2). ``gyro_sign`` (default (1,1,1) ==
+                # identity / no change) applies the LIVE-WIRE per-axis convention correction here,
+                # at the wire, before the AHRS -- see __init__ for why and the consumer enumeration.
                 # Defensive: real HIGHRES_IMU always carries gyro, but message variants/fakes may
                 # omit it; gyro_body stays None then (only consumed when use_ahrs=True), so ingest
                 # never crashes and the default (use_ahrs=False) path is byte-identical.
                 gyro_body=(
-                    np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=np.float64)
+                    np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=np.float64) * self.gyro_sign
                     if hasattr(msg, "xgyro")
                     else None
                 ),

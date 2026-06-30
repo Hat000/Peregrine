@@ -38,12 +38,20 @@ from racer.navigator import NavigatorConfig
 # a commanded body rate realizes at ~2.5x on the wire, so the uplink pre-scales by 1/2.5.
 VQ2_CMD_RATE_SCALE = 0.4   # = 1 / 2.5 ; multiplies the FRD body rates at MavlinkClient.send_command
 
+# LIVE-WIRE gyro-sign correction (live-confirmed sim build 1.0.3379, 2026-06-29): the VQ2
+# HIGHRES_IMU gyro PITCH axis (y) is INVERTED vs the code's FRD assumption (3/3 A9 runs:
+# commanded +1.5 reads -1.4 while the nose physically pitches UP). Applied at the wire
+# (MavlinkClient.gyro_sign) before the AHRS. x (roll) and z (yaw) are UNCONFIRMED -- a roll/yaw
+# probe is pending -- so they stay +1; the single tuple makes extending it a one-value change.
+VQ2_GYRO_SIGN = (1.0, -1.0, 1.0)   # (roll +, PITCH FLIPPED, yaw +)
+
 
 @dataclass(frozen=True)
 class DeployProfile:
     """A named flight preset: the estimator config + the uplink rate-scale + a label.
 
-    ``nav_config`` -> ``Navigator(config=...)``; ``cmd_rate_scale`` -> ``MavlinkClient(cmd_rate_scale=...)``.
+    ``nav_config`` -> ``Navigator(config=...)``; ``cmd_rate_scale`` -> ``MavlinkClient(cmd_rate_scale=...)``;
+    ``gyro_sign`` -> ``MavlinkClient(gyro_sign=...)`` (live-wire per-axis gyro convention correction).
     ``self_localizing`` is True when the profile carries NO given position (case-C) — the deploy
     entry uses it to decide whether to thread a ground-truth seed (it must NOT in case-C).
     """
@@ -52,6 +60,10 @@ class DeployProfile:
     nav_config: NavigatorConfig
     cmd_rate_scale: float
     self_localizing: bool
+    # Per-axis LIVE-WIRE gyro-sign correction -> MavlinkClient(gyro_sign=...). (1,1,1) == identity
+    # (no change; VQ1 + every offline path byte-identical). vq2_case_c flips PITCH (the live-confirmed
+    # HIGHRES_IMU convention mismatch). Default keeps existing callers / pickles forward-compatible.
+    gyro_sign: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 
 def vq1_case_a() -> DeployProfile:
@@ -64,6 +76,7 @@ def vq1_case_a() -> DeployProfile:
         nav_config=NavigatorConfig(),   # every flag at its dataclass default == today's VQ1 path
         cmd_rate_scale=1.0,             # identity uplink (no rate scaling)
         self_localizing=False,
+        gyro_sign=(1.0, 1.0, 1.0),     # identity gyro (no live-wire correction)
     )
 
 
@@ -115,6 +128,7 @@ def vq2_case_c() -> DeployProfile:
         nav_config=cfg,
         cmd_rate_scale=VQ2_CMD_RATE_SCALE,
         self_localizing=True,
+        gyro_sign=VQ2_GYRO_SIGN,   # live-confirmed HIGHRES_IMU PITCH-axis flip (x/z unconfirmed -> +1)
     )
 
 

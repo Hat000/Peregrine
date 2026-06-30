@@ -1725,12 +1725,17 @@ def main() -> int:
     # Under --gate-seeker the deploy profile's cmd_rate_scale wins UNLESS the user passed an explicit
     # --cmd-rate-scale (!= the 1.0 default) -- so the case-C profile is one flag, but still overridable.
     cmd_rate_scale = args.cmd_rate_scale
+    # LIVE-WIRE gyro-sign correction: identity (1,1,1) == byte-identical default; the deploy profile
+    # supplies the VQ2 HIGHRES_IMU pitch flip (vq2_case_c -> (1,-1,1)) at the SAME seam as cmd_rate_scale.
+    gyro_sign = (1.0, 1.0, 1.0)
     if getattr(args, "gate_seeker", False) and args.cmd_rate_scale == 1.0:
         from racer.deploy_profile import get_profile
-        cmd_rate_scale = get_profile(args.deploy_profile).cmd_rate_scale
+        _profile = get_profile(args.deploy_profile)
+        cmd_rate_scale = _profile.cmd_rate_scale
+        gyro_sign = _profile.gyro_sign
         print(f"  [gate-seeker] deploy profile {args.deploy_profile!r} -> "
-              f"cmd_rate_scale={cmd_rate_scale:g}")
-    client = MavlinkClient(args.endpoint, cmd_rate_scale=cmd_rate_scale)
+              f"cmd_rate_scale={cmd_rate_scale:g} gyro_sign={tuple(gyro_sign)}")
+    client = MavlinkClient(args.endpoint, cmd_rate_scale=cmd_rate_scale, gyro_sign=gyro_sign)
     if args.cmd_rate_scale != 1.0:
         print(f"  [vq2] cmd_rate_scale={args.cmd_rate_scale:g} -> BODY_RATE commands scaled at the "
               f"uplink (command->realized ~{1.0 / args.cmd_rate_scale:.2f}x compensation).")
