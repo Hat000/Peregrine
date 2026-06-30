@@ -1,0 +1,4510 @@
+[
+ {
+  "t": 0.0,
+  "sim_ns": 1178048246000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   -0.0
+  ],
+  "thrust": 0.2656,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": 0.0,
+  "est_pitch_deg": 0.0,
+  "est_yaw_deg": 0.0,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.0534,
+  "sim_ns": 1178103828000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.2537,
+  "raw_gyro_y": -0.0068,
+  "gyro_y_corrected": 0.0068,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.47,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.0901,
+  "sim_ns": 1178145465000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.317,
+  "raw_gyro_y": -0.0007,
+  "gyro_y_corrected": 0.0007,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.38,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.1257,
+  "sim_ns": 1178180203000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3431,
+  "raw_gyro_y": 0.0035,
+  "gyro_y_corrected": -0.0035,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.34,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.1614,
+  "sim_ns": 1178214912000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.001,
+  "gyro_y_corrected": -0.001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.33,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.197,
+  "sim_ns": 1178249666000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0004,
+  "gyro_y_corrected": -0.0004,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.33,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.2331,
+  "sim_ns": 1178291288000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0006,
+  "gyro_y_corrected": -0.0006,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.32,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.2692,
+  "sim_ns": 1178326030000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0005,
+  "gyro_y_corrected": -0.0005,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.32,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.3053,
+  "sim_ns": 1178353787000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0004,
+  "gyro_y_corrected": -0.0004,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.32,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.3409,
+  "sim_ns": 1178388525000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0004,
+  "gyro_y_corrected": -0.0004,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.27,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.3765,
+  "sim_ns": 1178423266000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.2956,
+  "raw_gyro_y": 0.0003,
+  "gyro_y_corrected": -0.0003,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.27,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.4121,
+  "sim_ns": 1178464970000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0003,
+  "gyro_y_corrected": -0.0003,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.27,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.4477,
+  "sim_ns": 1178499722000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0002,
+  "gyro_y_corrected": -0.0002,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.27,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.4828,
+  "sim_ns": 1178534410000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0002,
+  "gyro_y_corrected": -0.0002,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.24,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.5189,
+  "sim_ns": 1178569123000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0002,
+  "gyro_y_corrected": -0.0002,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.24,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.5544,
+  "sim_ns": 1178603875000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0001,
+  "gyro_y_corrected": -0.0001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.24,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.5906,
+  "sim_ns": 1178645562000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0001,
+  "gyro_y_corrected": -0.0001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.24,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.6261,
+  "sim_ns": 1178680258000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0001,
+  "gyro_y_corrected": -0.0001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.21,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.6618,
+  "sim_ns": 1178714981000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0001,
+  "gyro_y_corrected": -0.0001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.21,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.6973,
+  "sim_ns": 1178749732000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.2797,
+  "raw_gyro_y": 0.0001,
+  "gyro_y_corrected": -0.0001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.21,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.7329,
+  "sim_ns": 1178784449000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1999,
+  "raw_gyro_y": 0.0001,
+  "gyro_y_corrected": -0.0001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.17,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.769,
+  "sim_ns": 1178819112000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0001,
+  "gyro_y_corrected": -0.0001,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.17,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.8046,
+  "sim_ns": 1178860815000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.16,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.8402,
+  "sim_ns": 1178895506000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3685,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.16,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.8753,
+  "sim_ns": 1178930276000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.16,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.911,
+  "sim_ns": 1178965017000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.16,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.9464,
+  "sim_ns": 1178999738000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.14,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 0.982,
+  "sim_ns": 1179034425000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1925,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.14,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.0177,
+  "sim_ns": 1179076084000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.14,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.0532,
+  "sim_ns": 1179110972000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.13,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.0889,
+  "sim_ns": 1179138624000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.13,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.124,
+  "sim_ns": 1179173351000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.13,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.1596,
+  "sim_ns": 1179208039000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.13,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.1947,
+  "sim_ns": 1179249784000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.12,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.2303,
+  "sim_ns": 1179284430000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1962,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.12,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.2659,
+  "sim_ns": 1179319183000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.12,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.302,
+  "sim_ns": 1179353860000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.11,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.3376,
+  "sim_ns": 1179388596000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.11,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.3732,
+  "sim_ns": 1179430294000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.11,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.4088,
+  "sim_ns": 1179465054000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.09,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.4443,
+  "sim_ns": 1179499784000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.09,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.4799,
+  "sim_ns": 1179534492000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.09,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.515,
+  "sim_ns": 1179569232000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.09,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.5506,
+  "sim_ns": 1179603917000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.07,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.5872,
+  "sim_ns": 1179645589000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.07,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.6227,
+  "sim_ns": 1179680350000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.07,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.6584,
+  "sim_ns": 1179715097000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.07,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.694,
+  "sim_ns": 1179749873000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.06,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.73,
+  "sim_ns": 1179777627000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.05,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.7656,
+  "sim_ns": 1179819254000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.05,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.8013,
+  "sim_ns": 1179853951000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.05,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.8374,
+  "sim_ns": 1179888735000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.03,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.8734,
+  "sim_ns": 1179923401000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.03,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.9096,
+  "sim_ns": 1179958158000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -17.03,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.9451,
+  "sim_ns": 1179999875000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.99,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 1.9807,
+  "sim_ns": 1180034561000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.99,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.0164,
+  "sim_ns": 1180069300000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.99,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.0529,
+  "sim_ns": 1180103966000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.99,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.0885,
+  "sim_ns": 1180138799000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.96,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.1236,
+  "sim_ns": 1180180458000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.96,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.1592,
+  "sim_ns": 1180215237000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.96,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.1948,
+  "sim_ns": 1180249996000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.92,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.2303,
+  "sim_ns": 1180284718000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.92,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.2655,
+  "sim_ns": 1180319410000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.92,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.301,
+  "sim_ns": 1180354154000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0,
+  "gyro_y_corrected": 0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.92,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.3366,
+  "sim_ns": 1180388894000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.9,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.3722,
+  "sim_ns": 1180430598000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": -0.0,
+  "gyro_y_corrected": 0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.9,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.4078,
+  "sim_ns": 1180465331000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0,
+  "gyro_y_corrected": 0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.9,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.4429,
+  "sim_ns": 1180500078000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0,
+  "gyro_y_corrected": 0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.88,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.478,
+  "sim_ns": 1180527755000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.88,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.5136,
+  "sim_ns": 1180562519000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.88,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.5487,
+  "sim_ns": 1180597281000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.88,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.5838,
+  "sim_ns": 1180632027000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.86,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.6199,
+  "sim_ns": 1180673604000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.86,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.6555,
+  "sim_ns": 1180708296000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.86,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.6906,
+  "sim_ns": 1180743005000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.83,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.7262,
+  "sim_ns": 1180777737000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.2641,
+  "raw_gyro_y": -0.0,
+  "gyro_y_corrected": 0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.83,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.7613,
+  "sim_ns": 1180812506000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1732,
+  "raw_gyro_y": -0.0,
+  "gyro_y_corrected": 0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.77,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.7968,
+  "sim_ns": 1180847234000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.77,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.832,
+  "sim_ns": 1180888859000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.76,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.8671,
+  "sim_ns": 1180923598000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.76,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.9022,
+  "sim_ns": 1180958318000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.1594,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.76,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.9383,
+  "sim_ns": 1180993171000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": 0.0,
+  "gyro_y_corrected": -0.0,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.76,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 2.9744,
+  "sim_ns": 1181021026000,
+  "phase": "warmup",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.2183,
+  "gyro_y_corrected": 0.2183,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.4,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.01,
+  "sim_ns": 1181069609000,
+  "phase": "inject",
+  "cmd_pitch_wire": -1.5771,
+  "cmd_body_rate": [
+   -0.0114,
+   -3.9427,
+   -0.0023
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": 0.0479,
+  "gyro_y_corrected": -0.0479,
+  "est_roll_deg": -0.07,
+  "est_pitch_deg": -16.53,
+  "est_yaw_deg": 0.02,
+  "accel_demand": [
+   8.0,
+   0.003,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.0456,
+  "sim_ns": 1181097444000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.7671,
+  "cmd_body_rate": [
+   -0.0075,
+   -1.9176,
+   -0.0008
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": 3.5262,
+  "gyro_y_corrected": -3.5262,
+  "est_roll_deg": -0.06,
+  "est_pitch_deg": -22.16,
+  "est_yaw_deg": 0.03,
+  "accel_demand": [
+   8.0,
+   0.004,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.0812,
+  "sim_ns": 1181132211000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.5404,
+  "cmd_body_rate": [
+   -0.0046,
+   -1.3509,
+   0.0005
+  ],
+  "thrust": 0.4316,
+  "raw_gyro_y": 2.5084,
+  "gyro_y_corrected": -2.5084,
+  "est_roll_deg": -0.04,
+  "est_pitch_deg": -27.15,
+  "est_yaw_deg": 0.04,
+  "accel_demand": [
+   8.0,
+   0.006,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.1163,
+  "sim_ns": 1181166858000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.578,
+  "cmd_body_rate": [
+   -0.0053,
+   -1.445,
+   -0.0
+  ],
+  "thrust": 0.3118,
+  "raw_gyro_y": 1.0211,
+  "gyro_y_corrected": -1.0211,
+  "est_roll_deg": -0.04,
+  "est_pitch_deg": -29.17,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.1513,
+  "sim_ns": 1181201577000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.3217,
+  "cmd_body_rate": [
+   -0.0037,
+   -0.8041,
+   -0.0007
+  ],
+  "thrust": 0.0753,
+  "raw_gyro_y": 1.4643,
+  "gyro_y_corrected": -1.4643,
+  "est_roll_deg": -0.03,
+  "est_pitch_deg": -32.08,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.187,
+  "sim_ns": 1181236307000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.2653,
+  "cmd_body_rate": [
+   -0.0026,
+   -0.6632,
+   -0.0003
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.8962,
+  "gyro_y_corrected": -0.8962,
+  "est_roll_deg": -0.02,
+  "est_pitch_deg": -33.87,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.2231,
+  "sim_ns": 1181277918000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.1928,
+  "cmd_body_rate": [
+   -0.0022,
+   -0.4819,
+   0.0002
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.6286,
+  "gyro_y_corrected": -0.6286,
+  "est_roll_deg": -0.02,
+  "est_pitch_deg": -35.36,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.2586,
+  "sim_ns": 1181312691000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.1365,
+  "cmd_body_rate": [
+   -0.0017,
+   -0.3413,
+   0.0
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": 0.5082,
+  "gyro_y_corrected": -0.5082,
+  "est_roll_deg": -0.01,
+  "est_pitch_deg": -36.38,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.2937,
+  "sim_ns": 1181347394000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.1076,
+  "cmd_body_rate": [
+   -0.0012,
+   -0.2689,
+   -0.0001
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.3475,
+  "gyro_y_corrected": -0.3475,
+  "est_roll_deg": -0.01,
+  "est_pitch_deg": -37.07,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.3293,
+  "sim_ns": 1181382117000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0776,
+  "cmd_body_rate": [
+   -0.0009,
+   -0.194,
+   -0.0001
+  ],
+  "thrust": 0.0887,
+  "raw_gyro_y": 0.2768,
+  "gyro_y_corrected": -0.2768,
+  "est_roll_deg": -0.01,
+  "est_pitch_deg": -37.62,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.3644,
+  "sim_ns": 1181416847000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.056,
+  "cmd_body_rate": [
+   -0.0008,
+   -0.1401,
+   0.0
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.2116,
+  "gyro_y_corrected": -0.2116,
+  "est_roll_deg": -0.01,
+  "est_pitch_deg": -38.04,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.3995,
+  "sim_ns": 1181451608000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0395,
+  "cmd_body_rate": [
+   -0.0005,
+   -0.0988,
+   0.0
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.1617,
+  "gyro_y_corrected": -0.1617,
+  "est_roll_deg": -0.0,
+  "est_pitch_deg": -38.36,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.4351,
+  "sim_ns": 1181486298000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0277,
+  "cmd_body_rate": [
+   -0.0004,
+   -0.0693,
+   -0.0
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": 0.1207,
+  "gyro_y_corrected": -0.1207,
+  "est_roll_deg": -0.0,
+  "est_pitch_deg": -38.6,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.471,
+  "sim_ns": 1181527910000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0201,
+  "cmd_body_rate": [
+   -0.0003,
+   -0.0501,
+   -0.0
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.0766,
+  "gyro_y_corrected": -0.0766,
+  "est_roll_deg": -0.0,
+  "est_pitch_deg": -38.79,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.5071,
+  "sim_ns": 1181562686000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0123,
+  "cmd_body_rate": [
+   -0.0002,
+   -0.0308,
+   0.0
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.0654,
+  "gyro_y_corrected": -0.0654,
+  "est_roll_deg": -0.0,
+  "est_pitch_deg": -38.92,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.5427,
+  "sim_ns": 1181597464000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0081,
+  "cmd_body_rate": [
+   -0.0002,
+   -0.0202,
+   0.0
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": 0.0467,
+  "gyro_y_corrected": -0.0467,
+  "est_roll_deg": -0.0,
+  "est_pitch_deg": -39.01,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.5783,
+  "sim_ns": 1181632205000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0053,
+  "cmd_body_rate": [
+   -0.0001,
+   -0.0132,
+   -0.0
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.0307,
+  "gyro_y_corrected": -0.0307,
+  "est_roll_deg": -0.0,
+  "est_pitch_deg": -39.08,
+  "est_yaw_deg": 0.05,
+  "accel_demand": [
+   8.0,
+   0.007,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.6134,
+  "sim_ns": 1181666945000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.3037,
+  "cmd_body_rate": [
+   -0.017,
+   -0.7591,
+   -0.0423
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": -1.1379,
+  "gyro_y_corrected": 1.1379,
+  "est_roll_deg": 0.05,
+  "est_pitch_deg": -36.81,
+  "est_yaw_deg": -0.3,
+  "accel_demand": [
+   8.0,
+   -0.043,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.6485,
+  "sim_ns": 1181701612000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0633,
+  "cmd_body_rate": [
+   -0.0206,
+   -0.1583,
+   -0.0135
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": 0.4012,
+  "gyro_y_corrected": -0.4012,
+  "est_roll_deg": -0.01,
+  "est_pitch_deg": -37.61,
+  "est_yaw_deg": -0.42,
+  "accel_demand": [
+   8.0,
+   -0.058,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.6841,
+  "sim_ns": 1181729362000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.1599,
+  "cmd_body_rate": [
+   -0.0181,
+   -0.3997,
+   0.0209
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2098,
+  "gyro_y_corrected": 0.2098,
+  "est_roll_deg": -0.1,
+  "est_pitch_deg": -37.28,
+  "est_yaw_deg": -0.28,
+  "accel_demand": [
+   8.0,
+   -0.039,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.7197,
+  "sim_ns": 1181777964000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0085,
+  "cmd_body_rate": [
+   -0.0114,
+   -0.0213,
+   0.0103
+  ],
+  "thrust": 0.5851,
+  "raw_gyro_y": 0.4013,
+  "gyro_y_corrected": -0.4013,
+  "est_roll_deg": -0.11,
+  "est_pitch_deg": -38.39,
+  "est_yaw_deg": -0.15,
+  "accel_demand": [
+   8.0,
+   -0.021,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.7558,
+  "sim_ns": 1181812670000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0738,
+  "cmd_body_rate": [
+   0.0054,
+   -0.1846,
+   -0.0108
+  ],
+  "thrust": 0.05,
+  "raw_gyro_y": -0.0663,
+  "gyro_y_corrected": 0.0663,
+  "est_roll_deg": -0.01,
+  "est_pitch_deg": -38.26,
+  "est_yaw_deg": -0.24,
+  "accel_demand": [
+   8.0,
+   -0.034,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.7914,
+  "sim_ns": 1181847431000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0527,
+  "cmd_body_rate": [
+   0.0285,
+   -0.1317,
+   -0.0098
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.0483,
+  "gyro_y_corrected": -0.0483,
+  "est_roll_deg": 0.11,
+  "est_pitch_deg": -38.37,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.046,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.827,
+  "sim_ns": 1181875211000,
+  "phase": "inject",
+  "cmd_pitch_wire": -0.0274,
+  "cmd_body_rate": [
+   0.024,
+   -0.0685,
+   -0.0047
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.1347,
+  "gyro_y_corrected": -0.1347,
+  "est_roll_deg": 0.13,
+  "est_pitch_deg": -38.58,
+  "est_yaw_deg": -0.36,
+  "accel_demand": [
+   8.0,
+   -0.05,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.8621,
+  "sim_ns": 1181909903000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.4917,
+  "cmd_body_rate": [
+   0.0277,
+   1.2292,
+   0.0044
+  ],
+  "thrust": 0.1372,
+  "raw_gyro_y": 2.0685,
+  "gyro_y_corrected": -2.0685,
+  "est_roll_deg": 0.14,
+  "est_pitch_deg": -42.69,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.046,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.8977,
+  "sim_ns": 1181944624000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.0013,
+  "cmd_body_rate": [
+   0.0229,
+   2.5032,
+   -0.0058
+  ],
+  "thrust": 0.2219,
+  "raw_gyro_y": 2.8931,
+  "gyro_y_corrected": -2.8931,
+  "est_roll_deg": 0.12,
+  "est_pitch_deg": -48.58,
+  "est_yaw_deg": -0.34,
+  "accel_demand": [
+   8.0,
+   -0.047,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.9333,
+  "sim_ns": 1181993258000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.35,
+  "cmd_body_rate": [
+   0.0317,
+   3.3749,
+   -0.0058
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 2.2076,
+  "gyro_y_corrected": -2.2076,
+  "est_roll_deg": 0.17,
+  "est_pitch_deg": -54.75,
+  "est_yaw_deg": -0.39,
+  "accel_demand": [
+   8.0,
+   -0.054,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 3.9694,
+  "sim_ns": 1182021074000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.4823,
+  "cmd_body_rate": [
+   0.0383,
+   3.7057,
+   -0.0059
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 1.7085,
+  "gyro_y_corrected": -1.7085,
+  "est_roll_deg": 0.21,
+  "est_pitch_deg": -57.5,
+  "est_yaw_deg": -0.41,
+  "accel_demand": [
+   8.0,
+   -0.057,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.0063,
+  "sim_ns": 1182055754000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.581,
+  "cmd_body_rate": [
+   0.0435,
+   3.9524,
+   -0.0071
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 1.1626,
+  "gyro_y_corrected": -1.1626,
+  "est_roll_deg": 0.24,
+  "est_pitch_deg": -59.85,
+  "est_yaw_deg": -0.43,
+  "accel_demand": [
+   8.0,
+   -0.059,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.0422,
+  "sim_ns": 1182090484000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.5999,
+  "cmd_body_rate": [
+   0.046,
+   3.9997,
+   -0.0085
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.7149,
+  "gyro_y_corrected": -0.7149,
+  "est_roll_deg": 0.26,
+  "est_pitch_deg": -61.33,
+  "est_yaw_deg": -0.44,
+  "accel_demand": [
+   8.0,
+   -0.061,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.0777,
+  "sim_ns": 1182132248000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.5999,
+  "cmd_body_rate": [
+   0.0481,
+   3.9997,
+   -0.0094
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.2966,
+  "gyro_y_corrected": -0.2966,
+  "est_roll_deg": 0.28,
+  "est_pitch_deg": -62.1,
+  "est_yaw_deg": -0.45,
+  "accel_demand": [
+   8.0,
+   -0.063,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.1133,
+  "sim_ns": 1182166958000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.5999,
+  "cmd_body_rate": [
+   0.0504,
+   3.9997,
+   -0.01
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": 0.0137,
+  "gyro_y_corrected": -0.0137,
+  "est_roll_deg": 0.29,
+  "est_pitch_deg": -62.19,
+  "est_yaw_deg": -0.45,
+  "accel_demand": [
+   8.0,
+   -0.063,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.1495,
+  "sim_ns": 1182201745000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.5503,
+  "cmd_body_rate": [
+   0.0517,
+   3.8758,
+   -0.0104
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2278,
+  "gyro_y_corrected": 0.2278,
+  "est_roll_deg": 0.3,
+  "est_pitch_deg": -61.81,
+  "est_yaw_deg": -0.45,
+  "accel_demand": [
+   8.0,
+   -0.063,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.185,
+  "sim_ns": 1182236374000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.4693,
+  "cmd_body_rate": [
+   0.0522,
+   3.6733,
+   -0.01
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.438,
+  "gyro_y_corrected": 0.438,
+  "est_roll_deg": 0.3,
+  "est_pitch_deg": -61.01,
+  "est_yaw_deg": -0.45,
+  "accel_demand": [
+   8.0,
+   -0.063,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.2202,
+  "sim_ns": 1182271063000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.3617,
+  "cmd_body_rate": [
+   0.0525,
+   3.4043,
+   -0.0094
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.6378,
+  "gyro_y_corrected": 0.6378,
+  "est_roll_deg": 0.3,
+  "est_pitch_deg": -59.81,
+  "est_yaw_deg": -0.44,
+  "accel_demand": [
+   8.0,
+   -0.062,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.2563,
+  "sim_ns": 1182312734000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.2102,
+  "cmd_body_rate": [
+   0.0537,
+   3.0255,
+   -0.009
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.815,
+  "gyro_y_corrected": 0.815,
+  "est_roll_deg": 0.3,
+  "est_pitch_deg": -57.94,
+  "est_yaw_deg": -0.43,
+  "accel_demand": [
+   8.0,
+   -0.061,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.2924,
+  "sim_ns": 1182347499000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.1312,
+  "cmd_body_rate": [
+   0.0557,
+   2.8279,
+   -0.0084
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.7157,
+  "gyro_y_corrected": 0.7157,
+  "est_roll_deg": 0.31,
+  "est_pitch_deg": -56.64,
+  "est_yaw_deg": -0.43,
+  "accel_demand": [
+   8.0,
+   -0.06,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.3279,
+  "sim_ns": 1182382220000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.09,
+  "cmd_body_rate": [
+   0.0602,
+   2.725,
+   -0.0085
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.5222,
+  "gyro_y_corrected": 0.5222,
+  "est_roll_deg": 0.34,
+  "est_pitch_deg": -55.72,
+  "est_yaw_deg": -0.43,
+  "accel_demand": [
+   8.0,
+   -0.061,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.3636,
+  "sim_ns": 1182416910000,
+  "phase": "inject",
+  "cmd_pitch_wire": 1.0495,
+  "cmd_body_rate": [
+   0.0626,
+   2.6238,
+   -0.0083
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.4251,
+  "gyro_y_corrected": 0.4251,
+  "est_roll_deg": 0.35,
+  "est_pitch_deg": -54.97,
+  "est_yaw_deg": -0.43,
+  "accel_demand": [
+   8.0,
+   -0.06,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.3992,
+  "sim_ns": 1182451669000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.9939,
+  "cmd_body_rate": [
+   0.0651,
+   2.4848,
+   -0.0083
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.4368,
+  "gyro_y_corrected": 0.4368,
+  "est_roll_deg": 0.36,
+  "est_pitch_deg": -54.19,
+  "est_yaw_deg": -0.43,
+  "accel_demand": [
+   8.0,
+   -0.06,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.4347,
+  "sim_ns": 1182486364000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.9448,
+  "cmd_body_rate": [
+   0.068,
+   2.362,
+   -0.0077
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.419,
+  "gyro_y_corrected": 0.419,
+  "est_roll_deg": 0.38,
+  "est_pitch_deg": -53.46,
+  "est_yaw_deg": -0.42,
+  "accel_demand": [
+   8.0,
+   -0.059,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.4711,
+  "sim_ns": 1182528015000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.8986,
+  "cmd_body_rate": [
+   0.0708,
+   2.2465,
+   -0.0081
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.3591,
+  "gyro_y_corrected": 0.3591,
+  "est_roll_deg": 0.39,
+  "est_pitch_deg": -52.7,
+  "est_yaw_deg": -0.41,
+  "accel_demand": [
+   8.0,
+   -0.058,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.5074,
+  "sim_ns": 1182562702000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.8643,
+  "cmd_body_rate": [
+   0.0737,
+   2.1607,
+   -0.008
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.323,
+  "gyro_y_corrected": 0.323,
+  "est_roll_deg": 0.41,
+  "est_pitch_deg": -52.14,
+  "est_yaw_deg": -0.41,
+  "accel_demand": [
+   8.0,
+   -0.057,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.545,
+  "sim_ns": 1182597465000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.8239,
+  "cmd_body_rate": [
+   0.078,
+   2.0598,
+   -0.0086
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.3284,
+  "gyro_y_corrected": 0.3284,
+  "est_roll_deg": 0.44,
+  "est_pitch_deg": -51.57,
+  "est_yaw_deg": -0.42,
+  "accel_demand": [
+   8.0,
+   -0.058,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.5811,
+  "sim_ns": 1182639121000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.7772,
+  "cmd_body_rate": [
+   0.0813,
+   1.9429,
+   -0.008
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.3206,
+  "gyro_y_corrected": 0.3206,
+  "est_roll_deg": 0.45,
+  "est_pitch_deg": -50.89,
+  "est_yaw_deg": -0.41,
+  "accel_demand": [
+   8.0,
+   -0.057,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.6167,
+  "sim_ns": 1182673852000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.7479,
+  "cmd_body_rate": [
+   0.0842,
+   1.8697,
+   -0.0079
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2847,
+  "gyro_y_corrected": 0.2847,
+  "est_roll_deg": 0.47,
+  "est_pitch_deg": -50.41,
+  "est_yaw_deg": -0.41,
+  "accel_demand": [
+   8.0,
+   -0.057,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.6528,
+  "sim_ns": 1182708585000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.7177,
+  "cmd_body_rate": [
+   0.0871,
+   1.7943,
+   -0.0079
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2689,
+  "gyro_y_corrected": 0.2689,
+  "est_roll_deg": 0.48,
+  "est_pitch_deg": -49.95,
+  "est_yaw_deg": -0.4,
+  "accel_demand": [
+   8.0,
+   -0.056,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.6889,
+  "sim_ns": 1182743301000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.6815,
+  "cmd_body_rate": [
+   0.0896,
+   1.7038,
+   -0.0078
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2852,
+  "gyro_y_corrected": 0.2852,
+  "est_roll_deg": 0.5,
+  "est_pitch_deg": -49.46,
+  "est_yaw_deg": -0.4,
+  "accel_demand": [
+   8.0,
+   -0.055,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.7246,
+  "sim_ns": 1182771193000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.6563,
+  "cmd_body_rate": [
+   0.0937,
+   1.6408,
+   -0.0075
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2799,
+  "gyro_y_corrected": 0.2799,
+  "est_roll_deg": 0.52,
+  "est_pitch_deg": -49.09,
+  "est_yaw_deg": -0.39,
+  "accel_demand": [
+   8.0,
+   -0.055,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.7606,
+  "sim_ns": 1182812731000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.6219,
+  "cmd_body_rate": [
+   0.0963,
+   1.5547,
+   -0.0077
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2559,
+  "gyro_y_corrected": 0.2559,
+  "est_roll_deg": 0.54,
+  "est_pitch_deg": -48.55,
+  "est_yaw_deg": -0.39,
+  "accel_demand": [
+   8.0,
+   -0.054,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.7962,
+  "sim_ns": 1182847492000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.5921,
+  "cmd_body_rate": [
+   0.0989,
+   1.4802,
+   -0.0074
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2537,
+  "gyro_y_corrected": 0.2537,
+  "est_roll_deg": 0.55,
+  "est_pitch_deg": -48.12,
+  "est_yaw_deg": -0.38,
+  "accel_demand": [
+   8.0,
+   -0.053,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.8318,
+  "sim_ns": 1182882373000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.5666,
+  "cmd_body_rate": [
+   0.1017,
+   1.4164,
+   -0.0073
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2357,
+  "gyro_y_corrected": 0.2357,
+  "est_roll_deg": 0.57,
+  "est_pitch_deg": -47.73,
+  "est_yaw_deg": -0.38,
+  "accel_demand": [
+   8.0,
+   -0.053,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.8669,
+  "sim_ns": 1182916958000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.5421,
+  "cmd_body_rate": [
+   0.1042,
+   1.3552,
+   -0.0072
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2238,
+  "gyro_y_corrected": 0.2238,
+  "est_roll_deg": 0.58,
+  "est_pitch_deg": -47.36,
+  "est_yaw_deg": -0.37,
+  "accel_demand": [
+   8.0,
+   -0.052,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.9025,
+  "sim_ns": 1182951712000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.5164,
+  "cmd_body_rate": [
+   0.108,
+   1.2911,
+   -0.01
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2202,
+  "gyro_y_corrected": 0.2202,
+  "est_roll_deg": 0.6,
+  "est_pitch_deg": -46.98,
+  "est_yaw_deg": -0.38,
+  "accel_demand": [
+   8.0,
+   -0.053,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.9381,
+  "sim_ns": 1182986457000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.492,
+  "cmd_body_rate": [
+   0.1105,
+   1.23,
+   -0.0067
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2146,
+  "gyro_y_corrected": 0.2146,
+  "est_roll_deg": 0.62,
+  "est_pitch_deg": -46.62,
+  "est_yaw_deg": -0.37,
+  "accel_demand": [
+   8.0,
+   -0.052,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 4.9742,
+  "sim_ns": 1183028037000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.4602,
+  "cmd_body_rate": [
+   0.113,
+   1.1504,
+   -0.0067
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.2173,
+  "gyro_y_corrected": 0.2173,
+  "est_roll_deg": 0.63,
+  "est_pitch_deg": -46.17,
+  "est_yaw_deg": -0.37,
+  "accel_demand": [
+   8.0,
+   -0.051,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.0103,
+  "sim_ns": 1183062816000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.4397,
+  "cmd_body_rate": [
+   0.1154,
+   1.0993,
+   -0.0065
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1974,
+  "gyro_y_corrected": 0.1974,
+  "est_roll_deg": 0.65,
+  "est_pitch_deg": -45.84,
+  "est_yaw_deg": -0.36,
+  "accel_demand": [
+   8.0,
+   -0.05,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.0459,
+  "sim_ns": 1183097536000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.4223,
+  "cmd_body_rate": [
+   0.1178,
+   1.0558,
+   -0.0064
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1754,
+  "gyro_y_corrected": 0.1754,
+  "est_roll_deg": 0.66,
+  "est_pitch_deg": -45.56,
+  "est_yaw_deg": -0.36,
+  "accel_demand": [
+   8.0,
+   -0.05,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.0815,
+  "sim_ns": 1183132305000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.4008,
+  "cmd_body_rate": [
+   0.1201,
+   1.0019,
+   -0.0062
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1806,
+  "gyro_y_corrected": 0.1806,
+  "est_roll_deg": 0.67,
+  "est_pitch_deg": -45.26,
+  "est_yaw_deg": -0.35,
+  "accel_demand": [
+   8.0,
+   -0.049,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.117,
+  "sim_ns": 1183166985000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.3808,
+  "cmd_body_rate": [
+   0.1223,
+   0.9521,
+   -0.0061
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1781,
+  "gyro_y_corrected": 0.1781,
+  "est_roll_deg": 0.69,
+  "est_pitch_deg": -44.97,
+  "est_yaw_deg": -0.35,
+  "accel_demand": [
+   8.0,
+   -0.048,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.1527,
+  "sim_ns": 1183208645000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.359,
+  "cmd_body_rate": [
+   0.1248,
+   0.8975,
+   -0.0059
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1649,
+  "gyro_y_corrected": 0.1649,
+  "est_roll_deg": 0.7,
+  "est_pitch_deg": -44.63,
+  "est_yaw_deg": -0.34,
+  "accel_demand": [
+   8.0,
+   -0.048,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.1883,
+  "sim_ns": 1183243368000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.3433,
+  "cmd_body_rate": [
+   0.1284,
+   0.8582,
+   -0.0065
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1532,
+  "gyro_y_corrected": 0.1532,
+  "est_roll_deg": 0.72,
+  "est_pitch_deg": -44.39,
+  "est_yaw_deg": -0.35,
+  "accel_demand": [
+   8.0,
+   -0.049,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.2243,
+  "sim_ns": 1183278096000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.3251,
+  "cmd_body_rate": [
+   0.1308,
+   0.8127,
+   -0.0056
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.157,
+  "gyro_y_corrected": 0.157,
+  "est_roll_deg": 0.74,
+  "est_pitch_deg": -44.13,
+  "est_yaw_deg": -0.35,
+  "accel_demand": [
+   8.0,
+   -0.048,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.2605,
+  "sim_ns": 1183312806000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.3095,
+  "cmd_body_rate": [
+   0.1329,
+   0.7737,
+   -0.0054
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1478,
+  "gyro_y_corrected": 0.1478,
+  "est_roll_deg": 0.75,
+  "est_pitch_deg": -43.89,
+  "est_yaw_deg": -0.34,
+  "accel_demand": [
+   8.0,
+   -0.048,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.2967,
+  "sim_ns": 1183354491000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2899,
+  "cmd_body_rate": [
+   0.1353,
+   0.7248,
+   -0.0052
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1436,
+  "gyro_y_corrected": 0.1436,
+  "est_roll_deg": 0.76,
+  "est_pitch_deg": -43.61,
+  "est_yaw_deg": -0.34,
+  "accel_demand": [
+   8.0,
+   -0.047,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.3322,
+  "sim_ns": 1183389194000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2776,
+  "cmd_body_rate": [
+   0.1373,
+   0.6939,
+   -0.005
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1289,
+  "gyro_y_corrected": 0.1289,
+  "est_roll_deg": 0.77,
+  "est_pitch_deg": -43.4,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.046,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.3677,
+  "sim_ns": 1183423921000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2636,
+  "cmd_body_rate": [
+   0.1391,
+   0.6591,
+   -0.0049
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1281,
+  "gyro_y_corrected": 0.1281,
+  "est_roll_deg": 0.79,
+  "est_pitch_deg": -43.2,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.046,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.4034,
+  "sim_ns": 1183451779000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2543,
+  "cmd_body_rate": [
+   0.1407,
+   0.6357,
+   -0.0048
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.123,
+  "gyro_y_corrected": 0.123,
+  "est_roll_deg": 0.79,
+  "est_pitch_deg": -43.06,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.4395,
+  "sim_ns": 1183486468000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2393,
+  "cmd_body_rate": [
+   0.1425,
+   0.5983,
+   -0.0046
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1288,
+  "gyro_y_corrected": 0.1288,
+  "est_roll_deg": 0.81,
+  "est_pitch_deg": -42.86,
+  "est_yaw_deg": -0.32,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.4756,
+  "sim_ns": 1183528131000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2231,
+  "cmd_body_rate": [
+   0.1445,
+   0.5578,
+   -0.0044
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1231,
+  "gyro_y_corrected": 0.1231,
+  "est_roll_deg": 0.82,
+  "est_pitch_deg": -42.61,
+  "est_yaw_deg": -0.32,
+  "accel_demand": [
+   8.0,
+   -0.044,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.5117,
+  "sim_ns": 1183562827000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2139,
+  "cmd_body_rate": [
+   0.1462,
+   0.5347,
+   -0.0043
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1065,
+  "gyro_y_corrected": 0.1065,
+  "est_roll_deg": 0.83,
+  "est_pitch_deg": -42.45,
+  "est_yaw_deg": -0.32,
+  "accel_demand": [
+   8.0,
+   -0.044,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.5473,
+  "sim_ns": 1183597553000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.2026,
+  "cmd_body_rate": [
+   0.1478,
+   0.5064,
+   -0.0042
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1067,
+  "gyro_y_corrected": 0.1067,
+  "est_roll_deg": 0.84,
+  "est_pitch_deg": -42.29,
+  "est_yaw_deg": -0.31,
+  "accel_demand": [
+   8.0,
+   -0.044,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.5828,
+  "sim_ns": 1183632469000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1921,
+  "cmd_body_rate": [
+   0.1494,
+   0.4801,
+   -0.004
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1033,
+  "gyro_y_corrected": 0.1033,
+  "est_roll_deg": 0.85,
+  "est_pitch_deg": -42.14,
+  "est_yaw_deg": -0.31,
+  "accel_demand": [
+   8.0,
+   -0.044,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.6184,
+  "sim_ns": 1183667128000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.181,
+  "cmd_body_rate": [
+   0.151,
+   0.4526,
+   -0.0039
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.1039,
+  "gyro_y_corrected": 0.1039,
+  "est_roll_deg": 0.86,
+  "est_pitch_deg": -41.98,
+  "est_yaw_deg": -0.31,
+  "accel_demand": [
+   8.0,
+   -0.043,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.654,
+  "sim_ns": 1183701758000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1718,
+  "cmd_body_rate": [
+   0.1515,
+   0.4296,
+   -0.0059
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0974,
+  "gyro_y_corrected": 0.0974,
+  "est_roll_deg": 0.87,
+  "est_pitch_deg": -41.84,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.046,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.6901,
+  "sim_ns": 1183743405000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1609,
+  "cmd_body_rate": [
+   0.1548,
+   0.4022,
+   -0.0037
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0905,
+  "gyro_y_corrected": 0.0905,
+  "est_roll_deg": 0.88,
+  "est_pitch_deg": -41.67,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.046,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.7262,
+  "sim_ns": 1183778143000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1531,
+  "cmd_body_rate": [
+   0.1562,
+   0.3827,
+   -0.0035
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0849,
+  "gyro_y_corrected": 0.0849,
+  "est_roll_deg": 0.89,
+  "est_pitch_deg": -41.55,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.046,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.7623,
+  "sim_ns": 1183812872000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1456,
+  "cmd_body_rate": [
+   0.1577,
+   0.3641,
+   -0.0034
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0802,
+  "gyro_y_corrected": 0.0802,
+  "est_roll_deg": 0.9,
+  "est_pitch_deg": -41.43,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.7979,
+  "sim_ns": 1183847609000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1378,
+  "cmd_body_rate": [
+   0.1591,
+   0.3446,
+   -0.0032
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0792,
+  "gyro_y_corrected": 0.0792,
+  "est_roll_deg": 0.9,
+  "est_pitch_deg": -41.32,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.8335,
+  "sim_ns": 1183889292000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1286,
+  "cmd_body_rate": [
+   0.1606,
+   0.3215,
+   -0.0031
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0762,
+  "gyro_y_corrected": 0.0762,
+  "est_roll_deg": 0.91,
+  "est_pitch_deg": -41.18,
+  "est_yaw_deg": -0.32,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.8691,
+  "sim_ns": 1183923984000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1223,
+  "cmd_body_rate": [
+   0.1617,
+   0.3057,
+   -0.0031
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0717,
+  "gyro_y_corrected": 0.0717,
+  "est_roll_deg": 0.92,
+  "est_pitch_deg": -41.08,
+  "est_yaw_deg": -0.32,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.9047,
+  "sim_ns": 1183958733000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1158,
+  "cmd_body_rate": [
+   0.1629,
+   0.2896,
+   -0.003
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0699,
+  "gyro_y_corrected": 0.0699,
+  "est_roll_deg": 0.93,
+  "est_pitch_deg": -40.99,
+  "est_yaw_deg": -0.32,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.9418,
+  "sim_ns": 1183993418000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1096,
+  "cmd_body_rate": [
+   0.164,
+   0.2741,
+   -0.0029
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0683,
+  "gyro_y_corrected": 0.0683,
+  "est_roll_deg": 0.93,
+  "est_pitch_deg": -40.89,
+  "est_yaw_deg": -0.32,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 5.9774,
+  "sim_ns": 1184028164000,
+  "phase": "inject",
+  "cmd_pitch_wire": 0.1042,
+  "cmd_body_rate": [
+   0.165,
+   0.2604,
+   -0.0028
+  ],
+  "thrust": 0.6,
+  "raw_gyro_y": -0.0645,
+  "gyro_y_corrected": 0.0645,
+  "est_roll_deg": 0.94,
+  "est_pitch_deg": -40.81,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   8.0,
+   -0.045,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.013,
+  "sim_ns": 1184069900000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   -0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0645,
+  "gyro_y_corrected": 0.0645,
+  "est_roll_deg": 0.95,
+  "est_pitch_deg": -40.7,
+  "est_yaw_deg": -0.33,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.0485,
+  "sim_ns": 1184104602000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   -0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -1.4522,
+  "gyro_y_corrected": 1.4522,
+  "est_roll_deg": 0.91,
+  "est_pitch_deg": -37.81,
+  "est_yaw_deg": -0.26,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.0841,
+  "sim_ns": 1184139324000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   -0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -2.8964,
+  "gyro_y_corrected": 2.8964,
+  "est_roll_deg": 0.83,
+  "est_pitch_deg": -32.06,
+  "est_yaw_deg": -0.15,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.1197,
+  "sim_ns": 1184173991000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -1.7679,
+  "gyro_y_corrected": 1.7679,
+  "est_roll_deg": 0.0,
+  "est_pitch_deg": -28.55,
+  "est_yaw_deg": 0.41,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.1553,
+  "sim_ns": 1184208756000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -1.2768,
+  "gyro_y_corrected": 1.2768,
+  "est_roll_deg": -0.21,
+  "est_pitch_deg": -26.01,
+  "est_yaw_deg": 0.52,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.1925,
+  "sim_ns": 1184250481000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.3609,
+  "gyro_y_corrected": 0.3609,
+  "est_roll_deg": -0.22,
+  "est_pitch_deg": -25.16,
+  "est_yaw_deg": 0.52,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.228,
+  "sim_ns": 1184285189000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.1475,
+  "gyro_y_corrected": 0.1475,
+  "est_roll_deg": -0.23,
+  "est_pitch_deg": -24.9,
+  "est_yaw_deg": 0.51,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.2636,
+  "sim_ns": 1184312897000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.1582,
+  "gyro_y_corrected": 0.1582,
+  "est_roll_deg": -0.23,
+  "est_pitch_deg": -24.69,
+  "est_yaw_deg": 0.51,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.2992,
+  "sim_ns": 1184347630000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.2219,
+  "gyro_y_corrected": 0.2219,
+  "est_roll_deg": -0.29,
+  "est_pitch_deg": -24.29,
+  "est_yaw_deg": 0.52,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.3353,
+  "sim_ns": 1184382440000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.2166,
+  "gyro_y_corrected": 0.2166,
+  "est_roll_deg": -0.35,
+  "est_pitch_deg": -23.9,
+  "est_yaw_deg": 0.54,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.3709,
+  "sim_ns": 1184424054000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.1791,
+  "gyro_y_corrected": 0.1791,
+  "est_roll_deg": -0.43,
+  "est_pitch_deg": -23.52,
+  "est_yaw_deg": 0.56,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.4066,
+  "sim_ns": 1184458798000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.1445,
+  "gyro_y_corrected": 0.1445,
+  "est_roll_deg": -0.5,
+  "est_pitch_deg": -23.27,
+  "est_yaw_deg": 0.59,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.4426,
+  "sim_ns": 1184493474000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.12,
+  "gyro_y_corrected": 0.12,
+  "est_roll_deg": -0.61,
+  "est_pitch_deg": -23.07,
+  "est_yaw_deg": 0.63,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.4787,
+  "sim_ns": 1184528199000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0953,
+  "gyro_y_corrected": 0.0953,
+  "est_roll_deg": -0.71,
+  "est_pitch_deg": -22.92,
+  "est_yaw_deg": 0.67,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.5143,
+  "sim_ns": 1184562901000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0784,
+  "gyro_y_corrected": 0.0784,
+  "est_roll_deg": -0.81,
+  "est_pitch_deg": -22.8,
+  "est_yaw_deg": 0.72,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.5504,
+  "sim_ns": 1184604625000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0719,
+  "gyro_y_corrected": 0.0719,
+  "est_roll_deg": -0.95,
+  "est_pitch_deg": -22.67,
+  "est_yaw_deg": 0.78,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.586,
+  "sim_ns": 1184639345000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0582,
+  "gyro_y_corrected": 0.0582,
+  "est_roll_deg": -1.05,
+  "est_pitch_deg": -22.59,
+  "est_yaw_deg": 0.83,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.6216,
+  "sim_ns": 1184674029000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0486,
+  "gyro_y_corrected": 0.0486,
+  "est_roll_deg": -1.15,
+  "est_pitch_deg": -22.53,
+  "est_yaw_deg": 0.87,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.6581,
+  "sim_ns": 1184708772000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0354,
+  "gyro_y_corrected": 0.0354,
+  "est_roll_deg": -1.23,
+  "est_pitch_deg": -22.5,
+  "est_yaw_deg": 0.91,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.6937,
+  "sim_ns": 1184743480000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0356,
+  "gyro_y_corrected": 0.0356,
+  "est_roll_deg": -1.33,
+  "est_pitch_deg": -22.46,
+  "est_yaw_deg": 0.94,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.7294,
+  "sim_ns": 1184785208000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0248,
+  "gyro_y_corrected": 0.0248,
+  "est_roll_deg": -1.42,
+  "est_pitch_deg": -22.44,
+  "est_yaw_deg": 0.98,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.765,
+  "sim_ns": 1184819979000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0201,
+  "gyro_y_corrected": 0.0201,
+  "est_roll_deg": -1.49,
+  "est_pitch_deg": -22.44,
+  "est_yaw_deg": 1.0,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.8006,
+  "sim_ns": 1184854615000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0178,
+  "gyro_y_corrected": 0.0178,
+  "est_roll_deg": -1.56,
+  "est_pitch_deg": -22.44,
+  "est_yaw_deg": 1.02,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.8362,
+  "sim_ns": 1184889365000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0152,
+  "gyro_y_corrected": 0.0152,
+  "est_roll_deg": -1.62,
+  "est_pitch_deg": -22.44,
+  "est_yaw_deg": 1.04,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.8723,
+  "sim_ns": 1184924033000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0155,
+  "gyro_y_corrected": 0.0155,
+  "est_roll_deg": -1.68,
+  "est_pitch_deg": -22.45,
+  "est_yaw_deg": 1.06,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.9089,
+  "sim_ns": 1184965716000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0112,
+  "gyro_y_corrected": 0.0112,
+  "est_roll_deg": -1.73,
+  "est_pitch_deg": -22.46,
+  "est_yaw_deg": 1.07,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.9449,
+  "sim_ns": 1185000523000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.0096,
+  "gyro_y_corrected": 0.0096,
+  "est_roll_deg": -1.77,
+  "est_pitch_deg": -22.47,
+  "est_yaw_deg": 1.08,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ },
+ {
+  "t": 6.9805,
+  "sim_ns": 1185035224000,
+  "phase": "cooldown",
+  "cmd_pitch_wire": 0.0,
+  "cmd_body_rate": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "thrust": 0.3718,
+  "raw_gyro_y": -0.01,
+  "gyro_y_corrected": 0.01,
+  "est_roll_deg": -1.8,
+  "est_pitch_deg": -22.49,
+  "est_yaw_deg": 1.09,
+  "accel_demand": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "dr_pos": null
+ }
+]
