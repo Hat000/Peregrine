@@ -1,0 +1,29 @@
+loading actor: C:\Users\Shadow\Peregrine\rl\checkpoints\stage1_inc7_actor.pth
+[load_actor] sidecar stage1_inc7_actor.json: action bounds -> thrust [0.000,3.765] rates +-3.14 rad/s
+  type: _ActorMean
+  obs_dim=17 -> action shape=(4,)  (expected (4,))
+  [gate-seeker] deploy profile 'vq2_case_c' -> cmd_rate_scale=0.4
+connecting udp:127.0.0.1:14550 ...
+
+====================== FLIGHT 1/1 ======================
+recording -> data\runs\20260630_024427_vq2_slow_seeker_a9_f1
+>>> Waiting PASSIVELY for the race GO (no sim-control command will be sent; this is the submission-safe posture).
+  waiting: started=False pos=y map=0     [gate-seeker] no live TRACK_INFO + self-localizing profile -> MAP-FREE flight (visual servo + vision yaw/z; NO absolute map). The stale --map is IGNORED.
+
+  LATE-JOIN GO!  to_go=-2.80s  pos_off=0.00 m  gi=0.  armed=False sim_t=   6.099s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+
+[arm] ...
+  attempt 1/3: ACK=MAV_RESULT_ACCEPTED  armed=True
+
+[gate-seeker] profile=vq2_case_c self_localizing=True cmd_rate_scale=0.4 detector=red_glow cruise=3 m/s  gates=0  max=120s ...
+  t=   6.18s gi=0 pos=(  +0.0,  +0.0,  +0.0) thr=0.266 rate=[+0.00,+0.00,-0.00] tsv=infs     t=   7.20s gi=0 pos=(  +1.5,  +0.0,  -1.7) thr=0.266 rate=[+0.12,+1.50,-0.21] tsv=infs     t=   8.25s gi=0 pos=(  +9.1,  +0.0,  -1.1) thr=0.372 rate=[+0.00,+0.00,-0.00] tsv=infs     t=   9.28s gi=0 pos=( +30.3,  +0.0,  +2.1) thr=0.372 rate=[+0.00,+0.00,-0.00] tsv=infs     t=  10.29s gi=0 pos=( +63.6,  +0.1,  +9.6) thr=0.372 rate=[+0.00,+0.00,-0.00] tsv=infs     t=  11.34s gi=0 pos=(+109.2,  +0.3, +24.3) thr=0.372 rate=[+0.00,+0.00,-0.00] tsv=infs   
+  [gate-seeker] HARD COLLISION -> abort.
+  [loop-rate]  15.7 Hz over 97 ticks (target 30); worst work 90 ms; 100.0% ticks over budget -> CHOKED
+
+[safety] disarming ...
+
+  flight 1: CRASH  gates=0  session=data\runs\20260630_024427_vq2_slow_seeker_a9_f1
+
+==== fly_rl summary ====
+  flight 1: CRASH      gates=0  data\runs\20260630_024427_vq2_slow_seeker_a9_f1
+  collisions (all flights): 3 (ids [1002]; 1001=gate 1002=env)
