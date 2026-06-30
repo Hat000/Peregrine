@@ -467,6 +467,8 @@ class GateSeeker:
     _last_index: int | None = field(default=None, repr=False)  # last seen active_gate_index
     _anchored: bool = field(default=False, repr=False)         # first accepted vision fix seen?
     _last_yaw: float | None = field(default=None, repr=False)  # last commanded heading (no-detection hold)
+    _last_yaw_des: float | None = field(default=None, repr=False)  # last PRE-SLEW desired yaw toward gate
+                                                                  # (instrumentation only, A14 yaw-sign probe)
     _last_frame_id: int | None = field(default=None, repr=False)  # detector idempotence across re-feeds
     _last_pose: GatePose | None = field(default=None, repr=False)  # cached detected lever for re-fed frames
     _consec_detections: int = field(default=0, repr=False)     # consecutive own-detection ticks (anchor release)
@@ -1087,6 +1089,9 @@ class GateSeeker:
         horiz = np.array([gdir[0], gdir[1], 0.0])
         los = _unit(horiz, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
         yaw_des = float(np.arctan2(los[1], los[0]))
+        # INSTRUMENTATION ONLY (A14 yaw-steer-sign probe): stash the PRE-SLEW desired yaw toward the
+        # gate so the nav-estimate logger can read it. Not consumed by control — purely additive.
+        self._last_yaw_des = yaw_des
         # RATE-LIMIT the heading slew: cap the per-tick change of the yaw setpoint so the steering
         # bearing stays SMOOTH (the proximate fix for the swing that saturated roll in A3).
         yaw = self._slew_heading(yaw_des, int(nav.sim_time_ns))

@@ -64,3 +64,40 @@ def test_profile_gyro_sign_values():
     inverted on the live VQ2 wire, 2026-06-30); vq1_case_a stays identity."""
     assert tuple(get_profile("vq2_case_c").gyro_sign) == (-1.0, -1.0, -1.0)
     assert tuple(get_profile("vq1_case_a").gyro_sign) == (1.0, 1.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# A14 yaw-steer-sign probe: the RAW pre-sign gyro stash (gyro_body_raw).
+# Instrumentation only -- it is INDEPENDENT of gyro_sign and must never change
+# gyro_body (the post-sign value the AHRS uses).
+# ---------------------------------------------------------------------------
+
+def test_gyro_body_raw_is_pre_sign_and_independent_identity():
+    """gyro_sign=(1,1,1): raw == post (both equal the parsed gyro)."""
+    c = MavlinkClient()
+    c._handle(_imu(gx=0.1, gy=-0.2, gz=0.3))
+    np.testing.assert_array_equal(c.state.gyro_body_raw, [0.1, -0.2, 0.3])
+    np.testing.assert_array_equal(c.state.gyro_body, [0.1, -0.2, 0.3])  # post == raw at identity
+
+
+def test_gyro_body_raw_unchanged_by_full_negation():
+    """gyro_sign=(-1,-1,-1): raw is UNCHANGED (pre-sign) while post is negated.
+    Pins that the raw stash is independent of the sign correction AND that
+    gyro_body (post) is still exactly the existing negated value (byte-identity)."""
+    c = MavlinkClient(gyro_sign=(-1.0, -1.0, -1.0))
+    c._handle(_imu(gx=0.1, gy=-0.2, gz=0.3))
+    np.testing.assert_array_equal(c.state.gyro_body_raw, [0.1, -0.2, 0.3])    # raw: pre-sign, unchanged
+    np.testing.assert_array_equal(c.state.gyro_body, [-0.1, 0.2, -0.3])       # post: negated (existing)
+    # raw == -post elementwise under full negation
+    np.testing.assert_array_equal(c.state.gyro_body_raw, -np.asarray(c.state.gyro_body))
+
+
+def test_gyro_body_raw_none_when_message_omits_gyro():
+    """A HIGHRES_IMU variant without xgyro -> gyro_body_raw None too (no crash)."""
+    m = SimpleNamespace(time_usec=1000, xacc=0.0, yacc=0.0, zacc=-9.8,
+                        xmag=1.0, ymag=2.0, zmag=3.0, abs_pressure=1013.25)
+    m.get_type = lambda: "HIGHRES_IMU"
+    c = MavlinkClient(gyro_sign=(-1.0, -1.0, -1.0))
+    c._handle(m)
+    assert c.state.gyro_body_raw is None
+    assert c.state.gyro_body is None

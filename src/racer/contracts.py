@@ -87,6 +87,11 @@ class DroneState:
                                               # gyro source for the VQ2 AHRS (case-C self-localizing); raw
                                               # TRUE FRD, NOT sign-conjugated. ``angular_rate_body`` above
                                               # stays the ODOMETRY-derived (blocked-in-VQ2) rate.
+    gyro_body_raw: np.ndarray | None = None   # rad/s, FRD; the RAW parsed HIGHRES_IMU gyro BEFORE the
+                                              # ``gyro_sign`` per-axis correction (instrumentation only,
+                                              # logged for the A14 yaw-steer-sign probe). gyro_body is the
+                                              # post-sign value the AHRS uses; this is the pre-sign stash and
+                                              # is NEVER consumed by control/estimate. None until first IMU.
     mag_body: np.ndarray | None = None        # FRD; None if unpopulated -> no free mag yaw
     baro_pressure_hpa: float | None = None    # absolute pressure; None if unpopulated -> no free baro z
 

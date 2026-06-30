@@ -41,6 +41,8 @@ EXPECTED_KEYS = {
     "time_since_vision_s",
     "body_rate",
     "thrust",
+    "yaw_des_rad",
+    "raw_gyro_yaw",
 }
 
 
@@ -68,11 +70,19 @@ def _make_nav(with_ahrs=True):
     return nav
 
 
-def _make_state(sim_time_ns=123_456_789):
+def _make_state(sim_time_ns=123_456_789, gyro_body_raw=None):
     """Minimal DroneState-like object."""
     s = SimpleNamespace()
     s.sim_time_ns = sim_time_ns
+    s.gyro_body_raw = gyro_body_raw
     return s
+
+
+def _make_seeker(last_yaw_des=None):
+    """Minimal GateSeeker-like object exposing _last_yaw_des (the A14 stash)."""
+    sk = SimpleNamespace()
+    sk._last_yaw_des = last_yaw_des
+    return sk
 
 
 def _make_cmd(body_rate=None, thrust=0.55):
@@ -156,6 +166,27 @@ class TestNavEstimateRecord:
             gate_index=0, tick_index=0,
         )
         assert rec["body_rate"] is None
+
+    def test_a14_probe_fields_present_and_correct(self):
+        """yaw_des_rad (from the seeker stash) + raw_gyro_yaw (from the state stash) are logged."""
+        s = _make_state(gyro_body_raw=np.array([0.01, -0.02, 0.33], dtype=np.float64))
+        sk = _make_seeker(last_yaw_des=1.7)
+        rec = _nav_estimate_record(
+            _make_nav_state(), _make_nav(), s, _make_cmd(),
+            gate_index=0, tick_index=0, seeker=sk,
+        )
+        assert "yaw_des_rad" in rec and "raw_gyro_yaw" in rec
+        assert abs(rec["yaw_des_rad"] - 1.7) < 1e-9
+        assert abs(rec["raw_gyro_yaw"] - 0.33) < 1e-9  # z/yaw axis only
+
+    def test_a14_probe_fields_default_null(self):
+        """No seeker + no gyro stash -> both probe fields log null, not a crash."""
+        rec = _nav_estimate_record(
+            _make_nav_state(), _make_nav(), _make_state(), _make_cmd(),
+            gate_index=0, tick_index=0,  # seeker omitted (defaults None)
+        )
+        assert rec["yaw_des_rad"] is None
+        assert rec["raw_gyro_yaw"] is None
 
     def test_broken_nav_state_does_not_raise(self):
         """A nav_state with no roll attribute should log nulls, not crash."""

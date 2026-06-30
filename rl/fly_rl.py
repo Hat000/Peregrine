@@ -1002,7 +1002,8 @@ def _build_casec_seeker(args, gates):
 # the logged position is the KF integrated estimate, not ground truth.
 # ---------------------------------------------------------------------------
 
-def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: int) -> dict:
+def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: int,
+                         seeker=None) -> dict:
     """Build one JSONL record from the current tick's navigator output + command.
 
     All numpy arrays are converted to plain Python lists (.tolist()) so
@@ -1062,6 +1063,26 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["thrust"] = float(cmd.thrust) if cmd.thrust is not None else None
     except Exception:
         rec["thrust"] = None
+
+    # --- A14 yaw-steer-sign probe (instrumentation only; never feeds control) ---
+    # yaw_des_rad: the seeker's PRE-SLEW desired yaw toward the seen gate (atan2(los[1],los[0])),
+    # stashed on the seeker each pursuit tick. On a no-pursuit tick the last stashed value (or None)
+    # is logged -- we do NOT fabricate a fresh one (matches the "last" semantics of the other fields).
+    try:
+        yld = getattr(seeker, "_last_yaw_des", None) if seeker is not None else None
+        rec["yaw_des_rad"] = float(yld) if yld is not None else None
+    except Exception:
+        rec["yaw_des_rad"] = None
+
+    # raw_gyro_yaw: the RAW HIGHRES_IMU zgyro (z/yaw axis) BEFORE the gyro_sign correction. Read from
+    # the pre-sign stash on the drone state; None when the gyro is unpopulated. INDEPENDENT of gyro_sign.
+    try:
+        graw = getattr(s, "gyro_body_raw", None)
+        rec["raw_gyro_yaw"] = (
+            float(np.asarray(graw, dtype=np.float64)[2]) if graw is not None else None
+        )
+    except Exception:
+        rec["raw_gyro_yaw"] = None
 
     return rec
 
@@ -1231,7 +1252,7 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         if session_dir is not None:
             try:
                 _nav_log.append(_nav_estimate_record(
-                    nav_state, nav, s, cmd, gate_index, n_ticks))
+                    nav_state, nav, s, cmd, gate_index, n_ticks, seeker=seeker))
             except Exception:
                 _nav_log_errors += 1
 

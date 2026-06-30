@@ -277,6 +277,14 @@ class MavlinkClient:
                     if hasattr(msg, "xgyro")
                     else None
                 ),
+                # RAW pre-sign gyro stash (instrumentation only, A14 yaw-steer-sign probe): the parsed
+                # HIGHRES_IMU gyro BEFORE gyro_sign is applied. NEVER consumed by control/estimate; only
+                # logged. gyro_body above (post-sign) is unchanged -> VQ1/case-A byte-identical.
+                gyro_body_raw=(
+                    np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=np.float64)
+                    if hasattr(msg, "xgyro")
+                    else None
+                ),
                 mag_body=np.array([msg.xmag, msg.ymag, msg.zmag], dtype=np.float64),
                 baro_pressure_hpa=float(msg.abs_pressure),
             )
