@@ -8,6 +8,14 @@ ROOT the tree didn't anticipate: ~256 ms of synchronous vision compute PER tick 
 vp_yaw 67 ms + floor_height 37 ms) starving the video-receiver thread — and detect at 150 ms is ~7×
 the ~21 ms expected for single YOLO.** Indicated fix = the BRANCH-A remedy anyway (cut GPU/CV load).
 
+**⛔ THIS IS A HARD PREREQUISITE, NOT JUST OBSERVABILITY (pilot):** the starvation feeds the LIVE
+detector, not only the recorder. `[vision-timing]` shows **`detect` ran only 3 times** in the whole
+22-tick armed flight (and `seeker-diag cmds=4 pursuit=4`) — i.e. the seeker got **~3 gate observations
+in ~2 s**. No pursuit/control logic can thread a gate it sees 3 times; **this flight was doomed
+regardless of control quality.** So fixing the frame supply is a PREREQUISITE for ANY VQ2 slow-lap to
+work — it must land BEFORE any further seeker/control tuning. Do not chase control bugs until the
+detector is actually being fed.
+
 HEAD flown: `307a126` (flight stack byte-identical to `a32938a` — the instrumentation commit; only a
 memory commit since). Config identical to A16 (single YOLO course_L110, vq2_case_c). Instrument-only,
 no behavior change. **NOTE:** armed via **LATE-JOIN `to_go=-2.51s`** — the race went GO ~2.5 s before
@@ -61,15 +69,23 @@ instantly — the video thread itself is not the bottleneck; it's **starved**.
   with the co-located sim, a CPU-fallback inference, or a double-detect. Investigate first.
 - **`vp_yaw` (67 ms) + `floor_height` (37 ms) = the CV backstops** (the `heading_vp` /
   `manhattan_lines` per-frame steps flagged in 5b3c131) — ~104 ms/tick, confirmed expensive.
+- **The same starvation strangled the DETECTOR: `detect` ran only 3× in 22 armed ticks** → the seeker
+  had ~3 gate observations for the whole ~2 s flight. Frame supply to the live detector — not just the
+  recorder — is what's broken. **This is why the flight can't work yet, full stop.**
 
 ---
 
 ## RECOMMENDED NEXT STEPS (for the commander)
 
+0. **[PREREQUISITE — do this before ANY further control/seeker work] Restore the detector's frame
+   supply.** The live seeker got only ~3 detections in ~2 s; no control logic can thread a gate on
+   that. Until the detector is actually being fed at a usable rate, every slow-lap is doomed and any
+   control-tuning result is uninterpretable. Steps 1–2 below ARE this fix.
 1. **Cut the vision compute (the BRANCH-A remedy — indicated regardless of A/B/D):**
    (a) chase the 150 ms `detect` (≫21 ms): GPU contention / CPU fallback / double-detect;
    (b) decimate or share the `vp_yaw` + `floor_height` backstops (run every N ticks, not every tick).
-   Cutting ~256 ms/tick should both un-choke the loop AND stop starving the receiver → freeze gone.
+   Cutting ~256 ms/tick should un-choke the loop, restore frame supply to the detector, AND stop
+   starving the receiver → freeze gone and the seeker finally gets enough gate observations to fly.
 2. **Make the wire snapshot unconditional at exit (instrumentation gap).** It only fires on receiver
    idle-timeout, which didn't happen — so we never saw datagrams/completed/evicted and can't split
    B vs D. Snapshot rx.metrics at flight-exit unconditionally (or lower the idle threshold) so the
