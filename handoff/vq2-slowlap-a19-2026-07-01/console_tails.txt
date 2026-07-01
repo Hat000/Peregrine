@@ -1,0 +1,25 @@
+=== A19c (clean-protocol, first fully-observed active flight) ===
+  [detector] GateDetector on device='cuda:0' (weights='models/gate_clean_ens_course_L110.pt')
+  GO!  pos_off=0.00 m.  armed=True sim_t= 130.975s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+[gate-seeker] profile=vq2_case_c self_localizing=True cmd_rate_scale=0.4 detector=yolo cruise=3 m/s  gates=0  max=120s ...
+  [loop-rate]  14.2 Hz over 76 ticks (target 30); worst work 227 ms; 68.4% ticks over budget -> CHOKED
+  [vision-timing] detect: mean=31.9ms max=71.3ms n=75  vp_yaw: mean=63.6ms max=104.4ms n=15  floor_height: mean=47.7ms max=82.1ms n=25
+  [vision-timing] worst tick sum=194.5ms breakdown: vp_yaw=104.4ms, floor_height=51.6ms, detect=38.6ms
+  [seeker-diag] cmds=64 pursuit=22 none=42 (valid_empty=26 continuity=16 first_acq=0 other=0) -> bridged=38 (90% of none) held_legacy=4
+  flight 1: CRASH  gates=0  session=data\runs\20260701_224640_vq2_slow_seeker_a19c_f1
+  [video-thread] frames=353 max_gap=52ms@fid=169 gaps>200ms=0 gaps>1s=0 gap_sum=11093ms max_pub=4.2ms reconnects=10(idle=10,exc=0) | wire: datagrams=293714 completed=353 evicted=0 dup=281544 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
+  flight 1: CRASH      gates=0  data\runs\20260701_224640_vq2_slow_seeker_a19c_f1
+
+=== A19 (long pre-GO wait: recorder cut out, detect 234ms, loop 3.1Hz) ===
+  [loop-rate]   3.1 Hz over 11 ticks (target 30); worst work 423 ms; 100.0% ticks over budget -> CHOKED
+  [vision-timing] detect: mean=234.3ms max=303.4ms n=10  vp_yaw: mean=96.0ms max=99.4ms n=2  floor_height: mean=45.7ms max=58.7ms n=3
+  [vision-timing] worst tick sum=363.6ms breakdown: detect=271.0ms, vp_yaw=92.6ms
+  [seeker-diag] cmds=5 pursuit=5 none=0 (valid_empty=0 continuity=0 first_acq=0 other=0) -> bridged=0 (0% of none) held_legacy=0
+  [video-thread] frames=1195 max_gap=166ms@fid=661 gaps>200ms=0 gaps>1s=0 gap_sum=43193ms max_pub=0.3ms reconnects=0(idle=0,exc=0) | wire: datagrams=1151042 completed=1195 evicted=5 dup=1042376 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
+
+=== A19b (short pre-GO: caught start of movement then cut out; detect 150ms) ===
+  [loop-rate]   4.2 Hz over 13 ticks (target 30); worst work 326 ms; 100.0% ticks over budget -> CHOKED
+  [vision-timing] detect: mean=150.0ms max=254.3ms n=12  vp_yaw: mean=177.0ms max=183.9ms n=2  floor_height: mean=53.6ms max=71.7ms n=4
+  [vision-timing] worst tick sum=319.6ms breakdown: vp_yaw=183.9ms, detect=135.7ms
+  [seeker-diag] cmds=7 pursuit=7 none=0 (valid_empty=0 continuity=0 first_acq=0 other=0) -> bridged=0 (0% of none) held_legacy=0
+  [video-thread] frames=446 max_gap=272ms@fid=4929 gaps>200ms=1 gaps>1s=0 gap_sum=17171ms max_pub=0.4ms reconnects=0(idle=0,exc=0) | wire: datagrams=388987 completed=446 evicted=0 dup=374105 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
