@@ -94,9 +94,11 @@ class _FakeModel:
     def __init__(self, results):
         self._results = results
         self.calls = 0
+        self.last_kwargs = None  # captures predict()'s kwargs for the A20 imgsz/half test below
 
     def predict(self, img, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         return self._results
 
 
@@ -312,3 +314,25 @@ def test_dedup_overhead_is_submillisecond():
     # and gives ~3x headroom against flake, while a real regression (e.g. O(n^2) blowup) still trips it.
     # (loosened 1.0 -> 5.0, cleanup 2026-06-20; re-tighten if moved to a faster CI box.)
     assert per_call_ms < 5.0, f"dedup overhead {per_call_ms:.3f} ms/frame too high (vs ~26 ms budget)"
+
+
+# ======================================================================================
+# F. A20 (2026-07-01): imgsz/half detect-cost knobs reach EVERY member's predict()
+# ======================================================================================
+def test_default_imgsz_half_omit_kwargs_on_every_member():
+    """Default construction (imgsz=None, half=False) must not pass imgsz=/half= to ANY member's
+    predict() -- byte-identical to the pre-A20 ensemble detect() call."""
+    frame = _frame()
+    mA, mB = _model_detecting(_corners(_R1, _T1)), _model_detecting(_corners(_R2, _T2))
+    EnsembleGateDetector([mA, mB], dedup_px=12.0).detect(frame)
+    for m in (mA, mB):
+        assert "imgsz" not in m.last_kwargs and "half" not in m.last_kwargs
+
+
+def test_imgsz_and_half_reach_every_member_predict():
+    """imgsz/half are threaded to EVERY ensemble member's predict() call, not just the first."""
+    frame = _frame()
+    mA, mB = _model_detecting(_corners(_R1, _T1)), _model_detecting(_corners(_R2, _T2))
+    EnsembleGateDetector([mA, mB], dedup_px=12.0, imgsz=416, half=True).detect(frame)
+    for m in (mA, mB):
+        assert m.last_kwargs["imgsz"] == 416 and m.last_kwargs["half"] is True

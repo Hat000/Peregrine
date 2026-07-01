@@ -228,11 +228,17 @@ class GateDetector:
     frame. The model is injectable, so ``detect`` is testable with a fake (no ultralytics)."""
 
     def __init__(self, model, *, score_thresh: float = 0.25, kpt_conf_thresh: float = 0.5,
-                 device: str | None = None):
+                 device: str | None = None, imgsz: int | None = None, half: bool = False):
         self.model = model
         self.score_thresh = score_thresh
         self.kpt_conf_thresh = kpt_conf_thresh
         self.device = device
+        # A20 detect-cost knobs (2026-07-01): imgsz=None / half=False reproduce TODAY'S exact
+        # ultralytics predict() call (no imgsz/half kwarg passed at all -- see detect() below), so the
+        # default construction path is byte-identical to before these knobs existed. See NavigatorConfig
+        # .detect_imgsz / .detect_half for the deploy-profile seam that sets them.
+        self.imgsz = imgsz
+        self.half = bool(half)
 
     @classmethod
     def load(cls, weights, **kwargs):
@@ -255,7 +261,16 @@ class GateDetector:
         return cls(model, device=device, **kwargs)
 
     def detect(self, frame: Frame) -> list[GateObservation]:
-        results = self.model.predict(frame.image_bgr, verbose=False, device=self.device)
+        # A20 (2026-07-01): imgsz/half are passed to predict() ONLY when set to a non-default value, so
+        # the default (imgsz=None, half=False) call is the EXACT SAME predict(...) invocation as before
+        # these knobs existed (no imgsz= / half= kwarg present at all) -- byte-identical, not merely
+        # equivalent-by-default-value.
+        kwargs = {}
+        if self.imgsz is not None:
+            kwargs["imgsz"] = self.imgsz
+        if self.half:
+            kwargs["half"] = True
+        results = self.model.predict(frame.image_bgr, verbose=False, device=self.device, **kwargs)
         if not results:
             return []
         return observations_from_results(
@@ -291,13 +306,18 @@ class EnsembleGateDetector:
     deploy config (validated: union 6.5 -> 3.6 obs/frame, accuracy preserved)."""
 
     def __init__(self, models, *, score_thresh: float = 0.25, kpt_conf_thresh: float = 0.5,
-                 device: str | None = None, dedup_px: float = 12.0):
+                 device: str | None = None, dedup_px: float = 12.0,
+                 imgsz: int | None = None, half: bool = False):
         self.models = list(models)
         self.score_thresh = score_thresh
         self.kpt_conf_thresh = kpt_conf_thresh
         self.device = device
         self.dedup_px = float(dedup_px)
         self.model = self.models[0] if self.models else None  # compat shim if a caller reads .model
+        # A20 detect-cost knobs (2026-07-01, mirrors GateDetector): default None/False -> byte-identical
+        # predict() call to before these knobs existed (see detect() below).
+        self.imgsz = imgsz
+        self.half = bool(half)
 
     @classmethod
     def load(cls, weights_list, **kwargs) -> "EnsembleGateDetector":
@@ -313,9 +333,16 @@ class EnsembleGateDetector:
         return cls(models, device=device, **kwargs)
 
     def detect(self, frame: Frame) -> list[GateObservation]:
+        # A20: same conditional-kwarg pattern as GateDetector.detect -- byte-identical predict() call
+        # at the default (imgsz=None, half=False).
+        kwargs = {}
+        if self.imgsz is not None:
+            kwargs["imgsz"] = self.imgsz
+        if self.half:
+            kwargs["half"] = True
         obs: list[GateObservation] = []
         for m in self.models:
-            results = m.predict(frame.image_bgr, verbose=False, device=self.device)
+            results = m.predict(frame.image_bgr, verbose=False, device=self.device, **kwargs)
             if results:
                 obs.extend(observations_from_results(
                     frame, results[0], score_thresh=self.score_thresh,

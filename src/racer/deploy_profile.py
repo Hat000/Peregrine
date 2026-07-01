@@ -150,6 +150,12 @@ def vq2_case_c() -> DeployProfile:
         # Default (1) is byte-identical; these are the estimator-safety-study tuned values.
         vp_yaw_decimate=5,
         floor_height_decimate=3,
+        # --- A20 YOLO detect-cost knobs (2026-07-01) ---
+        # detect_imgsz / detect_half are NOT set here (stay at the NavigatorConfig default: None /
+        # False = today's exact ultralytics predict() call, byte-identical) pending the offline speed
+        # + accuracy validation in handoff/vq2-detect-cut-a20-2026-07-01/FINDINGS.md. The seam is wired
+        # end-to-end (this profile -> GateDetector.load -> model.predict); flip these two lines to opt
+        # in once a setting is chosen -- do not add a third knob location.
     )
     return DeployProfile(
         name="vq2_case_c",
@@ -188,8 +194,16 @@ def vq2_case_c() -> DeployProfile:
         #     swamps the +1.2 feedforward, flips the tilt target nose-UP, and the drone climbs into the
         #     ceiling the instant pursuit engages (A15b flight 2; offline-repro-confirmed). Softening
         #     (kp_att/slew) could NOT fix it because the TARGET direction was wrong (nose-up), not stiff.
+        #   * ff_owns_vertical = True: the A19c bang-bang ROOT fix (the vertical twin of the above). The
+        #     alt-hold's kd_alt*(vel[2]-vz_t) damped the estimator's DEAD-RECKONED vel[2] (no baro /
+        #     ODOMETRY blocked -> drifting IMU integration); in pursuit kp_alt*(z-z_t) is constant so that
+        #     term was the SOLE thrust driver and rail-slammed the collective 0.05<->0.60 -> a net climb
+        #     OVER the acquired gate -> gate lost -> the 360 yaw-search (A19c, offline-repro-confirmed:
+        #     rail-slam flips 19->3). ON: a position loop on the trustworthy floor-corrected z + the
+        #     vertical-align vz_t ramped THROUGH a moving z_target + damping on a low-passed finite-diff of
+        #     z (NOT raw vel[2]). Without this, the vertical channel ends the flight regardless of control.
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
-                              "ff_owns_horizontal": True},
+                              "ff_owns_horizontal": True, "ff_owns_vertical": True},
     )
 
 

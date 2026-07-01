@@ -388,6 +388,26 @@ class NavigatorConfig:
     vp_yaw_decimate: int = 1
     floor_height_decimate: int = 1
 
+    # --- A20 YOLO detect-cost knobs (frame-supply hardening, 2026-07-01) ---
+    # The A18 flight showed detect()=129 ms on an UNCONTENDED cuda:0 (vs the ~21 ms single-GPU
+    # benchmark) -- genuine sim/GPU contention on the co-located ShadowPC box, on top of which the
+    # per-frame vision stack chokes the loop well below the 30 Hz target. Two standard inference-cost
+    # levers, threaded here so a deploy profile can opt them in as ONE bundle with everything else:
+    #   detect_imgsz: the square inference resolution ultralytics resizes/pads the frame to before the
+    #     forward pass (None -> ultralytics' own default, i.e. TODAY'S behaviour unchanged). Smaller
+    #     (416/320 vs the live ~640-wide frame) cuts compute roughly with the pixel-count ratio at some
+    #     accuracy cost -- must be validated per weights, not assumed safe.
+    #   detect_half: half-precision (FP16) inference on CUDA (model.predict(..., half=True)). False =
+    #     TODAY'S full-precision behaviour unchanged; True roughly halves compute on a half-capable GPU.
+    # BOTH default to today's exact values (None / False) -> GateDetector.detect / EnsembleGateDetector.
+    # detect are BYTE-IDENTICAL when unset (VQ1 + every offline path untouched); vq2_case_c or a future
+    # profile flips them only after an offline speed/accuracy validation picks a setting (see
+    # handoff/vq2-detect-cut-a20-2026-07-01/FINDINGS.md). Plumbed -> GateDetector.load(imgsz=, half=)
+    # at the rl/fly_rl.py detector construction seam (both the pre-warm and the real load use the SAME
+    # profile-sourced values, so the pre-warmed kernels match what the flight actually runs).
+    detect_imgsz: int | None = None
+    detect_half: bool = False
+
 
 @dataclass
 class _VisionDiag:

@@ -1002,16 +1002,25 @@ def _prewarm_detector(args) -> None:
     Only the ``yolo`` path warms (red_glow is pure OpenCV -> no warmup cost). Any failure (no
     ultralytics / no GPU / bad weights) is logged and swallowed: the real load in _build_casec_seeker
     surfaces a hard error later, and a warmup miss must never abort the run. Idempotent + additive:
-    non-yolo / non-gate-seeker runs are byte-identical (nothing is built, nothing stashed)."""
+    non-yolo / non-gate-seeker runs are byte-identical (nothing is built, nothing stashed).
+
+    A20 (2026-07-01): sources ``detect_imgsz`` / ``detect_half`` from the SAME deploy profile
+    ``_build_casec_seeker`` will use, so the pre-warmed kernels (cuDNN autotune / kernel compile) match
+    what the flight actually runs -- warming at imgsz=640 then flying at imgsz=416 would warm the WRONG
+    kernels and reintroduce a tick-0-ish stall on the first real-resolution inference. Default profile
+    values (None / False) reproduce today's exact GateDetector.load(weights) call (no imgsz/half kwarg)."""
     if not getattr(args, "gate_seeker", False) or args.seeker_detector != "yolo":
         return
     try:
         import numpy as np
 
         from racer.contracts import Frame
+        from racer.deploy_profile import get_profile
         from racer.vision.detector import GateDetector
         t0 = time.monotonic()
-        detector = GateDetector.load(_resolve_seeker_weights(args))
+        nav_cfg = get_profile(args.deploy_profile).nav_config
+        detector = GateDetector.load(_resolve_seeker_weights(args),
+                                      imgsz=nav_cfg.detect_imgsz, half=nav_cfg.detect_half)
         # A black (360, 640, 3) frame matching the live camera resolution (contracts.Frame): the
         # SHAPE is what drives cuDNN autotune + kernel compile, so warming on the true resolution
         # warms the exact kernels the flight will use. A black frame yields no detections (fine).
@@ -1049,9 +1058,13 @@ def _build_casec_seeker(args, gates):
         # Falls back to --checkpoint only if --seeker-weights is unset (legacy convenience).
         # REUSE the PRE-WARMED instance (_prewarm_detector, the A15 launch-freeze fix) when present,
         # so the expensive first-predict already ran at startup off the flight critical path; else
-        # build it here (byte-identical to the legacy path when no pre-warm ran).
+        # build it here (byte-identical to the legacy path when no pre-warm ran). A20: imgsz/half come
+        # from THIS SAME profile.nav_config, so a fallback (non-prewarmed) load still matches the
+        # pre-warm's kernels -- there is exactly one source of truth for the detect-cost knobs per flight.
         detector = (getattr(args, "_prewarmed_detector", None)
-                    or GateDetector.load(_resolve_seeker_weights(args)))  # weights (artifact-pipe)
+                    or GateDetector.load(_resolve_seeker_weights(args),  # weights (artifact-pipe)
+                                         imgsz=profile.nav_config.detect_imgsz,
+                                         half=profile.nav_config.detect_half))
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT

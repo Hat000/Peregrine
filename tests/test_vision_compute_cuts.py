@@ -301,3 +301,27 @@ def test_decimate_n_reduces_backstop_calls_vs_every_tick():
         navmod.estimate_heading = orig_h
     assert calls["one"] == 20 and calls["five"] == 4          # 20 vs 20//5
     assert calls["five"] < calls["one"]
+
+
+# ======================================================================================
+# 3. A20 (2026-07-01) — NavigatorConfig.detect_imgsz / detect_half knobs + the deploy-profile seam
+# ======================================================================================
+def test_navigator_config_detect_knobs_default_to_today():
+    """detect_imgsz=None / detect_half=False are the dataclass defaults -- unsetting them at a
+    GateDetector.load() call site reproduces exactly today's ultralytics predict() invocation."""
+    cfg = NavigatorConfig()
+    assert cfg.detect_imgsz is None
+    assert cfg.detect_half is False
+
+
+def test_vq2_case_c_leaves_detect_knobs_at_default():
+    """vq2_case_c() flips many NavigatorConfig flags ON, but must NOT touch detect_imgsz/detect_half
+    until an offline speed+accuracy validation picks a setting (handoff/vq2-detect-cut-a20-2026-07-01) --
+    a silent flip here would change flight-critical detector accuracy with no test coverage of the
+    tradeoff. Regression guard against an accidental edit to the profile."""
+    from racer.deploy_profile import vq1_case_a, vq2_case_c
+
+    assert vq2_case_c().nav_config.detect_imgsz is None
+    assert vq2_case_c().nav_config.detect_half is False
+    assert vq1_case_a().nav_config.detect_imgsz is None
+    assert vq1_case_a().nav_config.detect_half is False

@@ -117,9 +117,11 @@ class _FakeModel:
     def __init__(self, results):
         self._results = results
         self.calls = 0
+        self.last_kwargs = None  # captures predict()'s kwargs for the A20 imgsz/half tests below
 
     def predict(self, img, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         return self._results
 
 
@@ -135,3 +137,41 @@ def test_gate_detector_delegates_to_model():
 def test_gate_detector_empty_results():
     det = GateDetector(_FakeModel([]))
     assert det.detect(_frame()) == []
+
+
+# -- A20 (2026-07-01): imgsz/half detect-cost knobs -------------------------
+def test_default_imgsz_half_omit_kwargs_byte_identical_predict_call():
+    """The default construction (imgsz=None, half=False) must NOT pass imgsz= or half= to predict() at
+    all -- byte-identical to the pre-A20 call, not merely 'equivalent' at ultralytics' own default."""
+    model = _FakeModel([_fake_results(_corners()[None], np.ones((1, 4)), [0.9])])
+    GateDetector(model).detect(_frame())
+    assert "imgsz" not in model.last_kwargs
+    assert "half" not in model.last_kwargs
+
+
+def test_imgsz_reaches_predict():
+    model = _FakeModel([_fake_results(_corners()[None], np.ones((1, 4)), [0.9])])
+    GateDetector(model, imgsz=416).detect(_frame())
+    assert model.last_kwargs["imgsz"] == 416
+    assert "half" not in model.last_kwargs  # half stays omitted (its own default)
+
+
+def test_half_reaches_predict():
+    model = _FakeModel([_fake_results(_corners()[None], np.ones((1, 4)), [0.9])])
+    GateDetector(model, half=True).detect(_frame())
+    assert model.last_kwargs["half"] is True
+    assert "imgsz" not in model.last_kwargs  # imgsz stays omitted (its own default)
+
+
+def test_imgsz_and_half_both_reach_predict():
+    model = _FakeModel([_fake_results(_corners()[None], np.ones((1, 4)), [0.9])])
+    GateDetector(model, imgsz=320, half=True).detect(_frame())
+    assert model.last_kwargs["imgsz"] == 320 and model.last_kwargs["half"] is True
+
+
+def test_half_false_explicit_omits_kwarg():
+    """half=False (the explicit default) omits the kwarg just like the implicit default -- there is
+    no behavioural difference between 'not passed' and 'passed False' for this flag."""
+    model = _FakeModel([_fake_results(_corners()[None], np.ones((1, 4)), [0.9])])
+    GateDetector(model, half=False).detect(_frame())
+    assert "half" not in model.last_kwargs
