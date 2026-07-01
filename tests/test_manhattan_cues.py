@@ -498,12 +498,20 @@ def test_fit_vp_perf_regression_guard():
         (_timed(_fit_vanishing_point_reference, segs, iters=2000, seed=0) for _ in range(3)),
     )
     speedup = ref_best / best
-    # At least 2x faster than the original loop at the same iters (typically 3-5x); this is the
-    # regression signal — a revert to per-iteration np.cross collapses the ratio toward 1.0.
+    # PRIMARY, load-robust signal: >= 2x the original loop at the same iters (typically 3-5x). This
+    # is a RATIO measured on the same machine/run, so it stays valid under load — both paths slow
+    # together, and a revert to per-iteration np.cross collapses it toward 1.0. This is what actually
+    # catches the O(n_vps*iters) VP cost regressing.
     assert speedup >= 2.0, f"vectorized VP only {speedup:.2f}x vs original loop (regression?)"
-    # Absolute ceiling: 2000-iter vectorized fit on ~200 segments should be well under 120 ms even
-    # on slow hardware (the original was 110-250 ms; the doc's faster box hit ~5 ms at 512 iters).
-    assert best < 0.120, f"vectorized fit {best * 1e3:.1f} ms too slow (perf regression)"
+    # Coarse absolute BACKSTOP (secondary to the ratio): catches a catastrophe the ratio can miss —
+    # e.g. a shared helper (_vp_consistency_residual / _refine_vp) going O(n^2) slows BOTH paths
+    # equally, leaving the ratio intact. Kept DELIBERATELY loose: a min-of-5 on a thermally-throttled
+    # laptop steady-states at ~130-140 ms even when healthy (measured ~120-141 ms at rest here), so
+    # the old 120 ms wall flaked spuriously under the ~9-min full-suite load. The full-Python-loop
+    # reference on this same frame is ~390 ms, so 300 ms sits between "healthy under load" and a
+    # revert-to-loop: normal load passes, a genuine blowup still trips it. Do NOT re-tighten toward
+    # 120 ms — that just reintroduces the flake; the ratio above is the real regression guard.
+    assert best < 0.300, f"vectorized fit {best * 1e3:.1f} ms too slow (catastrophic perf regression)"
 
 
 def _timed(fn, *args, **kwargs):
