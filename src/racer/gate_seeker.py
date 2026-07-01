@@ -369,6 +369,27 @@ class GateSeekerConfig:
     # forward lean out over the window. Only active when hold_last_demand_s > 0.
     hold_last_demand_decay: bool = True
 
+    # --- TRUE-ATTITUDE FROM AHRS (the 2026-06-30 A14 yaw-mirror fix) ---
+    # ROOT CAUSE (A14): under ``use_ahrs`` (vq2_case_c) the case-C Navigator re-encodes the TRUE
+    # AHRS attitude into the legacy ODOMETRY conjugation before writing ``NavState`` (an R_y(pi)
+    # conjugation, ``_ahrs_odo_quat = q_true * ODO_QUAT_TRUE_CONJ_WXYZ``). Empirically, every tick:
+    # ``NavState.roll = -euler_roll(q_true)``, ``NavState.pitch = +euler_pitch(q_true)``,
+    # ``NavState.yaw = -euler_yaw(q_true)``. So the seeker is handed a MIRRORED-yaw attitude:
+    #   TRUE euler = (-nav.roll, nav.pitch, -nav.yaw).
+    # The seeker's gate-direction geometry (``_gate_dir_world``/``_gate_lever_world``) used the RAW
+    # conjugated euler, so for a gate on the RIGHT it computed a world LoS mirrored in yaw and
+    # steered the nose LEFT (A14 confirmed). The controller's ``R_cur`` has the SAME mirror: its
+    # ``odo_att_sign=[-1,1,1]`` un-conjugates ROLL (asign[0]=-1) but NOT yaw (asign[2]=1), so
+    # ``R_cur`` yaw = ``nav.yaw = -true_yaw`` -- the controller half of the same bug.
+    #
+    # THE FIX (this flag, ON): the seeker consumes the TRUE euler ``(-nav.roll, nav.pitch, -nav.yaw)``
+    # for ALL its attitude geometry + heading bookkeeping, and passes the controller a nav whose YAW
+    # is NEGATED (``replace(nav, yaw=-nav.yaw)``) so ``R_cur`` becomes R_true WITHOUT touching the
+    # controller's sign config: R_cur roll = (-true_roll)*-1 = +true_roll, pitch = +true_pitch,
+    # yaw = (-nav.yaw)*1 = (+true_yaw). No sign knob (gyro_sign/body_rate_sign/odo_att_sign/vp_yaw)
+    # is touched. OFF (default) == VQ1 / case-A byte-identical (raw ``nav`` euler everywhere).
+    true_attitude_from_ahrs: bool = False
+
     # --- ANCHOR RELEASE on the seeker's OWN detections (the 2026-06-29 attempt-2 BUG A fix) ---
     # On the LIVE VQ2 wire the navigator is MAP-FREE (gates=[]), so its map-associated fix path
     # never fires and ``nav.time_since_vision_update_s`` stays inf FOREVER -- the old anchor-release
@@ -737,7 +758,7 @@ class GateSeeker:
         index_advanced = self._last_index is not None and int(active_gate_index) > self._last_index
         self._last_index = int(active_gate_index)
         if self._last_yaw is None:
-            self._last_yaw = float(nav.yaw)
+            self._last_yaw = self._att_yaw(nav)
 
         # ACQUIRE-NEXT track reset: once we are past the dead-reckon GLIDE (the pass_coast_s window) the
         # just-passed gate is behind us; the temporal track may still be stale-locked on it (a fresh
@@ -776,7 +797,7 @@ class GateSeeker:
                 self._release_t_ns = int(nav.sim_time_ns)   # start the post-release pursuit ramp clock
                 # FREEZE the spawn heading = the direction OUT of the start gate the drone sits in
                 # (the egress phase creeps along it to clear gate 0 before re-aiming downrange).
-                self._spawn_heading = float(nav.yaw)
+                self._spawn_heading = self._att_yaw(nav)
             self._anchored = True
 
         # --- regime 0: POST-ARM SETTLE -> conservative level hold, all rates clamped, thrust bounded ---
@@ -932,7 +953,7 @@ class GateSeeker:
             self._end_pass()
             return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
                                       attitude_safe=True)
-        yaw0 = self._pass_heading if self._pass_heading is not None else float(nav.yaw)
+        yaw0 = self._pass_heading if self._pass_heading is not None else self._att_yaw(nav)
         self._last_yaw = yaw0
         los = np.array([np.cos(yaw0), np.sin(yaw0), 0.0])
         launch = self._launch_ramp(int(nav.sim_time_ns))
@@ -1008,6 +1029,33 @@ class GateSeeker:
             return False
         return (int(sim_time_ns) - self._t0_sim_ns) / 1e9 < self.config.settle_s
 
+    # -- TRUE-ATTITUDE recovery (A14 yaw-mirror fix) ------------------------
+    def _att_rpy(self, nav: NavState) -> tuple[float, float, float]:
+        """The (roll, pitch, yaw) the seeker geometry + heading bookkeeping should use.
+
+        When ``true_attitude_from_ahrs`` is ON, recover the TRUE euler from the ODO-conjugated
+        ``NavState`` the case-C Navigator emits: ``(-nav.roll, nav.pitch, -nav.yaw)`` (roll + yaw
+        negated, pitch kept -- the R_y(pi) conjugation). OFF (default) => the raw ``nav`` euler
+        (VQ1 / case-A byte-identical)."""
+        if self.config.true_attitude_from_ahrs:
+            return (-float(nav.roll), float(nav.pitch), -float(nav.yaw))
+        return (float(nav.roll), float(nav.pitch), float(nav.yaw))
+
+    def _att_yaw(self, nav: NavState) -> float:
+        """The TRUE (or raw, flag-off) yaw for heading bookkeeping (last-yaw / spawn-heading / holds)."""
+        return self._att_rpy(nav)[2]
+
+    def _controller_nav(self, nav: NavState) -> NavState:
+        """The NavState to hand the controller so its ``R_cur`` becomes R_true WITHOUT touching the
+        controller sign config. When the flag is ON, NEGATE yaw only (``replace(nav, yaw=-nav.yaw)``):
+        the controller's ``odo_att_sign=[-1,1,1]`` then yields R_cur = R_world_from_body(
+        nav.roll*-1, nav.pitch, (-nav.yaw)*1) = R_world_from_body(+true_roll, +true_pitch, +true_yaw).
+        Roll/pitch are left as the conjugated values that asign already handles. OFF => raw ``nav``."""
+        if self.config.true_attitude_from_ahrs:
+            import dataclasses
+            return dataclasses.replace(nav, yaw=-float(nav.yaw))
+        return nav
+
     def _gate_dir_world(self, nav: NavState, pose: GatePose) -> np.ndarray:
         """Unit world-NED direction from the drone to the DETECTED gate centre, from the relative lever.
 
@@ -1017,8 +1065,9 @@ class GateSeeker:
         NO absolute self-position enters — only the DIRECTION to the seen gate."""
         d_cam = _unit(np.asarray(pose.t_cam_gate, dtype=np.float64))
         d_body = R_camera_from_body().T @ d_cam
-        R_wb = R_world_from_body(float(nav.roll), float(nav.pitch), float(nav.yaw))
-        return _unit(R_wb @ d_body, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
+        tr, tp, ty = self._att_rpy(nav)
+        R_wb = R_world_from_body(tr, tp, ty)
+        return _unit(R_wb @ d_body, fallback=np.array([np.cos(ty), np.sin(ty), 0.0]))
 
     def _gate_lever_world(self, nav: NavState, pose: GatePose) -> np.ndarray:
         """FULL (non-unit) world-NED vector from the drone to the DETECTED gate centre, from the lever.
@@ -1032,7 +1081,8 @@ class GateSeeker:
         nulling the camera-frame trk_el would leave a residual world offset). [A5 BLOCKER 1]"""
         t_cam = np.asarray(pose.t_cam_gate, dtype=np.float64)
         v_body = R_camera_from_body().T @ t_cam
-        R_wb = R_world_from_body(float(nav.roll), float(nav.pitch), float(nav.yaw))
+        tr, tp, ty = self._att_rpy(nav)
+        R_wb = R_world_from_body(tr, tp, ty)
         return R_wb @ v_body
 
     def _vertical_align_vz(self, nav: NavState, pose: GatePose) -> float:
@@ -1087,7 +1137,8 @@ class GateSeeker:
         up from a small floor over ``pursuit_ramp_s``; the ROLL command is capped below saturation."""
         gdir = self._gate_dir_world(nav, pose)
         horiz = np.array([gdir[0], gdir[1], 0.0])
-        los = _unit(horiz, fallback=np.array([np.cos(nav.yaw), np.sin(nav.yaw), 0.0]))
+        _ty = self._att_yaw(nav)
+        los = _unit(horiz, fallback=np.array([np.cos(_ty), np.sin(_ty), 0.0]))
         yaw_des = float(np.arctan2(los[1], los[0]))
         # INSTRUMENTATION ONLY (A14 yaw-steer-sign probe): stash the PRE-SLEW desired yaw toward the
         # gate so the nav-estimate logger can read it. Not consumed by control — purely additive.
@@ -1128,7 +1179,7 @@ class GateSeeker:
             yaw=yaw,
             launch_ramp=eff_ramp,
         )
-        cmd = self.controller.command(nav, sp)
+        cmd = self.controller.command(self._controller_nav(nav), sp)
         cmd = self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
         cmd = self._cap_roll_rate(cmd, self.config.pursuit_roll_rate_cap_rps)
         return self._cap_pitch_rate(cmd, self.config.pursuit_pitch_rate_cap_rps)
@@ -1161,7 +1212,7 @@ class GateSeeker:
             yaw=yaw,
             launch_ramp=launch_ramp,
         )
-        cmd = self.controller.command(nav, sp)
+        cmd = self.controller.command(self._controller_nav(nav), sp)
         cmd = self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
         cmd = self._cap_roll_rate(cmd, self.config.pursuit_roll_rate_cap_rps)
         return self._cap_pitch_rate(cmd, self.config.pursuit_pitch_rate_cap_rps)
@@ -1195,7 +1246,7 @@ class GateSeeker:
         downrange gate. Reuses the bounded feedforward forward-tilt + pitch cap; the heading is the
         spawn heading (NOT slewed toward the downrange gate) so the drone departs straight out of the
         spawn gate rather than turning + lunging into its frame."""
-        yaw0 = self._spawn_heading if self._spawn_heading is not None else float(nav.yaw)
+        yaw0 = self._spawn_heading if self._spawn_heading is not None else self._att_yaw(nav)
         self._last_yaw = yaw0
         los = np.array([np.cos(yaw0), np.sin(yaw0), 0.0])
         launch = self._launch_ramp(int(nav.sim_time_ns))
@@ -1335,14 +1386,14 @@ class GateSeeker:
         mag-free, gravity-aligned-but-still-converging AHRS the attitude/altitude estimate can demand
         a saturated pitch-over + thrust climb; bounding EVERY axis (not just yaw) keeps the hold from
         tumbling the drone into the gate while the estimator settles."""
-        hold_yaw = self._last_yaw if self._last_yaw is not None else float(nav.yaw)
+        hold_yaw = self._last_yaw if self._last_yaw is not None else self._att_yaw(nav)
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
             velocity_ned=np.zeros(3),       # no horizontal lean -> level hover
             yaw=hold_yaw,
             launch_ramp=0.0,                # full anti-lean: keep the attitude level while holding
         )
-        cmd = self.controller.command(nav, sp)
+        cmd = self.controller.command(self._controller_nav(nav), sp)
         cmd = self._cap_yaw_rate(cmd, yaw_rate_cap)
         if attitude_safe:
             if self.config.hold_freeze_attitude:

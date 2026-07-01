@@ -155,7 +155,14 @@ def vq2_case_c() -> DeployProfile:
         # ticks (track-continuity flap), each previously a regime-2 zero-coast -> POLYGONAL motion. Hold
         # the last pursuit demand for 0.6 s across these gaps so control is CONTINUOUS per tick. (The
         # track-continuity gate widening is DEFERRED to A14 -- tune with the instrumentation data.)
-        seeker_overrides={"egress_freeze_attitude": True, "hold_last_demand_s": 0.6},
+        # A14 yaw-mirror fix (2026-06-30): under use_ahrs the case-C Navigator hands the seeker the
+        # ODO-conjugated attitude (roll+yaw negated, pitch kept). The seeker geometry used the raw
+        # conjugated euler and the controller's odo_att_sign un-conjugates roll but NOT yaw, so a gate
+        # on the RIGHT steered the nose LEFT. true_attitude_from_ahrs makes the seeker consume the TRUE
+        # euler (-nav.roll, nav.pitch, -nav.yaw) and pass the controller a yaw-negated nav so R_cur is
+        # R_true -- no sign knob touched. VQ1 / case-A byte-identical (default OFF).
+        seeker_overrides={"egress_freeze_attitude": True, "hold_last_demand_s": 0.6,
+                          "true_attitude_from_ahrs": True},
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
         # the egress->pursuit HANDOFF (held ~-18deg nose-down vs ~-5deg cruise = ~13deg error) commands
