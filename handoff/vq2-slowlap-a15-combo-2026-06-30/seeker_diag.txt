@@ -1,0 +1,4 @@
+gate-seeker: skipping RL actor load (unused on this path)
+  [loop-rate]  10.6 Hz over 67 ticks (target 30); worst work 2873 ms; 4.5% ticks over budget -> CHOKED
+  [seeker-diag] cmds=56 pursuit=56 none=0 (valid_empty=0 continuity=0 first_acq=0 other=0) -> bridged=0 (0% of none) held_legacy=0
+  collisions (all flights): 1 (ids [1001]; 1001=gate 1002=env)
