@@ -1,14 +1,18 @@
 # VQ2 Slow-Lap A15b — pre-warmed YOLO (launch-freeze fix) — 2026-07-01
 
 **OUTCOME (grounded in the PILOT's live eyes, not the estimate):** Pre-warm WORKS — live
-observation is UNBLOCKED (pilot saw both flights clearly, no camera freeze). Best result of the
-campaign: **flight 1 flew up+forward and PASSED gate 1**, then flew into the ceiling. The
-diagnosis is now sharp and dynamically confirmed: **the frozen egress attitude is a GOOD
-trajectory (it threads gate 1 with zero pursuit help); the pursuit vertical handoff is ACTIVELY
-HARMFUL — the instant it engages it commands a big nose-UP pitch rate and balloons up into the
-ceiling.** Blocker #3 (egress→pursuit nose-up overshoot) is the #1 killer. The yaw un-mirror fix
-(337c554) is UNTESTABLE until #3 is fixed — both flights die at the nose-up overshoot before ever
-reaching the off-axis gate 2.
+observation is UNBLOCKED (pilot saw both flights clearly, no camera freeze). **Flight 1 flew
+up+forward and PASSED gate 1**, then flew into the ceiling. The dynamically-confirmed diagnosis:
+**the pursuit vertical handoff is ACTIVELY HARMFUL — the instant it engages (flight 2) it commands
+a big nose-UP pitch rate and balloons up into the ceiling.** Blocker #3 (egress→pursuit nose-up
+overshoot) is the #1 killer. The yaw un-mirror fix (337c554) is UNTESTABLE until #3 is fixed — both
+flights die at the nose-up overshoot before ever reaching the off-axis gate 2.
+
+**PILOT'S REVISED READ OF FLIGHT 1 (do NOT over-credit it):** the gate-1 pass was most likely the
+controller issuing an *initial* fly command that then **dropped out**, leaving the drone on a fixed
+nose-down attitude that **coincidentally** threaded gate 1 — luck, not robust pursuit. Treat flight 1
+as "an initial command + dropout that happened to work," NOT as proof a frozen egress attitude is a
+reliably good trajectory. The load-bearing finding is flight 2's nose-up overshoot.
 
 HEAD flown: `142b6bc` (fly_rl.py byte-identical to `12f366b` — the pre-warm commit; +2 memory/docs
 commits don't touch the flight stack). Config: `--gate-seeker --deploy-profile vq2_case_c
@@ -60,17 +64,21 @@ Both flights ended by climbing into the CEILING.
 | egress freeze | 0–56 (~3.1s) | held **−16° nose-DOWN** | 0 (frozen) | tsv=none, yaw_des=none | correct forward-intent hold |
 | pursuit handoff | 60–70 (~0.6s) | **−14° → +15° nose-UP** | **+1.24 → +1.50 rad/s** | yaw_des +1.4°→+0.3° (gate ~centered) | over-pitch UP, thrust→0.6, CEILING |
 
-### Flight 1 (LATE-JOIN) — the gift: pure frozen-egress ballistic
-- **Held the egress freeze for ALL 259 ticks**: pitch ~−16° nose-down, thrust ~0.16–0.37,
-  `yaw_des=none` / `tsv=none` / zero rate commands **the entire flight**. The egress-freeze
-  **NEVER released into pursuit** (a late-join artifact — see caveat).
-- gate_index 0→1 at tick ~72: the frozen nose-down + thrust trajectory **threaded gate 1**.
-- With pursuit/vision-yaw never active, it could not steer right for gate 2 → continued the
-  ballistic climb into the ceiling. (So "didn't turn right" ≠ a yaw-sign test; steering was OFF.)
+### Flight 1 (LATE-JOIN) — an initial command + dropout that coincidentally threaded gate 1
+- The data shows the drone on a **fixed ~−16° nose-down attitude for ALL 259 ticks**: thrust
+  ~0.16–0.37, `yaw_des=none` / `tsv=none` / zero *sampled* rate commands. No active pursuit ever ran
+  (a late-join artifact — see caveat).
+- **Pilot's reading (preferred):** an *initial* fly command was issued that then **dropped out**,
+  and the resulting fixed nose-down attitude **coincidentally** threaded gate 1 (gate_index 0→1 at
+  tick ~72) before the ballistic climb into the ceiling. This is LUCK, not a robust trajectory — do
+  not treat "frozen egress attitude" as a reliable good path.
+- With pursuit/vision-yaw never active, there was no steering at all → "didn't turn right for gate 2"
+  is NOT a yaw-sign test; steering was simply OFF.
 
-**Cross-flight conclusion:** pursuit-OFF (flight 1) passed gate 1; pursuit-ON (flight 2) over-pitched
-and missed. The pursuit vertical/pitch target is wrong — it drives nose-UP when the working egress
-attitude is nose-DOWN. Softening (A12, kp_att 10→4) can't fix a wrong-direction target.
+**Cross-flight conclusion:** the load-bearing evidence is flight 2 — the moment pursuit engages it
+commands nose-UP (+1.5 rad/s) and flies into the ceiling. Flight 1 (pursuit never active) only tells
+us a bare nose-down attitude can, by luck, thread gate 1. The pursuit vertical/pitch target is wrong-
+DIRECTION (drives nose-UP); softening (A12, kp_att 10→4) can't fix a wrong-direction target.
 
 ---
 
@@ -78,9 +86,10 @@ attitude is nose-DOWN. Softening (A12, kp_att 10→4) can't fix a wrong-directio
 
 1. **[PRIMARY] Fix the pursuit→pitch handoff nose-up overshoot (blocker #3).** The moment pursuit
    engages it commands +1.5 rad/s nose-UP (flight 2, ticks 60–70), pitching −14°→+15° and flying up
-   into the ceiling. The frozen egress attitude (−16° nose-down, thrust ~0.37) is a GOOD trajectory
-   — the pursuit vertical target should hold/continue that, not command a large nose-up. Suspect the
-   pursuit pitch/altitude target sign or the egress→pursuit blend. This gates everything downstream.
+   into the ceiling. The pursuit vertical target should keep the drone tracking the gate forward, not
+   command a large nose-up. Suspect the pursuit pitch/altitude target sign or the egress→pursuit
+   blend. This gates everything downstream. (Caveat: flight 1's coincidental gate-1 thread on a bare
+   nose-down attitude is NOT proof the egress attitude is the right target — don't over-fit to it.)
 
 2. **[BLOCKED on #1] Confirm the yaw un-mirror (337c554) on an off-axis gate.** Neither flight
    reached the right-side gate 2 with pursuit active, so the fix is still unconfirmed dynamically.
@@ -93,10 +102,26 @@ attitude is nose-DOWN. Softening (A12, kp_att 10→4) can't fix a wrong-directio
    (`to_go=-48s`), which also appears to break the egress-release (flight 1 never left freeze) and
    zeroes the seeker-diag counters. Flight 2 used the correct sequence.
 
-4. **[LOW] Recorder frame-drops (~95%: 25/938 flight 2, 3/259 flight 1).** Separate from the tick-0
-   freeze (which the pre-warm fixed). The LIVE stream is fine (pilot observed both flights), so this
-   only makes post-hoc mp4 review useless — not a flight blocker. If post-hoc video matters later,
-   the video-recorder thread is starving under YOLO GPU load.
+4. **[COMMANDER — investigate] Recorder frame-drops are REALLY BAD (~95%: 25/938 flight 2, 3/259
+   flight 1).** Distinct from the tick-0 warmup freeze that the pre-warm fixed. The LIVE stream is
+   fine (pilot observed both flights), so this doesn't block *flying* — but it makes post-hoc mp4
+   review useless, and worst-work ticks were still 468–515 ms (over the 33 ms budget → CHOKED).
+   **Pilot recalls we have hit this exact bad-drop symptom before, and it was traced to a per-frame
+   stack element running too long and holding up the pipeline — he thinks it was the "Manhattan /
+   vanishing-point" module (a per-frame vanishing-point / Manhattan-world estimate) blocking the loop.
+   Commander: please check whether that module (or an equivalent per-frame vision step) is still in
+   the live path and time-boxed — it's the prime suspect for both the ~95% recorder starvation and
+   the 468–515 ms worst-work ticks.** The pilot did NOT have the exact name; verify against current
+   code.
+
+5. **[FUTURE VIDEOS — rendering request from the pilot] Overlay a per-frame "command sent" indicator
+   in rendered onboard videos**, so we can see the command cadence relative to the video frame rate
+   (how fast commands update vs. how fast frames arrive). `nav_estimate.jsonl` carries `sim_time_ns` +
+   `body_rate` per tick and `video_index.jsonl` carries per-frame `sim_time_ns`, so each frame can be
+   tagged with the nearest tick's command (mark frames whose tick issued a nonzero/pursuit command).
+   NOT applied retroactively to the A15b clips; to be added to the render workflow for future runs.
+   (Flight-test agent will handle this in a handoff-dir render tool; flagged here so commander is
+   aware of the diagnostic.)
 
 ---
 
