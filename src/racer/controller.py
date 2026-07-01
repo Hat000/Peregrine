@@ -187,8 +187,42 @@ class Controller:
     # bogus horizontal damping of an unobservable velocity is removed. None/False => byte-identical
     # (VQ1 / case-A: the horizontal velocity term applies as before). [VQ2 A15b, 2026-07-01]
     ff_owns_horizontal: bool = False
+    # FEEDFORWARD OWNS THE VERTICAL (the A19c bang-bang fix -- the vertical twin of ff_owns_horizontal).
+    # When set AND the setpoint carries ``accel_ned`` (the map-free feedforward drives the flight), the
+    # alt-hold STOPS damping against ``nav.velocity_ned[2]`` -- the estimator's DEAD-RECKONED vertical
+    # velocity. WHY: on the state-denied VQ2 wire (no baro, ODOMETRY blocked) ``velocity_ned[2]`` is pure
+    # IMU-accel integration -- noisy + drifting -- while ``kp_alt*(z-z_t)`` collapses to a constant in
+    # pursuit (position_ned is None -> z_t = z - alt_offset). So the ONLY varying thrust driver was
+    # ``kd_alt*(vel[2] - vz_t)`` chasing that poison, which rail-slammed the collective 0.05<->0.60 every
+    # 2-4 ticks for the whole active flight (A19c: 30 lo + 29 hi hits of 76 ticks) -> a net asymmetric
+    # climb OVER the acquired gate -> gate lost -> the 360 yaw-search. THE FIX (offline-repro-confirmed):
+    #   (1) keep a POSITION loop on the vision-pinned, floor-corrected z (``pos[2]``, semi-trustworthy);
+    #   (2) route the vertical-align vz_t THROUGH a RAMPING z_target (z_target += vz_t*dt) latched at the
+    #       first ff-owns-vertical tick, so a commanded sink/climb becomes a moving position target the
+    #       robust loop tracks -- NOT a velocity-error term on the fictional vel[2];
+    #   (3) damp against a TRUSTWORTHY vertical rate: a low-passed FINITE DIFFERENCE of the floor-corrected
+    #       z (``ff_vertical_kd_alt`` on the LP fd-vz), NOT raw vel[2]. The fd of a BOUNDED corrected z is
+    #       itself bounded (so it can't drift the collective into the rails the way integrated vel[2] did),
+    #       and the LP keeps it from injecting per-tick z-jump noise. A pure-P loop on noisy z + the sim's
+    #       sense->act lag can relay-ring (twin.py cmd_latency/thrust_tau), so real damping matters.
+    # The OFF path reads ``vel[2]`` with ``kd_alt`` EXACTLY as today. None/False => byte-identical
+    # (VQ1 / case-A). vq2_case_c flips it ON via ``controller_overrides``. [VQ2 A19c, 2026-07-01]
+    ff_owns_vertical: bool = False
+    # Damping gain (1/s) on the LP finite-difference vz when ff_owns_vertical is active. NOT the hot
+    # ``kd_alt`` (=3.0) -- that is tuned for the OFF-path integrated vel[2]; a modest gain on the fd-vz
+    # gives clean damping without amplifying finite-diff noise (arc-validated: 0.5 -> no rail-slam, low
+    # hold jitter). Only read on the ff-owns-vertical path; the OFF path is untouched.
+    ff_vertical_kd_alt: float = 0.5
+    # Low-pass coefficient [0,1] on the finite-difference vz (vz_lp = a*fd + (1-a)*vz_lp). 1.0 = raw fd
+    # (no smoothing); smaller = heavier smoothing. Only read on the ff-owns-vertical path.
+    ff_vertical_vz_lp_alpha: float = 0.5
     _prev_body_rate: np.ndarray | None = field(default=None, repr=False, compare=False)
     _prev_slew_t_ns: int | None = field(default=None, repr=False, compare=False)
+    # ff-owns-vertical alt-hold state (latched at the first ff-owns-vertical tick; untouched when OFF):
+    _alt_z_target: float | None = field(default=None, repr=False, compare=False)
+    _alt_prev_z: float | None = field(default=None, repr=False, compare=False)
+    _alt_prev_t_ns: int | None = field(default=None, repr=False, compare=False)
+    _alt_vz_lp: float = field(default=0.0, repr=False, compare=False)
 
     def _apply_body_rate_slew(self, omega: np.ndarray, sim_time_ns: int) -> np.ndarray:
         """Per-axis slew-rate limit on the commanded body rate (anti-bang-bang). Clamps
@@ -208,6 +242,36 @@ class Controller:
         self._prev_body_rate = out.copy()
         self._prev_slew_t_ns = int(sim_time_ns)
         return out
+
+    def _ff_owns_vertical_thrust(self, z: float, vz_t: float, sim_time_ns: int) -> float:
+        """Alt-hold collective (pre tilt-comp/clip) for the ff-owns-vertical path (A19c bang-bang fix).
+
+        thrust = hover + kp_alt*(z - z_target) + ff_vertical_kd_alt*(vz_lp - vz_t), where:
+          * ``z_target`` is latched to the current ``z`` on the FIRST ff-owns-vertical tick, then ramped
+            by the commanded vertical-align rate: ``z_target += vz_t*dt`` (dt = sim-time delta). A
+            commanded sink/climb becomes a MOVING position target the robust loop tracks -- never a
+            velocity-error term on the fictional, drifting ``vel[2]``.
+          * ``vz_lp`` is a low-passed FINITE DIFFERENCE of the (floor-corrected) ``z``: a TRUSTWORTHY,
+            bounded vertical rate. Damping against it (not raw ``vel[2]``) gives real damping for the
+            sim's sense->act lag without the drift that rail-slammed the collective.
+        Stateful (latched on first engage); the OFF path never calls this, so its state stays untouched
+        and the OFF-path thrust is byte-identical."""
+        if self._alt_z_target is None:                 # first ff-owns-vertical tick: latch the target
+            self._alt_z_target = z
+            self._alt_prev_z = z
+            self._alt_prev_t_ns = int(sim_time_ns)
+            self._alt_vz_lp = 0.0
+        dt = (int(sim_time_ns) - int(self._alt_prev_t_ns)) / 1e9
+        if dt > 0.0:
+            self._alt_z_target = self._alt_z_target + vz_t * dt        # ramp the target by the vz command
+            fd = (z - float(self._alt_prev_z)) / dt                    # finite-diff vz of the trusted z
+            a = float(np.clip(self.ff_vertical_vz_lp_alpha, 0.0, 1.0))
+            self._alt_vz_lp = a * fd + (1.0 - a) * self._alt_vz_lp     # low-pass the fd-vz
+            self._alt_prev_z = z
+            self._alt_prev_t_ns = int(sim_time_ns)
+        return (self.hover_thrust
+                + self.kp_alt * (z - self._alt_z_target)
+                + self.ff_vertical_kd_alt * (self._alt_vz_lp - vz_t))
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -313,10 +377,16 @@ class Controller:
         pos = np.asarray(nav.position_ned, dtype=np.float64)
         vel = np.asarray(nav.velocity_ned, dtype=np.float64)
         # -- vertical: altitude hold -> collective thrust --
-        z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
-        z_t = z_t - self.alt_offset_m                  # fly above the gate line (NED z+ = down)
         vz_t = float(sp.velocity_ned[2]) if sp.velocity_ned is not None else 0.0
-        thrust = self.hover_thrust + self.kp_alt * (pos[2] - z_t) + self.kd_alt * (vel[2] - vz_t)
+        if self.ff_owns_vertical and sp.accel_ned is not None:
+            # FEEDFORWARD-OWNS-VERTICAL (A19c): do NOT damp against the dead-reckoned vel[2] (the poison
+            # that rail-slammed the collective). Track a RAMPING z_target on the trustworthy floor-
+            # corrected z; damp against a low-passed FINITE-DIFFERENCE of that z instead of vel[2].
+            thrust = self._ff_owns_vertical_thrust(float(pos[2]), vz_t, int(sp.sim_time_ns))
+        else:
+            z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
+            z_t = z_t - self.alt_offset_m              # fly above the gate line (NED z+ = down)
+            thrust = self.hover_thrust + self.kp_alt * (pos[2] - z_t) + self.kd_alt * (vel[2] - vz_t)
         if self.tilt_comp:                             # undo the vertical-thrust loss from leaning
             cos_tilt = float(np.cos(nav.roll) * np.cos(nav.pitch))   # = R[2,2], world-up fraction
             thrust = thrust / max(cos_tilt, 0.5)       # floor at 60 deg so it can't blow up

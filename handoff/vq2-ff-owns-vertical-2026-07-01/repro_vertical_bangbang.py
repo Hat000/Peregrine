@@ -102,6 +102,31 @@ def _print_trace(label, t, thr, first=0, last=None):
     print("  " + " ".join(f"{x:.3f}" for x in thr[first:last]))
 
 
+def run_synthetic(controller_kwargs, *, z_series, t_series, vz_t_val, roll=0.0, pitch=0.0):
+    """Feed a CONTROLLED z (a realistic near-constant HOLD, level attitude) through the alt-hold.
+
+    The real A19c arc is an OPEN-LOOP replay of the BROKEN trajectory (z diverges to -4.5 m), so its
+    thrust pins low -- it demonstrates the no-rail-slam mechanism fix but NOT the hover band. This
+    synthetic held-z (what a WORKING closed loop produces) shows the thrust sits around hover and that
+    a commanded vz_t grades it up/down. accel_ned is set (pursuit) so the ff-owns-vertical path engages."""
+    ctrl = make_seeker_controller(**controller_kwargs)
+    out = np.zeros_like(z_series)
+    for i in range(len(z_series)):
+        vz_dr = (z_series[i] - z_series[i - 1]) / ((t_series[i] - t_series[i - 1]) / 1e9) if i > 0 else 0.0
+        nav = NavState(
+            sim_time_ns=int(t_series[i]),
+            position_ned=np.array([0.0, 0.0, z_series[i]]),
+            velocity_ned=np.array([0.0, 0.0, vz_dr]),
+            roll=roll, pitch=pitch, yaw=0.0, angular_rate_body=np.zeros(3),
+        )
+        vned = np.array([0.0, 0.0, vz_t_val]) if vz_t_val != 0.0 else None
+        sp = Setpoint(sim_time_ns=int(t_series[i]),
+                      accel_ned=1.2 * np.array([1.0, 0.0, 0.0]),
+                      velocity_ned=vned, yaw=0.0)
+        out[i] = float(ctrl.command(nav, sp).thrust)
+    return out
+
+
 if __name__ == "__main__":
     HOVER = 0.2656
     print("=" * 78)
@@ -130,8 +155,38 @@ if __name__ == "__main__":
     _, _, thr_descend = run({"ff_owns_vertical": True}, vz_t_series=np.full(len(z), 0.8))
     # ---- AFTER: commanded CLIMB (vz_t = -0.8 => rise => MORE thrust than hover mean) ----
     _, _, thr_climb = run({"ff_owns_vertical": True}, vz_t_series=np.full(len(z), -0.8))
-    print("\n[AFTER — vertical-align tracking check]")
+    print("\n[AFTER — vertical-align tracking check, on the OPEN-LOOP arc]")
     print(f"  mean thrust: descend(vz_t=+0.8)={np.mean(thr_descend):.3f}  "
           f"hold={np.mean(thr_hold):.3f}  climb(vz_t=-0.8)={np.mean(thr_climb):.3f}")
     assert np.mean(thr_descend) < np.mean(thr_hold) < np.mean(thr_climb), "vertical-align direction broken"
     print("  OK: descend<hold<climb (a commanded sink cuts thrust, a commanded climb adds it)")
+
+    # ---- SYNTHETIC held-altitude (a WORKING closed loop): the hover-band + graded-track proof ----
+    print("\n" + "=" * 78)
+    print("SYNTHETIC held-altitude (level, z ~= const -2.0 m, 40 ticks @ 12 Hz) — the HOVER BAND proof")
+    print("=" * 78)
+    rng = np.random.default_rng(0)
+    N = 40
+    ts = np.arange(N) * int(1e9 / 12)
+    z_hold = -2.0 + 0.02 * rng.standard_normal(N)     # realistic small z noise around a held altitude
+    thr_syn_off = run_synthetic({}, z_series=z_hold, t_series=ts, vz_t_val=0.0)
+    thr_syn_on = run_synthetic({"ff_owns_vertical": True}, z_series=z_hold, t_series=ts, vz_t_val=0.0)
+    for lbl, thr in (("OFF (kd_alt=3.0 vs dead-reckoned vz)", thr_syn_off),
+                     ("ON  (ff_owns_vertical)", thr_syn_on)):
+        nlo, nhi, flips = rail_stats(thr)
+        lo, hi, mean, std = band_stats(thr)
+        print(f"  [{lbl}]  flips={flips}  band min/max/mean/std={lo:.3f}/{hi:.3f}/{mean:.3f}/{std:.3f} "
+              f"(hover={HOVER})")
+    # ON must sit in a sane band around hover with NO rail-slam; OFF (fed the SAME finite-diff vz here,
+    # which is bounded) is not the poison case -- the poison is the DRIFTING integrated vz on the real
+    # wire, reproduced on the arc above. This synthetic block isolates the hover-band claim for ON.
+    assert rail_stats(thr_syn_on)[2] == 0, "ff_owns_vertical rail-slammed on a held altitude"
+    assert abs(np.median(thr_syn_on) - HOVER) < 0.12, ("ON not near hover", np.median(thr_syn_on))
+    print(f"  OK: ON holds around hover (median {np.median(thr_syn_on):.3f}) with zero rail-slam.")
+
+    # graded tracking on the synthetic hold: MODEST vz_t so the response is graded, not saturated
+    print("\n[SYNTHETIC graded vertical-align tracking, vz_t small]")
+    for vzt in (0.3, 0.0, -0.3):
+        thr = run_synthetic({"ff_owns_vertical": True}, z_series=np.full(N, -2.0), t_series=ts, vz_t_val=vzt)
+        print(f"  vz_t={vzt:+.1f}: mean_thrust={np.mean(thr):.3f}")
+    print("  (descend cuts thrust below hover, climb raises it — graded, sign-correct.)")
