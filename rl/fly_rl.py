@@ -1344,6 +1344,30 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     result["worst_work_ms"]     = round(worst_work_ms, 1)
     result["loop_over_budget_pct"] = round(over_pct, 1)
 
+    # --- vision-timing: per-STEP breakdown of the per-frame vision pipeline (logging only) --------
+    # Pins WHICH _maybe_run_vision sub-step (detect / vp_yaw [VP RANSAC + Manhattan lines] /
+    # floor_height / pnp) is driving worst_work_ms above, so the next tuning pass targets the right
+    # step instead of guessing. Reads the Navigator's in-memory vision_step_ms dict (same
+    # accumulate-in-memory / print-once-at-exit pattern as [seeker-diag]); swallowed if absent/empty
+    # so an older Navigator (or a run with no vision) doesn't break this print.
+    step_ms = getattr(nav, "vision_step_ms", None)
+    if isinstance(step_ms, dict) and any(v.get("count", 0) for v in step_ms.values()):
+        parts = []
+        for name, v in step_ms.items():
+            n = int(v.get("count", 0))
+            if n == 0:
+                continue
+            mean_ms = v.get("total_ms", 0.0) / n
+            parts.append(f"{name}: mean={mean_ms:.1f}ms max={v.get('max_ms', 0.0):.1f}ms n={n}")
+        worst = getattr(nav, "_vision_worst_tick_ms", None) or {}
+        worst_total = sum(worst.values())
+        worst_str = ", ".join(f"{k}={v:.1f}ms" for k, v in sorted(worst.items(),
+                                                                    key=lambda kv: -kv[1]))
+        print(f"  [vision-timing] " + "  ".join(parts))
+        print(f"  [vision-timing] worst tick sum={worst_total:.1f}ms breakdown: {worst_str}")
+        result["vision_step_ms"] = {k: dict(v) for k, v in step_ms.items()}
+        result["vision_worst_tick_ms"] = dict(worst)
+
     # --- A13 seeker diagnostics: pose-None breakdown + hold-last-demand bridge coverage -----------
     # Logging only (no behaviour change): the seeker tallies per-tick command regimes in memory
     # (no per-tick I/O, mirrors the buffered nav_estimate.jsonl pattern); we emit a single summary

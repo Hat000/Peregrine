@@ -41,6 +41,7 @@ The detector is INJECTED (anything with ``.detect(frame) -> [GateObservation]``)
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -424,6 +425,25 @@ class Navigator:
     n_floor_z_total: int = field(default=0, repr=False)
     n_gate_bearing_yaw_total: int = field(default=0, repr=False)
     vision_diag: _VisionDiag = field(default_factory=_VisionDiag, repr=False)
+    # -- per-STEP vision timing (logging only, no behaviour change) -- pins WHICH _maybe_run_vision
+    # sub-step (detect / vp_yaw [VP+Manhattan] / floor_height / pnp) is choking the loop. Mirrors
+    # gate_seeker.diag_counts: an instance dict accumulated in memory, no per-tick I/O; fly_rl prints
+    # a one-line [vision-timing] summary at loop exit. time.perf_counter() overhead is ~tens of ns,
+    # negligible next to the ms-scale steps being measured. Wrapped defensively (see _timed_step) so
+    # a timing bug can never raise into / alter the flight loop.
+    vision_step_ms: dict = field(default_factory=lambda: {
+        "detect": {"count": 0, "total_ms": 0.0, "max_ms": 0.0},
+        "vp_yaw": {"count": 0, "total_ms": 0.0, "max_ms": 0.0},
+        "floor_height": {"count": 0, "total_ms": 0.0, "max_ms": 0.0},
+        "pnp": {"count": 0, "total_ms": 0.0, "max_ms": 0.0},
+    }, repr=False)
+    # Breakdown (step -> ms) of the single worst tick seen so far, keyed by the SUM across that
+    # tick's steps -- lets [vision-timing] show which step(s) dominated the worst-work tick.
+    _vision_worst_tick_ms: dict = field(default_factory=dict, repr=False)
+    _vision_worst_tick_total_ms: float = field(default=0.0, repr=False)
+    # Per-tick step ms accumulated by _timed_step, flushed into the worst-tick breakdown (and reset)
+    # at the top of each _maybe_run_vision call.
+    _vision_tick_ms: dict = field(default_factory=dict, repr=False)
 
     _last_sim_time_ns: int = field(default=0, repr=False)
     _reset_counter: int = field(default=0, repr=False)
@@ -640,6 +660,24 @@ class Navigator:
         assert self._ahrs is not None
         return euler_from_quat_wxyz(np.asarray(self._ahrs.q_wxyz, dtype=np.float64))
 
+    def _time_step(self, name: str, t0: float) -> None:
+        """Record one _maybe_run_vision sub-step's elapsed ms into ``vision_step_ms[name]`` + the
+        current tick's running total (flushed into the worst-tick breakdown by ``_maybe_run_vision``).
+
+        Logging only -- never touches the estimate/command. Defensively wrapped: a KeyError/whatever
+        here must never propagate into the flight loop (better to silently drop a timing sample than
+        crash a flight over instrumentation)."""
+        try:
+            dt_ms = (time.perf_counter() - t0) * 1000.0
+            bucket = self.vision_step_ms[name]
+            bucket["count"] += 1
+            bucket["total_ms"] += dt_ms
+            if dt_ms > bucket["max_ms"]:
+                bucket["max_ms"] = dt_ms
+            self._vision_tick_ms[name] = self._vision_tick_ms.get(name, 0.0) + dt_ms
+        except Exception:
+            pass
+
     def _apply_vp_yaw(self, frame: Frame, R_wb: np.ndarray) -> np.ndarray:
         """(b) ABSOLUTE yaw backstop: vanishing-point heading -> ESKF yaw pseudo-measurement.
 
@@ -655,7 +693,12 @@ class Navigator:
         if frame is None or frame.image_bgr is None:
             return R_wb
         roll, pitch, yaw_hat = self._current_true_rpy()
+        # "vp_yaw" times estimate_heading END TO END, which internally runs BOTH the VP RANSAC and
+        # the Manhattan line extraction (racer.vision.manhattan_lines) -- there is no separate call
+        # site for Manhattan in this module, so this one bucket covers both (see grep in the header).
+        _t0 = time.perf_counter()
         est = estimate_heading(frame.image_bgr, roll, pitch, ransac_iters=self.config.vp_yaw_ransac_iters)
+        self._time_step("vp_yaw", _t0)
         if est is None or est.quality < self.config.vp_yaw_min_quality:
             self.vision_diag.n_vp_yaw_rejected += 1
             return R_wb
@@ -691,8 +734,10 @@ class Navigator:
         if frame is None or frame.image_bgr is None:
             return
         roll, pitch, _ = self._current_true_rpy()
+        _t0 = time.perf_counter()
         est = estimate_floor_height(frame.image_bgr, roll, pitch,
                                     grid_cell_m=self.config.floor_grid_cell_m)
+        self._time_step("floor_height", _t0)
         if (est is None or est.quality < self.config.floor_height_min_quality
                 or est.std_m > self.config.floor_height_max_std_m):
             self.vision_diag.n_floor_z_rejected += 1
@@ -785,6 +830,29 @@ class Navigator:
         ):
             return
         self._last_frame_id = frame.frame_id
+        # Per-STEP timing (instrumentation only): reset this tick's step-ms accumulator, then flush
+        # it into the worst-tick breakdown on every exit path via a try/finally so partial-frame
+        # returns (no detections, etc.) still get credited and the worst tick stays accurate.
+        self._vision_tick_ms = {}
+        try:
+            self._maybe_run_vision_timed(ds, frame, R_wb)
+        finally:
+            self._flush_vision_tick_timing()
+
+    def _flush_vision_tick_timing(self) -> None:
+        """Roll ``_vision_tick_ms`` (this tick's per-step ms) into the worst-tick breakdown if this
+        tick's summed step time is the largest seen so far. Logging only; never raises."""
+        try:
+            tick_total = sum(self._vision_tick_ms.values())
+            if tick_total > self._vision_worst_tick_total_ms:
+                self._vision_worst_tick_total_ms = tick_total
+                self._vision_worst_tick_ms = dict(self._vision_tick_ms)
+        except Exception:
+            pass
+
+    def _maybe_run_vision_timed(self, ds: DroneState, frame: Frame, R_wb: np.ndarray) -> None:
+        """Body of ``_maybe_run_vision`` after the dedup/gating checks -- split out so the per-tick
+        timing flush in the caller's ``finally`` covers every exit path uniformly."""
         # P0-b: learn the camera/server -> IMU epoch offset ONCE, from this paired (frame, ds).
         # At the frame's capture instant the IMU clock reads ds.sim + (frame.recv - ds.recv)
         # (assuming 1:1 realtime), so delta_epoch = frame.sim - ds.sim - (frame.recv - ds.recv).
@@ -802,7 +870,9 @@ class Navigator:
         R_wb = self._apply_vp_yaw(frame, R_wb)
         self._apply_floor_height(frame, R_wb, int(ds.sim_time_ns))
 
+        _t0 = time.perf_counter()
         observations = self.detector.detect(frame)
+        self._time_step("detect", _t0)
         self.vision_diag.n_detections = len(observations)
         if not observations:
             return
@@ -826,7 +896,9 @@ class Navigator:
         pg = predicted[gate_id]
         prior = GatePose(obs.frame_id, obs.sim_time_ns, pg.R_cam_gate, pg.t_cam_gate, 0.0,
                          gate_id=gate_id)
+        _t0 = time.perf_counter()
         pose = estimate_gate_pose(obs, prior=prior, compute_covariance=True)
+        self._time_step("pnp", _t0)
         if pose is None:
             return
         self.vision_diag.last_gate_id = gate_id
