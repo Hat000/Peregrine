@@ -147,6 +147,48 @@ def test_frames_idle_timeout_returns_without_hanging():
     assert elapsed < 1.0                                 # returned promptly, did not hang
 
 
+def test_frames_drains_buffer_in_one_wake():
+    """DRAIN-TO-EMPTY (A19 frame-supply fix): frames() reads ALL buffered datagrams per select()
+    wake in a tight recvfrom loop, not one-recvfrom-per-select. Buffer many complete frames (+ a
+    resend of each) BEFORE consuming, then assert: every unique frame is yielded in order (none
+    lost), the resends are deduped, and select() was called FAR fewer times than the datagram count
+    (proving the drain — the pre-fix loop needed one select PER datagram, which capped the drain at
+    ~1/3 of the sim's flood and grew an unbounded backlog under CPU stalls). [workflow wf_03f4a6b8]"""
+    import racer.vision.jpeg_receiver as jr
+    img = np.full((360, 640, 3), 100, np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    jpeg = buf.tobytes()
+    n = 12
+    select_calls = {"n": 0}
+    real_select = jr.select.select
+
+    def counting_select(r, w, x, t):
+        select_calls["n"] += 1
+        return real_select(r, w, x, t)
+
+    with JpegUdpReceiver(bind_host="127.0.0.1", port=0, stale_after_s=0.5) as rx:
+        port = rx._sock.getsockname()[1]
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        jr.select.select = counting_select
+        try:
+            for fid in range(1, n + 1):
+                dg = _datagram(fid, 0, 1, len(jpeg), jpeg, fid)
+                sender.sendto(dg, ("127.0.0.1", port))
+                sender.sendto(dg, ("127.0.0.1", port))   # the sim's resend -> must be deduped
+            time.sleep(0.05)                              # let all datagrams land in the kernel buffer
+            # Collect via the idle-timeout (not an early break) so ALL 2n datagrams are drained +
+            # counted before the generator returns (a break would leave the last frame's resend
+            # unread). max_wait_s small so the idle stop is quick.
+            got = [fr.frame_id for fr in rx.frames(max_wait_s=0.15)]
+        finally:
+            jr.select.select = real_select
+            sender.close()
+    assert got == list(range(1, n + 1))                  # all unique frames, in order, none lost
+    assert rx.metrics.duplicate_datagrams == n           # each resend deduped (frame already emitted)
+    assert select_calls["n"] <= 5, select_calls          # drained many datagrams per wake, not 1/select
+
+
 # -- stream-health metrics (first-contact MTU / packet-loss diagnostics) [red-team] --------
 def test_metrics_track_datagrams_chunks_and_completion():
     rx = JpegUdpReceiver()

@@ -88,7 +88,12 @@ class JpegUdpReceiver:
 
     def __enter__(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        # 64 MiB recv buffer (was 4 MiB): burst headroom to absorb a ~129 ms YOLO-detect CPU stall
+        # (~2,700 datagrams at the ~20.7k/s flood) without the kernel dropping fragments. DEFENSE IN
+        # DEPTH ONLY -- it is worthless without the drain-to-empty fix in frames() (a bigger buffer
+        # just gives a per-datagram select() loop more backlog to crawl through); the two go together.
+        # The OS may clamp the request (Windows honours large SO_RCVBUF); clamped is still >= 4 MiB.
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024 * 1024)
         self._sock.bind((self.bind_host, self.port))
         self._sock.setblocking(False)
         return self
@@ -112,27 +117,43 @@ class JpegUdpReceiver:
         # during quiet stretches, even when no datagram arrives.
         poll_s = self.stale_after_s if max_wait_s is None else min(self.stale_after_s, max_wait_s)
         poll_s = max(poll_s, 1e-3)
+        # DRAIN-TO-EMPTY (A19 frame-supply fix): after select wakes, read EVERY buffered datagram in a
+        # tight recvfrom loop until the socket is empty (BlockingIOError == EWOULDBLOCK), yielding each
+        # completed frame — instead of ONE recvfrom per select. The sim floods ~20.7k datagrams/s (its
+        # ~14x per-fragment resend over loopback); a select() PER datagram caps the drain at ~6.6k/s on
+        # Windows (select balloons to ~130 us under backlog), only ~1/3 of arrival. So during any CPU
+        # stall that deschedules this thread (the 129 ms YOLO detect on the shared core) the kernel recv
+        # buffer overflows, fragments drop, frames never complete, and the backlog grows WITHOUT BOUND
+        # (A18: completed=256 / datagrams=910046, published-frame gaps 360 ms -> 40 s). Draining to
+        # empty raises the ceiling to ~50k/s (>2x arrival) so the buffer never stays backlogged and any
+        # post-stall backlog clears in ms (offline-reproduced: completion 3-71 -> 256-263, gaps flat
+        # ~23 ms, evicted 0). [workflow wf_03f4a6b8, 2026-07-01]
+        _DRAIN_BATCH_CAP = 8192   # bound the inner loop so a permanently-saturated socket still returns
+                                  # to select each batch (honours the idle deadline + the consumer's stop)
         while True:
-            # Evict first, unconditionally: every early-return below would otherwise skip
-            # it and leak stale partials under packet loss / decode failures. [review 4A]
+            # Evict once per drained BATCH (not per datagram): a batch drains in ~ms (<< stale_after_s
+            # = 0.5 s) and this still runs every outer iteration, so no partial leaks. [review 4A]
             self._evict_stale()
-            # Block in the kernel until the socket is readable or poll_s elapses. Replaces a
-            # time.sleep(0.001) busy-poll whose ~15 ms granularity on Windows added frame
-            # latency + jitter; select wakes the instant a datagram lands. [red-team 2026-05-30]
+            # Block in the kernel until the socket is readable or poll_s elapses (wakes the instant a
+            # datagram lands). [red-team 2026-05-30]
             ready, _, _ = select.select([self._sock], [], [], poll_s)
             if not ready:
                 if deadline is not None and time.monotonic() >= deadline:
                     return
                 continue
-            try:
-                data, _ = self._sock.recvfrom(65535)
-            except BlockingIOError:
-                continue
-            if deadline is not None:
-                deadline = time.monotonic() + max_wait_s
-            frame = self._ingest(data)
-            if frame is not None:
-                yield frame
+            drained = 0
+            while drained < _DRAIN_BATCH_CAP:
+                try:
+                    data, _ = self._sock.recvfrom(65535)
+                except BlockingIOError:
+                    break        # socket drained (EWOULDBLOCK) -> back to select (other OSErrors
+                                 # propagate to the caller's reconnect handler, as before)
+                drained += 1
+                if deadline is not None:
+                    deadline = time.monotonic() + max_wait_s
+                frame = self._ingest(data)
+                if frame is not None:
+                    yield frame
 
     def _ingest(self, data: bytes) -> Frame | None:
         """Add one datagram to its partial frame; return a Frame iff it completes + decodes.
