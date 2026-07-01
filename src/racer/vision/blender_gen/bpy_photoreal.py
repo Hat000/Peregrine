@@ -34,7 +34,7 @@ _OUTER_H = GATE_OUTER_SIZE_M / 2.0
 
 
 # ----------------------------------------------------------------------------- world (HDRI + fix)
-def setup_hdri_world(scene, rng, hdri_path: str, strength: float) -> bool:
+def setup_hdri_world(scene, rng, hdri_path: str, strength: float, world_saturation: float = 1.0) -> bool:
     """Light + back the scene with an equirectangular HDRI, oriented for the OPTICAL frame.
 
     Critical: our world is the optical frame (up = -Y), but an equirect HDRI assumes up = +Z, so its
@@ -60,7 +60,15 @@ def setup_hdri_world(scene, rng, hdri_path: str, strength: float) -> bool:
     mp.inputs["Rotation"].default_value[2] = float(rng.uniform(0.0, 2.0 * math.pi))  # azimuth spin
     nt.links.new(tc.outputs["Generated"], mp.inputs["Vector"])
     nt.links.new(mp.outputs["Vector"], env.inputs["Vector"])
-    nt.links.new(env.outputs["Color"], bg.inputs["Color"])
+    if float(world_saturation) < 1.0:
+        # Desaturate the HDRI background toward dull grey (real VQ2 = a low-saturation grey warehouse,
+        # visible but reads dark). The emissive GATE is a separate material, so it stays vivid red.
+        hs = nt.nodes.new("ShaderNodeHueSaturation")
+        hs.inputs["Saturation"].default_value = float(world_saturation)
+        nt.links.new(env.outputs["Color"], hs.inputs["Color"])
+        nt.links.new(hs.outputs["Color"], bg.inputs["Color"])
+    else:
+        nt.links.new(env.outputs["Color"], bg.inputs["Color"])
     bg.inputs["Strength"].default_value = float(strength)
     nt.links.new(bg.outputs["Background"], out.inputs["Surface"])
     return True
@@ -70,11 +78,21 @@ def setup_hdri_world(scene, rng, hdri_path: str, strength: float) -> bool:
 def solid_gate_material(rng, appearance):
     """Plain solid vivid gate colour (VQ1 red, or hue-randomized), with a SMALL emission lift so it
     reads bright without washing out the hue, beveled edges. No branding/decals."""
-    if appearance.use_vq1_red and float(appearance.gate_hue_jitter) == 0.0:
+    jit = float(appearance.gate_hue_jitter)
+    if appearance.use_vq1_red and jit == 0.0:
         base = tuple(VQ1_GATE_RED_RGB_LINEAR)
+    elif jit >= 0.5:
+        base = M._hsv_to_linear_rgb(float(rng.random()),
+                                    M._u(rng, appearance.gate_sat_range), M._u(rng, appearance.gate_val_range))
     else:
-        h = M._vq1_red_hue() + float(rng.uniform(-1, 1)) * float(appearance.gate_hue_jitter) * 0.5 \
-            if float(appearance.gate_hue_jitter) < 0.5 else float(rng.random())
+        # ASYMMETRIC hue jitter: +offset drifts toward orange/yellow, -offset toward true/dark red.
+        # ``gate_hue_orange_frac`` (<1) caps the orange side so the sweep skews red and away from yellow
+        # (1.0 = symmetric legacy behaviour). Guarded >=0 so it never wraps to pink.
+        of = float(getattr(appearance, "gate_hue_orange_frac", 1.0))
+        # gate_hue_shift moves the CENTRE off the extracted VQ1 orange-red (hue ~0.033) -- negative
+        # => toward true/dark red (VQ2 gates read redder than VQ1's orange-red). Clamped >=0 (no pink).
+        shift = float(getattr(appearance, "gate_hue_shift", 0.0))
+        h = max(0.0, M._vq1_red_hue() + shift + float(rng.uniform(-1.0, of)) * jit * 0.5)
         base = M._hsv_to_linear_rgb(h, M._u(rng, appearance.gate_sat_range), M._u(rng, appearance.gate_val_range))
     mat = bpy.data.materials.new("VQ2_Gate")
     mat.use_nodes = True
@@ -89,6 +107,35 @@ def solid_gate_material(rng, appearance):
     bev.inputs["Radius"].default_value = 0.015
     nt.links.new(bev.outputs["Normal"], b.inputs["Normal"])
     return mat
+
+
+def add_inner_panel(scene, gr, rng):
+    """Emissive TEAL/cyan panel filling the gate opening. Real VQ2 gates have a bright cyan-lit inner
+    box, NOT a dark hole -- a detector trained on 'dark centroid inside a red ring' mis-keys the real
+    gate (bright, opposite-hue interior). The panel sits just BEHIND the opening plane (gate +Z, away
+    from the camera) and is named 'VQ2Gate*' so ``occlude_blocked_keypoints`` never treats it as an
+    occluder of the gate's own corners. It fills only INSIDE the inner square, so it never covers the
+    labelled inner corners (it makes the red/teal corner boundary MORE salient)."""
+    s = GATE_INNER_SIZE_M / 2.0 * 0.97
+    recess = 0.10
+    corners_g = np.array([[-s, s, recess], [s, s, recess], [s, -s, recess], [-s, -s, recess]], dtype=np.float64)
+    R = np.asarray(gr.R_cam_gate, dtype=np.float64)
+    t = np.asarray(gr.t_cam_gate, dtype=np.float64)
+    verts = [tuple((R @ c) + t) for c in corners_g]
+    mesh = bpy.data.meshes.new("VQ2Gate_PanelMesh")
+    mesh.from_pydata(verts, [], [(0, 1, 2, 3)])
+    mesh.update()
+    obj = bpy.data.objects.new("VQ2Gate_Panel", mesh)
+    scene.collection.objects.link(obj)
+    teal = (0.0, float(rng.uniform(0.45, 0.8)), float(rng.uniform(0.6, 1.0)))
+    mat = bpy.data.materials.new("VQ2_Panel")
+    mat.use_nodes = True
+    b = mat.node_tree.nodes.get("Principled BSDF") or mat.node_tree.nodes.new("ShaderNodeBsdfPrincipled")
+    M._set_socket(b, "Base Color", M._color4(teal))
+    M._set_socket(b, "Emission Color", M._color4(teal))
+    M._set_socket(b, ("Emission Strength", "Emission"), float(rng.uniform(1.0, 2.0)))
+    obj.data.materials.append(mat)
+    return obj
 
 
 # ----------------------------------------------------------------------------- PBR floor
@@ -327,9 +374,16 @@ def configure_clean_render(scene, rng, render_cfg, appearance) -> None:
         except Exception:
             pass
     scene.render.use_motion_blur = False          # camera artifacts -> albumentations (augment.py)
-    scene.render.use_compositing = False          # no in-render glare/bloom
+    # subtle FOG_GLOW bloom around the bright emissive gate (VQ2 gate glow), else a clean render
+    if float(getattr(appearance, "glare_prob", 0.0)) > 0.0 and float(rng.random()) < float(appearance.glare_prob):
+        # threshold LOW (~0.3): pure red is a LOW-luminance colour (lum ~0.2*R), so a bright red gate
+        # never crosses a 0.8 threshold -- only white hotspots would bloom. 0.3 lets the red gate glow.
+        bpy_render._build_glare_compositor(scene, "FOG_GLOW", mix=float(rng.uniform(-0.45, -0.25)),
+                                           threshold=float(rng.uniform(0.25, 0.4)), size=int(rng.integers(7, 9)))
+    else:
+        scene.render.use_compositing = False      # no in-render glare/bloom
     try:
-        scene.view_settings.view_transform = "AgX"        # filmic tonemap (no blown highlights)
+        scene.view_settings.view_transform = getattr(appearance, "view_transform", "AgX")
     except Exception:
         pass
     lo, hi = getattr(appearance, "exposure_range", (-0.4, 0.5))

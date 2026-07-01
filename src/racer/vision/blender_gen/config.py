@@ -46,6 +46,24 @@ class AppearanceConfig:
     #                                        validated 2026-06-15 look); False -> legacy procedural sky/walls
     assets_dir: str | None = None          # root of the CC0 asset set (default: <repo>/assets_vq2)
     gate_emission_range: tuple = (0.25, 0.5)   # small always-on gate glow (vivid, not washed out)
+    gate_render_depth_m: float = 0.26          # rendered gate thickness; ULTRA-THIN (e.g. 0.008) for
+    #                                            training so Z=0 labels land on the visible corner (no
+    #                                            depth parallax) and the corner isn't lost in a red band
+    hdri_strength_range: tuple = (0.7, 1.3)    # photoreal HDRI world strength; LOW (e.g. 0.05-0.2) =>
+    #                                            dark warehouse so emissive gates glow (VQ2 look)
+    view_transform: str = "AgX"                # Blender view transform: 'AgX' (filmic, desaturates bright
+    #                                            emissives -> washes a glowing gate to pink) or 'Standard'
+    #                                            (keeps saturated emissives VIVID -- use for glowing gates)
+    inner_panel_prob: float = 0.0              # chance a gate gets a bright emissive TEAL inner panel
+    #                                            (real VQ2 gates have a cyan-lit inner box, NOT a dark hole)
+    glare_prob: float = 0.0                    # chance a frame gets a SUBTLE FOG_GLOW bloom halo around
+    #                                            the bright emissive gate (VQ2 gate glow); 0 => clean render
+    world_saturation: float = 1.0              # HDRI-background saturation; <1 => dull grey backgrounds
+    #                                            (real VQ2 look); the emissive gate is unaffected
+    gate_hue_orange_frac: float = 1.0          # <1 caps the ORANGE/yellow side of the gate hue jitter
+    #                                            (skew the red sweep toward true/dark red, away from yellow)
+    gate_hue_shift: float = 0.0                # shift the gate hue CENTRE off VQ1 orange-red; negative
+    #                                            => toward true/dark red (VQ2 gates are redder than VQ1)
     prop_count_range: tuple = (8, 14)      # real photoscanned props scattered OFF the gate corridor
     people_count_range: tuple = (2, 5)     # procedural clothing-tinted mannequin people
 
@@ -144,7 +162,7 @@ def _validate(p: ScenarioPreset) -> ScenarioPreset:
     if not (0.0 <= ap.colored_light_prob <= 1.0):
         raise ValueError("appearance.colored_light_prob must be in [0, 1]")
     for lo_hi in (ap.gate_sat_range, ap.gate_val_range, ap.sun_intensity_range,
-                  ap.color_temp_range_k, ap.exposure_range, ap.gamma_range):
+                  ap.color_temp_range_k, ap.exposure_range, ap.gamma_range, ap.hdri_strength_range):
         if not (len(lo_hi) == 2 and lo_hi[0] <= lo_hi[1]):
             raise ValueError(f"appearance range must be (lo<=hi), got {lo_hi}")
     rc = p.render

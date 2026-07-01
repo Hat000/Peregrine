@@ -77,10 +77,15 @@ def _gate_frame_geometry(inner: float, outer: float, depth: float):
     return verts, faces
 
 
-def build_gate_template(name: str = _TEMPLATE_NAME) -> "bpy.types.Object":
+def build_gate_template(name: str = _TEMPLATE_NAME, depth: float = GATE_DEPTH_M) -> "bpy.types.Object":
     """Build the gate-frame mesh once and return a (hidden-by-the-backend) template Object. The
-    backend duplicates its mesh per gate via :func:`instance_gate`."""
-    verts, faces = _gate_frame_geometry(GATE_INNER_SIZE_M, GATE_OUTER_SIZE_M, GATE_DEPTH_M)
+    backend duplicates its mesh per gate via :func:`instance_gate`.
+
+    ``depth`` is the rendered gate thickness (default the spec 0.26 m). Training presets can set it
+    ULTRA-THIN (e.g. 0.008 m): the Z=0 keypoint labels then coincide with the visible corner (no
+    front-face-vs-mid-plane parallax, which is up to ~20 px on near/tilted gates) and the corner
+    isn't lost inside a thick band of red. The real gate's depth is irrelevant to what we label."""
+    verts, faces = _gate_frame_geometry(GATE_INNER_SIZE_M, GATE_OUTER_SIZE_M, depth)
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata(verts, [], faces)
     mesh.update()

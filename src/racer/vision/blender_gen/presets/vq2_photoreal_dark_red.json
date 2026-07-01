@@ -1,0 +1,56 @@
+{
+  "name": "vq2_photoreal_dark_red",
+  "description": "VQ2 'Now You See Me' look, PHOTOREAL: glowing orange-red gates floating in a DARK warehouse (dim HDRI world + emissive gates). Uses the photoreal HDRI/PBR path (real backgrounds/floor/props) but with a LOW hdri_strength so the scene is dark and the self-lit gates glow (matches the 2026-06-29 recon, mean gray ~36). Gate colour anchored at VQ1 orange-red, no hue jitter. TEST preset for operator visual approval; tune hdri_strength_range / gate_emission_range after eyeballing.",
+  "negative_fraction": 0.0,
+  "viewpoint": {
+    "range_min_m": 2.0,
+    "range_max_m": 30.0,
+    "range_skew": 1.5,
+    "lateral_sigma_m": 1.1,
+    "vertical_sigma_m": 0.8,
+    "yaw_jitter_rad": 0.28,
+    "pitch_jitter_rad": 0.22,
+    "roll_jitter_rad": 0.32
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.5,
+    "lighting_p": 0.15,
+    "brightness_p": 0.35,
+    "geometric_p": 0.0
+  },
+  "appearance": {
+    "use_vq1_red": true,
+    "gate_hue_jitter": 0.075,
+    "gate_hue_orange_frac": 0.5,
+    "gate_hue_shift": -0.008,
+    "gate_sat_range": [0.62, 1.0],
+    "gate_val_range": [0.45, 1.0],
+    "gate_metallic_range": [0.0, 0.1],
+    "gate_roughness_range": [0.3, 0.6],
+    "use_hdri": true,
+    "photoreal": true,
+    "hdri_strength_range": [0.10, 0.18],
+    "world_saturation": 0.2,
+    "view_transform": "Standard",
+    "gate_render_depth_m": 0.008,
+    "gate_emission_range": [1.0, 4.0],
+    "inner_panel_prob": 0.0,
+    "glare_prob": 0.9,
+    "prop_count_range": [1, 4],
+    "people_count_range": [0, 1],
+    "lighting_mode": "dark_arena",
+    "background_mode": "arena",
+    "exposure_range": [0.0, 0.15],
+    "gamma_range": [0.95, 1.05],
+    "sensor_noise_prob": 0.0
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 64,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": false,
+    "use_glare": false
+  }
+}

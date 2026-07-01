@@ -49,7 +49,7 @@ class BlenderBackend:
         bpy_scene.clear_scene()
         self.scene = bpy.context.scene
         self.cam = bpy_camera.setup_camera(self.scene)
-        self.template = bpy_scene.build_gate_template()
+        self.template = bpy_scene.build_gate_template(depth=float(preset.appearance.gate_render_depth_m))
         # hide the bare template from renders (we render duplicated instances of its mesh)
         try:
             self.template.hide_render = True
@@ -108,8 +108,10 @@ class BlenderBackend:
 
         # 1. HDRI environment (image-based lighting + photographic background, optical-frame oriented)
         hdris = self._lib.hdris()
+        s_lo, s_hi = ap.hdri_strength_range
         PR.setup_hdri_world(self.scene, rng, hdris[int(rng.integers(len(hdris)))],
-                            strength=float(rng.uniform(0.7, 1.3)))
+                            strength=float(rng.uniform(float(s_lo), float(s_hi))),
+                            world_saturation=float(getattr(ap, "world_saturation", 1.0)))
 
         # 2. PBR floor a good way BELOW the gates (so gates float in the air, ground visible below)
         floor_y = PR.floor_below_gates(frame, rng)
@@ -117,11 +119,14 @@ class BlenderBackend:
         texset = texsets[int(rng.integers(len(texsets)))] if texsets else {}
         self._frame_objects.append(PR.add_floor(self.scene, floor_y, texset, rng))
 
-        # 3. solid vivid gate(s) at their exact optical poses (labels unchanged)
+        # 3. solid vivid gate(s) at their exact optical poses (labels unchanged) + optional teal inner panel
         gate_mat = PR.solid_gate_material(rng, ap)
+        panel_p = float(getattr(ap, "inner_panel_prob", 0.0))
         for gr in frame.gates:
             self._frame_objects.append(
                 self._scene_mod.instance_gate(self.template, gr.R_cam_gate, gr.t_cam_gate, gate_mat))
+            if panel_p > 0.0 and float(rng.random()) < panel_p:
+                self._frame_objects.append(PR.add_inner_panel(self.scene, gr, rng))
 
         # 4. real props + mannequin people, scattered OFF the gate corridor (sides/background).
         #    Props are spawned as duplicates of the once-imported cache (shared mesh data -> fast).

@@ -90,7 +90,8 @@ def _set_view_exposure_gamma(scene, appearance: AppearanceConfig, rng: np.random
     vs.gamma = float(rng.uniform(glo, ghi))
 
 
-def _build_glare_compositor(scene, glare_type: str = "FOG_GLOW") -> None:
+def _build_glare_compositor(scene, glare_type: str = "FOG_GLOW",
+                            mix: float = 0.0, threshold: float = 1.0, size: int = 8) -> None:
     """Insert a Glare node between Render Layers and Composite for bloom/lens flare.
 
     Compositor access changed across versions:
@@ -127,8 +128,9 @@ def _build_glare_compositor(scene, glare_type: str = "FOG_GLOW") -> None:
         glare.location = (300.0, 0.0)
 
         _set_glare_param(glare, "glare_type", glare_type)  # 'FOG_GLOW'|'GHOSTS'|'STREAKS'|'BLOOM'
-        _set_glare_param(glare, "mix", 0.0)        # 0 = balanced glare+image
-        _set_glare_param(glare, "threshold", 1.0)  # only pixels brighter than 1.0 bloom
+        _set_glare_param(glare, "mix", mix)        # -1 image-only .. 0 balanced .. +1 glare-only (subtle => negative)
+        _set_glare_param(glare, "threshold", threshold)  # only pixels brighter than this bloom
+        _set_glare_param(glare, "size", size)      # FOG_GLOW spread (smaller => tighter halo)
         _set_glare_param(glare, "quality", "MEDIUM")
 
         # Render Layers[Image] -> Glare[in 0] -> output[in 0]. Use index 0 sockets: the image socket
