@@ -1,0 +1,8 @@
+  [prewarm] YOLO detector warmed in 12.16s (first-predict off the launch window; tick-0 stall eliminated).
+  GO!  pos_off=0.00 m.  armed=True sim_t= 111.361s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+[gate-seeker] profile=vq2_case_c self_localizing=True cmd_rate_scale=0.4 detector=yolo cruise=3 m/s  gates=0  max=120s ...
+  [gate-seeker] HARD COLLISION -> abort.
+  [loop-rate]  13.8 Hz over 47 ticks (target 30); worst work 504 ms; 8.5% ticks over budget -> CHOKED
+  [seeker-diag] cmds=18 pursuit=17 none=1 (valid_empty=0 continuity=1 first_acq=0 other=0) -> bridged=1 (100% of none) held_legacy=0
+  flight 1: CRASH  gates=0  session=data\runs\20260701_161958_vq2_slow_seeker_a16_f1
+  flight 1: CRASH      gates=0  data\runs\20260701_161958_vq2_slow_seeker_a16_f1
