@@ -74,6 +74,13 @@ def main() -> int:
     ap.add_argument("--out-fps", type=int, default=30)
     ap.add_argument("--scale", type=int, default=2)
     ap.add_argument("--yolo", default=None, help="optional YOLO weights to overlay the REAL detections")
+    ap.add_argument("--from-go", dest="from_go", action="store_true", default=True,
+                    help="(default) trim the video to the ARMED FLIGHT window (from GO to crash), "
+                         "dropping the pre-GO waiting room so the video matches the live flight.")
+    ap.add_argument("--full", dest="from_go", action="store_false",
+                    help="render the WHOLE recording incl. the pre-GO waiting room (no trim).")
+    ap.add_argument("--pre-go-s", type=float, default=0.5,
+                    help="seconds of lead-in before GO to keep (default 0.5) so the launch is visible.")
     args = ap.parse_args()
 
     session = Path(args.session)
@@ -115,6 +122,25 @@ def main() -> int:
 
     if len(frames) < 1:
         raise SystemExit("no decodable frames in video.bin -- recorder captured nothing (severe drops)")
+
+    # --- FROM-GO trim (pilot request): the recorder attaches during the pre-GO passive wait, so the
+    # recording spans (long waiting room) + (armed flight); the flight is the TAIL, ending at the crash
+    # (both video & nav_estimate end at disarm). nav_estimate = armed flight ONLY, so its duration is
+    # the flight length. Keep only the last (nav_duration + pre_go) seconds of recv-time so the video
+    # STARTS at GO and lines up with what the pilot saw live. (Clocks differ - epoch vs sim-boot - so we
+    # anchor by DURATION-from-the-end, not absolute time.) ---
+    if args.from_go and ticks and len(frames) >= 2:
+        nav_dur_s = (ticks[-1][0] - ticks[0][0]) / 1e9
+        recv_end = frames[-1]["recv_ms"]
+        flight_start = recv_end - (nav_dur_s + args.pre_go_s) * 1000.0
+        kept = [f for f in frames if f["recv_ms"] >= flight_start]
+        if len(kept) >= 2:
+            print(f"[from-go] trimmed to the flight window: {len(kept)}/{len(frames)} frames "
+                  f"(last {nav_dur_s + args.pre_go_s:.1f}s, GO->crash; use --full for the whole recording)")
+            frames = kept
+        else:
+            print(f"[from-go] flight window too small ({len(kept)} frames) -- keeping full recording")
+
     if len(frames) < 2:
         # single frame: still emit a short clip so the path is valid
         canvas = frames[0]["img"].copy()
