@@ -69,6 +69,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 from pathlib import Path
 from typing import NamedTuple
 
@@ -1885,21 +1886,111 @@ def main() -> int:
 
     client._latest_frame = None   # gate-seeker perception source (freshest reassembled Frame)
 
+    # --- video-thread diagnostics (A17 freeze hunt) ------------------------------------
+    # ADDITIVE / logging-only: pins WHERE a multi-second onboard-video freeze lives (wire
+    # starvation vs. publish-side stall vs. a swallowed reconnect) by timing the SAME two
+    # things the control loop already times ([loop-rate]/[vision-timing] above) but for the
+    # video thread's own two phases: (a) the gap between successive PUBLISHED frames, which
+    # is dominated by socket wait when the sim stops emitting UDP (the leading hypothesis),
+    # and (b) the cost of the publish+record step itself, which would instead pin a stall on
+    # OUR side (e.g. rec.record_frame). Mirrors navigator._time_step's defensive style: every
+    # timing/bookkeeping op is try/except-wrapped so an instrumentation bug can never raise
+    # into the video loop and starve client._latest_frame for real. Counters are plain ints
+    # and a bounded deque -- GIL-atomic reads/writes, no new locks, no change to the publish/
+    # record semantics or the reconnect behaviour (still sleep 0.5 + loop).
+    vstats: dict = {
+        "n_frames": 0,
+        "max_gap_ms": 0.0,
+        "max_gap_fid": None,
+        "gaps_over_200": 0,
+        "gaps_over_1000": 0,
+        "gap_sum_ms": 0.0,
+        "max_pub_ms": 0.0,
+        "reconnects_idle": 0,
+        "reconnects_exc": 0,
+        "last_session_s": 0.0,   # duration of the last `with JpegUdpReceiver(...)` session
+        "wire": None,   # last rx.metrics snapshot (ReceiverMetrics), or None if never seen
+        "ring": deque(maxlen=64),   # bounded: (ts, frame_id, gap_ms, pub_ms, exc_repr|None)
+    }
+
     def _video():
+        t_prev = None   # monotonic timestamp of the last PUBLISHED frame (persists across
+                         # reconnects on purpose: a gap spanning a reconnect IS the freeze)
         while not stop.is_set():
+            # --- receiver-wait / wire-health bracket: monotonic before/after each `with
+            # JpegUdpReceiver(...)` session, so a hang INSIDE the `with` (vs. between
+            # sessions, e.g. the 0.5s reconnect sleep) is distinguishable if ever needed. Not
+            # printed mid-flight (see the exit-only rule); kept on vstats for post-hoc reading.
+            t_rx_open = time.monotonic()
             try:
                 with JpegUdpReceiver(port=args.video_port) as rx:
                     for fr in rx.frames(max_wait_s=5.0):
+                        # --- inter-published-frame gap + publish-cost split (additive) ---
+                        try:
+                            now_m = time.monotonic()
+                            if t_prev is not None:
+                                gap_ms = (now_m - t_prev) * 1e3
+                            else:
+                                gap_ms = 0.0
+                            t_prev = now_m
+                        except Exception:
+                            gap_ms = 0.0
+
                         # publish the freshest frame for the gate-seeker's case-C perception
                         # (the navigator is frame_id-idempotent, so re-reads are harmless).
+                        _pub_t0 = time.perf_counter()
                         client._latest_frame = fr
                         rec = holder["rec"]
                         if rec is not None:
                             rec.record_frame(fr)
+                        try:
+                            pub_ms = (time.perf_counter() - _pub_t0) * 1e3
+                        except Exception:
+                            pub_ms = 0.0
+
+                        try:
+                            vstats["n_frames"] += 1
+                            vstats["gap_sum_ms"] += gap_ms
+                            if gap_ms > vstats["max_gap_ms"]:
+                                vstats["max_gap_ms"] = gap_ms
+                                vstats["max_gap_fid"] = fr.frame_id
+                            if pub_ms > vstats["max_pub_ms"]:
+                                vstats["max_pub_ms"] = pub_ms
+                            if gap_ms > 200.0:
+                                vstats["gaps_over_200"] += 1
+                                vstats["ring"].append(
+                                    (now_m, fr.frame_id, gap_ms, pub_ms, None))
+                            if gap_ms > 1000.0:
+                                vstats["gaps_over_1000"] += 1
+                        except Exception:
+                            pass
+
                         if stop.is_set():
                             break
-            except Exception:
-                pass
+                    # --- for-loop exit with NO exception: either the idle timeout (`rx.frames`'s
+                    # own max_wait_s=5.0 -- no datagram for 5s) fired, or `break` above on stop.
+                    # Only count/snapshot as a reconnect when we are actually going to reconnect
+                    # (not a clean shutdown). This is the PRIME suspect path for the freeze: the
+                    # sim-stops-emitting-UDP hypothesis surfaces here, not as an exception. ---
+                    if not stop.is_set():
+                        try:
+                            vstats["reconnects_idle"] += 1
+                            vstats["last_session_s"] = time.monotonic() - t_rx_open
+                            m = getattr(rx, "metrics", None)
+                            if m is not None:
+                                vstats["wire"] = m
+                        except Exception:
+                            pass
+            except Exception as exc:
+                # UN-BLIND: this used to be a silent `except Exception: pass`, a dangerous
+                # blind spot over the exact failure mode we're hunting. Same reconnect
+                # behaviour (sleep 0.5 + loop below) -- just make it visible.
+                try:
+                    vstats["reconnects_exc"] += 1
+                    vstats["ring"].append(
+                        (time.monotonic(), None, 0.0, 0.0, repr(exc)))
+                except Exception:
+                    pass
             if not stop.is_set():
                 time.sleep(0.5)
     vthread = threading.Thread(target=_video, name="video", daemon=True)
@@ -2006,6 +2097,39 @@ def main() -> int:
     finally:
         stop.set()
         vthread.join(timeout=6.0)
+
+    # --- [video-thread] exit summary: mirrors [loop-rate]/[vision-timing] above, but for the
+    # video thread (spans ALL flights, not one -- the thread outlives fly_once). Printed ONCE
+    # here (never mid-flight, so it can't contend with the tick loop's \r status line). Pins
+    # WHERE a multi-second freeze lives: a wire-side starvation shows up as a big max_gap_ms
+    # with a wire snapshot showing few/no new datagrams; a publish-side stall shows up as a
+    # big max_pub_ms instead; a swallowed reconnect exception now shows up as reconnects>0
+    # (exc) with the repr() in the ring dump, instead of vanishing into `except: pass`.
+    try:
+        vs = vstats
+        wire = vs.get("wire")
+        if wire is not None:
+            wire_str = (f" | wire: datagrams={wire.datagrams} completed={wire.frames_completed} "
+                        f"evicted={wire.partials_evicted} dup={wire.duplicate_datagrams} "
+                        f"decode_failed={wire.frames_decode_failed} "
+                        f"size_mismatch={wire.frames_size_mismatch} "
+                        f"bad_chunkmap={wire.frames_bad_chunkmap} "
+                        f"short={wire.short_datagrams}")
+        else:
+            wire_str = " | wire: (no rx.metrics snapshot -- receiver never hit an idle timeout)"
+        print(f"  [video-thread] frames={vs['n_frames']} "
+              f"max_gap={vs['max_gap_ms']:.0f}ms@fid={vs['max_gap_fid']} "
+              f"gaps>200ms={vs['gaps_over_200']} gaps>1s={vs['gaps_over_1000']} "
+              f"gap_sum={vs['gap_sum_ms']:.0f}ms max_pub={vs['max_pub_ms']:.1f}ms "
+              f"reconnects={vs['reconnects_idle'] + vs['reconnects_exc']}"
+              f"(idle={vs['reconnects_idle']},exc={vs['reconnects_exc']})" + wire_str)
+        if vs["gaps_over_1000"] > 0 and vs["ring"]:
+            print("  [video-thread] ring buffer (gap/exception events, ts/frame_id/gap_ms/pub_ms/exc):")
+            for ts, fid, gap_ms, pub_ms, exc in vs["ring"]:
+                print(f"    ts={ts:.3f} fid={fid} gap={gap_ms:.0f}ms pub={pub_ms:.1f}ms exc={exc}")
+    except Exception as exc:
+        print(f"  [video-thread] WARNING: summary print failed ({type(exc).__name__}: {exc}); "
+              "raw counters not shown (logging bug, not flight bug).")
 
     # -- summary --
     print("\n==== fly_rl summary ====")
