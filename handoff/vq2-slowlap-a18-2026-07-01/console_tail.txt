@@ -1,0 +1,29 @@
+  [detector] GateDetector on device='cuda:0' (weights='models/gate_clean_ens_course_L110.pt')
+  GO!  pos_off=0.00 m.  armed=True sim_t= 109.401s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+[gate-seeker] profile=vq2_case_c self_localizing=True cmd_rate_scale=0.4 detector=yolo cruise=3 m/s  gates=0  max=120s ...
+  [gate-seeker] gate 0 PASSED -> targeting 1
+  [loop-rate]  28.0 Hz over 1248 ticks (target 30); worst work 259 ms; 0.3% ticks over budget -> OK
+  [vision-timing] detect: mean=129.1ms max=184.4ms n=4  floor_height: mean=44.6ms max=44.6ms n=1
+  [vision-timing] worst tick sum=194.5ms breakdown: detect=149.9ms, floor_height=44.6ms
+  [seeker-diag] cmds=0 pursuit=0 none=0 (valid_empty=0 continuity=0 first_acq=0 other=0) -> bridged=0 (0% of none) held_legacy=0
+  flight 1: STALLED  gates=1  session=data\runs\20260701_204806_vq2_slow_seeker_a18b_f1
+  [video-thread] frames=256 max_gap=40356ms@fid=4058 gaps>200ms=17 gaps>1s=4 gap_sum=102827ms max_pub=0.2ms reconnects=0(idle=0,exc=0) | wire: datagrams=910046 completed=256 evicted=2837 dup=234275 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
+  [video-thread] ring buffer (gap/exception events, ts/frame_id/gap_ms/pub_ms/exc):
+    ts=16246.709 fid=1251 gap=360ms pub=0.1ms exc=None
+    ts=16247.438 fid=1282 gap=729ms pub=0.1ms exc=None
+    ts=16247.749 fid=1289 gap=310ms pub=0.1ms exc=None
+    ts=16248.331 fid=1309 gap=582ms pub=0.2ms exc=None
+    ts=16254.762 fid=1499 gap=6136ms pub=0.0ms exc=None
+    ts=16255.090 fid=1512 gap=327ms pub=0.1ms exc=None
+    ts=16255.323 fid=1517 gap=233ms pub=0.0ms exc=None
+    ts=16256.297 fid=1548 gap=858ms pub=0.1ms exc=None
+    ts=16256.626 fid=1555 gap=329ms pub=0.0ms exc=None
+    ts=16257.442 fid=1582 gap=816ms pub=0.2ms exc=None
+    ts=16269.948 fid=1954 gap=12506ms pub=0.0ms exc=None
+    ts=16270.334 fid=1969 gap=387ms pub=0.1ms exc=None
+    ts=16270.792 fid=1983 gap=324ms pub=0.1ms exc=None
+    ts=16271.638 fid=2008 gap=700ms pub=0.1ms exc=None
+    ts=16299.933 fid=2854 gap=28296ms pub=0.0ms exc=None
+    ts=16340.289 fid=4058 gap=40356ms pub=0.0ms exc=None
+    ts=16341.127 fid=4092 gap=838ms pub=0.0ms exc=None
+
