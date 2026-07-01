@@ -90,6 +90,10 @@ from racer.vision.association import (
     range_consistent,
 )
 from racer.vision.gate_pose import GATE_INNER_SIZE_M, estimate_gate_pose
+# Shared per-frame_id detection cache (A15/A17 double-detect fix): the navigator + the gate-seeker
+# hold the SAME detector instance; routing both through detect_cached computes detect() ONCE per
+# frame_id. Pure-python (no ultralytics) so the module-level import is safe on every path.
+from racer.vision.detector import detect_cached
 # Map-free vision yaw/z anchors (magfree-vision-yaw-scope.md). CONSUMED behind use_vp_yaw / use_floor_height;
 # imported here (cheap, pure-numpy module-level) so the gated code path is a straight call. The OFF path never
 # invokes them, so they cannot perturb the byte-identical default.
@@ -370,6 +374,20 @@ class NavigatorConfig:
     floor_camera_height_ref_m: float = 0.0     # world-down z of the FLOOR plane (NED). camera z = floor_z -
                                                # height_above_floor (camera sits ABOVE the floor => smaller z).
 
+    # --- A17 per-frame CV-backstop DECIMATION (frame-starvation fix, 2026-07-01) ---
+    # The two heaviest per-frame CV backstops run every processed vision tick: vp_yaw (~67 ms, the VP
+    # RANSAC + Manhattan line extraction in estimate_heading) and floor_height (~37 ms). Under the live
+    # ShadowPC load (sim + fly_rl co-located) that per-frame cost choked the loop to ~10 Hz and starved
+    # the video receiver. These knobs run each backstop only every N-th PROCESSED vision tick; on the
+    # SKIPPED ticks the backstop is not called AT ALL (no estimate_heading / estimate_floor_height), and
+    # the ESKF gyro-propagates yaw + predicts z between corrections. DEFAULT = 1 = every tick = BYTE-
+    # IDENTICAL to the pre-decimation path (the modulo is always 0 at N=1). vq2_case_c sets vp_yaw=5
+    # (yaw drifts slowly + the gate-bearing-yaw lock pins yaw per accepted detection + the gyro
+    # integrates between) and floor_height=3 (the ONLY dedicated z pin -> keep it tighter). N<=0 is
+    # treated as 1 (defensive). The update ORDER is unchanged (vp_yaw -> floor_height -> detect).
+    vp_yaw_decimate: int = 1
+    floor_height_decimate: int = 1
+
 
 @dataclass
 class _VisionDiag:
@@ -448,6 +466,10 @@ class Navigator:
     _last_sim_time_ns: int = field(default=0, repr=False)
     _reset_counter: int = field(default=0, repr=False)
     _last_frame_id: int | None = field(default=None, repr=False)
+    # A17 CV-backstop decimation counter: increments once per PROCESSED vision tick (new frame_id).
+    # vp_yaw runs when (_vision_tick_count % vp_yaw_decimate)==0; floor_height likewise. At decimate=1
+    # (the default) the modulo is always 0 -> every tick -> byte-identical to pre-decimation behaviour.
+    _vision_tick_count: int = field(default=0, repr=False)
     _last_vision_sim_time_ns: int | None = field(default=None, repr=False)
     # P0-b: learned camera/server -> IMU epoch offset (frame.sim - imu.sim, recv-paired). None
     # until the first processed frame; re-learned on reset(). 0 on same-clock data.
@@ -535,6 +557,7 @@ class Navigator:
         self.kf = None
         self.initialized = False
         self._last_frame_id = None
+        self._vision_tick_count = 0        # A17: restart the CV-backstop decimation phase on a sim reset
         self._last_vision_sim_time_ns = None
         self._delta_epoch_ns = None        # P0-b: re-learn the epoch offset after a sim restart
         self._last_fix_gate_R = None       # C2: drop the confidence-export gate frame on restart
@@ -862,16 +885,25 @@ class Navigator:
                 int(frame.sim_time_ns) - int(ds.sim_time_ns)
                 - (int(frame.recv_monotonic_ns) - int(ds.recv_monotonic_ns))
             )
+        # A17 decimation: count THIS processed vision tick, then run each CV backstop only every N-th
+        # tick (N=vp_yaw_decimate / floor_height_decimate; 1 => every tick => byte-identical). On a
+        # SKIPPED tick the backstop is not invoked at all (no estimate_heading / estimate_floor_height)
+        # -- the ESKF gyro-propagates yaw + predicts z between. The update ORDER is unchanged.
+        self._vision_tick_count += 1
         # Mag-free vision attitude/z anchors (magfree-vision-yaw-scope §4). These run PER FRAME,
         # independent of gate detection/association (the no-gate-in-view backstops): the VP heading
         # corrects the ESKF yaw (refreshing R_wb for the rest of this tick), and the floor-grid height
         # corrects the KF z. Both are OFF by default + require use_ahrs (they correct the ESKF/KF the
         # AHRS path owns); the OFF path skips them entirely -> byte-identical.
-        R_wb = self._apply_vp_yaw(frame, R_wb)
-        self._apply_floor_height(frame, R_wb, int(ds.sim_time_ns))
+        if self._vision_tick_count % max(1, int(self.config.vp_yaw_decimate)) == 0:
+            R_wb = self._apply_vp_yaw(frame, R_wb)
+        if self._vision_tick_count % max(1, int(self.config.floor_height_decimate)) == 0:
+            self._apply_floor_height(frame, R_wb, int(ds.sim_time_ns))
 
+        # A15/A17 double-detect fix: route through the shared per-frame_id cache so the gate-seeker's
+        # subsequent detect on the SAME frame reuses this result (detect() runs ONCE per frame).
         _t0 = time.perf_counter()
-        observations = self.detector.detect(frame)
+        observations = detect_cached(self.detector, frame)
         self._time_step("detect", _t0)
         self.vision_diag.n_detections = len(observations)
         if not observations:

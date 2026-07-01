@@ -102,6 +102,10 @@ from racer.contracts import (
 )
 from racer.controller import Controller
 from racer.frames import R_camera_from_body, R_world_from_body
+# Shared per-frame_id detection cache (A15/A17 double-detect fix): the seeker + the navigator hold the
+# SAME detector instance. Routing the seeker's detect through detect_cached reuses the navigator's
+# per-frame_id detections (computed first, same tick) instead of running YOLO a SECOND time.
+from racer.vision.detector import detect_cached
 from racer.vision.gate_pose import estimate_gate_pose
 
 
@@ -599,7 +603,9 @@ class GateSeeker:
 
     def _valid_poses(self, frame: Frame) -> list[GatePose]:
         """All quality-gated candidate gate poses in ``frame`` (score + reproj + in-front), unsorted."""
-        observations: list[GateObservation] = list(self.detector.detect(frame))
+        # A15/A17 double-detect fix: reuse the navigator's per-frame_id detections (same shared detector)
+        # instead of running detect() a second time this frame. Identical observations, ~half the cost.
+        observations: list[GateObservation] = list(detect_cached(self.detector, frame))
         out: list[GatePose] = []
         for obs in observations:
             if float(getattr(obs, "score", 1.0)) < self.config.min_detect_score:

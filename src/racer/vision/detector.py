@@ -45,6 +45,44 @@ from racer.contracts import Frame, GateObservation
 N_CORNERS = 4
 
 
+def _resolve_device(requested: str | None) -> str:
+    """Resolve the inference device for a YOLO model.
+
+    A15/A17 FRAME-STARVATION FIX (2026-07-01): ultralytics ``YOLO(weights)`` loads to CPU and never
+    moves itself to the GPU unless ``.to('cuda')`` is called (or a ``device=`` is threaded into every
+    ``predict``); with ``device=None`` (our old default) ``predict`` runs on the model's CURRENT
+    device -- i.e. CPU. On ShadowPC (sim + fly_rl co-located, GPU present) that silently ran YOLO on
+    the CPU at ~150 ms/frame (~7x the ~21 ms single-YOLO GPU cost), choking the loop to ~10 Hz and
+    starving the video receiver. This resolves the device EXPLICITLY:
+      * ``requested`` given (e.g. 'cuda:0', 'cpu') -> honoured verbatim (an override / a test).
+      * ``requested`` None -> 'cuda:0' when CUDA is available, else 'cpu'.
+    Defensive: if torch import / the cuda probe raises (no torch, CPU-only build, driver issue) it
+    falls back to today's behaviour (return ``requested`` unchanged, i.e. None -> ultralytics decides),
+    so a warmup/probe miss can NEVER abort a run. Returns the resolved device string (or the original
+    ``requested`` on the fallback path)."""
+    if requested is not None:
+        return requested
+    try:
+        import torch  # lazy: torch is only present with the [detector] extra
+
+        return "cuda:0" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return requested  # torch missing / probe failed -> today's behaviour (ultralytics decides)
+
+
+def _move_model_to_device(model, device: str | None) -> None:
+    """Best-effort move an ultralytics model onto ``device`` (``model.to(device)``) so its weights
+    live where inference runs -- the actual GPU placement that ``device=`` alone in predict does not
+    guarantee to persist. No-op when ``device`` is None or the model has no ``.to`` (an injected test
+    fake); any failure is swallowed (never abort a run over a placement miss)."""
+    if device is None or not hasattr(model, "to"):
+        return
+    try:
+        model.to(device)
+    except Exception:
+        pass
+
+
 def observations_from_keypoints(
     frame: Frame,
     keypoints_xy: np.ndarray,
@@ -144,6 +182,46 @@ def observations_from_results(
     )
 
 
+# Sentinel attribute names for the shared per-frame_id detection cache (detect_cached). Namespaced
+# with a leading underscore so they cannot collide with a detector's own fields.
+_CACHE_FID_ATTR = "_detect_cache_frame_id"
+_CACHE_OBS_ATTR = "_detect_cache_obs"
+
+
+def detect_cached(detector, frame: Frame) -> list[GateObservation]:
+    """Run ``detector.detect(frame)`` AT MOST ONCE per ``frame.frame_id``, caching the result on the
+    detector instance so a SECOND consumer of the SAME shared detector reuses it instead of paying a
+    second inference.
+
+    A15/A17 DOUBLE-DETECT FIX (2026-07-01): the navigator (``_maybe_run_vision``) and the gate-seeker
+    (``command_visual`` -> ``_valid_poses``) hold the SAME detector instance and each called
+    ``detector.detect(frame)`` on every new frame -> YOLO ran TWICE per frame (~2x the ~150 ms hog).
+    Routing both through this cache computes the detections ONCE and hands the identical list to both,
+    ~halving detect cost/frame. The returned list is the SAME object the direct ``detect`` returned
+    (no copy, no re-order, no threshold change), so the observations both consumers see are byte-
+    identical to today's -- this is a transparent memoization, safe to leave always-on (VQ1/case-A
+    unaffected: it only ever RETURNS what ``detect`` would have).
+
+    Cache scope: keyed strictly on ``frame.frame_id``; a different frame_id (or a frame lacking one)
+    recomputes. The cache lives on the detector object (two attrs), so distinct detector instances
+    never share a cache. Defensive: any bookkeeping failure falls back to a plain ``detect``."""
+    fid = getattr(frame, "frame_id", None)
+    if fid is not None:
+        try:
+            if getattr(detector, _CACHE_FID_ATTR, object()) == fid:
+                return getattr(detector, _CACHE_OBS_ATTR)
+        except Exception:
+            pass
+    obs = detector.detect(frame)
+    if fid is not None:
+        try:
+            setattr(detector, _CACHE_FID_ATTR, fid)
+            setattr(detector, _CACHE_OBS_ATTR, obs)
+        except Exception:
+            pass
+    return obs
+
+
 class GateDetector:
     """Runtime YOLO-pose gate detector. ``GateDetector.load(weights)`` loads a model (needs the
     ``[detector]`` extra: ``ultralytics``); ``detect(frame)`` returns GateObservations for one
@@ -166,7 +244,15 @@ class GateDetector:
             return EnsembleGateDetector.load(str(weights).split("++"), **kwargs)
         from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
 
-        return cls(YOLO(str(weights)), **kwargs)
+        # A15/A17 device fix: RESOLVE the device explicitly at load (GPU if available, else CPU) and
+        # MOVE the model onto it, so inference does not silently run on the CPU (~7x slower). The
+        # resolved device is stored on the instance and threaded into every predict(); it is LOGGED
+        # once so the flight console / pre-warm shows GPU-vs-CPU (the #1 frame-starvation diagnostic).
+        device = _resolve_device(kwargs.pop("device", None))
+        model = YOLO(str(weights))
+        _move_model_to_device(model, device)
+        print(f"  [detector] GateDetector on device={device!r} (weights={str(weights)!r})")
+        return cls(model, device=device, **kwargs)
 
     def detect(self, frame: Frame) -> list[GateObservation]:
         results = self.model.predict(frame.image_bgr, verbose=False, device=self.device)
@@ -217,8 +303,14 @@ class EnsembleGateDetector:
     def load(cls, weights_list, **kwargs) -> "EnsembleGateDetector":
         from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
 
+        # A15/A17 device fix (mirrors GateDetector.load): resolve the device explicitly + move EVERY
+        # member onto it, so no ensemble member silently runs on the CPU. One log line names the device.
+        device = _resolve_device(kwargs.pop("device", None))
         models = [YOLO(str(w).strip()) for w in weights_list if str(w).strip()]
-        return cls(models, **kwargs)
+        for m in models:
+            _move_model_to_device(m, device)
+        print(f"  [detector] EnsembleGateDetector ({len(models)} models) on device={device!r}")
+        return cls(models, device=device, **kwargs)
 
     def detect(self, frame: Frame) -> list[GateObservation]:
         obs: list[GateObservation] = []

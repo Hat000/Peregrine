@@ -142,6 +142,14 @@ def vq2_case_c() -> DeployProfile:
         use_rewind_kf=True,
         use_range_channel=True,
         use_inplane_pos_floor=True,
+        # --- A17 CV-backstop decimation (frame-starvation fix, 2026-07-01) ---
+        # The per-frame vp_yaw (~67 ms VP RANSAC + Manhattan) + floor_height (~37 ms) choked the live
+        # loop to ~10 Hz and starved the video receiver. Decimate them: vp_yaw every 5th tick (yaw
+        # drifts slowly + the gate-bearing-yaw lock pins yaw per accepted detection + the ESKF gyro-
+        # integrates between), floor_height every 3rd (the ONLY dedicated z pin -> keep N tighter).
+        # Default (1) is byte-identical; these are the estimator-safety-study tuned values.
+        vp_yaw_decimate=5,
+        floor_height_decimate=3,
     )
     return DeployProfile(
         name="vq2_case_c",

@@ -950,6 +950,43 @@ def fly_once(client, actor, args, flight_idx: int,
             print(f"  disarm error: {exc}", file=sys.stderr)
 
 
+def _resolve_seeker_weights(args) -> str | None:
+    """The weights spec the yolo gate-seeker detector will load: ``--seeker-weights`` if set, else the
+    legacy fallback to ``--checkpoint``. Single source of truth for the loaders + the startup guard."""
+    return args.seeker_weights or args.checkpoint
+
+
+def _looks_like_detector_weights(spec) -> bool:
+    """True when ``spec`` looks like an ultralytics YOLO weights file (``.pt``, or an ``a.pt++b.pt``
+    ensemble spec) rather than the RL-actor ``.pth`` checkpoint. Every member of an ensemble spec must
+    look like a detector weight. The RL actor default is ``stage1_inc7_actor.pth`` -> False (the footgun)."""
+    if not spec:
+        return False
+    members = [s.strip().lower() for s in str(spec).split("++") if s.strip()]
+    return bool(members) and all(m.endswith(".pt") for m in members)
+
+
+def _validate_seeker_detector(args) -> None:
+    """FAIL LOUD at startup if the gate-seeker yolo path has no usable detector weights (2026-07-01
+    footgun fix). With ``--seeker-detector`` now defaulting to ``yolo``, a bare ``--gate-seeker`` run
+    would otherwise silently fall back to ``--checkpoint`` (the RL-actor ``.pth``) and hand a POLICY
+    net to ``YOLO(...)`` as if it were detector weights. Guard: on the gate-seeker + yolo path, require
+    a spec that looks like detector weights (``--seeker-weights <model.pt>``, or an ``a.pt++b.pt``
+    ensemble); raise ``SystemExit`` with a clear message otherwise. No-op for non-gate-seeker runs and
+    for the explicit ``red_glow`` / ``none`` opt-ins (which need no weights)."""
+    if not getattr(args, "gate_seeker", False) or args.seeker_detector != "yolo":
+        return
+    spec = _resolve_seeker_weights(args)
+    if not _looks_like_detector_weights(spec):
+        raise SystemExit(
+            "gate-seeker YOLO needs --seeker-weights <model.pt> (a trained gate detector). "
+            f"Got seeker_weights={args.seeker_weights!r}, and the --checkpoint fallback "
+            f"({args.checkpoint!r}) is the RL-actor .pth, NOT detector weights -- loading it as "
+            "YOLO weights would silently fly a broken detector. Pass --seeker-weights explicitly, "
+            "or use --seeker-detector red_glow for the classical (no-GPU) detector."
+        )
+
+
 def _prewarm_detector(args) -> None:
     """PRE-WARM the YOLO gate detector BEFORE arm (the A15 launch-window-freeze fix).
 
@@ -974,7 +1011,7 @@ def _prewarm_detector(args) -> None:
         from racer.contracts import Frame
         from racer.vision.detector import GateDetector
         t0 = time.monotonic()
-        detector = GateDetector.load(args.seeker_weights or args.checkpoint)
+        detector = GateDetector.load(_resolve_seeker_weights(args))
         # A black (360, 640, 3) frame matching the live camera resolution (contracts.Frame): the
         # SHAPE is what drives cuDNN autotune + kernel compile, so warming on the true resolution
         # warms the exact kernels the flight will use. A black frame yields no detections (fine).
@@ -1014,7 +1051,7 @@ def _build_casec_seeker(args, gates):
         # so the expensive first-predict already ran at startup off the flight critical path; else
         # build it here (byte-identical to the legacy path when no pre-warm ran).
         detector = (getattr(args, "_prewarmed_detector", None)
-                    or GateDetector.load(args.seeker_weights or args.checkpoint))  # weights (artifact-pipe)
+                    or GateDetector.load(_resolve_seeker_weights(args)))  # weights (artifact-pipe)
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
@@ -1725,11 +1762,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="named estimator+control preset for --gate-seeker (racer.deploy_profile): "
                          "'vq2_case_c' (self-localizing, default) or 'vq1_case_a' (legacy/given pose). "
                          "Sets the NavigatorConfig flags + the uplink cmd_rate_scale as one bundle.")
-    ap.add_argument("--seeker-detector", default="red_glow",
+    ap.add_argument("--seeker-detector", default="yolo",
                     choices=["red_glow", "yolo", "none"],
-                    help="perception detector for --gate-seeker: 'red_glow' (classical, no GPU; "
-                         "default), 'yolo' (weights from --seeker-weights), or 'none' (estimator "
-                         "coasts on IMU/AHRS with no vision fix -- diagnostic only).")
+                    help="perception detector for --gate-seeker: 'yolo' (DEFAULT; the trained model, "
+                         "weights from --seeker-weights) -- changed from 'red_glow' (2026-07-01) so a "
+                         "bare --gate-seeker run no longer silently flies the CLASSICAL detector; "
+                         "'red_glow' (classical, no GPU) stays available as an explicit opt-in; 'none' "
+                         "(estimator coasts on IMU/AHRS with no vision fix -- diagnostic only). The yolo "
+                         "path REQUIRES real detector weights via --seeker-weights (fails loud at startup "
+                         "if only the RL-actor --checkpoint default is present).")
     ap.add_argument("--seeker-weights", default=None,
                     help="YOLO detector weights for --seeker-detector yolo, SEPARATE from --checkpoint "
                          "(the RL actor). A single .pt path, or an 'a.pt++b.pt' spec to load the "
@@ -1835,6 +1876,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+
+    # FAIL LOUD before any connection/load if the gate-seeker yolo path has no usable detector weights
+    # (2026-07-01: --seeker-detector now defaults to yolo, so a bare --gate-seeker must NOT silently
+    # fall back to the RL-actor --checkpoint .pth as if it were YOLO weights).
+    _validate_seeker_detector(args)
 
     # -- load checkpoint (RL actor) --
     # Under --gate-seeker the RL actor is UNUSED: fly_once passes it straight through to the
@@ -1968,19 +2014,23 @@ def main() -> int:
                         if stop.is_set():
                             break
                     # --- for-loop exit with NO exception: either the idle timeout (`rx.frames`'s
-                    # own max_wait_s=5.0 -- no datagram for 5s) fired, or `break` above on stop.
-                    # Only count/snapshot as a reconnect when we are actually going to reconnect
-                    # (not a clean shutdown). This is the PRIME suspect path for the freeze: the
-                    # sim-stops-emitting-UDP hypothesis surfaces here, not as an exception. ---
-                    if not stop.is_set():
-                        try:
+                    # own max_wait_s=5.0 -- no datagram for 5s) fired, or `break` above on stop
+                    # (clean shutdown). A17 fix: snapshot rx.metrics UNCONDITIONALLY on EVERY normal
+                    # for-loop exit (both paths), so the exit [video-thread] line ALWAYS shows
+                    # datagrams/completed/evicted/decode_failed -- the ONLY way to split "sim stopped
+                    # emitting" (datagrams flat) from "packet loss" (evicted/decode_failed climbing).
+                    # In A17 the idle-timeout never fired (the loop broke on stop), so the OLD
+                    # stop-gated snapshot left us with no wire counters at all. ``reconnects_idle``
+                    # stays gated on ``not stop`` (its meaning = "actually going to reconnect").
+                    try:
+                        vstats["last_session_s"] = time.monotonic() - t_rx_open
+                        m = getattr(rx, "metrics", None)
+                        if m is not None:
+                            vstats["wire"] = m
+                        if not stop.is_set():
                             vstats["reconnects_idle"] += 1
-                            vstats["last_session_s"] = time.monotonic() - t_rx_open
-                            m = getattr(rx, "metrics", None)
-                            if m is not None:
-                                vstats["wire"] = m
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
             except Exception as exc:
                 # UN-BLIND: this used to be a silent `except Exception: pass`, a dangerous
                 # blind spot over the exact failure mode we're hunting. Same reconnect
@@ -1989,6 +2039,12 @@ def main() -> int:
                     vstats["reconnects_exc"] += 1
                     vstats["ring"].append(
                         (time.monotonic(), None, 0.0, 0.0, repr(exc)))
+                    # A17 fix: snapshot rx.metrics on the exception exit too (rx is bound once the
+                    # `with` __enter__ succeeded, i.e. the exception came from .frames()/publish), so
+                    # even a receiver-error exit still leaves the last wire counters on vstats.
+                    m = getattr(locals().get("rx", None), "metrics", None)
+                    if m is not None:
+                        vstats["wire"] = m
                 except Exception:
                     pass
             if not stop.is_set():
@@ -2116,7 +2172,7 @@ def main() -> int:
                         f"bad_chunkmap={wire.frames_bad_chunkmap} "
                         f"short={wire.short_datagrams}")
         else:
-            wire_str = " | wire: (no rx.metrics snapshot -- receiver never hit an idle timeout)"
+            wire_str = " | wire: (no rx.metrics snapshot -- receiver never opened a session)"
         print(f"  [video-thread] frames={vs['n_frames']} "
               f"max_gap={vs['max_gap_ms']:.0f}ms@fid={vs['max_gap_fid']} "
               f"gaps>200ms={vs['gaps_over_200']} gaps>1s={vs['gaps_over_1000']} "
