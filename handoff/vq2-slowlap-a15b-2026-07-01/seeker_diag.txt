@@ -1,0 +1,20 @@
+=== flight1 diag ===
+  [prewarm] YOLO detector warmed in 7.81s (first-predict off the launch window; tick-0 stall eliminated).
+  LATE-JOIN GO!  to_go=-48.40s  pos_off=0.00 m  gi=0.  armed=True sim_t=  51.914s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+[gate-seeker] profile=vq2_case_c self_localizing=True cmd_rate_scale=0.4 detector=yolo cruise=3 m/s  gates=0  max=120s ...
+  [gate-seeker] gate 0 PASSED -> targeting 1
+  [gate-seeker] HARD COLLISION -> abort.
+  [loop-rate]  24.9 Hz over 259 ticks (target 30); worst work 468 ms; 1.5% ticks over budget -> CHOKED
+  [seeker-diag] cmds=0 pursuit=0 none=0 (valid_empty=0 continuity=0 first_acq=0 other=0) -> bridged=0 (0% of none) held_legacy=0
+  flight 1: CRASH  gates=1  session=data\runs\20260701_041856_vq2_slow_seeker_a15b_f1
+  flight 1: CRASH      gates=1  data\runs\20260701_041856_vq2_slow_seeker_a15b_f1
+
+=== flight2 diag ===
+  [prewarm] YOLO detector warmed in 7.49s (first-predict off the launch window; tick-0 stall eliminated).
+  GO!  pos_off=0.00 m.  armed=True sim_t= 177.179s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+[gate-seeker] profile=vq2_case_c self_localizing=True cmd_rate_scale=0.4 detector=yolo cruise=3 m/s  gates=0  max=120s ...
+  [gate-seeker] HARD COLLISION -> abort.
+  [loop-rate]  18.1 Hz over 71 ticks (target 30); worst work 515 ms; 5.6% ticks over budget -> CHOKED
+  [seeker-diag] cmds=12 pursuit=12 none=0 (valid_empty=0 continuity=0 first_acq=0 other=0) -> bridged=0 (0% of none) held_legacy=0
+  flight 1: CRASH  gates=0  session=data\runs\20260701_042347_vq2_slow_seeker_a15b2_f1
+  flight 1: CRASH      gates=0  data\runs\20260701_042347_vq2_slow_seeker_a15b2_f1
