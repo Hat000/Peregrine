@@ -1,0 +1,26 @@
+>>> Waiting PASSIVELY for the race GO (no sim-control command will be sent; this is the submission-safe posture).
+
+  LATE-JOIN GO!  to_go=-2.51s  pos_off=0.00 m  gi=0.  armed=True sim_t=7011.379s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+
+[arm] ...
+  attempt 1/3: ACK=MAV_RESULT_ACCEPTED  armed=True
+
+[gate-seeker] profile=vq2_case_c self_localizing=True cmd_rate_scale=0.4 detector=yolo cruise=3 m/s  gates=0  max=120s ...
+  t=7011.41s gi=0 pos=(  +0.0,  +0.0,  +0.0) thr=0.266 rate=[+0.00,+0.00,-0.00] tsv=infs     t=7012.55s gi=0 pos=(  +0.0,  +0.0,  -0.0) thr=0.266 rate=[+0.00,+0.00,+0.00] tsv=infs   
+  [gate-seeker] HARD COLLISION -> abort.
+  [nav-log] wrote 22 ticks -> data\runs\20260701_181739_vq2_slow_seeker_a17_f1\nav_estimate.jsonl
+  [loop-rate]  10.0 Hz over 22 ticks (target 30); worst work 496 ms; 18.2% ticks over budget -> CHOKED
+  [vision-timing] detect: mean=149.7ms max=157.1ms n=3  vp_yaw: mean=66.9ms max=71.1ms n=3  floor_height: mean=36.7ms max=39.8ms n=3
+  [vision-timing] worst tick sum=255.8ms breakdown: detect=147.8ms, vp_yaw=69.7ms, floor_height=38.4ms
+  [seeker-diag] cmds=4 pursuit=4 none=0 (valid_empty=0 continuity=0 first_acq=0 other=0) -> bridged=0 (0% of none) held_legacy=0
+
+[safety] disarming ...
+
+  flight 1: CRASH  gates=0  session=data\runs\20260701_181739_vq2_slow_seeker_a17_f1
+  [video-thread] frames=190 max_gap=1051ms@fid=277 gaps>200ms=4 gaps>1s=1 gap_sum=9129ms max_pub=0.1ms reconnects=0(idle=0,exc=0) | wire: (no rx.metrics snapshot -- receiver never hit an idle timeout)
+  [video-thread] ring buffer (gap/exception events, ts/frame_id/gap_ms/pub_ms/exc):
+    ts=7219.861 fid=186 gap=401ms pub=0.0ms exc=None
+    ts=7220.575 fid=208 gap=714ms pub=0.0ms exc=None
+    ts=7221.507 fid=242 gap=932ms pub=0.0ms exc=None
+    ts=7222.558 fid=277 gap=1051ms pub=0.0ms exc=None
+
