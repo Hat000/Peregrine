@@ -966,7 +966,10 @@ def _build_casec_seeker(args, gates):
         detector = RedGlowGateDetector()
     elif args.seeker_detector == "yolo":
         from racer.vision.detector import GateDetector
-        detector = GateDetector.load(args.checkpoint)   # weights path (artifact-pipe); opt-in
+        # Detector weights come from --seeker-weights (SEPARATE from --checkpoint, the RL actor).
+        # A single .pt path -> one model; an 'a.pt++b.pt' spec -> EnsembleGateDetector (union+dedup).
+        # Falls back to --checkpoint only if --seeker-weights is unset (legacy convenience).
+        detector = GateDetector.load(args.seeker_weights or args.checkpoint)   # weights (artifact-pipe)
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
@@ -1656,8 +1659,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seeker-detector", default="red_glow",
                     choices=["red_glow", "yolo", "none"],
                     help="perception detector for --gate-seeker: 'red_glow' (classical, no GPU; "
-                         "default), 'yolo' (--checkpoint weights), or 'none' (estimator coasts on "
-                         "IMU/AHRS with no vision fix -- diagnostic only).")
+                         "default), 'yolo' (weights from --seeker-weights), or 'none' (estimator "
+                         "coasts on IMU/AHRS with no vision fix -- diagnostic only).")
+    ap.add_argument("--seeker-weights", default=None,
+                    help="YOLO detector weights for --seeker-detector yolo, SEPARATE from --checkpoint "
+                         "(the RL actor). A single .pt path, or an 'a.pt++b.pt' spec to load the "
+                         "EnsembleGateDetector (union+dedup before the KF). Falls back to --checkpoint "
+                         "if unset. This split is what makes the yolo path deployable: --checkpoint is "
+                         "consumed by the RL actor loader, so a detector spec passed there died in "
+                         "load_actor (why the trained detector was never in the live gate-seeker loop).")
     ap.add_argument("--seeker-speed", type=float, default=3.0,
                     help="gate-seeker cruise speed cap (m/s). SLOW first (default 3.0): more frames "
                          "per metre, no motion blur, vision yaw/z self-loc works. Ramp later.")
@@ -1757,16 +1767,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
 
-    # -- load checkpoint --
-    print(f"loading actor: {args.checkpoint}")
-    actor = load_actor(args.checkpoint)
-    print(f"  type: {type(actor).__name__}")
-    _out = actor(torch.zeros(1, 17))
-    _act = (_out[0] if isinstance(_out, (tuple, list)) else _out)[0]
-    print(f"  obs_dim=17 -> action shape={tuple(_act.shape)}  (expected (4,))")
-    if _act.shape != (4,):
-        print(f"  WARNING: unexpected action shape {tuple(_act.shape)}; "
-              "check DiffAero actor architecture.", file=sys.stderr)
+    # -- load checkpoint (RL actor) --
+    # Under --gate-seeker the RL actor is UNUSED: fly_once passes it straight through to the
+    # gate-seeker early-return in _fly_armed without ever calling it. --checkpoint's default is the
+    # inc7 actor, and the gate-seeker's YOLO detector takes its weights from --seeker-weights. So
+    # SKIP the actor load on the gate-seeker path -- (a) a run needs no valid actor .pth, and (b) a
+    # detector-weights spec can never be mis-fed to load_actor (the overload that kept yolo undeployed).
+    if getattr(args, "gate_seeker", False):
+        actor = None
+        print("gate-seeker: skipping RL actor load (unused on this path)")
+    else:
+        print(f"loading actor: {args.checkpoint}")
+        actor = load_actor(args.checkpoint)
+        print(f"  type: {type(actor).__name__}")
+        _out = actor(torch.zeros(1, 17))
+        _act = (_out[0] if isinstance(_out, (tuple, list)) else _out)[0]
+        print(f"  obs_dim=17 -> action shape={tuple(_act.shape)}  (expected (4,))")
+        if _act.shape != (4,):
+            print(f"  WARNING: unexpected action shape {tuple(_act.shape)}; "
+                  "check DiffAero actor architecture.", file=sys.stderr)
 
     # -- MAVLink --
     # cmd_rate_scale (default 1.0 == identity / byte-identical VQ1 path). ~0.4 compensates the
