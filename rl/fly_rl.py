@@ -949,6 +949,46 @@ def fly_once(client, actor, args, flight_idx: int,
             print(f"  disarm error: {exc}", file=sys.stderr)
 
 
+def _prewarm_detector(args) -> None:
+    """PRE-WARM the YOLO gate detector BEFORE arm (the A15 launch-window-freeze fix).
+
+    A15: the FIRST live ``detector.detect`` (tick 0 of the flight loop) cost ~2873 ms -- the
+    one-time Ultralytics/CUDA warmup (context init + cuDNN autotune + kernel compile + the model's
+    own first-predict predictor setup). That stall froze the onboard camera / recorder over the exact
+    launch window we need to OBSERVE, and starved the video thread (~19% frame drops under GPU load),
+    so we could not even tell whether the drone lifted off. THE FIX: build the detector + run ONE
+    dummy inference on a black frame HERE, at startup -- before GO / arm / the recorder attaching --
+    so the expensive first-predict happens off the flight critical path and the loop's tick 0 is fast.
+    The warmed instance is stashed on ``args`` and REUSED by ``_build_casec_seeker`` (no double-load).
+
+    Only the ``yolo`` path warms (red_glow is pure OpenCV -> no warmup cost). Any failure (no
+    ultralytics / no GPU / bad weights) is logged and swallowed: the real load in _build_casec_seeker
+    surfaces a hard error later, and a warmup miss must never abort the run. Idempotent + additive:
+    non-yolo / non-gate-seeker runs are byte-identical (nothing is built, nothing stashed)."""
+    if not getattr(args, "gate_seeker", False) or args.seeker_detector != "yolo":
+        return
+    try:
+        import numpy as np
+
+        from racer.contracts import Frame
+        from racer.vision.detector import GateDetector
+        t0 = time.monotonic()
+        detector = GateDetector.load(args.seeker_weights or args.checkpoint)
+        # A black (360, 640, 3) frame matching the live camera resolution (contracts.Frame): the
+        # SHAPE is what drives cuDNN autotune + kernel compile, so warming on the true resolution
+        # warms the exact kernels the flight will use. A black frame yields no detections (fine).
+        dummy = Frame(frame_id=-1, sim_time_ns=0,
+                      image_bgr=np.zeros((360, 640, 3), dtype=np.uint8))
+        detector.detect(dummy)   # the expensive first-predict -> now off the flight critical path
+        args._prewarmed_detector = detector
+        print(f"  [prewarm] YOLO detector warmed in {(time.monotonic() - t0):.2f}s "
+              f"(first-predict off the launch window; tick-0 stall eliminated).")
+    except Exception as exc:
+        print(f"  [prewarm] WARNING: detector pre-warm skipped ({type(exc).__name__}: {exc}); "
+              f"the real load happens in _build_casec_seeker (tick-0 may stall as before).",
+              file=sys.stderr)
+
+
 def _build_casec_seeker(args, gates):
     """Construct the case-C Navigator + the slow gate-seeker from the deploy profile (--gate-seeker).
 
@@ -969,7 +1009,11 @@ def _build_casec_seeker(args, gates):
         # Detector weights come from --seeker-weights (SEPARATE from --checkpoint, the RL actor).
         # A single .pt path -> one model; an 'a.pt++b.pt' spec -> EnsembleGateDetector (union+dedup).
         # Falls back to --checkpoint only if --seeker-weights is unset (legacy convenience).
-        detector = GateDetector.load(args.seeker_weights or args.checkpoint)   # weights (artifact-pipe)
+        # REUSE the PRE-WARMED instance (_prewarm_detector, the A15 launch-freeze fix) when present,
+        # so the expensive first-predict already ran at startup off the flight critical path; else
+        # build it here (byte-identical to the legacy path when no pre-warm ran).
+        detector = (getattr(args, "_prewarmed_detector", None)
+                    or GateDetector.load(args.seeker_weights or args.checkpoint))  # weights (artifact-pipe)
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
@@ -1836,6 +1880,12 @@ def main() -> int:
                 time.sleep(0.5)
     vthread = threading.Thread(target=_video, name="video", daemon=True)
     vthread.start()
+
+    # PRE-WARM the YOLO detector NOW -- before GO / arm / the recorder attaching (the A15 launch-
+    # window-freeze fix). Moves the one-time ~2.9 s Ultralytics/CUDA first-predict off the flight
+    # critical path so tick 0 is fast and the launch is OBSERVABLE (no camera/recorder freeze, no
+    # GPU-contention frame drops over the launch). No-op unless --gate-seeker + --seeker-detector yolo.
+    _prewarm_detector(args)
 
     def _on_msg(msg):
         if msg.get_type() == "BAD_DATA":
