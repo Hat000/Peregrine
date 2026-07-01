@@ -3,10 +3,11 @@
 **OUTCOME (footage-grounded; attitude+commands trustworthy, position_ned is dead-reckon fiction):**
 ✅ **The nose-up-into-the-ceiling is GONE — `ff_owns_horizontal` works.** Pursuit now holds a sane
 nose-DOWN attitude (eases −17° → −8° forward lean) with a small decaying pitch-rate command, instead
-of the A15b saturated +1.5 rad/s nose-up slam. **BUT the flight still fails, and the two remaining
-blockers are now the story: (1) the drone barely leaves the START SHELF — mostly sits, little/no
-liftoff-translation; (2) the moment it DOES move, frame-drops black out the onboard view, so the
-movement phase is unobservable.** Crashed at ~3.4s, gates=0.
+of the A15b saturated +1.5 rad/s nose-up slam (confirmed from the nav DATA — trustworthy). **The
+flight still fails (crash ~3.4s, gates=0), but the actual flight PHASE is UNOBSERVED: frame-drops
+black out the view the instant the race goes GREEN.** See the corrected pilot read below — the
+"sitting on the shelf" was mostly the pre-GO WAITING ROOM (red side-lights), NOT a confirmed liftoff
+failure.
 
 HEAD flown: `d5b8fed` (flight stack byte-identical to `35561c7` — the ff_owns_horizontal commit; later
 commits are memory-only). Config: `--gate-seeker --deploy-profile vq2_case_c --seeker-detector yolo
@@ -45,12 +46,19 @@ cmd +0.47→+0.08, yaw_des +0.8→+0.4° (gate ~centered), thrust ~0.6. Exactly 
 
 1. "Not getting a good fix on the first gate / looks like the wrong vision model." → **See the
    red_glow-overlay caveat below — the flight DID use YOLO; the video overlay is misleading.**
-2. "For the majority of the video there's NO movement — it just sits on the start shelf."
-3. "When we DO get movement (lights green / pursuit), the camera lags out, I lose telemetry — really
-   bad frame drops."
+2. **[CORRECTED] "Most of the recording the SIDE-LIGHTS were RED = still in the WAITING ROOM, not
+   racing. The moment the light turns GREEN and the drone activates is exactly when the frame-drops
+   hit."** So the long "sitting on the shelf" stretch was mostly the pre-GO waiting room (by design),
+   NOT a confirmed liftoff failure. (The recorder attaches during the passive-wait, so the recording
+   spans waiting-room + the ~3.4s armed flight; nav_estimate's 47 ticks are only the armed flight.)
+3. The actual flight phase (post-GREEN) is **blacked out by frame-drops** → we could NOT watch whether
+   it lifts off, translates, or how it threads/misses gate 1.
 
-So: sane nose-down attitude (per data) but **little actual liftoff off the shelf**, and the movement
-phase is **blacked out by frame-drops** → we still can't watch it thread (or miss) gate 1.
+**Key correlation for the commander:** frame-drops onset EXACTLY at GO / green-light / drone-activate
+— i.e., when the armed flight loop + the full per-frame vision pipeline (heading_vp + manhattan_lines)
+starts running under load. In the static red-light waiting room the frames are fine. That the drop is
+*state-triggered by flight-active*, not gradual, points straight at a per-frame compute step that only
+runs (or only saturates) once flying.
 
 ---
 
@@ -72,21 +80,24 @@ flown), `gate_clean_ens_precision_L107.pt` (precision-lever, best <0.5m fixes, s
 ## PRIORITIZED NEXT-FIX LEADS
 
 1. **[#1 OBSERVABILITY — commander already investigating] Kill the frame-drops (heading_vp +
-   manhattan_lines, per-frame in `_maybe_run_vision`).** Confirmed suspect (commit 5b3c131). They
-   black out the movement phase (pilot loses view exactly when it starts moving) AND drive the
-   13.8 Hz choke / 504 ms worst-work. Until fixed, we CANNOT observe whether the drone lifts off and
-   threads gate 1 — this gates the whole diagnosis. (Drop rate is variable run-to-run: A16 recording
-   378/1062 ≈ 61%, A15b was ≈95%.)
+   manhattan_lines, per-frame in `_maybe_run_vision`).** Confirmed suspect (commit 5b3c131). NEW
+   diagnostic: the drops onset **exactly at GO/green-light/drone-activate** — fine in the static
+   red-light waiting room, saturate the instant the armed flight loop + full per-frame vision runs.
+   So it's state-triggered by flight-active, not gradual — a per-frame step that only runs/saturates
+   once flying. They black out the entire flight phase AND drive the 13.8 Hz choke / 504 ms
+   worst-work. Until fixed we CANNOT observe liftoff/translation/gate-1 — this gates the whole
+   diagnosis. (Drop rate variable run-to-run: A16 378/1062 ≈ 61%, A15b ≈ 95%.)
 
-2. **[#2 NO-LIFTOFF / no shelf-egress] The drone sits on the start shelf and barely translates.**
-   With the nose-up fixed, this is the next flight blocker: sane nose-down attitude (−17°→−8°) +
-   thrust ~0.6 but the pilot sees little/no forward liftoff off the shelf. Suspect insufficient
-   climb/thrust to leave the shelf, or the egress→pursuit forward feedforward is too weak to build
-   translation. Re-diagnose once #1 makes the movement observable.
+2. **[#2 UNKNOWN — flight phase unobserved, was overstated as "no-liftoff"] Whether the drone lifts
+   off / threads gate 1 is NOT yet known.** CORRECTION: the "sits on the shelf" the pilot saw was
+   mostly the pre-GO WAITING ROOM (red side-lights), not a confirmed liftoff failure — and the actual
+   post-green flight is blacked out by #1. What we DO know from the nav DATA: 47 armed ticks, sane
+   nose-down attitude (−17°→−8°), thrust ~0.6, crash (HARD COLLISION) at ~3.4s, gates=0. The crash
+   cause is undetermined until #1 restores observation. Do NOT assume no-liftoff.
 
-3. **[BLOCKED on #1, #2] Yaw un-mirror (337c554) STILL untested** — A16 never reached the off-axis
-   gate 2 (crashed at ~3.4s on the shelf/near gate 1); yaw_des stayed ~+0.4° (gate centered). Same as
-   A15b: blocked behind survival past gate 1.
+3. **[BLOCKED on #1] Yaw un-mirror (337c554) STILL untested** — A16 crashed at ~3.4s before reaching
+   the off-axis gate 2; yaw_des stayed ~+0.4° (gate centered). Same as A15b: blocked behind surviving
+   the (now unobserved) flight phase past gate 1.
 
 4. **[MODEL — pilot request] Consider deploying the precision model / ensemble for a better gate
    fix.** valid_empty=0 already (recall fine), so this is about pose PRECISION, not recall. Precision
