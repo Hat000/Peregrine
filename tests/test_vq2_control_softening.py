@@ -164,11 +164,14 @@ def test_slew_first_tick_passes_through():
 def test_deploy_profile_controller_overrides_wires_the_softening():
     """vq2_case_c carries the softening via the new DeployProfile.controller_overrides seam; vq1_case_a
     leaves it None (explicit, to pin VQ1 byte-identity)."""
-    assert get_profile("vq2_case_c").controller_overrides == {
-        "kp_att": 4.0, "body_rate_slew_max_rps2": 8.0}
+    # Subset key-checks (not exact-dict) so the softening pin survives the profile legitimately
+    # growing new vq2-only overrides (e.g. the A15b ff_owns_horizontal fix), per the A13 precedent.
+    ov = get_profile("vq2_case_c").controller_overrides
+    assert ov["kp_att"] == 4.0 and ov["body_rate_slew_max_rps2"] == 8.0
     assert get_profile("vq1_case_a").controller_overrides is None
     # the constructors agree with the named lookup
-    assert vq2_case_c().controller_overrides == {"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0}
+    ov2 = vq2_case_c().controller_overrides
+    assert ov2["kp_att"] == 4.0 and ov2["body_rate_slew_max_rps2"] == 8.0
     assert vq1_case_a().controller_overrides is None
 
 

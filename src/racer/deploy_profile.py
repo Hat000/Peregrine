@@ -173,7 +173,15 @@ def vq2_case_c() -> DeployProfile:
         #   * body_rate_slew_max_rps2 = 8.0: at ~12 Hz (dt~=0.083 s) the per-tick body-rate change is
         #     bounded to 8.0*0.083 ~= 0.66 rad/s, so a step (handoff, or a big correction after a
         #     detection gap) ramps 0->1.5 over ~2-3 ticks instead of whipping the camera in ONE tick.
-        controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0},
+        #   * ff_owns_horizontal = True: the A15b nose-up-into-the-ceiling ROOT fix. The pursuit
+        #     feedforward (accel_ned) owns the horizontal tilt; the vertical-align velocity_ned=[0,0,vz]
+        #     is consumed by the alt-hold for vz ONLY and its (zero) horizontal components no longer
+        #     damp the DEAD-RECKONED (fictional) horizontal velocity. Without this, -kd_vel*vel_xy
+        #     swamps the +1.2 feedforward, flips the tilt target nose-UP, and the drone climbs into the
+        #     ceiling the instant pursuit engages (A15b flight 2; offline-repro-confirmed). Softening
+        #     (kp_att/slew) could NOT fix it because the TARGET direction was wrong (nose-up), not stiff.
+        controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
+                              "ff_owns_horizontal": True},
     )
 
 

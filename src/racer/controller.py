@@ -173,6 +173,20 @@ class Controller:
     # slew is the LAST step on the body-rate path (after kp_att/kd_att/ff_gain/clip/sign), so it
     # bounds the exact vector sent to the wire. [VQ2 A11 control-softening, 2026-06-30]
     body_rate_slew_max_rps2: float | None = None
+    # FEEDFORWARD OWNS THE HORIZONTAL (the A15b nose-up-into-the-ceiling fix). When set AND the
+    # setpoint carries ``accel_ned`` (the map-free feedforward forward tilt), the decoupled horizontal
+    # channel is driven PURELY by that feedforward: the ``velocity_ned`` term is NOT applied to the
+    # horizontal axes. WHY: the gate-seeker passes ``velocity_ned=[0,0,vz]`` ONLY to feed the alt-hold
+    # a vertical-align sink/climb rate (the alt-hold reads velocity_ned[2] separately); but the legacy
+    # horizontal block then adds ``kd_vel*(velocity_ned[0:2] - vel_xy) = -kd_vel*vel_xy``, damping the
+    # DEAD-RECKONED horizontal velocity. On the state-denied VQ2 wire that velocity is FICTION and grows
+    # (A15b: ~1.8 m/s forward), so -kd_vel*vel_xy (~-5.4) SWAMPS the small forward feedforward (+1.2),
+    # flips a_h BACKWARD, and _accel_to_attitude tilts the target NOSE-UP -> the saturated +1.5 climb
+    # into the ceiling (A15b flight 2, offline-repro-confirmed: vz=0 -> +0.6 benign level; vz!=0 ->
+    # +2.7 nose-up). The vertical vz is UNAFFECTED (alt-hold still reads velocity_ned[2]); only the
+    # bogus horizontal damping of an unobservable velocity is removed. None/False => byte-identical
+    # (VQ1 / case-A: the horizontal velocity term applies as before). [VQ2 A15b, 2026-07-01]
+    ff_owns_horizontal: bool = False
     _prev_body_rate: np.ndarray | None = field(default=None, repr=False, compare=False)
     _prev_slew_t_ns: int | None = field(default=None, repr=False, compare=False)
 
@@ -336,7 +350,13 @@ class Controller:
                 if self.max_pos_error_m is not None:
                     err = _clip_norm(err, self.max_pos_error_m)
                 a_h = a_h + self.kp_pos * err
-            if sp.velocity_ned is not None:
+            # FEEDFORWARD-OWNS-HORIZONTAL (A15b): skip the horizontal velocity term when a feedforward
+            # accel_ned drives the horizontal and velocity_ned is only carrying the vertical-align vz.
+            # Otherwise -kd_vel*vel_xy damps the DEAD-RECKONED (fictional, growing) horizontal velocity
+            # and flips the tilt target nose-up (the ceiling climb). The alt-hold already consumed
+            # velocity_ned[2] above, so the vertical-align sink/climb is unaffected.
+            ff_horizontal = self.ff_owns_horizontal and sp.accel_ned is not None
+            if sp.velocity_ned is not None and not ff_horizontal:
                 a_h = a_h + self.kd_vel * (np.asarray(sp.velocity_ned, dtype=np.float64) - vel)
             elif sp.position_ned is not None:
                 a_h = a_h - self.kd_vel * vel
