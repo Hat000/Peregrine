@@ -216,6 +216,21 @@ class Controller:
     # Low-pass coefficient [0,1] on the finite-difference vz (vz_lp = a*fd + (1-a)*vz_lp). 1.0 = raw fd
     # (no smoothing); smaller = heavier smoothing. Only read on the ff-owns-vertical path.
     ff_vertical_vz_lp_alpha: float = 0.5
+    # VERTICAL-CHANNEL ESTIMATOR SOURCE (the A21 egress->ceiling-climb fix, 2026-07-02). When set,
+    # the ff-owns-vertical alt-hold sources BOTH its z and its damping rate from the Navigator's
+    # dedicated 1-D vertical estimator (NavState.vert_z_est / vert_vz_est, racer.vertical_estimator)
+    # instead of the dead-reckoned nav position + the LP finite-difference of it. WHY: on the
+    # state-denied VQ2 wire the 6-state KF's z TELEPORTS when a sparse floor_height pin lands
+    # (run 20260702_040036: -1.435 m in ONE tick) — the fd-vz then spikes ~-4.4 m/s (a thrust slam)
+    # — while between pins that z is BLIND to the real climb (integrated a_up reached +4-5 m/s
+    # upward over 2.7 s that est_z never showed), so the damper cannot oppose it and the drone
+    # climbs over gate 0 into the ceiling. The estimator's vz is the IMU-integrated, pin-corrected
+    # REAL vertical rate: smooth across pins (bounded Kalman corrections, no steps) and live to the
+    # climb the instant it starts. Requires ff_owns_vertical; falls back to the fd path while the
+    # NavState fields are NaN (estimator not enabled/seeded — a robustness seam, never a silent
+    # behaviour fork on the OFF path). None/False => byte-identical (VQ1 / case-A + today's
+    # vq2_case_c). Opted in via DeployProfile.vertical_estimator. [VQ2 A21, 2026-07-02]
+    use_vertical_estimator: bool = False
     _prev_body_rate: np.ndarray | None = field(default=None, repr=False, compare=False)
     _prev_slew_t_ns: int | None = field(default=None, repr=False, compare=False)
     # ff-owns-vertical alt-hold state (latched at the first ff-owns-vertical tick; untouched when OFF):
@@ -243,17 +258,20 @@ class Controller:
         self._prev_slew_t_ns = int(sim_time_ns)
         return out
 
-    def _ff_owns_vertical_thrust(self, z: float, vz_t: float, sim_time_ns: int) -> float:
+    def _ff_owns_vertical_thrust(self, z: float, vz_t: float, sim_time_ns: int,
+                                 vz_meas: float | None = None) -> float:
         """Alt-hold collective (pre tilt-comp/clip) for the ff-owns-vertical path (A19c bang-bang fix).
 
-        thrust = hover + kp_alt*(z - z_target) + ff_vertical_kd_alt*(vz_lp - vz_t), where:
+        thrust = hover + kp_alt*(z - z_target) + ff_vertical_kd_alt*(vz - vz_t), where:
           * ``z_target`` is latched to the current ``z`` on the FIRST ff-owns-vertical tick, then ramped
             by the commanded vertical-align rate: ``z_target += vz_t*dt`` (dt = sim-time delta). A
             commanded sink/climb becomes a MOVING position target the robust loop tracks -- never a
             velocity-error term on the fictional, drifting ``vel[2]``.
-          * ``vz_lp`` is a low-passed FINITE DIFFERENCE of the (floor-corrected) ``z``: a TRUSTWORTHY,
-            bounded vertical rate. Damping against it (not raw ``vel[2]``) gives real damping for the
-            sim's sense->act lag without the drift that rail-slammed the collective.
+          * the damping rate ``vz`` is ``vz_meas`` when the caller supplies one (A21: the vertical
+            estimator's IMU-integrated, pin-corrected vz -- smooth AND live to a real climb), else the
+            low-passed FINITE DIFFERENCE of the (floor-corrected) ``z``: a bounded rate that cannot
+            drift the collective the way raw ``vel[2]`` did. The fd/LP state is maintained either way,
+            so a mid-flight ``vz_meas`` dropout (estimator not seeded) degrades seamlessly to the fd.
         Stateful (latched on first engage); the OFF path never calls this, so its state stays untouched
         and the OFF-path thrust is byte-identical."""
         if self._alt_z_target is None:                 # first ff-owns-vertical tick: latch the target
@@ -269,9 +287,10 @@ class Controller:
             self._alt_vz_lp = a * fd + (1.0 - a) * self._alt_vz_lp     # low-pass the fd-vz
             self._alt_prev_z = z
             self._alt_prev_t_ns = int(sim_time_ns)
+        vz = self._alt_vz_lp if vz_meas is None else float(vz_meas)
         return (self.hover_thrust
                 + self.kp_alt * (z - self._alt_z_target)
-                + self.ff_vertical_kd_alt * (self._alt_vz_lp - vz_t))
+                + self.ff_vertical_kd_alt * (vz - vz_t))
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
@@ -382,7 +401,19 @@ class Controller:
             # FEEDFORWARD-OWNS-VERTICAL (A19c): do NOT damp against the dead-reckoned vel[2] (the poison
             # that rail-slammed the collective). Track a RAMPING z_target on the trustworthy floor-
             # corrected z; damp against a low-passed FINITE-DIFFERENCE of that z instead of vel[2].
-            thrust = self._ff_owns_vertical_thrust(float(pos[2]), vz_t, int(sp.sim_time_ns))
+            # A21 (use_vertical_estimator): source BOTH channel inputs from the dedicated vertical
+            # estimator when it is live — the smooth vert_z_est replaces the pin-teleporting pos[2]
+            # in the kp_alt position term (a -1.4 m z step is a kp_alt*1.4=2.8 thrust kick on its
+            # own), and vert_vz_est replaces the fd-vz in the damping term (the fd of a teleporting
+            # z spikes ~-4.4 m/s at a pin AND is blind to a real climb between pins). NaN fields
+            # (estimator off / not yet seeded) fall back to the A19c fd path unchanged.
+            z_v, vz_v = float(pos[2]), None
+            if self.use_vertical_estimator:
+                z_est = float(getattr(nav, "vert_z_est", float("nan")))
+                vz_est = float(getattr(nav, "vert_vz_est", float("nan")))
+                if np.isfinite(z_est) and np.isfinite(vz_est):
+                    z_v, vz_v = z_est, vz_est
+            thrust = self._ff_owns_vertical_thrust(z_v, vz_t, int(sp.sim_time_ns), vz_meas=vz_v)
         else:
             z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
             z_t = z_t - self.alt_offset_m              # fly above the gate line (NED z+ = down)

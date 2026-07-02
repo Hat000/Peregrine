@@ -260,6 +260,14 @@ class NavState:
     # until the first accepted gate-relative fix (no gate frame -> no projection). [C2-ESTIMATOR-CHAIN]
     nav_inplane_sigma: float = float("inf")             # m, in-plane (gate-plane) 1-sigma
     nav_along_sigma: float = float("inf")               # m, along-track (gate-normal) 1-sigma
+    # A21 vertical-channel estimator export (racer.vertical_estimator): the SMOOTH (altitude, vz)
+    # pair the ff-owns-vertical alt-hold damps on — IMU a_up integrated between the sparse vision
+    # floor_height pins, so it tracks a real climb the dead-reckoned position misses and never
+    # step-teleports when a pin lands. NaN until the Navigator's estimator is enabled AND seeded
+    # (NavigatorConfig.use_vertical_estimator; default OFF) — consumers treat NaN as absent, so
+    # every existing constructor/path is byte-identical. [VQ2 A21, 2026-07-02]
+    vert_z_est: float = float("nan")                     # m, NED world-down z (down +)
+    vert_vz_est: float = float("nan")                    # m/s, NED world-down zdot (down +)
 
 
 # ---------------------------------------------------------------------------

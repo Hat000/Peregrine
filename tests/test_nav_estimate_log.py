@@ -39,6 +39,8 @@ EXPECTED_KEYS = {
     "yaw_rad",
     "position_ned",
     "time_since_vision_s",
+    "vert_z_est",       # A21 vertical-channel estimator export (null when off/unseeded)
+    "vert_vz_est",
     "body_rate",
     "thrust",
     "yaw_des_rad",

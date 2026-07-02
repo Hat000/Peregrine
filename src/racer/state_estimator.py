@@ -202,6 +202,8 @@ def make_nav_state(
     *,
     attitude_rpy_override: tuple[float, float, float] | None = None,
     angular_rate_override: np.ndarray | None = None,
+    vert_z_est: float | None = None,
+    vert_vz_est: float | None = None,
 ) -> NavState:
     """Assemble a NavState from the KF (position/velocity) + given attitude/rates.
 
@@ -216,7 +218,12 @@ def make_nav_state(
     -> the existing wire-attitude path, BYTE-IDENTICAL (no new array drawn). The caller (Navigator
     under ``use_ahrs``) supplies them already in the SAME convention the existing consumers expect
     (the controller's aliased ``roll/pitch/yaw`` + ODOMETRY-sign ``angular_rate_body``), so no
-    downstream recalibration is needed."""
+    downstream recalibration is needed.
+
+    ``vert_z_est`` / ``vert_vz_est`` (A21 vertical-channel estimator, ``racer.vertical_estimator``):
+    the smooth (altitude, vz) export the ff-owns-vertical alt-hold damps on. BOTH default ``None``
+    -> the NavState fields stay NaN (the frozen absent-marker), BYTE-IDENTICAL for every existing
+    caller; the Navigator supplies them only under ``use_vertical_estimator``."""
     if attitude_rpy_override is None:
         roll, pitch, yaw = drone_state.roll, drone_state.pitch, drone_state.yaw
     else:
@@ -238,4 +245,6 @@ def make_nav_state(
         time_since_vision_update_s=time_since_vision_update_s,
         nav_inplane_sigma=float(nav_inplane_sigma),
         nav_along_sigma=float(nav_along_sigma),
+        vert_z_est=float("nan") if vert_z_est is None else float(vert_z_est),
+        vert_vz_est=float("nan") if vert_vz_est is None else float(vert_vz_est),
     )

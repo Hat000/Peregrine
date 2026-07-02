@@ -1050,6 +1050,18 @@ def _resolve_async_detect(args, profile) -> bool:
     return bool(getattr(profile, "async_detect", False))
 
 
+def _resolve_vertical_estimator(args, profile) -> bool:
+    """Effective vertical-estimator switch: the CLI overrides the profile; 'auto' (default) defers
+    to ``DeployProfile.vertical_estimator`` (vq2_case_c -> ON, vq1_case_a -> OFF). OFF is the
+    byte-identical path (no filter constructed; the alt-hold keeps the A19c fd-of-z inputs)."""
+    cli = getattr(args, "vertical_estimator", "auto")
+    if cli == "on":
+        return True
+    if cli == "off":
+        return False
+    return bool(getattr(profile, "vertical_estimator", False))
+
+
 def _build_casec_seeker(args, gates, frame_source=None):
     """Construct the case-C Navigator + the slow gate-seeker from the deploy profile (--gate-seeker).
 
@@ -1092,7 +1104,17 @@ def _build_casec_seeker(args, gates, frame_source=None):
         from racer.vision.async_detect import AsyncDetectorProxy, AsyncDetectWorker
         vision_worker = AsyncDetectWorker(detector, frame_source)
         detector = AsyncDetectorProxy(vision_worker)
-    nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
+    # A21 VERTICAL-ESTIMATOR seam: the flag spans the navigator (own+step+export the 1-D vertical
+    # channel) and the controller (damp the alt-hold on its export), so thread the resolved switch
+    # into BOTH construction sites here. OFF (the default resolve for vq1_case_a / --vertical-
+    # estimator off) leaves the profile's config objects untouched -> byte-identical.
+    nav_config = profile.nav_config
+    controller_overrides = dict(profile.controller_overrides or {})
+    if _resolve_vertical_estimator(args, profile):
+        import dataclasses
+        nav_config = dataclasses.replace(nav_config, use_vertical_estimator=True)
+        controller_overrides["use_vertical_estimator"] = True
+    nav = Navigator(gates=gates, detector=detector, config=nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
     # steer to the absolute map position (the 2026-06-29 blind-launch fix).
@@ -1115,7 +1137,7 @@ def _build_casec_seeker(args, gates, frame_source=None):
             anchor_release_detections=args.seeker_anchor_dets,
             **(profile.seeker_overrides or {}),
         ),
-        controller=make_seeker_controller(**(profile.controller_overrides or {})),
+        controller=make_seeker_controller(**controller_overrides),
         detector=detector,
     )
     return nav, seeker, profile, vision_worker
@@ -1177,6 +1199,15 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["time_since_vision_s"] = None if (tsv != tsv or tsv == float("inf")) else tsv
     except Exception:
         rec["time_since_vision_s"] = None
+
+    # --- A21 vertical-channel estimator export (NaN -> null when off/unseeded) ---
+    try:
+        vze = float(getattr(nav_state, "vert_z_est", float("nan")))
+        vvze = float(getattr(nav_state, "vert_vz_est", float("nan")))
+        rec["vert_z_est"] = None if vze != vze else vze
+        rec["vert_vz_est"] = None if vvze != vvze else vvze
+    except Exception:
+        rec["vert_z_est"] = rec["vert_vz_est"] = None
 
     # --- commanded control ---
     try:
@@ -1289,6 +1320,10 @@ def _fly_gate_seeker(client, args, flight_idx: int,
               f"ticks at {args.rate:g} Hz on the freshest COMPLETED detection (never blocks on "
               f"the GPU). [vision-timing] 'detect' now times CACHE HITS (~0 ms); the real detect "
               f"latency is on the [async-detect] exit line.")
+    if _resolve_vertical_estimator(args, profile):
+        print("  [vertical-estimator] ON -> alt-hold z + damping rate come from the 1-D vertical "
+              "channel (IMU a_up integrated, floor-pin corrected; racer.vertical_estimator), not "
+              "the dead-reckoned KF z + its finite difference (A21 egress->ceiling-climb fix).")
 
     tick        = 1.0 / args.rate
     deadline    = time.monotonic() + args.max_seconds
@@ -1887,6 +1922,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "blocks on the ~250 ms host-GPU-arbitration detect stall), so the loop "
                          "holds --rate and the sim's zero-order-hold gap shrinks ~300 ms -> ~33 ms. "
                          "OFF is the byte-identical synchronous path.")
+    ap.add_argument("--vertical-estimator", default="auto", choices=["auto", "on", "off"],
+                    help="Damp the --gate-seeker alt-hold on the dedicated 1-D vertical-channel "
+                         "estimator (A21 egress->ceiling-climb fix): 'auto' (default) follows the "
+                         "deploy profile (vq2_case_c -> ON, vq1_case_a -> OFF); 'on'/'off' force "
+                         "it. ON integrates the IMU a_up between the sparse vision floor_height "
+                         "pins (racer.vertical_estimator) and the ff-owns-vertical alt-hold reads "
+                         "ITS smooth (z, vz) instead of the pin-teleporting dead-reckoned z + its "
+                         "finite difference. OFF is the byte-identical A19c fd-of-z path.")
     ap.add_argument("--seeker-weights", default=None,
                     help="YOLO detector weights for --seeker-detector yolo, SEPARATE from --checkpoint "
                          "(the RL actor). A single .pt path, or an 'a.pt++b.pt' spec to load the "

@@ -91,6 +91,21 @@ class DeployProfile:
     # byte-identical synchronous path (the worker module is not even imported); vq2_case_c turns
     # it ON. fly_rl's ``--async-detect on|off`` overrides the profile either way (A/B seam).
     async_detect: bool = False
+    # A21 VERTICAL ESTIMATOR (2026-07-02): run the dedicated 1-D vertical-channel filter
+    # (racer.vertical_estimator — IMU a_up integrated between the sparse vision floor_height pins)
+    # and have the ff-owns-vertical alt-hold damp on ITS smooth (z, vz) instead of the 6-state KF's
+    # dead-reckoned z + its finite difference. WHY: the KF z step-teleports when a tight floor pin
+    # lands (-1.435 m in one tick, run 20260702_040036) and is blind to the real climb between pins
+    # (integrated a_up hit +4-5 m/s upward that est_z never showed) — the damper reacted to steps
+    # instead of the actual vertical rate, and the drone climbed over gate 0 into the ceiling. The
+    # fly_rl construction seam threads this into BOTH sides of the seam it spans:
+    # NavigatorConfig.use_vertical_estimator (own + step + pin-correct the filter, export on
+    # NavState) and Controller.use_vertical_estimator (consume the export). A SEPARATE flag from
+    # ff_owns_vertical so the estimator can be A/B'd against the A19c fd-of-z path independently.
+    # Default OFF = byte-identical (no filter constructed, NavState fields NaN, controller on the
+    # fd path); vq2_case_c turns it ON. fly_rl's ``--vertical-estimator on|off`` overrides the
+    # profile either way (A/B seam).
+    vertical_estimator: bool = False
 
 
 def vq1_case_a() -> DeployProfile:
@@ -107,6 +122,7 @@ def vq1_case_a() -> DeployProfile:
         seeker_overrides=None,          # no seeker overrides (byte-identical seeker config)
         controller_overrides=None,      # no controller overrides (byte-identical controller gains)
         async_detect=False,             # synchronous detect (byte-identical VQ1 loop scheduling)
+        vertical_estimator=False,       # no vertical channel (byte-identical VQ1 alt-hold inputs)
     )
 
 
@@ -214,6 +230,11 @@ def vq2_case_c() -> DeployProfile:
         # ceiling at gate 0. Loop holds --rate (~30 Hz); vision lands at whatever rate the GPU
         # allows (~4 Hz busy) and the OOSM/gyro-propagation chain absorbs the ~250 ms obs age.
         async_detect=True,
+        # A21 vertical estimator (2026-07-02): the egress->ceiling-climb fix. The alt-hold's z +
+        # damping rate come from the dedicated a_up-integrating, floor-pin-corrected vertical
+        # channel — smooth across pin teleports AND live to a real climb between pins (the two
+        # failure modes of the dead-reckoned z the fd path read). See DeployProfile.vertical_estimator.
+        vertical_estimator=True,
     )
 
 

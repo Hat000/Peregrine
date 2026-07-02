@@ -99,6 +99,10 @@ from racer.vision.detector import detect_cached
 # invokes them, so they cannot perturb the byte-identical default.
 from racer.vision.floor_height import estimate_floor_height
 from racer.vision.heading_vp import estimate_heading
+# A21 vertical-channel estimator (vertical-estimator scope, 2026-07-02). CONSUMED behind
+# use_vertical_estimator; imported here (cheap, pure-numpy module-level) so the gated code path is a
+# straight call. The OFF path never constructs one, so it cannot perturb the byte-identical default.
+from racer.vertical_estimator import VerticalEstimator, a_up_from_specific_force
 
 _WORLD_DOWN = np.array([0.0, 0.0, 1.0])   # NED down
 
@@ -388,6 +392,17 @@ class NavigatorConfig:
     vp_yaw_decimate: int = 1
     floor_height_decimate: int = 1
 
+    # --- A21 vertical-channel estimator (egress->ceiling-climb fix, 2026-07-02) ---
+    # Own a 1-D [z, vz, bias] vertical KF (racer.vertical_estimator) beside the 6-state KF: IMU
+    # a_up integrated per tick, corrected by the SAME accepted floor_height pins the KF gets. WHY a
+    # second surface: the 6-state KF's z is dead-reckoning between sparse pins and STEP-TELEPORTS
+    # when one lands (run 20260702_040036: -1.435 m in one tick), so the controller's vertical
+    # damper reads teleports instead of the real climb. The dedicated channel exports a SMOOTH
+    # (z, vz) pair on NavState.vert_z_est / vert_vz_est for the ff-owns-vertical alt-hold to damp
+    # on. OFF by default -> no estimator constructed, NavState fields stay NaN, byte-identical.
+    # vq2_case_c opts in via DeployProfile.vertical_estimator (the fly_rl construction seam).
+    use_vertical_estimator: bool = False
+
 
 @dataclass
 class _VisionDiag:
@@ -490,6 +505,9 @@ class Navigator:
     # Mag-free gate-bearing yaw lock: the latest RACE_STATUS active gate index (from ds.active_gate_index),
     # refreshed each update(). None until a RACE_STATUS arrives -> the gate-bearing yaw lock no-ops.
     _active_gate_index: int | None = field(default=None, repr=False)
+    # A21 vertical-channel estimator (use_vertical_estimator): constructed + seeded at _initialize
+    # ONLY when the flag is ON; None on the OFF path (never stepped, never exported -> byte-identical).
+    _vert_est: VerticalEstimator | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._gates_by_id = {g.gate_id: g for g in self.gates}
@@ -548,6 +566,11 @@ class Navigator:
             self._ahrs.seed(AHRSAttitudeSource.level_seed_from_accel(ds.accel_body))
             self._ahrs_odo_quat = None
             self._ahrs_odo_rate = None
+        # A21 vertical-channel estimator: seed at the SAME z the 6-state KF seeded with (the pad
+        # altitude — the origin in true case C), at rest. OFF path: stays None (byte-identical).
+        if self.config.use_vertical_estimator:
+            self._vert_est = VerticalEstimator()
+            self._vert_est.seed(float(pos[2]))
         self._last_sim_time_ns = int(ds.sim_time_ns)
         self._reset_counter = int(ds.reset_counter)
         self.initialized = True
@@ -564,6 +587,7 @@ class Navigator:
         self._ahrs = None                  # L1: re-seed the AHRS on the next _initialize (sim restart)
         self._ahrs_odo_quat = None
         self._ahrs_odo_rate = None
+        self._vert_est = None              # A21: re-seed the vertical channel on the next _initialize
 
     # -- per-tick -----------------------------------------------------------
     def update(self, ds: DroneState, frame: Frame | None = None) -> NavState:
@@ -614,6 +638,10 @@ class Navigator:
             self.kf.predict(ds.accel_body, R_wb, dt, int(ds.sim_time_ns))   # RewindKF: IMU-clock stamp
         else:
             self.kf.predict(ds.accel_body, R_wb, dt)
+        # A21 vertical channel: integrate the VERIFIED a_up decode (specific force + the TRUE R_wb)
+        # BEFORE vision, so a floor pin this tick corrects the propagated state (mirrors the KF order).
+        if self._vert_est is not None:
+            self._vert_est.predict(a_up_from_specific_force(ds.accel_body, R_wb), dt)
         self._maybe_run_vision(ds, frame, R_wb)
         if self.config.use_given_position and ds.position_ned is not None:
             self.kf.update_position(
@@ -771,6 +799,11 @@ class Navigator:
         z_ned = np.array([p[0], p[1], z_world])                  # in-plane == current => 1-DOF in z
         cov = np.diag([_FLOOR_INPLANE_STD ** 2, _FLOOR_INPLANE_STD ** 2, var_z])
         self._apply_pos_fix(z_ned, cov, t_fix_ns)
+        # A21 vertical channel: the SAME accepted pin (same z, same variance) corrects the dedicated
+        # vertical estimator — its Kalman gain BOUNDS the correction, so the exported vert_z_est
+        # never step-teleports the way the tight KF fix steps the 6-state z. OFF path: no-op.
+        if self._vert_est is not None:
+            self._vert_est.update_z(z_world, var_z)
         self.vision_diag.n_floor_z_applied += 1
         self.n_floor_z_total += 1
         self.vision_diag.last_floor_height_m = float(est.height_m)
@@ -1125,10 +1158,16 @@ class Navigator:
         if self.config.use_ahrs and self._ahrs_odo_quat is not None:
             att_override = euler_from_quat_wxyz(self._ahrs_odo_quat)
             rate_override = self._ahrs_odo_rate
+        # A21 vertical channel: export the smooth (z, vz) pair when the estimator is live; None
+        # otherwise -> the NavState fields stay NaN (make_nav_state's absent-marker, byte-identical).
+        vert_z = vert_vz = None
+        if self._vert_est is not None and self._vert_est.seeded:
+            vert_z, vert_vz = self._vert_est.z, self._vert_est.vz
         return make_nav_state(self.kf, ds, tsv, nav_inplane_sigma=inplane_sig,
                               nav_along_sigma=along_sig,
                               attitude_rpy_override=att_override,
-                              angular_rate_override=rate_override)
+                              angular_rate_override=rate_override,
+                              vert_z_est=vert_z, vert_vz_est=vert_vz)
 
     def obs_drone_state(self, ds: DroneState) -> DroneState:
         """The DroneState the case-C OBS seam should consume (use_ahrs attitude routing, GAP #2).
