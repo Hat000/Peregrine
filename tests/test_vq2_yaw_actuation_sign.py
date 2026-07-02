@@ -243,6 +243,60 @@ def test_two_gates_near_left_and_far_beyond_acquire_range_targets_the_near_one()
 
 
 # ===========================================================================
+# CLOSED LOOP — the run-20260702_152528 physics: realized yaw rate = +2.1 x wire
+# ===========================================================================
+def _closed_loop_final_bearing(controller_sign_override: dict, n_ticks=90, dt_s=0.033):
+    """Fly the yaw channel closed-loop against the MEASURED wire plant (T1: realized TRUE yaw
+    rate = +2.1 x the wire value — the plain FRD sign at the known realization gain). Each tick:
+    detector projects the gate from the CURRENT true yaw -> seeker+controller command -> the wire
+    value integrates the true yaw. Returns the final gate bearing error |yaw_to_gate - true_yaw|.
+
+    This is the loop-STABILITY regression the per-tick sign asserts can't express: with the
+    correct sign the bearing error CONVERGES to ~0 (the drone turns onto the gate); with the old
+    VQ1 z=-1 sign the SAME harness positive-feedbacks and the bearing DIVERGES — the live gate-2
+    spin-away, reproduced offline."""
+    from racer.frames import R_world_from_body
+    profile = vq2_case_c()
+    gate = _gate([10.0, 5.0, -2.5], normal=[1, 0, 0])          # bearing atan2(5,10) ~ +0.46 rad
+    det = _MultiGateProjDetector([gate], np.zeros(3), np.eye(3))
+    cfg = GateSeekerConfig(
+        settle_s=0.0, launch_ramp_s=0.0, use_spawn_egress=False,
+        anchor_release_detections=1, pursuit_ramp_s=0.0, forward_ramp_s=0.0,
+        vertical_align_ramp_s=0.0,
+        **(profile.seeker_overrides or {}),
+    )
+    overrides = {**(profile.controller_overrides or {}), **controller_sign_override}
+    seeker = GateSeeker(config=cfg, controller=make_seeker_controller(**overrides), detector=det)
+    psi = 0.0                                                   # TRUE yaw (world), starts north
+    for k in range(n_ticks):
+        t_ns = int(k * dt_s * 1e9)
+        det.R_wb = R_world_from_body(0.0, 0.0, psi)             # camera follows the true yaw
+        nav = NavState(sim_time_ns=t_ns, position_ned=np.zeros(3), velocity_ned=np.zeros(3),
+                       yaw=-psi,                                # the ODO conjugation (yaw negated)
+                       time_since_vision_update_s=float("inf"))
+        cmd = seeker.command_visual(nav, _frame(k, t_ns), 0)
+        wire = float(cmd.body_rate[2]) * VQ2_CMD_RATE_SCALE     # what MavlinkClient emits
+        psi += _VQ2_REALIZED_GAIN * wire * dt_s                 # T1: realized = +2.1 x wire (FRD)
+    los = np.arctan2(5.0, 10.0)
+    return abs(float(np.arctan2(np.sin(los - psi), np.cos(los - psi))))
+
+
+def test_closed_loop_converges_onto_the_gate_with_the_fixed_sign():
+    """With the A22 identity yaw sign the closed yaw loop is NEGATIVE feedback: 3 s of ticks turn
+    the nose onto the gate bearing (error -> ~0). The live-flight physics, made a unit test."""
+    err = _closed_loop_final_bearing({})                        # the vq2_case_c profile as shipped
+    assert err < 0.08, f"loop must converge onto the gate; final bearing error {err:.3f} rad"
+
+
+def test_closed_loop_diverges_with_the_old_vq1_yaw_sign():
+    """COUNTERFACTUAL pin: the SAME harness with the old VQ1 z=-1 sign positive-feedbacks — the
+    bearing error GROWS (the drone turns away from gate 2, run 20260702_152528). If the plant
+    convention here ever drifts, this and the test above fail together, flagging the harness."""
+    err = _closed_loop_final_bearing({"body_rate_sign": (1.0, 1.0, -1.0)})
+    assert err > 0.5, f"old sign must diverge away from the gate; final bearing error {err:.3f} rad"
+
+
+# ===========================================================================
 # The profile seam: VQ2 opts in; VQ1 / the seeker default stay byte-identical
 # ===========================================================================
 def test_vq2_profile_carries_identity_body_rate_sign():
