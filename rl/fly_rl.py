@@ -1005,6 +1005,17 @@ def _prewarm_detector(args) -> None:
     non-yolo / non-gate-seeker runs are byte-identical (nothing is built, nothing stashed)."""
     if not getattr(args, "gate_seeker", False) or args.seeker_detector != "yolo":
         return
+    # ONE-LINE env fingerprint next to the [detector] device log: two python envs exist on this
+    # box (repo .venv vs system), and a run from the wrong one silently changes torch/CUDA
+    # behaviour. Printed BEFORE the load so it lands even if the pre-warm itself fails.
+    try:
+        import torch
+        import ultralytics
+        print(f"  [env] python={sys.executable} torch={torch.__version__} "
+              f"ultralytics={getattr(ultralytics, '__version__', '?')} "
+              f"cuda_available={torch.cuda.is_available()}")
+    except Exception as exc:
+        print(f"  [env] python={sys.executable} (torch/ultralytics probe failed: {exc})")
     try:
         import numpy as np
 
@@ -1027,12 +1038,34 @@ def _prewarm_detector(args) -> None:
               file=sys.stderr)
 
 
-def _build_casec_seeker(args, gates):
+def _resolve_async_detect(args, profile) -> bool:
+    """Effective async-detect switch: the CLI overrides the profile; 'auto' (default) defers to
+    ``DeployProfile.async_detect`` (vq2_case_c -> ON, vq1_case_a -> OFF). OFF is the byte-identical
+    synchronous path (the async module is never imported)."""
+    cli = getattr(args, "async_detect", "auto")
+    if cli == "on":
+        return True
+    if cli == "off":
+        return False
+    return bool(getattr(profile, "async_detect", False))
+
+
+def _build_casec_seeker(args, gates, frame_source=None):
     """Construct the case-C Navigator + the slow gate-seeker from the deploy profile (--gate-seeker).
 
-    Returns ``(navigator, seeker, profile)``. The Navigator runs the SELF-LOCALIZING estimator
-    (use_ahrs + vision yaw/z + gate-relative chain, NO given position) with an opt-in detector;
-    the seeker is the transparent slow pursuit controller. No torch / no RL checkpoint needed."""
+    Returns ``(navigator, seeker, profile, vision_worker)``. The Navigator runs the SELF-LOCALIZING
+    estimator (use_ahrs + vision yaw/z + gate-relative chain, NO given position) with an opt-in
+    detector; the seeker is the transparent slow pursuit controller. No torch / no RL checkpoint
+    needed.
+
+    ASYNC-DETECT (A20 GPU-contention fix): when the effective flag is ON (profile.async_detect /
+    ``--async-detect on``) and a detector + ``frame_source`` exist, the real detector is wrapped in
+    an :class:`racer.vision.async_detect.AsyncDetectWorker` (ONE daemon thread running detect
+    continuously on the freshest frame) and the Navigator + GateSeeker are handed the SHARED
+    :class:`AsyncDetectorProxy` instead — their ``detect_cached`` calls then serve the worker's
+    published snapshot and NEVER block on the ~250 ms GPU stall. ``vision_worker`` is the worker
+    (caller starts/stops it) or ``None`` on the synchronous path, which is byte-identical to today.
+    """
     from racer.deploy_profile import get_profile
     from racer.gate_seeker import GateSeeker, GateSeekerConfig, make_seeker_controller
     from racer.navigator import Navigator
@@ -1052,6 +1085,13 @@ def _build_casec_seeker(args, gates):
         # build it here (byte-identical to the legacy path when no pre-warm ran).
         detector = (getattr(args, "_prewarmed_detector", None)
                     or GateDetector.load(_resolve_seeker_weights(args)))  # weights (artifact-pipe)
+    # ASYNC-DETECT seam: swap in the non-blocking proxy for BOTH consumers (they must share ONE
+    # instance so detect_cached keeps deduping per frame_id, exactly like the shared real detector).
+    vision_worker = None
+    if detector is not None and frame_source is not None and _resolve_async_detect(args, profile):
+        from racer.vision.async_detect import AsyncDetectorProxy, AsyncDetectWorker
+        vision_worker = AsyncDetectWorker(detector, frame_source)
+        detector = AsyncDetectorProxy(vision_worker)
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
@@ -1078,7 +1118,7 @@ def _build_casec_seeker(args, gates):
         controller=make_seeker_controller(**(profile.controller_overrides or {})),
         detector=detector,
     )
-    return nav, seeker, profile
+    return nav, seeker, profile, vision_worker
 
 
 # ---------------------------------------------------------------------------
@@ -1236,10 +1276,19 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         return result
     n_gates = len(gates)
 
-    nav, seeker, _ = _build_casec_seeker(args, gates)
+    # ASYNC-DETECT (A20): thread the freshest-frame source into the builder; when the effective
+    # flag is ON it returns a started-by-us worker + hands nav/seeker the non-blocking proxy.
+    nav, seeker, _, vision_worker = _build_casec_seeker(
+        args, gates, frame_source=lambda: getattr(client, "_latest_frame", None))
     print(f"\n[gate-seeker] profile={profile.name} self_localizing={profile.self_localizing} "
           f"cmd_rate_scale={client.cmd_rate_scale:g} detector={args.seeker_detector} "
           f"cruise={args.seeker_speed:g} m/s  gates={n_gates}  max={args.max_seconds:g}s ...")
+    if vision_worker is not None:
+        vision_worker.start()
+        print(f"  [async-detect] ON -> detect runs in its own worker thread; the control loop "
+              f"ticks at {args.rate:g} Hz on the freshest COMPLETED detection (never blocks on "
+              f"the GPU). [vision-timing] 'detect' now times CACHE HITS (~0 ms); the real detect "
+              f"latency is on the [async-detect] exit line.")
 
     tick        = 1.0 / args.rate
     deadline    = time.monotonic() + args.max_seconds
@@ -1260,6 +1309,8 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     n_ticks      = 0
     worst_work_ms = 0.0
     n_over_budget = 0
+    _last_p_t     = loop_t0   # last 1 Hz status-print time (live loop-Hz window, async mode)
+    _last_p_ticks = 0         # n_ticks at the last status print
 
     reset_counter0 = int(client.state.reset_counter)
     prev_pos = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
@@ -1271,6 +1322,12 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     # Guard on session_dir so runs without a recording dir are byte-identical.
     _nav_log: list = []   # populated only when session_dir is not None
     _nav_log_errors: int = 0
+
+    # --- async-detect consumption stats (obs age per consumed tick; logging only) ---
+    _obs_age_sum_ms = 0.0
+    _obs_age_max_ms = 0.0
+    _obs_age_last_ms = float("nan")
+    _n_obs_ticks = 0
 
     while time.monotonic() < deadline:
         while time.monotonic() < next_t:
@@ -1322,7 +1379,23 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         # The video thread owns the single UDP receiver and stashes the latest reassembled Frame
         # in client._latest_frame; we consume it here, once per new frame_id (the navigator's
         # _maybe_run_vision is itself frame_id-idempotent, so re-feeding the same frame is a no-op).
-        frame: Frame | None = getattr(client, "_latest_frame", None)
+        # ASYNC-DETECT (A20): consume the worker's latest COMPLETED (frame, detections) snapshot
+        # instead — nav/seeker hold the AsyncDetectorProxy, so their detect_cached on THIS frame_id
+        # serves the published observations without ever touching the model. Feeding only the
+        # worker's own frame guarantees the id matches; a not-yet-detected fresher camera frame is
+        # deliberately NOT consumed (its detect would block/miss). None until the first detect
+        # completes -> the existing no-frame hold/settle regimes cover startup.
+        if vision_worker is not None:
+            _vres = vision_worker.latest()
+            frame: Frame | None = _vres.frame if _vres is not None else None
+            if _vres is not None:
+                _obs_age_last_ms = _vres.age_ms()
+                _obs_age_sum_ms += _obs_age_last_ms
+                _n_obs_ticks += 1
+                if _obs_age_last_ms > _obs_age_max_ms:
+                    _obs_age_max_ms = _obs_age_last_ms
+        else:
+            frame = getattr(client, "_latest_frame", None)
 
         # --- estimate (case-C self-localizing) then command the MAP-FREE visual servo ---
         # The seeker chases the gate the CAMERA SEES (command_visual): it runs its own detect+PnP on
@@ -1352,12 +1425,23 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         if now - last_p >= 1.0:
             p = nav_state.position_ned
             br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
+            # async-detect live triple (loop Hz / vision fps / obs age): the operator's one-glance
+            # "loop 30 Hz, vision 4 Hz, obs age ~250 ms" readout. Empty on the sync path so the
+            # OFF-path status line is byte-identical.
+            if vision_worker is not None:
+                _hz_live = (n_ticks - _last_p_ticks) / max(now - _last_p_t, 1e-6)
+                _age_s = f"{_obs_age_last_ms:4.0f}" if _obs_age_last_ms == _obs_age_last_ms else "  --"
+                async_s = f"hz={_hz_live:4.1f} vfps={vision_worker.fps():4.1f} age={_age_s}ms "
+            else:
+                async_s = ""
             print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} "
                   f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) "
                   f"thr={cmd.thrust:.3f} rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
+                  f"{async_s}"
                   f"tsv={nav_state.time_since_vision_update_s:.2f}s   ",
                   end="\r", flush=True)
             last_p = now
+            _last_p_t, _last_p_ticks = now, n_ticks
 
     if final_state == "IDLE":
         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
@@ -1381,6 +1465,29 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     result["achieved_hz"]       = round(achieved_hz, 2)
     result["worst_work_ms"]     = round(worst_work_ms, 1)
     result["loop_over_budget_pct"] = round(over_pct, 1)
+
+    # --- async-detect verdict: the decoupling triple (loop Hz above / vision fps / obs age) -------
+    # The REAL detect latency lives here (the worker timed every model call); [vision-timing]'s
+    # 'detect' bucket only times the control loop's cache hits in async mode. Stop the worker
+    # FIRST so its stats are final (daemon thread -> a GPU-stalled join miss cannot hang exit).
+    if vision_worker is not None:
+        vision_worker.stop()
+        _age_mean = _obs_age_sum_ms / max(_n_obs_ticks, 1)
+        print(f"  [async-detect] vision {vision_worker.fps():.1f} fps "
+              f"(n={vision_worker.n_detects}, detect mean={vision_worker.mean_detect_ms():.0f}ms "
+              f"max={vision_worker.max_detect_ms:.0f}ms); obs age mean={_age_mean:.0f}ms "
+              f"max={_obs_age_max_ms:.0f}ms over {_n_obs_ticks} consumed ticks; "
+              f"errors={vision_worker.n_errors}"
+              + (f" last={vision_worker.last_error}" if vision_worker.n_errors else ""))
+        result["async_detect"] = {
+            "vision_fps": round(vision_worker.fps(), 2),
+            "n_detects": vision_worker.n_detects,
+            "detect_mean_ms": round(vision_worker.mean_detect_ms(), 1),
+            "detect_max_ms": round(vision_worker.max_detect_ms, 1),
+            "obs_age_mean_ms": round(_age_mean, 1),
+            "obs_age_max_ms": round(_obs_age_max_ms, 1),
+            "worker_errors": vision_worker.n_errors,
+        }
 
     # --- vision-timing: per-STEP breakdown of the per-frame vision pipeline (logging only) --------
     # Pins WHICH _maybe_run_vision sub-step (detect / vp_yaw [VP RANSAC + Manhattan lines] /
@@ -1771,6 +1878,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "(estimator coasts on IMU/AHRS with no vision fix -- diagnostic only). The yolo "
                          "path REQUIRES real detector weights via --seeker-weights (fails loud at startup "
                          "if only the RL-actor --checkpoint default is present).")
+    ap.add_argument("--async-detect", default="auto", choices=["auto", "on", "off"],
+                    help="DECOUPLE the gate detector from the --gate-seeker control loop (A20 "
+                         "GPU-contention fix): 'auto' (default) follows the deploy profile "
+                         "(vq2_case_c -> ON, vq1_case_a -> OFF); 'on'/'off' force it. ON runs "
+                         "detect continuously in ONE daemon worker thread and each control tick "
+                         "consumes the freshest COMPLETED detection (latest-wins snapshot, never "
+                         "blocks on the ~250 ms host-GPU-arbitration detect stall), so the loop "
+                         "holds --rate and the sim's zero-order-hold gap shrinks ~300 ms -> ~33 ms. "
+                         "OFF is the byte-identical synchronous path.")
     ap.add_argument("--seeker-weights", default=None,
                     help="YOLO detector weights for --seeker-detector yolo, SEPARATE from --checkpoint "
                          "(the RL actor). A single .pt path, or an 'a.pt++b.pt' spec to load the "

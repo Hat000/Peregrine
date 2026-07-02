@@ -82,6 +82,15 @@ class DeployProfile:
     # slew limit) to de-saturate the A11 egress->pursuit handoff overshoot + the bang-bang clip.
     # Default keeps existing callers / pickles forward-compatible.
     controller_overrides: dict | None = None
+    # A20 ASYNC-DETECT (2026-07-01): run the gate detector in its OWN daemon worker thread
+    # (racer.vision.async_detect) so the ~30 Hz control loop NEVER blocks on the ~250 ms
+    # GPU-arbitration detect stall (ShadowPC passthrough RTX 2000 Ada; the sim's render load
+    # starves guest CUDA — confirmed not fixable guest-side). The loop consumes the freshest
+    # COMPLETED detection (however old); the RewindKF applies it at CAPTURE time (OOSM) and the
+    # ESKF gyro-propagates between fixes, so staleness is the designed-for case. Default OFF =
+    # byte-identical synchronous path (the worker module is not even imported); vq2_case_c turns
+    # it ON. fly_rl's ``--async-detect on|off`` overrides the profile either way (A/B seam).
+    async_detect: bool = False
 
 
 def vq1_case_a() -> DeployProfile:
@@ -97,6 +106,7 @@ def vq1_case_a() -> DeployProfile:
         gyro_sign=(1.0, 1.0, 1.0),     # identity gyro (no live-wire correction)
         seeker_overrides=None,          # no seeker overrides (byte-identical seeker config)
         controller_overrides=None,      # no controller overrides (byte-identical controller gains)
+        async_detect=False,             # synchronous detect (byte-identical VQ1 loop scheduling)
     )
 
 
@@ -198,6 +208,12 @@ def vq2_case_c() -> DeployProfile:
         #     z (NOT raw vel[2]). Without this, the vertical channel ends the flight regardless of control.
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True},
+        # A20 async-detect (2026-07-01): decouple the ~250 ms GPU-stalled YOLO detect from the
+        # control loop (worker thread + latest-wins snapshot; racer.vision.async_detect). Fixes
+        # the ~3 Hz loop -> ~300 ms ZOH command-hold -> one held climb command flies into the
+        # ceiling at gate 0. Loop holds --rate (~30 Hz); vision lands at whatever rate the GPU
+        # allows (~4 Hz busy) and the OOSM/gyro-propagation chain absorbs the ~250 ms obs age.
+        async_detect=True,
     )
 
 
