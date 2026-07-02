@@ -2185,6 +2185,21 @@ def main() -> int:
             rec.record_mavlink(bytes(buf))
     client.on_message = _on_msg
 
+    # RAW OUTGOING-COMMAND mirror (2026-07-01 telemetry-completeness fix). The tlog logs
+    # RECEIVED messages only (pymavlink writes its logfile on recv), so until now every
+    # SET_ATTITUDE_TARGET we SENT was unlogged — a ceiling-crash post-mortem had commanded
+    # thrust only via the derived nav_estimate.jsonl. Mirror every control command
+    # (post-scale body rates + collective + type_mask + mono/sim stamps) into
+    # <session>/commands.jsonl. TIMING-SAFE: MavlinkClient._tap_command builds one small
+    # dict (no I/O, exceptions counted not raised) and Recorder.record_command is an
+    # enqueue-only put_nowait — the disk write happens on the recorder's writer thread,
+    # the exact same guarantee record_mavlink already provides at ~10k msgs/flight.
+    def _on_cmd(info: dict):
+        rec = holder["rec"]
+        if rec is not None:
+            rec.record_command(info)
+    client.on_command = _on_cmd
+
     results = []
     rc = 0
     try:

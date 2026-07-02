@@ -188,6 +188,16 @@ class MavlinkClient:
         # parsing. The recorder sets this to capture msg.get_msgbuf() (raw wire bytes).
         # Kept orthogonal so recording never perturbs the parse/state path.
         self.on_message: Callable[[Any], None] | None = None
+        # Optional OUTGOING-command tap, called with one small dict per control command
+        # AFTER it is written to the wire (see _tap_command). Mirrors on_message but for
+        # the uplink: pymavlink's tlog records RECEIVED messages only, so without this
+        # every SET_ATTITUDE_TARGET we send is UNLOGGED (2026-07-01: a ceiling-crash
+        # post-mortem had commanded thrust only via the derived nav_estimate.jsonl).
+        # The recorder sets this to enqueue into <session>/commands.jsonl. HOT-PATH
+        # CONTRACT: the hook must only enqueue (never block/IO); a hook failure is
+        # counted on on_command_errors, never raised into the control loop.
+        self.on_command: Callable[[dict], None] | None = None
+        self.on_command_errors = 0
         # First-contact diagnostics (events / heartbeat metadata, not steady telemetry, so
         # kept OFF the immutable DroneState snapshot). Populated by _handle; read by the probes.
         self.last_command_ack: dict | None = None   # {command, result, result_name, recv_monotonic_ns}
@@ -445,6 +455,37 @@ class MavlinkClient:
         return int(time.monotonic() * 1000) & 0xFFFFFFFF
 
     # -- control output -----------------------------------------------------
+    def _tap_command(self, cmd: ControlCommand, type_mask: int,
+                     body_rate_sent=None, extra: dict | None = None) -> None:
+        """Mirror one JUST-SENT control command to the ``on_command`` hook.
+
+        Called only when a hook is installed. Builds ONE small plain-python dict (no
+        numpy in the record, so the recorder's writer thread can json.dumps it as-is)
+        and hands it to the hook. TIMING-SAFE BY CONSTRUCTION: no I/O here, and the
+        recorder's hook is an enqueue-only put_nowait; any exception is swallowed and
+        counted (a logging bug must NEVER perturb or kill the 30 Hz control loop)."""
+        try:
+            info: dict = {
+                "t_mono_ns": time.monotonic_ns(),                # our monotonic send stamp
+                "sim_time_ns": int(self.state.sim_time_ns),      # sim master clock at send
+                "mode": cmd.mode.name,
+                "type_mask": int(type_mask),
+                "thrust": float(cmd.thrust) if cmd.thrust is not None else None,
+                # RAW commanded FRD body rates (pre cmd_rate_scale) ...
+                "body_rate_frd": ([float(x) for x in cmd.body_rate]
+                                  if cmd.body_rate is not None else None),
+                # ... and the rates ACTUALLY emitted on the wire (post-scale), so the
+                # command->realized calibration is reconstructible from the log alone.
+                "body_rate_sent": ([float(x) for x in body_rate_sent]
+                                   if body_rate_sent is not None else None),
+                "cmd_rate_scale": float(self.cmd_rate_scale),
+            }
+            if extra:
+                info.update(extra)
+            self.on_command(info)
+        except Exception:
+            self.on_command_errors += 1
+
     def send_command(self, cmd: ControlCommand) -> None:
         """Translate a :class:`ControlCommand` into the appropriate MAVLink message."""
         assert self.conn is not None
@@ -467,6 +508,15 @@ class MavlinkClient:
                 cmd.yaw if cmd.yaw is not None else 0.0,
                 cmd.yaw_rate if cmd.yaw_rate is not None else 0.0,
             )
+            if self.on_command is not None:
+                self._tap_command(cmd, mask, extra={
+                    "position_ned": ([float(v) for v in cmd.position_ned]
+                                     if cmd.position_ned is not None else None),
+                    "velocity_ned": ([float(v) for v in cmd.velocity_ned]
+                                     if cmd.velocity_ned is not None else None),
+                    "yaw": float(cmd.yaw) if cmd.yaw is not None else None,
+                    "yaw_rate": float(cmd.yaw_rate) if cmd.yaw_rate is not None else None,
+                })
         elif cmd.mode == ControlMode.ATTITUDE:
             assert cmd.attitude_quat_wxyz is not None and cmd.thrust is not None
             self.conn.mav.set_attitude_target_send(
@@ -478,6 +528,10 @@ class MavlinkClient:
                 0.0, 0.0, 0.0,
                 float(cmd.thrust),
             )
+            if self.on_command is not None:
+                self._tap_command(cmd, _ATT_MASK_ATTITUDE, extra={
+                    "attitude_quat_wxyz": [float(x) for x in cmd.attitude_quat_wxyz],
+                })
         elif cmd.mode == ControlMode.BODY_RATE:
             assert cmd.body_rate is not None and cmd.thrust is not None
             # cmd_rate_scale: command->realized body-rate calibration (default 1.0 == identity, so
@@ -494,6 +548,11 @@ class MavlinkClient:
                 float(r[0]) * s, float(r[1]) * s, float(r[2]) * s,
                 float(cmd.thrust),
             )
+            if self.on_command is not None:
+                self._tap_command(
+                    cmd, _ATT_MASK_BODY_RATE,
+                    body_rate_sent=(float(r[0]) * s, float(r[1]) * s, float(r[2]) * s),
+                )
         else:
             raise ValueError(f"unknown control mode: {cmd.mode!r}")
 

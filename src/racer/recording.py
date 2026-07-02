@@ -13,6 +13,11 @@ Session layout (``data/runs/<stamp>_<label>/``):
   ``video.bin``         raw JPEG frames concatenated — the exact bytes the sim sent.
   ``video_index.jsonl`` one JSON object per frame: frame_id, sim_time_ns, recv_monotonic_ns,
                         and the byte offset + length into ``video.bin`` (seekable).
+  ``commands.jsonl``    one JSON object per OUTGOING control command (SET_ATTITUDE_TARGET /
+                        SET_POSITION_TARGET): t_mono_ns, sim_time_ns, mode, type_mask, body
+                        rates (raw + post-scale) and collective. The tlog records RECEIVED
+                        messages only, so this is the ONLY log of what we actually commanded.
+                        Written lazily (absent when no commands were mirrored).
   ``meta.json``         session metadata + a monotonic<->UNIX clock bridge + close-out stats.
 
 Clocks: every record is stamped at RECEIVE time (``time.monotonic_ns``), not write time,
@@ -69,6 +74,7 @@ class Recorder:
         # writer-thread-only counters (no lock needed: single writer)
         self._n_mav = 0
         self._n_frames = 0
+        self._n_cmds = 0
         self._mav_bytes = 0
         self._video_bytes = 0
         self._video_offset = 0
@@ -80,6 +86,10 @@ class Recorder:
         self._tlog = None
         self._video = None
         self._index = None
+        # commands.jsonl is opened LAZILY by the writer thread on the first record_command
+        # (a session that never sends commands leaves no empty file behind; existing
+        # sessions' on-disk layout is unchanged).
+        self._cmds = None
 
     # -- lifecycle ----------------------------------------------------------
     def __enter__(self) -> Recorder:
@@ -114,7 +124,7 @@ class Recorder:
         self._q.put(None)  # sentinel; blocking put drains past maxsize as the writer empties
         if self._writer is not None:
             self._writer.join()
-        for f in (self._tlog, self._video, self._index):
+        for f in (self._tlog, self._video, self._index, self._cmds):
             if f is None:
                 continue
             try:
@@ -132,6 +142,18 @@ class Recorder:
             return
         recv = time.monotonic_ns() if recv_monotonic_ns is None else recv_monotonic_ns
         self._put(("mav", bytes(raw), int(recv)))
+
+    def record_command(self, record: dict) -> None:
+        """Enqueue one OUTGOING control-command record -> ``commands.jsonl``.
+
+        ``record`` is a small json-serialisable dict (see MavlinkClient._tap_command:
+        t_mono_ns / sim_time_ns / mode / type_mask / body rates / thrust). HOT-PATH
+        SAFE: enqueue-only (put_nowait, drop-on-full like every record_*); the writer
+        thread does the json.dumps + disk write, so the 30 Hz control loop never
+        blocks on I/O or serialisation."""
+        if not record:
+            return
+        self._put(("cmd", record))
 
     def record_frame(self, frame: Frame) -> None:
         """Enqueue one camera frame. Uses ``frame.jpeg_bytes`` (bit-exact) when present,
@@ -160,6 +182,10 @@ class Recorder:
     @property
     def n_frames(self) -> int:
         return self._n_frames
+
+    @property
+    def n_commands(self) -> int:
+        return self._n_cmds
 
     @property
     def n_dropped(self) -> int:
@@ -211,6 +237,22 @@ class Recorder:
                     )
                     self._n_frames += 1
                     self._video_bytes += len(jpeg)
+                elif kind == "cmd":
+                    # OUTGOING control-command mirror (writer-thread only: the lazy open,
+                    # the json.dumps and the write all happen HERE, never on the hot path).
+                    _, record = item
+                    if self._cmds is None:
+                        self._cmds = open(self.dir / "commands.jsonl", "w", encoding="utf-8")
+                    try:
+                        self._cmds.write(json.dumps(record) + "\n")
+                    except (TypeError, ValueError):
+                        pass  # non-serialisable record: drop it, never kill the writer
+                    else:
+                        self._n_cmds += 1
+                        # Modest periodic flush (writer thread; NOT fsync) so a hard crash
+                        # mid-flight still leaves the commands on disk within ~1 s.
+                        if self._n_cmds % 32 == 0:
+                            self._cmds.flush()
             finally:
                 self._q.task_done()
 
@@ -233,6 +275,7 @@ class Recorder:
                     "mavlink_bytes": self._mav_bytes,
                     "video_frames": self._n_frames,
                     "video_bytes": self._video_bytes,
+                    "command_records": self._n_cmds,
                     "dropped": self.n_dropped,
                 }
             )
@@ -261,6 +304,18 @@ class RecordingReader:
                 yield msg
         finally:
             conn.close()
+
+    def iter_commands(self) -> Iterator[dict]:
+        """Yield the OUTGOING control-command records from ``commands.jsonl`` (empty
+        iterator when the session predates command mirroring / sent no commands)."""
+        path = self.dir / "commands.jsonl"
+        if not path.exists():
+            return
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
 
     def iter_video_index(self) -> Iterator[dict]:
         path = self.dir / "video_index.jsonl"
