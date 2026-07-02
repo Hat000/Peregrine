@@ -1332,6 +1332,7 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     last_adv_w  = time.monotonic()
     last_p      = 0.0
     n_coll0     = result["collisions_at_start"]
+    n_hard_seen = 0                # --ignore-collisions observe mode: hard-collisions already logged
     gate_index  = 0
     final_state = "IDLE"
 
@@ -1385,10 +1386,15 @@ def _fly_gate_seeker(client, args, flight_idx: int,
             print("\n  [gate-seeker] RACE_STATUS finished -> stopping.")
             final_state = "FINISHED"
             break
-        if any(c["threat_level"] >= 2 for c in client.collisions[n_coll0:]):
+        n_hard = sum(1 for c in client.collisions[n_coll0:] if c["threat_level"] >= 2)
+        if n_hard and not args.ignore_collisions:
             print("\n  [gate-seeker] HARD COLLISION -> abort.")
             final_state = "CRASH"
             break
+        if n_hard > n_hard_seen:      # OBSERVE mode: log each new hard collision but keep flying + recording
+            print(f"  [gate-seeker] COLLISION threat>=2 (#{n_hard}) @ t={s.sim_time_ns/1e9:.2f}s "
+                  f"pos={np.asarray(s.position_ned)} gi={gate_index} -> --ignore-collisions, flying on")
+            n_hard_seen = n_hard
 
         # --- sim-reset guard (epoch discontinuity -> cut commands) ---
         jump = (float(np.linalg.norm(np.asarray(s.position_ned) - prev_pos))
@@ -1995,6 +2001,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="dev only: seconds without a fresh GO before firing a sim reset "
                          "(used only under --dev-auto-reset).")
     ap.add_argument("--max-seconds",  type=float, default=120.0)
+    ap.add_argument("--ignore-collisions", action="store_true",
+                    help="OBSERVE mode: do NOT abort the flight on a hard (threat>=2) collision; "
+                         "log each with the drone's position + keep flying + recording. For diagnosing "
+                         "spurious collisions / seeing the full 20s+ trajectory. Default off = "
+                         "submission-safe abort-on-crash.")
     ap.add_argument("--wait-seconds", type=float, default=180.0)
     ap.add_argument("--start-margin-s", type=float, default=0.3)
     ap.add_argument("--finish-hold-s",  type=float, default=1.0)
