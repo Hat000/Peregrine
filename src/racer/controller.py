@@ -451,16 +451,24 @@ class Controller:
                 if self.max_pos_error_m is not None:
                     err = _clip_norm(err, self.max_pos_error_m)
                 a_h = a_h + self.kp_pos * err
-            # FEEDFORWARD-OWNS-HORIZONTAL (A15b): skip the horizontal velocity term when a feedforward
-            # accel_ned drives the horizontal and velocity_ned is only carrying the vertical-align vz.
-            # Otherwise -kd_vel*vel_xy damps the DEAD-RECKONED (fictional, growing) horizontal velocity
-            # and flips the tilt target nose-up (the ceiling climb). The alt-hold already consumed
-            # velocity_ned[2] above, so the vertical-align sink/climb is unaffected.
-            ff_horizontal = self.ff_owns_horizontal and sp.accel_ned is not None
-            if sp.velocity_ned is not None and not ff_horizontal:
-                a_h = a_h + self.kd_vel * (np.asarray(sp.velocity_ned, dtype=np.float64) - vel)
-            elif sp.position_ned is not None:
-                a_h = a_h - self.kd_vel * vel
+            # FEEDFORWARD-OWNS-HORIZONTAL (A15b + A23): on the position-denied wire the horizontal
+            # velocity estimate is ALWAYS fictional (dead-reckoned, unbounded), so a -kd_vel*vel_xy
+            # damping term flips the tilt target NOSE-UP (drone pitches up + slides backward).
+            # A15b skipped that term -- but ONLY while a gate was being pursued (guard was
+            # ``ff_owns_horizontal and sp.accel_ned is not None``), AND the guard only covered the
+            # velocity_ned branch; the ``elif position_ned`` branch below still fired -kd_vel*vel.
+            # So the moment pursuit dropped (gate lost, or never acquired: seeker first_acq=0, run
+            # 20260702_165236), the nose-up damping returned -> pitch-up + fly-backward -> the drone
+            # never got close enough to re-acquire. A23 makes the skip UNCONDITIONAL under
+            # ff_owns_horizontal, covering BOTH branches: on this wire we NEVER damp against the
+            # fictional horizontal velocity. Horizontal is then driven by the accel_ned feedforward
+            # (pursuit) + the kp_pos position error alone; the alt-hold already consumed
+            # velocity_ned[2] (vz), so the vertical channel is unaffected.
+            if not self.ff_owns_horizontal:
+                if sp.velocity_ned is not None:
+                    a_h = a_h + self.kd_vel * (np.asarray(sp.velocity_ned, dtype=np.float64) - vel)
+                elif sp.position_ned is not None:
+                    a_h = a_h - self.kd_vel * vel
         a_h[2] = 0.0                                  # the alt-hold owns vertical
         if self.max_accel_mps2 is not None:
             a_h = _clip_norm(a_h, self.max_accel_mps2)
