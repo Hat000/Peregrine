@@ -83,6 +83,19 @@ def _move_model_to_device(model, device: str | None) -> None:
         pass
 
 
+def _load_yolo_model(weights):
+    """ultralytics ``YOLO`` loader with the exported-graph task hint (TRT sidequest, 2026-07-01):
+    ``.engine`` (TensorRT) / ``.onnx`` files carry no pickled task, so ``YOLO()`` falls back to
+    ``guess_model_task() -> "detect"`` and the detect post-process silently drops the keypoints
+    (zero observations, no error). Pin ``task="pose"`` for those extensions; a ``.pt`` spec takes
+    exactly the legacy ``YOLO(weights)`` call -- the proven flight path is unchanged."""
+    from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
+
+    if str(weights).lower().endswith((".engine", ".onnx")):
+        return YOLO(str(weights), task="pose")
+    return YOLO(str(weights))
+
+
 def observations_from_keypoints(
     frame: Frame,
     keypoints_xy: np.ndarray,
@@ -242,14 +255,12 @@ class GateDetector:
         # legacy behaviour, so the VQ1-proven single-model flight stack is untouched.
         if "++" in str(weights):
             return EnsembleGateDetector.load(str(weights).split("++"), **kwargs)
-        from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
-
         # A15/A17 device fix: RESOLVE the device explicitly at load (GPU if available, else CPU) and
         # MOVE the model onto it, so inference does not silently run on the CPU (~7x slower). The
         # resolved device is stored on the instance and threaded into every predict(); it is LOGGED
         # once so the flight console / pre-warm shows GPU-vs-CPU (the #1 frame-starvation diagnostic).
         device = _resolve_device(kwargs.pop("device", None))
-        model = YOLO(str(weights))
+        model = _load_yolo_model(weights)
         _move_model_to_device(model, device)
         print(f"  [detector] GateDetector on device={device!r} (weights={str(weights)!r})")
         return cls(model, device=device, **kwargs)
@@ -301,12 +312,10 @@ class EnsembleGateDetector:
 
     @classmethod
     def load(cls, weights_list, **kwargs) -> "EnsembleGateDetector":
-        from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
-
         # A15/A17 device fix (mirrors GateDetector.load): resolve the device explicitly + move EVERY
         # member onto it, so no ensemble member silently runs on the CPU. One log line names the device.
         device = _resolve_device(kwargs.pop("device", None))
-        models = [YOLO(str(w).strip()) for w in weights_list if str(w).strip()]
+        models = [_load_yolo_model(str(w).strip()) for w in weights_list if str(w).strip()]
         for m in models:
             _move_model_to_device(m, device)
         print(f"  [detector] EnsembleGateDetector ({len(models)} models) on device={device!r}")

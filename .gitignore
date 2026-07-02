@@ -37,6 +37,11 @@ demo/
 # ML artifacts
 *.pt
 *.pth
+# TensorRT engines + export intermediates are DERIVED, hardware+TRT-version-specific
+# artifacts (rebuild via scripts/export_trt_engine.py); the .pt stays the source of truth
+*.engine
+*.onnx
+*.cache
 rl/checkpoints/*.json
 runs/
 # stale staging copy of stage1_inc7_actor.pth (no sidecar); canonical = stage1_inc7_actor.pth

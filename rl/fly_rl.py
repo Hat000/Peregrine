@@ -957,13 +957,15 @@ def _resolve_seeker_weights(args) -> str | None:
 
 
 def _looks_like_detector_weights(spec) -> bool:
-    """True when ``spec`` looks like an ultralytics YOLO weights file (``.pt``, or an ``a.pt++b.pt``
-    ensemble spec) rather than the RL-actor ``.pth`` checkpoint. Every member of an ensemble spec must
-    look like a detector weight. The RL actor default is ``stage1_inc7_actor.pth`` -> False (the footgun)."""
+    """True when ``spec`` looks like a detector weights file the GateDetector can load (``.pt``, a
+    TensorRT ``.engine`` / ``.onnx`` export of one, or an ``a.pt++b.pt`` ensemble spec) rather than
+    the RL-actor ``.pth`` checkpoint. Every member of an ensemble spec must look like a detector
+    weight. The RL actor default is ``stage1_inc7_actor.pth`` -> False (the footgun): ``.pth`` is
+    deliberately NOT in the accepted set."""
     if not spec:
         return False
     members = [s.strip().lower() for s in str(spec).split("++") if s.strip()]
-    return bool(members) and all(m.endswith(".pt") for m in members)
+    return bool(members) and all(m.endswith((".pt", ".engine", ".onnx")) for m in members)
 
 
 def _validate_seeker_detector(args) -> None:
