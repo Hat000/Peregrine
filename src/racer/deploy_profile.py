@@ -222,8 +222,25 @@ def vq2_case_c() -> DeployProfile:
         #     rail-slam flips 19->3). ON: a position loop on the trustworthy floor-corrected z + the
         #     vertical-align vz_t ramped THROUGH a moving z_target + damping on a low-passed finite-diff of
         #     z (NOT raw vel[2]). Without this, the vertical channel ends the flight regardless of control.
+        #   * body_rate_sign = (1,1,1): the A22 gate-2 no-turn ROOT fix (2026-07-02). The seeker's
+        #     default SEEKER_SIGNS carries the VQ1-MEASURED yaw command inversion (body_rate_sign
+        #     z=-1: a right-turn FRD yaw command is emitted NEGATED because THAT sim inverted it).
+        #     The VQ2 wire does NOT invert: run 20260702_152528_rl_s1_f1 (the gate-2 no-turn
+        #     failure) shows the realized yaw rate tracks the POST-sign wire value directly —
+        #     corr(wire, d(yaw_est)/dt) = +0.79 at the known ~2.1x realization gain, only 5% sign
+        #     agreement with the pre-sign FRD command — while the estimator itself is exonerated
+        #     twice over (yaw_est == integral of the A9 sign-corrected gyro, corr +0.96; AND the
+        #     camera-measured gate bearing swept the SAME way as the estimated turn, +0.43 rad/s).
+        #     So a gate seen on the RIGHT produced a wire command that physically turned the drone
+        #     LEFT: a positive-feedback yaw loop that saturates and spins the gate out of frame —
+        #     the "passed gate 1, never turned to the well-detected gate 2" signature. Roll/pitch
+        #     are exonerated (attitude held stable all flight, |roll|<0.10 rad pre-collision), so
+        #     only the yaw element changes: identity (1,1,1). The per-wire actuation convention
+        #     lives HERE, in the profile, exactly like gyro_sign; VQ1 keeps the measured seeker
+        #     default [1,1,-1] untouched (flight-proven on that wire, byte-identical off-path).
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
-                              "ff_owns_horizontal": True, "ff_owns_vertical": True},
+                              "ff_owns_horizontal": True, "ff_owns_vertical": True,
+                              "body_rate_sign": (1.0, 1.0, 1.0)},
         # A20 async-detect (2026-07-01): decouple the ~250 ms GPU-stalled YOLO detect from the
         # control loop (worker thread + latest-wins snapshot; racer.vision.async_detect). Fixes
         # the ~3 Hz loop -> ~300 ms ZOH command-hold -> one held climb command flies into the
