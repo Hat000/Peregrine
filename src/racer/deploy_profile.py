@@ -91,16 +91,19 @@ class DeployProfile:
     # byte-identical synchronous path (the worker module is not even imported); vq2_case_c turns
     # it ON. fly_rl's ``--async-detect on|off`` overrides the profile either way (A/B seam).
     async_detect: bool = False
-    # A21 VERTICAL ESTIMATOR (2026-07-02): run the dedicated 1-D vertical-channel filter
-    # (racer.vertical_estimator — IMU a_up integrated between the sparse vision floor_height pins)
-    # and have the ff-owns-vertical alt-hold damp on ITS smooth (z, vz) instead of the 6-state KF's
-    # dead-reckoned z + its finite difference. WHY: the KF z step-teleports when a tight floor pin
-    # lands (-1.435 m in one tick, run 20260702_040036) and is blind to the real climb between pins
-    # (integrated a_up hit +4-5 m/s upward that est_z never showed) — the damper reacted to steps
-    # instead of the actual vertical rate, and the drone climbed over gate 0 into the ceiling. The
-    # fly_rl construction seam threads this into BOTH sides of the seam it spans:
-    # NavigatorConfig.use_vertical_estimator (own + step + pin-correct the filter, export on
-    # NavState) and Controller.use_vertical_estimator (consume the export). A SEPARATE flag from
+    # A24 VERTICAL-VELOCITY WASHOUT (2026-07-02, supersedes the A21 floor-pin KF): run the
+    # dedicated 1-D washout filter (racer.vertical_estimator — IMU a_up integrated with an
+    # exponential leak, structurally bounded, NO floor-pin correction) and have the ff-owns-vertical
+    # alt-hold damp on ITS smooth, bounded vz instead of the 6-state KF's dead-reckoned z + its
+    # finite difference. WHY: the KF z step-teleports when a tight vision fix lands (-1.435 m in one
+    # tick, run 20260702_040036) and is blind to the real climb between fixes (integrated a_up hit
+    # +4-5 m/s upward that est_z never showed) — the damper reacted to steps instead of the actual
+    # vertical rate, and the drone climbed over gate 0 into the ceiling. The floor-height "fix" the
+    # A21 KF leaned on was itself a false premise (no floor grid on this wire) -- the A24 washout
+    # needs no external measurement at all: it is bounded by construction (an exponential leak, not
+    # a Kalman gain). The fly_rl construction seam threads this into BOTH sides of the seam it
+    # spans: NavigatorConfig.use_vertical_estimator (own + step the filter, export vz on NavState)
+    # and Controller.use_vertical_estimator (consume the export). A SEPARATE flag from
     # ff_owns_vertical so the estimator can be A/B'd against the A19c fd-of-z path independently.
     # Default OFF = byte-identical (no filter constructed, NavState fields NaN, controller on the
     # fd path); vq2_case_c turns it ON. fly_rl's ``--vertical-estimator on|off`` overrides the
@@ -238,19 +241,39 @@ def vq2_case_c() -> DeployProfile:
         #     only the yaw element changes: identity (1,1,1). The per-wire actuation convention
         #     lives HERE, in the profile, exactly like gyro_sign; VQ1 keeps the measured seeker
         #     default [1,1,-1] untouched (flight-proven on that wire, byte-identical off-path).
+        #   * kp_alt = 0.0 (the A24 washout fix, R0, 2026-07-02): kill the position term. Before
+        #     this, ``make_seeker_controller``'s kp_alt=2.0 default was LIVE on the ff-owns-vertical
+        #     path, multiplying the diverging double-integrated z (a SECOND, LARGER poison than the
+        #     vz term the A21->A24 rewrite fixes). With kp_alt=0, the effective law is purely
+        #     ``thrust = hover + ff_vertical_kd_alt*(vz - vz_t)``, clamped -- the z_target-ramp
+        #     machinery goes inert (only fed by the now-zeroed kp_alt term) but is left in place,
+        #     unused.
+        #   * ff_vertical_kd_alt = 0.25 (down from the Controller default 0.5): at 0.5 the inner
+        #     crossover G=c*Kd (c=g/hover~=36.9) = 18.5 rad/s ~= 2.9 Hz -- SITTING ON the observed
+        #     2.5-3 Hz vertical bob (~37deg phase margin at a 50 ms delay). 0.25 -> 9.2 rad/s
+        #     (~1.5 Hz, PM~=64deg), doubling the linear window to (vz-vz_t) in [-0.86, +1.34] m/s.
+        #   * ff_vertical_vz_lp_alpha = 0.8 (up from the Controller default 0.5): re-enables a LIGHT
+        #     low-pass on the vz_meas branch (the A24 washout export) -- ~19 Hz @ 30 Hz control rate,
+        #     under 5deg of lag at the 1.5 Hz crossover, just enough to catch single-tick glitches.
+        #     0.5 (~3 Hz cutoff, ~40deg lag) would be destabilizing paired with Kd=0.25.
+        # See the A24 washout spec (handoff/vq2_vertical_washout_spec_2026-07-02.md) for the full
+        # derivation of these three values; they are gated to vq2_case_c only via this override dict
+        # (the Controller field defaults are untouched, so VQ1/case-A stay byte-identical).
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True,
-                              "body_rate_sign": (1.0, 1.0, 1.0)},
+                              "body_rate_sign": (1.0, 1.0, 1.0),
+                              "kp_alt": 0.0, "ff_vertical_kd_alt": 0.25,
+                              "ff_vertical_vz_lp_alpha": 0.8},
         # A20 async-detect (2026-07-01): decouple the ~250 ms GPU-stalled YOLO detect from the
         # control loop (worker thread + latest-wins snapshot; racer.vision.async_detect). Fixes
         # the ~3 Hz loop -> ~300 ms ZOH command-hold -> one held climb command flies into the
         # ceiling at gate 0. Loop holds --rate (~30 Hz); vision lands at whatever rate the GPU
         # allows (~4 Hz busy) and the OOSM/gyro-propagation chain absorbs the ~250 ms obs age.
         async_detect=True,
-        # A21 vertical estimator (2026-07-02): the egress->ceiling-climb fix. The alt-hold's z +
-        # damping rate come from the dedicated a_up-integrating, floor-pin-corrected vertical
-        # channel — smooth across pin teleports AND live to a real climb between pins (the two
-        # failure modes of the dead-reckoned z the fd path read). See DeployProfile.vertical_estimator.
+        # A24 vertical-velocity washout (2026-07-02): the egress->ceiling-climb fix. The alt-hold's
+        # damping rate comes from the dedicated a_up-integrating washout channel — structurally
+        # bounded, smooth, and live to a real climb between vision fixes (the two failure modes of
+        # the dead-reckoned z the fd path read). See DeployProfile.vertical_estimator.
         vertical_estimator=True,
     )
 

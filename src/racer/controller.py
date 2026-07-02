@@ -216,20 +216,23 @@ class Controller:
     # Low-pass coefficient [0,1] on the finite-difference vz (vz_lp = a*fd + (1-a)*vz_lp). 1.0 = raw fd
     # (no smoothing); smaller = heavier smoothing. Only read on the ff-owns-vertical path.
     ff_vertical_vz_lp_alpha: float = 0.5
-    # VERTICAL-CHANNEL ESTIMATOR SOURCE (the A21 egress->ceiling-climb fix, 2026-07-02). When set,
-    # the ff-owns-vertical alt-hold sources BOTH its z and its damping rate from the Navigator's
-    # dedicated 1-D vertical estimator (NavState.vert_z_est / vert_vz_est, racer.vertical_estimator)
-    # instead of the dead-reckoned nav position + the LP finite-difference of it. WHY: on the
-    # state-denied VQ2 wire the 6-state KF's z TELEPORTS when a sparse floor_height pin lands
+    # VERTICAL-CHANNEL ESTIMATOR SOURCE (the A24 washout fix, superseding the A21 floor-pin KF,
+    # 2026-07-02). When set, the ff-owns-vertical alt-hold sources its damping rate from the
+    # Navigator's dedicated vertical-velocity washout (NavState.vert_vz_est, racer.vertical_estimator)
+    # instead of the LP finite-difference of the dead-reckoned nav z. The z term (kp_alt*(z-z_target))
+    # is UNCHANGED -- always ``pos[2]`` -- because the washout carries no altitude state at all
+    # (vert_z_est is permanently NaN; floor-height was a false premise as a vertical FIX on this
+    # wire) and because vq2_case_c sets kp_alt=0.0 (R0), making the z term inert there regardless.
+    # WHY: on the state-denied VQ2 wire the 6-state KF's z TELEPORTS when a sparse vision fix lands
     # (run 20260702_040036: -1.435 m in ONE tick) — the fd-vz then spikes ~-4.4 m/s (a thrust slam)
-    # — while between pins that z is BLIND to the real climb (integrated a_up reached +4-5 m/s
+    # — while between fixes that z is BLIND to the real climb (integrated a_up reached +4-5 m/s
     # upward over 2.7 s that est_z never showed), so the damper cannot oppose it and the drone
-    # climbs over gate 0 into the ceiling. The estimator's vz is the IMU-integrated, pin-corrected
-    # REAL vertical rate: smooth across pins (bounded Kalman corrections, no steps) and live to the
+    # climbs over gate 0 into the ceiling. The washout's vz is the IMU-integrated REAL vertical
+    # rate: structurally bounded (an exponential leak, not a Kalman correction) and live to the
     # climb the instant it starts. Requires ff_owns_vertical; falls back to the fd path while the
-    # NavState fields are NaN (estimator not enabled/seeded — a robustness seam, never a silent
+    # NavState vz field is NaN (estimator not enabled/seeded — a robustness seam, never a silent
     # behaviour fork on the OFF path). None/False => byte-identical (VQ1 / case-A + today's
-    # vq2_case_c). Opted in via DeployProfile.vertical_estimator. [VQ2 A21, 2026-07-02]
+    # vq2_case_c). Opted in via DeployProfile.vertical_estimator. [VQ2 A24, 2026-07-02]
     use_vertical_estimator: bool = False
     _prev_body_rate: np.ndarray | None = field(default=None, repr=False, compare=False)
     _prev_slew_t_ns: int | None = field(default=None, repr=False, compare=False)
@@ -238,6 +241,11 @@ class Controller:
     _alt_prev_z: float | None = field(default=None, repr=False, compare=False)
     _alt_prev_t_ns: int | None = field(default=None, repr=False, compare=False)
     _alt_vz_lp: float = field(default=0.0, repr=False, compare=False)
+    # A24: separate LP state for the vz_meas (vertical-estimator) branch -- kept apart from
+    # ``_alt_vz_lp`` (the fd-of-z branch) so the two damping-rate sources never cross-contaminate
+    # if a controller instance's config ever changed paths mid-flight (it does not today, but the
+    # states are logically distinct signals and should not share a filter).
+    _alt_vzmeas_lp: float = field(default=0.0, repr=False, compare=False)
 
     def _apply_body_rate_slew(self, omega: np.ndarray, sim_time_ns: int) -> np.ndarray:
         """Per-axis slew-rate limit on the commanded body rate (anti-bang-bang). Clamps
@@ -267,11 +275,13 @@ class Controller:
             by the commanded vertical-align rate: ``z_target += vz_t*dt`` (dt = sim-time delta). A
             commanded sink/climb becomes a MOVING position target the robust loop tracks -- never a
             velocity-error term on the fictional, drifting ``vel[2]``.
-          * the damping rate ``vz`` is ``vz_meas`` when the caller supplies one (A21: the vertical
-            estimator's IMU-integrated, pin-corrected vz -- smooth AND live to a real climb), else the
-            low-passed FINITE DIFFERENCE of the (floor-corrected) ``z``: a bounded rate that cannot
-            drift the collective the way raw ``vel[2]`` did. The fd/LP state is maintained either way,
-            so a mid-flight ``vz_meas`` dropout (estimator not seeded) degrades seamlessly to the fd.
+          * the damping rate ``vz`` is a LIGHT low-pass of ``vz_meas`` when the caller supplies one
+            (A24: the washout estimator's IMU-integrated, structurally-bounded vz -- smooth AND live
+            to a real climb; the LP just catches single-tick glitches, ``ff_vertical_vz_lp_alpha``),
+            else the low-passed FINITE DIFFERENCE of the (floor-corrected) ``z``: a bounded rate that
+            cannot drift the collective the way raw ``vel[2]`` did. Both LP states are maintained
+            every tick, so a mid-flight ``vz_meas`` dropout (estimator not seeded) degrades seamlessly
+            to the fd.
         Stateful (latched on first engage); the OFF path never calls this, so its state stays untouched
         and the OFF-path thrust is byte-identical."""
         if self._alt_z_target is None:                 # first ff-owns-vertical tick: latch the target
@@ -279,15 +289,20 @@ class Controller:
             self._alt_prev_z = z
             self._alt_prev_t_ns = int(sim_time_ns)
             self._alt_vz_lp = 0.0
+            self._alt_vzmeas_lp = 0.0 if vz_meas is None else float(vz_meas)
         dt = (int(sim_time_ns) - int(self._alt_prev_t_ns)) / 1e9
+        a = float(np.clip(self.ff_vertical_vz_lp_alpha, 0.0, 1.0))
         if dt > 0.0:
             self._alt_z_target = self._alt_z_target + vz_t * dt        # ramp the target by the vz command
             fd = (z - float(self._alt_prev_z)) / dt                    # finite-diff vz of the trusted z
-            a = float(np.clip(self.ff_vertical_vz_lp_alpha, 0.0, 1.0))
             self._alt_vz_lp = a * fd + (1.0 - a) * self._alt_vz_lp     # low-pass the fd-vz
             self._alt_prev_z = z
             self._alt_prev_t_ns = int(sim_time_ns)
-        vz = self._alt_vz_lp if vz_meas is None else float(vz_meas)
+        if vz_meas is None:
+            vz = self._alt_vz_lp
+        else:
+            self._alt_vzmeas_lp = a * float(vz_meas) + (1.0 - a) * self._alt_vzmeas_lp
+            vz = self._alt_vzmeas_lp
         return (self.hover_thrust
                 + self.kp_alt * (z - self._alt_z_target)
                 + self.ff_vertical_kd_alt * (vz - vz_t))
@@ -401,18 +416,21 @@ class Controller:
             # FEEDFORWARD-OWNS-VERTICAL (A19c): do NOT damp against the dead-reckoned vel[2] (the poison
             # that rail-slammed the collective). Track a RAMPING z_target on the trustworthy floor-
             # corrected z; damp against a low-passed FINITE-DIFFERENCE of that z instead of vel[2].
-            # A21 (use_vertical_estimator): source BOTH channel inputs from the dedicated vertical
-            # estimator when it is live — the smooth vert_z_est replaces the pin-teleporting pos[2]
-            # in the kp_alt position term (a -1.4 m z step is a kp_alt*1.4=2.8 thrust kick on its
-            # own), and vert_vz_est replaces the fd-vz in the damping term (the fd of a teleporting
-            # z spikes ~-4.4 m/s at a pin AND is blind to a real climb between pins). NaN fields
-            # (estimator off / not yet seeded) fall back to the A19c fd path unchanged.
-            z_v, vz_v = float(pos[2]), None
+            # A24 (use_vertical_estimator): source the damping-term RATE from the dedicated washout
+            # vz when it is live -- the structurally-bounded vert_vz_est replaces the fd-vz (the fd
+            # of a teleporting z spikes and is blind to a real climb between pins). The gate is on
+            # vz_est ALONE (vert_z_est is now PERMANENTLY NaN -- the washout carries no altitude
+            # state -- so gating on both would silently and permanently disable this path). z_v
+            # stays pos[2] unconditionally: harmless on vq2_case_c since kp_alt=0 there (R0).
+            # use_vertical_estimator OFF -> vz_meas=None -> byte-identical A19c fd path (unchanged).
+            # ON but NaN export (pre-init / estimator not seeded) -> vz_meas=0.0, a benign OPEN-LOOP
+            # track on vz_t -- NEVER the fd-of-pos[2] path (that path silently re-admits the
+            # unbounded-dead-reckoning poison this fix removes).
+            z_v = float(pos[2])
+            vz_v = None
             if self.use_vertical_estimator:
-                z_est = float(getattr(nav, "vert_z_est", float("nan")))
                 vz_est = float(getattr(nav, "vert_vz_est", float("nan")))
-                if np.isfinite(z_est) and np.isfinite(vz_est):
-                    z_v, vz_v = z_est, vz_est
+                vz_v = vz_est if np.isfinite(vz_est) else 0.0
             thrust = self._ff_owns_vertical_thrust(z_v, vz_t, int(sp.sim_time_ns), vz_meas=vz_v)
         else:
             z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
