@@ -488,12 +488,29 @@ class GateSeeker:
     # ``.detect(frame) -> [GateObservation]``; the live VQ2 path passes RedGlowGateDetector). None
     # => command_visual cannot see and always holds (the map-based plan/command path is unaffected).
     detector: object | None = field(default=None, repr=False)
+    # A25 gate-relative altitude (VerticalEstimator.latch_offset): the Navigator instance whose
+    # ``_vert_est`` (the SAME VerticalEstimator the Navigator owns + steps at IMU rate) receives the
+    # fresh-pose latch. Read live via ``getattr(nav_owner, "_vert_est", None)`` EACH tick (not cached
+    # at construction time) because the Navigator lazily creates/reseeds ``_vert_est`` on
+    # (re)initialize -- a sim-epoch restart swaps in a brand-new estimator instance. The seeker only
+    # sees poses at control rate and cannot itself propagate ẑ_off between them or run the contact
+    # gate, so it pushes the fresh measurement INTO the shared estimator instead of owning any state
+    # of its own (spec §1.2 rationale). None (default) => latch_offset is never called -> byte-
+    # identical when the estimator is off / not wired (VQ1 / case-A untouched).
+    nav_owner: object | None = field(default=None, repr=False)
+    _last_latched_pose_ns: int | None = field(default=None, repr=False)  # fresh-pose dedupe (§1.4)
     _t0_sim_ns: int | None = field(default=None, repr=False)   # first-command sim time (launch clock)
     _last_index: int | None = field(default=None, repr=False)  # last seen active_gate_index
     _anchored: bool = field(default=False, repr=False)         # first accepted vision fix seen?
     _last_yaw: float | None = field(default=None, repr=False)  # last commanded heading (no-detection hold)
     _last_yaw_des: float | None = field(default=None, repr=False)  # last PRE-SLEW desired yaw toward gate
                                                                   # (instrumentation only, A14 yaw-sign probe)
+    # -- A25 instrumentation (spec §7): stashed so fly_rl's nav_estimate logger can read them
+    # directly instead of reconstructing them from the thrust law. Instrumentation only -- never
+    # consumed by control. None when unavailable (no pursuit tick yet / no pose this tick).
+    _last_vz_t: float | None = field(default=None, repr=False)             # commanded vertical vz_t
+    _last_offset_z_world: float | None = field(default=None, repr=False)   # raw pre-latency-comp offset
+    _last_pose_age_s: float | None = field(default=None, repr=False)       # this tick's pose obs age
     _last_frame_id: int | None = field(default=None, repr=False)  # detector idempotence across re-feeds
     _last_pose: GatePose | None = field(default=None, repr=False)  # cached detected lever for re-fed frames
     _consec_detections: int = field(default=0, repr=False)     # consecutive own-detection ticks (anchor release)
@@ -1100,7 +1117,12 @@ class GateSeeker:
         the world-NED Z of the gate-centre lever (:meth:`_gate_lever_world`): a gate BELOW the drone
         (offset > 0) yields a positive (descend) vz_t, which the controller's alt-hold turns into reduced
         thrust to sink toward the opening height. Bounded + ramped (NEVER a position step) -- the same
-        discipline as the forward feedforward, so the vertical command can't lurch."""
+        discipline as the forward feedforward, so the vertical command can't lurch.
+
+        A25 §5: below min-trust range, vz_t still returns 0.0 (unchanged) -- but that no longer
+        strands the loop, because ẑ_off (latched separately, see :meth:`_maybe_latch_z_off`) now
+        carries the altitude memory through the close-in zone."""
+        self._last_offset_z_world = None                     # instrumentation default (no pose / no align)
         if not self.config.use_vertical_align:
             return 0.0
         # POINT-BLANK ELEVATION GUARD (A7): below the min-trust range the PnP elevation is degenerate
@@ -1112,11 +1134,38 @@ class GateSeeker:
                 and float(pose.range_m) < self.config.min_trust_elevation_range_m):
             return 0.0
         offset_z = float(self._gate_lever_world(nav, pose)[2])
+        self._last_offset_z_world = offset_z                  # A25 §7 instrumentation (raw, pre-deadband)
         if abs(offset_z) <= self.config.vertical_align_deadband_m:
             return 0.0
         cap = abs(float(self.config.vertical_align_speed_cap_mps))
         vz = float(np.clip(self.config.vertical_align_kp * offset_z, -cap, cap))
         return vz * self._vertical_align_ramp(int(nav.sim_time_ns))
+
+    def _maybe_latch_z_off(self, nav: NavState, pose: GatePose) -> None:
+        """A25 §1.4/§5: latch the gate-relative vertical offset into the shared ``VerticalEstimator``
+        (``nav_owner._vert_est``, read LIVE each call -- see :attr:`nav_owner`) on a FRESH pose -- a
+        NEW detection, never a re-used cached one (an async ZOH re-feed of the same capture would
+        otherwise re-inject stale data every tick). Suppressed below ``min_trust_elevation_range_m``
+        (the point-blank PnP elevation is degenerate there; §5.2 -- ẑ_off HOLDS its last latched
+        value and keeps propagating by vz instead of being overwritten by garbage). No-op when no
+        estimator is wired/seeded -- VQ1/case-A byte-identical; the seeker's OWN pursuit behaviour
+        never depends on this call."""
+        self._last_pose_age_s = None                          # instrumentation default (no pose this tick)
+        vert_est = getattr(self.nav_owner, "_vert_est", None)
+        if vert_est is None or not getattr(vert_est, "seeded", False):
+            return
+        obs_age_s = max(0.0, (int(nav.sim_time_ns) - int(pose.sim_time_ns)) / 1e9)
+        obs_age_s = min(obs_age_s, 1.0)                        # obs_age_max_s (A25 §2.2): reject a
+                                                                # garbage/negative delta or >1s stale pose
+        self._last_pose_age_s = obs_age_s                      # A25 §7 instrumentation (every pursuit tick)
+        if (self.config.use_min_trust_elevation
+                and float(pose.range_m) < self.config.min_trust_elevation_range_m):
+            return                                              # HOLD: do not latch (§5.2), do not re-mark fresh
+        if int(pose.sim_time_ns) == self._last_latched_pose_ns:
+            return                                              # same capture (async ZOH re-feed): not fresh
+        offset_z_world = float(self._gate_lever_world(nav, pose)[2])
+        vert_est.latch_offset(offset_z_world, obs_age_s)
+        self._last_latched_pose_ns = int(pose.sim_time_ns)
 
     def _vertical_align_ramp(self, sim_time_ns: int) -> float:
         """Vertical-align authority ramp [0,1] over ``vertical_align_ramp_s`` from the anchor release, so
@@ -1166,6 +1215,12 @@ class GateSeeker:
             # BLOCKER 1): a bounded vertical-velocity target nulls the gate-opening vertical offset so
             # the drone descends/climbs onto the opening centre instead of holding altitude and clipping.
             vz = self._vertical_align_vz(nav, pose)
+            self._last_vz_t = vz                          # A25 §7 instrumentation (raw command, pre-controller)
+            # A25 §1.4/§5: latch the gate-relative vertical offset into the shared VerticalEstimator
+            # (fresh-pose dedupe + min-range suppression live inside). This is INDEPENDENT of vz_t
+            # above (which stays 0 below min range / deadband) -- ẑ_off is the loop's persistent
+            # altitude memory; latching it is not gated on whether vz_t itself fired this tick.
+            self._maybe_latch_z_off(nav, pose)
             fwd_ramp = self._forward_accel_ramp(int(nav.sim_time_ns))
             # HOLD-LAST-DEMAND BRIDGE (A13): cache this fresh pursuit demand so a subsequent pose-None
             # tick can re-issue it (continuous per-tick command) instead of regime-2's zero-coast. We

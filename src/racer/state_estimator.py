@@ -204,6 +204,7 @@ def make_nav_state(
     angular_rate_override: np.ndarray | None = None,
     vert_z_est: float | None = None,
     vert_vz_est: float | None = None,
+    z_off_est: float | None = None,
 ) -> NavState:
     """Assemble a NavState from the KF (position/velocity) + given attitude/rates.
 
@@ -223,7 +224,11 @@ def make_nav_state(
     ``vert_z_est`` / ``vert_vz_est`` (A21 vertical-channel estimator, ``racer.vertical_estimator``):
     the smooth (altitude, vz) export the ff-owns-vertical alt-hold damps on. BOTH default ``None``
     -> the NavState fields stay NaN (the frozen absent-marker), BYTE-IDENTICAL for every existing
-    caller; the Navigator supplies them only under ``use_vertical_estimator``."""
+    caller; the Navigator supplies them only under ``use_vertical_estimator``.
+
+    ``z_off_est`` (A25 gate-relative vertical offset, ``VerticalEstimator.z_off``): default ``None``
+    -> ``NavState.z_off_est`` stays NaN, BYTE-IDENTICAL for every existing caller; the Navigator
+    supplies it only under the same ``use_vertical_estimator`` gate."""
     if attitude_rpy_override is None:
         roll, pitch, yaw = drone_state.roll, drone_state.pitch, drone_state.yaw
     else:
@@ -247,4 +252,5 @@ def make_nav_state(
         nav_along_sigma=float(nav_along_sigma),
         vert_z_est=float("nan") if vert_z_est is None else float(vert_z_est),
         vert_vz_est=float("nan") if vert_vz_est is None else float(vert_vz_est),
+        z_off_est=float("nan") if z_off_est is None else float(z_off_est),
     )

@@ -1141,6 +1141,10 @@ def _build_casec_seeker(args, gates, frame_source=None):
         ),
         controller=make_seeker_controller(**controller_overrides),
         detector=detector,
+        # A25: wire the seeker to the SAME Navigator whose VerticalEstimator it feeds fresh-pose
+        # latches into (nav._vert_est, read live -- see GateSeeker.nav_owner). None only when the
+        # estimator is entirely absent (nav._vert_est stays None -> latch is a no-op, byte-identical).
+        nav_owner=nav,
     )
     return nav, seeker, profile, vision_worker
 
@@ -1210,6 +1214,36 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["vert_vz_est"] = None if vvze != vvze else vvze
     except Exception:
         rec["vert_z_est"] = rec["vert_vz_est"] = None
+
+    # --- A25 gate-relative altitude instrumentation (spec §7) ---
+    # z_off_est: the ẑ_off NavState export (NaN -> null, mirrors the vert_vz_est block above).
+    try:
+        zoe = float(getattr(nav_state, "z_off_est", float("nan")))
+        rec["z_off_est"] = None if zoe != zoe else zoe
+    except Exception:
+        rec["z_off_est"] = None
+    # vz_t: the seeker's commanded vertical-velocity target this tick (down-positive), stashed on
+    # the seeker where vz_cmd is set (_vertical_align_vz). None when no pursuit tick has run yet /
+    # the seeker isn't wired -- never fabricated.
+    try:
+        vzt = getattr(seeker, "_last_vz_t", None) if seeker is not None else None
+        rec["vz_t"] = float(vzt) if vzt is not None else None
+    except Exception:
+        rec["vz_t"] = None
+    # offset_z_world: the raw latched gate->drone vertical offset (down-positive, pre-latency-comp),
+    # stashed on the seeker where _gate_lever_world(...)[2] is computed.
+    try:
+        ozw = getattr(seeker, "_last_offset_z_world", None) if seeker is not None else None
+        rec["offset_z_world"] = float(ozw) if ozw is not None else None
+    except Exception:
+        rec["offset_z_world"] = None
+    # pose_age_s: this tick's pose observation age (sim clock), stashed on the seeker on each
+    # pursuit tick -- makes the obs-age staleness directly visible per-tick (vs an aggregate).
+    try:
+        pas = getattr(seeker, "_last_pose_age_s", None) if seeker is not None else None
+        rec["pose_age_s"] = float(pas) if pas is not None else None
+    except Exception:
+        rec["pose_age_s"] = None
 
     # --- commanded control ---
     try:

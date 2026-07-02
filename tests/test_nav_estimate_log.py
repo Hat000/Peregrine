@@ -41,6 +41,10 @@ EXPECTED_KEYS = {
     "time_since_vision_s",
     "vert_z_est",       # A21 vertical-channel estimator export (null when off/unseeded)
     "vert_vz_est",
+    "z_off_est",        # A25 gate-relative altitude offset export (null when off/unseeded)
+    "vz_t",             # A25 seeker's commanded vertical-velocity target (null when no pursuit tick)
+    "offset_z_world",   # A25 raw latched gate->drone vertical offset (null when no pose/no align)
+    "pose_age_s",       # A25 per-tick pose observation age (null when no pose this tick)
     "body_rate",
     "thrust",
     "yaw_des_rad",

@@ -256,14 +256,26 @@ def vq2_case_c() -> DeployProfile:
         #     low-pass on the vz_meas branch (the A24 washout export) -- ~19 Hz @ 30 Hz control rate,
         #     under 5deg of lag at the 1.5 Hz crossover, just enough to catch single-tick glitches.
         #     0.5 (~3 Hz cutoff, ~40deg lag) would be destabilizing paired with Kd=0.25.
-        # See the A24 washout spec (handoff/vq2_vertical_washout_spec_2026-07-02.md) for the full
-        # derivation of these three values; they are gated to vq2_case_c only via this override dict
+        #   * kp_gate = 0.06 (the A25 gate-relative altitude fix, 2026-07-02): gives the alt-hold a
+        #     POSITION reference it never had (kp_alt=0 kills the old z-position term above). The
+        #     washout alone can null a velocity but cannot SEEK a gate-relative height -- diagnosis
+        #     run 20260702_203428 showed the drone climbing monotonically into gate 0's ceiling
+        #     (z +3.7 m, vz +3.5 m/s at impact, 3.5x the +/-1 m/s cap) with nothing to arrest it.
+        #     kp_gate*36.9 (thrust->accel gain at hover) ~= 2.21 s^-2 -> omega_n ~= 1.49 rad/s
+        #     (tau~=0.67s to correct a height error); paired with the 26%-effective washout damping,
+        #     zeta~=0.81 (well-damped, no ceiling overshoot) -- see the A25 spec §3.3 for the full
+        #     derivation. The term is ``-kp_gate*z_off`` (NEGATIVE: above-gate/z_off>0 => less
+        #     thrust => sink onto gate height); z_off rides the SAME use_vertical_estimator gate as
+        #     vz_est (NaN/off -> 0, zero altitude authority, benign).
+        # See the A24 washout spec (handoff/vq2_vertical_washout_spec_2026-07-02.md) and the A25
+        # gate-relative altitude spec (handoff/vq2_gate_relative_altitude_spec_2026-07-02.md) for the
+        # full derivation of these values; they are gated to vq2_case_c only via this override dict
         # (the Controller field defaults are untouched, so VQ1/case-A stay byte-identical).
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True,
                               "body_rate_sign": (1.0, 1.0, 1.0),
                               "kp_alt": 0.0, "ff_vertical_kd_alt": 0.25,
-                              "ff_vertical_vz_lp_alpha": 0.8},
+                              "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.06},
         # A20 async-detect (2026-07-01): decouple the ~250 ms GPU-stalled YOLO detect from the
         # control loop (worker thread + latest-wins snapshot; racer.vision.async_detect). Fixes
         # the ~3 Hz loop -> ~300 ms ZOH command-hold -> one held climb command flies into the

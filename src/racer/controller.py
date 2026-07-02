@@ -234,6 +234,15 @@ class Controller:
     # behaviour fork on the OFF path). None/False => byte-identical (VQ1 / case-A + today's
     # vq2_case_c). Opted in via DeployProfile.vertical_estimator. [VQ2 A24, 2026-07-02]
     use_vertical_estimator: bool = False
+    # GATE-RELATIVE ALTITUDE TERM (the A25 fix, 2026-07-02 -- extends A24). Proportional gain (1/
+    # (m*s^2), i.e. thrust-per-metre) on the gate-relative vertical offset ``z_off`` (NED down-
+    # positive: drone ABOVE the gate => positive). The ff-owns-vertical alt-hold term is
+    # ``- kp_gate*z_off`` -- NEGATIVE, because z_off>0 (above the gate) must REDUCE thrust below
+    # hover so the drone SINKS onto gate height (see ``_ff_owns_vertical_thrust``). Default 0.0 =>
+    # the term is identically zero regardless of z_off -- VQ1/case-A byte-identical. Set to 0.06
+    # ONLY in vq2_case_c's controller_overrides (deploy_profile.py); see the A25 build spec
+    # (handoff/vq2_gate_relative_altitude_spec_2026-07-02.md §3.3) for the ω/ζ sizing derivation.
+    kp_gate: float = 0.0
     _prev_body_rate: np.ndarray | None = field(default=None, repr=False, compare=False)
     _prev_slew_t_ns: int | None = field(default=None, repr=False, compare=False)
     # ff-owns-vertical alt-hold state (latched at the first ff-owns-vertical tick; untouched when OFF):
@@ -267,14 +276,25 @@ class Controller:
         return out
 
     def _ff_owns_vertical_thrust(self, z: float, vz_t: float, sim_time_ns: int,
-                                 vz_meas: float | None = None) -> float:
-        """Alt-hold collective (pre tilt-comp/clip) for the ff-owns-vertical path (A19c bang-bang fix).
+                                 vz_meas: float | None = None, z_off: float = 0.0) -> float:
+        """Alt-hold collective (pre tilt-comp/clip) for the ff-owns-vertical path (A19c bang-bang fix,
+        A25 gate-relative altitude term).
 
-        thrust = hover + kp_alt*(z - z_target) + ff_vertical_kd_alt*(vz - vz_t), where:
+        thrust = hover + kp_alt*(z - z_target) - kp_gate*z_off + ff_vertical_kd_alt*(vz - vz_t), where:
           * ``z_target`` is latched to the current ``z`` on the FIRST ff-owns-vertical tick, then ramped
             by the commanded vertical-align rate: ``z_target += vz_t*dt`` (dt = sim-time delta). A
             commanded sink/climb becomes a MOVING position target the robust loop tracks -- never a
-            velocity-error term on the fictional, drifting ``vel[2]``.
+            velocity-error term on the fictional, drifting ``vel[2]``. This ramp is maintained even
+            though ``kp_alt=0`` on the live vq2_case_c path makes its term inert (see the A25 spec
+            §3.5) -- kept for the OFF-path / any future ``kp_alt>0`` profile, byte-identical.
+          * ``- kp_gate*z_off`` (A25, 2026-07-02) is the GATE-RELATIVE position term that REPLACES
+            ``kp_alt*(z-z_target)`` as the live altitude-seeking authority on vq2_case_c (kp_alt=0
+            there): ``z_off`` is the gate-relative vertical offset (NED down-positive, drone ABOVE
+            the gate => positive). The sign is NEGATIVE: above-the-gate (z_off>0) must REDUCE
+            thrust below hover so the drone SINKS onto gate height -- pinned by
+            ``tests/test_vertical_estimator_zoff.py::test_z_off_positive_two_yields_thrust_below_hover``.
+            Default ``z_off=0.0`` (the caller passes 0 when ``kp_gate=0`` or the estimator has no
+            latched offset yet) makes the term identically zero -- byte-identical when unused.
           * the damping rate ``vz`` is a LIGHT low-pass of ``vz_meas`` when the caller supplies one
             (A24: the washout estimator's IMU-integrated, structurally-bounded vz -- smooth AND live
             to a real climb; the LP just catches single-tick glitches, ``ff_vertical_vz_lp_alpha``),
@@ -305,6 +325,7 @@ class Controller:
             vz = self._alt_vzmeas_lp
         return (self.hover_thrust
                 + self.kp_alt * (z - self._alt_z_target)
+                - self.kp_gate * z_off
                 + self.ff_vertical_kd_alt * (vz - vz_t))
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
@@ -426,12 +447,19 @@ class Controller:
             # ON but NaN export (pre-init / estimator not seeded) -> vz_meas=0.0, a benign OPEN-LOOP
             # track on vz_t -- NEVER the fd-of-pos[2] path (that path silently re-admits the
             # unbounded-dead-reckoning poison this fix removes).
+            # A25: z_off is read behind the SAME use_vertical_estimator gate (it rides the same
+            # NavState export as vz_est). NaN (no gate ever latched, or estimator off) -> 0.0 ->
+            # zero altitude authority from this term, benign (matches the vz_est NaN fallback).
             z_v = float(pos[2])
             vz_v = None
+            z_off_v = 0.0
             if self.use_vertical_estimator:
                 vz_est = float(getattr(nav, "vert_vz_est", float("nan")))
                 vz_v = vz_est if np.isfinite(vz_est) else 0.0
-            thrust = self._ff_owns_vertical_thrust(z_v, vz_t, int(sp.sim_time_ns), vz_meas=vz_v)
+                z_off_est = float(getattr(nav, "z_off_est", float("nan")))
+                z_off_v = z_off_est if np.isfinite(z_off_est) else 0.0
+            thrust = self._ff_owns_vertical_thrust(z_v, vz_t, int(sp.sim_time_ns),
+                                                   vz_meas=vz_v, z_off=z_off_v)
         else:
             z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
             z_t = z_t - self.alt_offset_m              # fly above the gate line (NED z+ = down)

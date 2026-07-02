@@ -270,6 +270,13 @@ class NavState:
     # byte-identical. [VQ2 A24, 2026-07-02]
     vert_z_est: float = float("nan")                     # m, PERMANENTLY NaN (no altitude state)
     vert_vz_est: float = float("nan")                    # m/s, NED world-down zdot (down +)
+    # A25 gate-relative vertical offset export (racer.vertical_estimator.VerticalEstimator.z_off):
+    # signed vertical distance from the drone to the last-latched gate-opening centre, world NED,
+    # DOWN-positive (drone ABOVE the gate => positive). NaN when no gate has ever been latched OR
+    # the estimator is off/unseeded -- the controller treats NaN as ZERO altitude authority (benign,
+    # byte-identical to no term at all). Gated exactly like vert_vz_est (NavigatorConfig.
+    # use_vertical_estimator). [VQ2 A25, 2026-07-02]
+    z_off_est: float = float("nan")                      # m, NED down-positive gate->drone offset
 
 
 # ---------------------------------------------------------------------------

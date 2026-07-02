@@ -1163,14 +1163,17 @@ class Navigator:
         # A24 vertical-velocity washout: export the smooth, bounded vz when the estimator is live
         # (vert_z stays permanently NaN -- no absolute-altitude state, see VerticalEstimator.z);
         # None otherwise -> the NavState fields stay NaN (make_nav_state's absent-marker, byte-identical).
-        vert_z = vert_vz = None
+        # A25: export the gate-relative z_off the SAME way (mirrored gating) -- None until a gate
+        # has ever been latched (VerticalEstimator.z_off is NaN then, same absent-marker contract).
+        vert_z = vert_vz = z_off = None
         if self._vert_est is not None and self._vert_est.seeded:
             vert_z, vert_vz = self._vert_est.z, self._vert_est.vz
+            z_off = self._vert_est.z_off
         return make_nav_state(self.kf, ds, tsv, nav_inplane_sigma=inplane_sig,
                               nav_along_sigma=along_sig,
                               attitude_rpy_override=att_override,
                               angular_rate_override=rate_override,
-                              vert_z_est=vert_z, vert_vz_est=vert_vz)
+                              vert_z_est=vert_z, vert_vz_est=vert_vz, z_off_est=z_off)
 
     def obs_drone_state(self, ds: DroneState) -> DroneState:
         """The DroneState the case-C OBS seam should consume (use_ahrs attitude routing, GAP #2).
