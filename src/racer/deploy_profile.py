@@ -281,11 +281,28 @@ def vq2_case_c() -> DeployProfile:
         # gate-relative altitude spec (handoff/vq2_gate_relative_altitude_spec_2026-07-02.md) for the
         # full derivation of these values; they are gated to vq2_case_c only via this override dict
         # (the Controller field defaults are untouched, so VQ1/case-A stay byte-identical).
+        #   * alt_thrust_lo = 0.15 (the A27 forward-decouple fix, 2026-07-03, raised from the
+        #     Controller default 0.05): diagnosis of run 20260703_002244 -- the seeker's forward
+        #     pursuit itself is correct (commands/achieves the -7deg forward tilt, +1.2 m/s^2 demand),
+        #     but a ~2 Hz vertical bob rail-slams the collective down to the 0.05 floor repeatedly,
+        #     and forward aerodynamic force scales with the collective magnitude -- so the forward
+        #     push collapses from +1.02 to +0.14 m/s^2 on every low-thrust half-cycle and the drone
+        #     cannot translate forward past gate 1. Raising the floor to 0.15 (hover is 0.2656) still
+        #     allows a real descent but keeps enough collective on the floor half-cycle that forward
+        #     thrust never collapses to near-zero. VQ1/case-A keep the Controller default 0.05 --
+        #     byte-identical.
+        #   * alt_thrust_slew_per_s = 2.0 (the A27 fix, paired with the raised floor above): rate-
+        #     limits the FINAL commanded collective so it cannot slam floor<->ceiling in one tick --
+        #     a full 0.15->0.6 swing now takes ~0.22 s instead of a single tick, killing the 2 Hz
+        #     bang-bang while still allowing legitimate thrust response. Initial tuning value --
+        #     revisit against live flight data. VQ1/case-A keep the Controller default None (no
+        #     limiter) -- byte-identical.
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True,
                               "body_rate_sign": (1.0, 1.0, 1.0),
                               "kp_alt": 0.0, "ff_vertical_kd_alt": 0.25,
-                              "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.06},
+                              "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.06,
+                              "alt_thrust_lo": 0.15, "alt_thrust_slew_per_s": 2.0},
         # A20 async-detect (2026-07-01): decouple the ~250 ms GPU-stalled YOLO detect from the
         # control loop (worker thread + latest-wins snapshot; racer.vision.async_detect). Fixes
         # the ~3 Hz loop -> ~300 ms ZOH command-hold -> one held climb command flies into the

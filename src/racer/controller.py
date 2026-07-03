@@ -243,8 +243,27 @@ class Controller:
     # ONLY in vq2_case_c's controller_overrides (deploy_profile.py); see the A25 build spec
     # (handoff/vq2_gate_relative_altitude_spec_2026-07-02.md §3.3) for the ω/ζ sizing derivation.
     kp_gate: float = 0.0
+    # COLLECTIVE (THRUST) SLEW-RATE LIMIT (the A27 forward-decouple fix, 2026-07-03). Diagnosis of run
+    # 20260703_002244: the gate-seeker's FORWARD pursuit is correct (it commands/achieves the -7deg
+    # forward tilt, +1.2 m/s^2 demand), but a ~2 Hz VERTICAL bob rail-slams the collective to its
+    # ``alt_thrust_lo`` floor repeatedly -- and forward aerodynamic force SCALES WITH the collective
+    # (the thrust vector's horizontal component is proportional to its magnitude), so the forward push
+    # collapses from +1.02 to +0.14 m/s^2 on every low-thrust half-cycle. Net: the drone cannot
+    # translate forward, stuck between spawn and gate 1, even though the pursuit/forward path itself
+    # is not at fault. THE FIX (this field, paired with a raised ``alt_thrust_lo`` in
+    # ``vq2_case_c().controller_overrides``): cap how fast the FINAL commanded collective may change
+    # per tick, ``|thrust - prev| <= alt_thrust_slew_per_s * dt``, so a bob can no longer slam the
+    # collective floor<->ceiling in a single tick -- it is smoothed into a bounded ramp, same pattern
+    # as ``body_rate_slew_max_rps2`` above. None (default) => OFF => no state kept => byte-identical
+    # (VQ1 / case-A); the first tick (no prev) passes through unclamped, exactly like the body-rate
+    # slew. [VQ2 A27, 2026-07-03]
+    alt_thrust_slew_per_s: float | None = None
     _prev_body_rate: np.ndarray | None = field(default=None, repr=False, compare=False)
     _prev_slew_t_ns: int | None = field(default=None, repr=False, compare=False)
+    # thrust-slew state (A27): separate prev/t_ns from the body-rate slew's (different signal, same
+    # per-tick-clamp pattern) so the two limiters never cross-contaminate.
+    _prev_thrust: float | None = field(default=None, repr=False, compare=False)
+    _prev_thrust_t_ns: int | None = field(default=None, repr=False, compare=False)
     # ff-owns-vertical alt-hold state (latched at the first ff-owns-vertical tick; untouched when OFF):
     _alt_z_target: float | None = field(default=None, repr=False, compare=False)
     _alt_prev_z: float | None = field(default=None, repr=False, compare=False)
@@ -273,6 +292,27 @@ class Controller:
                 out = self._prev_body_rate + delta
         self._prev_body_rate = out.copy()
         self._prev_slew_t_ns = int(sim_time_ns)
+        return out
+
+    def _apply_thrust_slew(self, thrust: float, sim_time_ns: int) -> float:
+        """Per-tick slew-rate limit on the FINAL commanded collective (the A27 forward-decouple fix).
+        Clamps ``|thrust - prev| <= alt_thrust_slew_per_s * dt`` where ``dt`` is the sim-time delta
+        since the last command, then stores the (clamped) command as the new prev. OFF (slew
+        None/<=0) or no prior command / non-positive dt => pass thrust through unchanged + just
+        latch it (byte-identical) -- exactly the ``_apply_body_rate_slew`` pattern, applied to the
+        scalar collective instead of the body-rate vector."""
+        slew = self.alt_thrust_slew_per_s
+        if slew is None or slew <= 0.0:
+            return thrust                                   # OFF: byte-identical, no state kept
+        out = float(thrust)
+        if self._prev_thrust is not None and self._prev_thrust_t_ns is not None:
+            dt = (int(sim_time_ns) - int(self._prev_thrust_t_ns)) / 1e9
+            if dt > 0.0:                                     # bound the per-tick change to slew*dt
+                max_step = float(slew) * dt
+                delta = float(np.clip(out - self._prev_thrust, -max_step, max_step))
+                out = self._prev_thrust + delta
+        self._prev_thrust = out
+        self._prev_thrust_t_ns = int(sim_time_ns)
         return out
 
     def _ff_owns_vertical_thrust(self, z: float, vz_t: float, sim_time_ns: int,
@@ -468,6 +508,7 @@ class Controller:
             cos_tilt = float(np.cos(nav.roll) * np.cos(nav.pitch))   # = R[2,2], world-up fraction
             thrust = thrust / max(cos_tilt, 0.5)       # floor at 60 deg so it can't blow up
         thrust = float(np.clip(thrust, self.alt_thrust_lo, self.alt_thrust_hi))
+        thrust = self._apply_thrust_slew(thrust, sp.sim_time_ns)   # anti-bang-bang (A27; None => off)
         # -- horizontal: xy error -> desired horizontal accel (vertical zeroed) --
         a_h = np.zeros(3)
         if sp.accel_ned is not None:
