@@ -273,6 +273,17 @@ class NavigatorConfig:
     # capture-time OOSM RewindKF that consumes the precise stamp is a LATER step (deferred, §1.5).
     reconcile_vision_clock: bool = True
     vision_latency_const_s: float = 0.0    # predict-forward constant fix age (s); calibrated L3/L4
+    # A29 CONTINUOUS epoch reconciliation (2026-07-03): the camera/server epoch is NOT 1:1 with the
+    # IMU epoch under GPU load (measured 0.9449x wall over run 20260703_024023 while the IMU epoch
+    # tracked wall at 1.0002x), so the learn-ONCE delta_epoch above drifts ~0.05-0.10 s per second
+    # of flight: pose_age_s ramps to the 1.0 s cap, the vertical latch latency-comp over-corrects
+    # by vz*(~0.9 s), and -- worst -- the OOSM fix time drifts past RewindKF.horizon_s=0.5 (~t+5 s),
+    # silently DROPPING every absolute/gate-relative/range fix for the rest of the flight. When ON,
+    # re-estimate delta each paired (frame, ds) vision tick and track it with a slow EMA (the
+    # per-tick estimate is exact at that instant; the EMA only smooths recv jitter). OFF (default)
+    # => learn-once, byte-identical (VQ1 / case-A untouched).
+    reconcile_vision_clock_continuous: bool = False
+    reconcile_epoch_ema_alpha: float = 0.10
 
     # --- C2 estimator chain (case-C VQ2 gate-relative pipeline, BLUEPRINT §1.2-1.6) ---
     # OFF by default -> the VQ1 / case-A path is byte-identical (bare LinearKF, in-place fixes). Flip
@@ -938,15 +949,24 @@ class Navigator:
     def _maybe_run_vision_timed(self, ds: DroneState, frame: Frame, R_wb: np.ndarray) -> None:
         """Body of ``_maybe_run_vision`` after the dedup/gating checks -- split out so the per-tick
         timing flush in the caller's ``finally`` covers every exit path uniformly."""
-        # P0-b: learn the camera/server -> IMU epoch offset ONCE, from this paired (frame, ds).
+        # P0-b: learn the camera/server -> IMU epoch offset from this paired (frame, ds).
         # At the frame's capture instant the IMU clock reads ds.sim + (frame.recv - ds.recv)
         # (assuming 1:1 realtime), so delta_epoch = frame.sim - ds.sim - (frame.recv - ds.recv).
         # Same-clock data (recv=0, frame.sim==ds.sim) -> 0 -> back-compat is exact.
-        if self.config.reconcile_vision_clock and self._delta_epoch_ns is None:
-            self._delta_epoch_ns = (
+        # A29: with ``reconcile_vision_clock_continuous`` the delta is RE-estimated each paired
+        # vision tick and tracked with a slow EMA, because the two epochs run at DIFFERENT RATES
+        # under GPU load (the learn-once value drifts ~0.05-0.10 s/s -> the OOSM fix chain dies at
+        # ~t+5 s; see the NavigatorConfig note). OFF (default) => learn once, byte-identical.
+        if self.config.reconcile_vision_clock:
+            delta_now = (
                 int(frame.sim_time_ns) - int(ds.sim_time_ns)
                 - (int(frame.recv_monotonic_ns) - int(ds.recv_monotonic_ns))
             )
+            if self._delta_epoch_ns is None:
+                self._delta_epoch_ns = delta_now
+            elif self.config.reconcile_vision_clock_continuous:
+                a = float(np.clip(self.config.reconcile_epoch_ema_alpha, 0.0, 1.0))
+                self._delta_epoch_ns = int(round((1.0 - a) * self._delta_epoch_ns + a * delta_now))
         # A17 decimation: count THIS processed vision tick, then run each CV backstop only every N-th
         # tick (N=vp_yaw_decimate / floor_height_decimate; 1 => every tick => byte-identical). On a
         # SKIPPED tick the backstop is not invoked at all (no estimate_heading / estimate_floor_height)

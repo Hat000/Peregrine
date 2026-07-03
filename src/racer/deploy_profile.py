@@ -187,6 +187,14 @@ def vq2_case_c() -> DeployProfile:
         # information with the correct structure, so the fusion goes back OFF here (the flag stays
         # for byte-compat / A-B replay of the A26 behaviour).
         use_gate_vz_fusion=False,
+        # --- A29 continuous epoch reconciliation (2026-07-03) ---
+        # The camera epoch runs at 0.9449x wall under GPU load (run 20260703_024023) while the IMU
+        # epoch tracks 1.0002x, so the learn-once delta_epoch drifted ~0.05-0.10 s/s: pose_age_s
+        # ramped to the 1.0 s cap, the vertical latch latency-comp over-corrected by vz*(~0.9 s)
+        # (a large chunk of the 50% zoff innovation rejection), and every OOSM fix rewound past
+        # RewindKF.horizon_s=0.5 from ~t=5 s on -- the KF position channel silently dead. Re-track
+        # the delta per vision tick with a slow EMA (alpha field default 0.10). VQ1 default OFF.
+        reconcile_vision_clock_continuous=True,
         # --- A28 2-state complementary filter on (z_off, vz_rel) (2026-07-03) ---
         # Splatted into VerticalEstimator(...) at Navigator._initialize (same opt-in dict pattern
         # as controller_overrides). use_zoff_filter=True: IMU predicts BOTH states per tick (phase
@@ -221,8 +229,20 @@ def vq2_case_c() -> DeployProfile:
         # on the RIGHT steered the nose LEFT. true_attitude_from_ahrs makes the seeker consume the TRUE
         # euler (-nav.roll, nav.pitch, -nav.yaw) and pass the controller a yaw-negated nav so R_cur is
         # R_true -- no sign knob touched. VQ1 / case-A byte-identical (default OFF).
+        # A29 orbit fix (2026-07-03): LOS-rate damping kills the tangential drift that made the
+        # drone yaw at gate 1 while coasting a 392-deg orbit around it (21.1 m/s of commanded
+        # delta-v, net vector 2.6 m/s, coherence 0.12 -- run 20260703_024023). The lateral term
+        # v_t = -r*theta_dot is a pure vision observable (tracked PnP range x filtered LOS rate),
+        # so no dead-reckoned velocity re-enters the loop (A15b/A23 stand). Sub-field defaults
+        # (kd=0.8, lateral cap 2.0, total cap 2.5, deadband 0.3, EMA 0.4) live on GateSeekerConfig.
+        # A29 delay trim: the 115-deg gate-1 acquire turn tracked a RECEDING bearing at ~1.05 rad/s
+        # realized; pursuit_yaw_slew_rps 1.0 -> 1.5 matches visual_yaw_rate_cap so the SLEW is no
+        # longer the binding constraint (the cap + slew-limit still bound steps; the A3
+        # roll-saturation guard was about heading STEPS, which the 1.5 slew still rate-limits).
         seeker_overrides={"egress_freeze_attitude": True, "hold_last_demand_s": 0.6,
-                          "true_attitude_from_ahrs": True},
+                          "true_attitude_from_ahrs": True,
+                          "use_los_rate_damping": True,
+                          "pursuit_yaw_slew_rps": 1.5},
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
         # the egress->pursuit HANDOFF (held ~-18deg nose-down vs ~-5deg cruise = ~13deg error) commands

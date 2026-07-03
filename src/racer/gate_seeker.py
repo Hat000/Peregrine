@@ -117,6 +117,15 @@ def _unit(v: np.ndarray, fallback: np.ndarray | None = None) -> np.ndarray:
     return np.asarray(v, dtype=np.float64) / n
 
 
+def _clip_norm(v: np.ndarray, cap: float) -> np.ndarray:
+    """Scale ``v`` down so its norm is at most ``cap`` (direction preserved). cap<=0 => untouched."""
+    v = np.asarray(v, dtype=np.float64)
+    n = float(np.linalg.norm(v))
+    if cap <= 0.0 or n <= cap:
+        return v
+    return v * (float(cap) / n)
+
+
 # Flight-proven decoupled-CTBR sim-sign compensation (MEASURED on ShadowPC; see
 # scripts/twin_fly_course._FAITHFUL_SIGNS). The ODOMETRY roll-quat + roll/pitch-rate reporting
 # inversions and the roll/yaw COMMAND inversion the live sim needs. ff_gain is 1.0 here (NOT 2.5):
@@ -373,6 +382,49 @@ class GateSeekerConfig:
     # forward lean out over the window. Only active when hold_last_demand_s > 0.
     hold_last_demand_decay: bool = True
 
+    # --- LOS-RATE DAMPING / tangential-velocity kill (the A29 orbit fix, 2026-07-03) ---
+    # A29 (run 20260703_024023): after clearing gate 0 the drone carried ~3 m/s of momentum mostly
+    # PERPENDICULAR to the gate-1 line-of-sight -- and NO term in the whole control chain opposes
+    # that real tangential velocity (velocity is unobservable on this wire; ff_owns_horizontal
+    # correctly removed the damping of the FICTIONAL dead-reckoned velocity, and nothing replaced
+    # it). Pure pursuit with a lateral velocity component is the classic tail-chase: the seeker
+    # poured 21.1 m/s of commanded delta-v into a 392-deg orbit (net vector 2.6 m/s, coherence
+    # 0.12) -- it yawed AT the gate while coasting AROUND it. THE FIX: the missing observable is
+    # the LOS RATE. For a fixed gate, v_t = v.e_t = -r*theta_dot, where theta is the world LOS
+    # angle (yaw_des, pre-slew -- already computed every pursuit tick) and r the tracked PnP range
+    # (_track_range_m, already EMA-maintained). Classical proportional navigation, done entirely
+    # with signals that already exist: estimate theta_dot by differencing yaw_des across FRESH
+    # poses ON THE CAMERA-EPOCH STAMPS (same clock both sides, so the A29 epoch-rate skew
+    # cancels), EMA-filter it, and add a lateral demand a_lat = -kd*v_t = +kd*r*theta_dot along
+    # e_t = [-sin(theta), cos(theta), 0] that BRAKES the tangential drift. The bearing then stops
+    # receding, the orbit never forms, and the forward feedforward integrates coherently into
+    # closing speed. No velocity estimate is consumed anywhere -- r and theta_dot are pure vision
+    # observables; the banned dead-reckoned-velocity servo stays banned (A15b/A23 stand).
+    # OFF (default) => byte-identical (VQ1 / case-A untouched).
+    use_los_rate_damping: bool = False
+    # EMA on the per-fresh-pose LOS-rate sample (the sample cadence is the fresh-pose cadence,
+    # median ~48 ms gap on the A29 run; 0.4 tracks a 0.85 rad/s sweep with little lag).
+    los_rate_ema_alpha: float = 0.4
+    # Reject a raw sample beyond this (rad/s): a gate-track hop is a STEP in theta -> a >>3 rad/s
+    # one-tick sample; the honest orbit rate was 0.4-0.85 rad/s.
+    los_rate_max_rps: float = 3.0
+    # Reject/reset across a pose gap longer than this (s): differencing across a long gap mixes
+    # geometry regimes (the drone moved), so restart the filter instead.
+    los_rate_max_dt_s: float = 0.5
+    # Velocity-damping gain (1/s): a_lat = kd * |v_t| against the tangential drift. Observed
+    # v_t ~ 3 m/s => 2.4 m/s^2 demand (capped below) kills it in ~1.5-2 s.
+    tangential_kd: float = 0.8
+    # Cap the lateral demand (m/s^2): 2.0 alone is a ~11.5 deg lean -- well inside the 1.5 rad/s
+    # pitch/roll caps and far from the controller's max tilt.
+    lateral_accel_cap_mps2: float = 2.0
+    # Norm-cap the COMPOSED horizontal demand (forward + lateral; m/s^2): 2.5 ~ 14.3 deg lean.
+    total_accel_cap_mps2: float = 2.5
+    # No correction below this |v_t| (m/s): ~the r*theta_dot noise floor for r~10 m and ~0.03
+    # rad/s theta_dot jitter -- don't hunt on noise near a dead bearing.
+    tangential_deadband_mps: float = 0.3
+    # Clamp the range used in v_t (m): a mis-depthed far candidate can't demand a huge lateral.
+    los_range_cap_m: float = 25.0
+
     # --- TRUE-ATTITUDE FROM AHRS (the 2026-06-30 A14 yaw-mirror fix) ---
     # ROOT CAUSE (A14): under ``use_ahrs`` (vq2_case_c) the case-C Navigator re-encodes the TRUE
     # AHRS attitude into the legacy ODOMETRY conjugation before writing ``NavState`` (an R_y(pi)
@@ -541,6 +593,25 @@ class GateSeeker:
     _last_demand_yaw: float | None = field(default=None, repr=False)        # last pursuit slewed yaw
     _last_demand_accel: float | None = field(default=None, repr=False)      # last pursuit effective forward accel
     _last_demand_t_ns: int | None = field(default=None, repr=False)         # sim time of the last pursuit demand
+    # -- A29 LOS-rate damping state: the filtered world LOS angular rate of the TRACKED gate.
+    #    Sampled by differencing yaw_des (pre-slew) across FRESH poses on their CAMERA-EPOCH stamps
+    #    (same clock both sides -> the epoch-rate skew cancels). Describes ONE gate's geometry:
+    #    reset at pass begin/end, track drop, and reset(). --
+    _los_prev_angle: float | None = field(default=None, repr=False)   # last fresh-pose world LOS angle
+    _los_prev_pose_ns: int | None = field(default=None, repr=False)   # its pose.sim_time_ns (camera epoch)
+    _los_rate_ema: float = field(default=0.0, repr=False)             # filtered LOS rate (rad/s, world)
+    _los_rate_valid: bool = field(default=False, repr=False)          # >=1 accepted sample since reset
+    # -- A29 instrumentation (spec §4.4): stashed each flag-ON pursuit tick so the nav_estimate
+    #    logger can read them (same stale-retention semantics as yaw_des_rad). Never consumed by
+    #    control; None when the flag is off / no valid estimate yet. --
+    _last_los_rate: float | None = field(default=None, repr=False)          # = _los_rate_ema when valid
+    _last_vt_est: float | None = field(default=None, repr=False)            # v_t = -r*theta_dot (m/s)
+    _last_alat: float | None = field(default=None, repr=False)              # applied lateral accel (m/s^2)
+    _last_track_range_m: float | None = field(default=None, repr=False)     # range used in v_t (m)
+    # -- A29 regime stash (spec §4.4): which command_visual regime returned this tick, first-class
+    #    (settle/anchor/egress/pass/bridge/hold/pursuit) -- the A29 run's regime had to be
+    #    reconstructed from field-change fingerprints. Logging only. --
+    _last_regime: str | None = field(default=None, repr=False)
     # -- A13 instrumentation: per-flight pose-None breakdown + bridge coverage counters (logging only,
     #    no behaviour change). Accumulated in memory; fly_rl emits a one-line summary at loop exit. --
     _last_none_reason: str | None = field(default=None, repr=False)         # why detect_gate_lever returned None
@@ -674,6 +745,7 @@ class GateSeeker:
             self._track_coast_ticks += 1
             if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                 self._track_range_m, self._track_bearing = None, None
+                self._reset_los_rate()   # A29: tracked-gate identity gone -> LOS-rate history with it
             return None
 
         if self._track_range_m is None or self._track_bearing is None:
@@ -702,6 +774,7 @@ class GateSeeker:
                 self._track_coast_ticks += 1
                 if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                     self._track_range_m, self._track_bearing = None, None
+                    self._reset_los_rate()   # A29: tracked-gate identity gone -> LOS-rate history with it
                 return None
             # among the consistent candidates, the one closest to the predicted bearing+range.
             chosen = min(
@@ -827,11 +900,13 @@ class GateSeeker:
         # Hold for settle_s from the launch clock so the cold AHRS gravity-aligns before we lean. We
         # stay here EVEN IF a detection arrives early (the estimate is not yet trustworthy to lean on).
         if self._in_settle(int(nav.sim_time_ns)):
+            self._last_regime = "settle"        # A29 §4.4 instrumentation (logging only)
             return self._hold_command(nav, yaw_rate_cap=self.config.anchor_yaw_rate_rps,
                                       attitude_safe=True)
 
         # --- regime 1: LAUNCH ANCHOR (settled, no release yet) -> hold attitude, clamp ALL rates ---
         if not self._anchored:
+            self._last_regime = "anchor"        # A29 §4.4 instrumentation (logging only)
             return self._hold_command(nav, yaw_rate_cap=self.config.anchor_yaw_rate_rps,
                                       attitude_safe=True)
 
@@ -842,6 +917,7 @@ class GateSeeker:
         # cannot lunge -- it eases the drone out of the spawn gate. (A4: the first forward motion
         # drove straight into the start-gate frame; the egress departs the spawn gate first.) ---
         if self._in_egress(int(nav.sim_time_ns)):
+            self._last_regime = "egress"        # A29 §4.4 instrumentation (logging only)
             return self._egress_command(nav)
 
         # --- PASS DETECTION + DEAD-RECKON-THROUGH bookkeeping (the A5-footage fix) -------------------
@@ -861,6 +937,7 @@ class GateSeeker:
                 if self._pass_acquired_next(nav, pose):
                     self._end_pass()                # next gate re-acquired -> resume pursuit below
                 else:
+                    self._last_regime = "pass"      # A29 §4.4 instrumentation (logging only)
                     return self._pass_coast_command(nav)
 
         # --- regime 2: NO DETECTION -> coast level on the last heading, gentle re-acquire ---
@@ -874,14 +951,17 @@ class GateSeeker:
             bridged = self._maybe_hold_last_demand(nav)
             if bridged is not None:
                 self.diag_counts["bridged"] += 1
+                self._last_regime = "bridge"        # A29 §4.4 instrumentation (logging only)
                 return bridged
             self.diag_counts["held_legacy"] += 1
+            self._last_regime = "hold"              # A29 §4.4 instrumentation (logging only)
             return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
                                       attitude_safe=True)
 
         # --- regime 3: PURSUIT -> bounded feedforward forward tilt toward the SEEN opening +
         # centering yaw, pitch + roll capped, forward demand ramped (never a velocity setpoint) ---
         self.diag_counts["pursuit"] += 1
+        self._last_regime = "pursuit"               # A29 §4.4 instrumentation (logging only)
         return self._visual_pursuit_command(nav, pose)
 
     # =======================================================================
@@ -929,6 +1009,7 @@ class GateSeeker:
         self._pass_heading = self._last_yaw if self._last_yaw is not None else 0.0
         # reset the temporal track so the next-gate re-acquisition starts clean (a different gate).
         self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+        self._reset_los_rate()   # A29: the LOS-rate state describes the JUST-PASSED gate -> drop it
 
     def _end_pass(self) -> None:
         """End the pass regime (the NEXT gate has been re-acquired) -> resume normal pursuit on it.
@@ -939,6 +1020,7 @@ class GateSeeker:
         self._pass_t_ns = None
         self._pass_heading = None
         self._pass_index = self._last_index
+        self._reset_los_rate()   # A29: a NEW gate begins here -- seed its LOS-rate filter fresh
 
     def _pass_acquired_next(self, nav: NavState, pose: GatePose) -> bool:
         """True iff the seeker is in the ACQUIRE-NEXT window (past the dead-reckon coast) AND a fresh
@@ -1197,6 +1279,89 @@ class GateSeeker:
         elapsed = (int(sim_time_ns) - self._release_t_ns) / 1e9
         return float(np.clip(elapsed / self.config.vertical_align_ramp_s, 0.0, 1.0))
 
+    # =======================================================================
+    # LOS-RATE (TANGENTIAL-VELOCITY) DAMPING  (the A29 orbit fix)
+    # =======================================================================
+    def _reset_los_rate(self) -> None:
+        """Drop the A29 LOS-rate filter state. The state describes ONE gate's geometry, so it is
+        dropped whenever the tracked-gate identity can change: pass begin/end, track drop (coast-ticks
+        expiry), and :meth:`reset`. The first fresh sample after a reset seeds the EMA directly."""
+        self._los_prev_angle = None
+        self._los_prev_pose_ns = None
+        self._los_rate_ema = 0.0
+        self._los_rate_valid = False
+
+    def _update_los_rate(self, yaw_des: float, pose_ns: int) -> None:
+        """Fold one fresh-pose world LOS angle into the filtered LOS rate (A29 §4.1).
+
+        FRESH pose only: we difference two CAMERA-EPOCH stamps of the SAME clock, so the A29
+        epoch-rate skew (camera epoch measured at 0.9449x wall while the IMU epoch tracked 1.0002x)
+        cancels exactly; an async ZOH re-feed (same ``pose_ns``) is not a new geometry sample and is
+        ignored. Sample gates: a pose gap longer than ``los_rate_max_dt_s`` (or a non-positive dt)
+        RESTARTS the filter (differencing across a long gap mixes geometry regimes); a raw sample
+        beyond ``los_rate_max_rps`` is REJECTED (a gate-track hop is a STEP in theta -> a >>3 rad/s
+        one-tick sample). An accepted sample seeds the EMA directly when the filter is fresh."""
+        if self._los_prev_pose_ns is not None and pose_ns == self._los_prev_pose_ns:
+            return
+        if self._los_prev_angle is not None and self._los_prev_pose_ns is not None:
+            dt = (pose_ns - self._los_prev_pose_ns) / 1e9
+            if 0.0 < dt <= self.config.los_rate_max_dt_s:
+                d = float(np.arctan2(np.sin(yaw_des - self._los_prev_angle),
+                                     np.cos(yaw_des - self._los_prev_angle)))
+                sample = d / dt
+                if abs(sample) <= self.config.los_rate_max_rps:
+                    a = float(np.clip(self.config.los_rate_ema_alpha, 0.0, 1.0))
+                    self._los_rate_ema = (a * sample + (1.0 - a) * self._los_rate_ema
+                                          if self._los_rate_valid else sample)
+                    self._los_rate_valid = True
+            elif dt > self.config.los_rate_max_dt_s or dt <= 0.0:
+                self._los_rate_valid = False          # gap/garbage: restart the filter
+                self._los_rate_ema = 0.0
+        self._los_prev_angle = float(yaw_des)
+        self._los_prev_pose_ns = int(pose_ns)
+
+    def _compose_los_damped_accel(self, los: np.ndarray, pose: GatePose,
+                                  eff_ramp: float, fwd_ramp: float) -> np.ndarray:
+        """Compose the pursuit horizontal-accel VECTOR: today's forward feedforward along the LOS
+        plus the A29 LOS-rate lateral damping term that BRAKES the tangential drift (§4.1).
+
+        SIGN (safety-critical -- pinned by test_orbit_demands_braking_accel): with
+        ``e_r = [cos(theta), sin(theta)]`` (drone->gate) and ``e_t = [-sin(theta), cos(theta)]``,
+        a FIXED gate gives ``theta_dot = -(v.e_t)/r``, so ``v_t = v.e_t = -r*theta_dot`` and the
+        damping accel is ``a_lat_vec = -kd*(v.e_t)*e_t = +kd*r*theta_dot*e_t``. Cross-checked on
+        run 20260703_024023: t=4-5.5 s the drone coasted north with the gate swinging right
+        (theta_dot>0, theta~90deg => e_t~[-1,0]) => the demand points south, braking the coast.
+        A FLIPPED sign feeds the tangential velocity instead -- it TIGHTENS the orbit.
+
+        The lateral term rides the same authority ramp as the forward term; the composed vector is
+        norm-capped at ``total_accel_cap_mps2``. The range is the EMA track range (fallback: this
+        pose's PnP range), clamped to ``los_range_cap_m``. Instrumentation stashes (_last_los_rate /
+        _last_vt_est / _last_alat / _last_track_range_m) are written here each flag-ON pursuit tick."""
+        a_fwd = self.config.forward_accel_mps2 * float(eff_ramp) * float(fwd_ramp)
+        a_vec = a_fwd * np.asarray(los, dtype=np.float64)
+        if not self._los_rate_valid:
+            self._last_los_rate = None
+            self._last_vt_est = None
+            self._last_alat = None
+            self._last_track_range_m = None
+            return a_vec
+        r = float(np.clip(self._track_range_m if self._track_range_m is not None
+                          else pose.range_m, 0.0, self.config.los_range_cap_m))
+        v_t = -r * self._los_rate_ema                       # v.e_t (see the sign derivation above)
+        self._last_los_rate = float(self._los_rate_ema)     # A29 §4.4 instrumentation
+        self._last_vt_est = float(v_t)
+        self._last_track_range_m = r
+        a_lat_applied = 0.0
+        if abs(v_t) > self.config.tangential_deadband_mps:
+            e_t = np.array([-los[1], los[0], 0.0])          # horiz unit perpendicular to the LOS
+            a_lat = float(np.clip(-self.config.tangential_kd * v_t,
+                                  -self.config.lateral_accel_cap_mps2,
+                                  self.config.lateral_accel_cap_mps2))
+            a_vec = a_vec + (a_lat * float(eff_ramp)) * e_t  # same authority ramp as the fwd term
+            a_lat_applied = a_lat
+        self._last_alat = a_lat_applied
+        return _clip_norm(a_vec, self.config.total_accel_cap_mps2)
+
     def _visual_pursuit_command(self, nav: NavState, pose: GatePose) -> ControlCommand:
         """Build the slow pursuit CTBR from the SEEN gate's relative bearing (no map, no abs position).
 
@@ -1220,6 +1385,11 @@ class GateSeeker:
         # INSTRUMENTATION ONLY (A14 yaw-steer-sign probe): stash the PRE-SLEW desired yaw toward the
         # gate so the nav-estimate logger can read it. Not consumed by control — purely additive.
         self._last_yaw_des = yaw_des
+        # A29 LOS-rate sampling: fold this FRESH pose's world LOS angle (yaw_des, PRE-slew) into the
+        # LOS-rate filter, differenced on the pose's CAMERA-EPOCH stamp (same clock both sides -> the
+        # epoch-rate skew cancels; a ZOH re-feed of the same pose_ns is not a new geometry sample).
+        if self.config.use_los_rate_damping:
+            self._update_los_rate(yaw_des, int(pose.sim_time_ns))
         # RATE-LIMIT the heading slew: cap the per-tick change of the yaw setpoint so the steering
         # bearing stays SMOOTH (the proximate fix for the swing that saturated roll in A3).
         yaw = self._slew_heading(yaw_des, int(nav.sim_time_ns))
@@ -1244,6 +1414,19 @@ class GateSeeker:
             # altitude memory; latching it is not gated on whether vz_t itself fired this tick.
             self._maybe_latch_z_off(nav, pose)
             fwd_ramp = self._forward_accel_ramp(int(nav.sim_time_ns))
+            # A29 LOS-RATE DAMPING (the orbit fix): compose the forward feedforward + the lateral
+            # tangential-velocity brake into ONE vector, then pass it through the SAME machinery
+            # (accel_vec bypasses only the scalar accel*ramp*los product -- the ramps are already
+            # inside a_vec). The bridge cache stores unit(a_vec) + |a_vec|, so a bridged tick
+            # re-issues the decayed COMPOSED vector on the frozen heading -- the cache machinery is
+            # untouched. Flag OFF => the scalar path below, byte-identical to pre-A29.
+            if self.config.use_los_rate_damping:
+                a_vec = self._compose_los_damped_accel(los, pose, float(eff_ramp), float(fwd_ramp))
+                self._record_last_demand(_unit(a_vec), yaw, float(np.linalg.norm(a_vec)),
+                                         int(nav.sim_time_ns))
+                return self._feedforward_command(nav, los, yaw, eff_ramp,
+                                                 self.config.forward_accel_mps2,
+                                                 fwd_ramp, vz_cmd=vz, accel_vec=a_vec)
             # HOLD-LAST-DEMAND BRIDGE (A13): cache this fresh pursuit demand so a subsequent pose-None
             # tick can re-issue it (continuous per-tick command) instead of regime-2's zero-coast. We
             # cache the slewed world heading + yaw + the EFFECTIVE forward accel (forward_accel * the
@@ -1269,7 +1452,8 @@ class GateSeeker:
 
     def _feedforward_command(self, nav: NavState, los: np.ndarray, yaw: float,
                              launch_ramp: float | None, accel_mps2: float,
-                             demand_ramp: float, vz_cmd: float = 0.0) -> ControlCommand:
+                             demand_ramp: float, vz_cmd: float = 0.0,
+                             accel_vec: np.ndarray | None = None) -> ControlCommand:
         """Shared bounded-feedforward forward-tilt CTBR (pursuit + egress). Commands a horizontal
         acceleration ``accel_mps2 * demand_ramp`` along the unit world heading ``los`` via
         ``Setpoint.accel_ned`` -- the controller adds it as PURE feedforward (no velocity-error term
@@ -1284,13 +1468,20 @@ class GateSeeker:
         the controller derives from velocity_ned[0:2]=0 is ~zero map-free (vel~0), so it does not
         disturb the forward feedforward; vz_cmd=0 leaves the legacy fixed-altitude hold (velocity_ned
         stays None -> vz_t=0 -> hold current z)."""
-        a_fwd = float(max(accel_mps2, 0.0)) * float(np.clip(demand_ramp, 0.0, 1.0))
+        # A29: an explicit COMPOSED accel vector (forward + LOS-rate lateral damping, ramps + norm
+        # cap already applied inside) bypasses the scalar accel*ramp*los product below. ``None``
+        # (every pre-A29 call site, and the flag-OFF path) => the scalar path, byte-identical.
+        if accel_vec is not None:
+            accel_ned = np.asarray(accel_vec, dtype=np.float64)
+        else:
+            a_fwd = float(max(accel_mps2, 0.0)) * float(np.clip(demand_ramp, 0.0, 1.0))
+            accel_ned = a_fwd * np.asarray(los, dtype=np.float64)  # bounded feedforward forward tilt
         velocity_ned = None
         if abs(float(vz_cmd)) > 0.0:
             velocity_ned = np.array([0.0, 0.0, float(vz_cmd)], dtype=np.float64)  # VERTICAL target only
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
-            accel_ned=a_fwd * np.asarray(los, dtype=np.float64),   # bounded feedforward forward tilt
+            accel_ned=accel_ned,
             velocity_ned=velocity_ned,                             # bounded vertical-align vz_t (Z only)
             yaw=yaw,
             launch_ramp=launch_ramp,
@@ -1609,6 +1800,13 @@ class GateSeeker:
         self._last_demand_accel = None
         self._last_demand_t_ns = None
         self._last_none_reason = None
+        # A29 LOS-rate damping: drop the filter state + the instrumentation stashes + the regime.
+        self._reset_los_rate()
+        self._last_los_rate = None
+        self._last_vt_est = None
+        self._last_alat = None
+        self._last_track_range_m = None
+        self._last_regime = None
         for k in self.diag_counts:
             self.diag_counts[k] = 0
 

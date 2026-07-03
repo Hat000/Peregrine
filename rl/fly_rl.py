@@ -1312,6 +1312,28 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
     except Exception:
         rec["raw_gyro_yaw"] = None
 
+    # --- A29 LOS-rate damping instrumentation (spec §4.4; never feeds control) ---
+    # los_rate_rps: the seeker's filtered world LOS angular rate (rad/s); vt_est_mps: the estimated
+    # tangential velocity v_t = -r*theta_dot (m/s); alat_mps2: the applied lateral damping accel
+    # (0.0 when inside the deadband); track_range_m: the range used in v_t. All stashed on each
+    # flag-ON pursuit tick with the same stale-retention semantics as yaw_des_rad; None when the
+    # A29 flag is off / no valid LOS-rate estimate yet.
+    try:
+        for key, attr in (("los_rate_rps", "_last_los_rate"), ("vt_est_mps", "_last_vt_est"),
+                          ("alat_mps2", "_last_alat"), ("track_range_m", "_last_track_range_m")):
+            val = getattr(seeker, attr, None) if seeker is not None else None
+            rec[key] = float(val) if val is not None else None
+    except Exception:
+        rec["los_rate_rps"] = rec["vt_est_mps"] = rec["alat_mps2"] = rec["track_range_m"] = None
+    # seeker_regime: which command_visual regime returned THIS tick
+    # (settle/anchor/egress/pass/bridge/hold/pursuit) -- first-class, so the next post-mortem does
+    # not have to reconstruct the regime from field-change fingerprints (A29 §4.4).
+    try:
+        reg = getattr(seeker, "_last_regime", None) if seeker is not None else None
+        rec["seeker_regime"] = str(reg) if reg is not None else None
+    except Exception:
+        rec["seeker_regime"] = None
+
     return rec
 
 
