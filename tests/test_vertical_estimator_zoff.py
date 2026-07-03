@@ -358,9 +358,12 @@ def test_kp_gate_default_is_zero_byte_identical():
     assert thr_hi == pytest.approx(thr_lo), "kp_gate=0 must ignore z_off entirely"
 
 
-def test_vq2_profile_sets_kp_gate_0_06():
+def test_vq2_profile_sets_kp_gate_0_04():
+    """A28 re-sizing (was 0.06 under A25/A26): kp_gate=0.04 -> omega_n = sqrt(37*0.04) = 1.21
+    rad/s on the MEASURED c~=37 plant, 6.5x softer than the 3.1 rad/s effective stiffness that
+    limit-cycled once the hidden -kd*vz_t position path is removed (gate_pd_vertical)."""
     from racer.deploy_profile import vq1_case_a, vq2_case_c
     ov = vq2_case_c().controller_overrides
     assert ov is not None
-    assert ov["kp_gate"] == pytest.approx(0.06)
+    assert ov["kp_gate"] == pytest.approx(0.04)
     assert vq1_case_a().controller_overrides is None or "kp_gate" not in (vq1_case_a().controller_overrides or {})

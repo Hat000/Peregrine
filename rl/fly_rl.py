@@ -1253,6 +1253,34 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
     except Exception:
         rec["pose_age_s"] = None
 
+    # --- A28 instrumentation (spec §2.6) ---
+    # vz_t_consumed: the vz_t the CONTROLLER actually used this tick (the seeker-side "vz_t" above
+    # is the seeker's stash and was STALE on the ~21% hold-last-demand bridge ticks -- the 2.3 Hz
+    # flicker that drove run 20260703_013748 was invisible in it). term_gate / term_damp /
+    # thrust_pre_clip: the per-term vertical-law decomposition (pre tilt-comp/clip).
+    try:
+        ctrl = getattr(seeker, "controller", None) if seeker is not None else None
+        for key, attr in (("vz_t_consumed", "_last_vz_t_consumed"),
+                          ("term_gate", "_last_term_gate"),
+                          ("term_damp", "_last_term_damp"),
+                          ("thrust_pre_clip", "_last_thrust_pre_clip")):
+            val = getattr(ctrl, attr, None) if ctrl is not None else None
+            rec[key] = float(val) if val is not None else None
+    except Exception:
+        rec["vz_t_consumed"] = rec["term_gate"] = rec["term_damp"] = rec["thrust_pre_clip"] = None
+    # zoff_innov / zoff_innov_accepted / zoff_miss: the A28 complementary filter's last-latch
+    # innovation, its accept/reject flag, and the consecutive-miss (reseed) counter.
+    try:
+        vest = getattr(nav, "_vert_est", None)
+        zi = getattr(vest, "zoff_last_innov", None) if vest is not None else None
+        rec["zoff_innov"] = None if (zi is None or zi != zi) else float(zi)
+        za = getattr(vest, "zoff_last_accepted", None) if vest is not None else None
+        rec["zoff_innov_accepted"] = None if za is None else bool(za)
+        zm = getattr(vest, "zoff_miss", None) if vest is not None else None
+        rec["zoff_miss"] = int(zm) if zm is not None else None
+    except Exception:
+        rec["zoff_innov"] = rec["zoff_innov_accepted"] = rec["zoff_miss"] = None
+
     # --- commanded control ---
     try:
         br = cmd.body_rate

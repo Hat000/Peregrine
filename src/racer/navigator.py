@@ -410,7 +410,23 @@ class NavigatorConfig:
     # meaningful when ``use_vertical_estimator`` is also True -- no estimator, no fusion). Default
     # OFF -> byte-identical to A25/A24. vq2_case_c opts in via DeployProfile.gate_vz_fusion (mirrors
     # the vertical_estimator seam exactly).
+    # A28 (2026-07-03): SUPERSEDED on the vq2 path by the complementary filter's beta innovations
+    # (vq2_case_c now sets this back to False; see vertical_estimator_overrides below). The flag
+    # stays for byte-compat / A-B replay of the A26 behaviour.
     use_gate_vz_fusion: bool = False
+
+    # --- A28 vertical-estimator construction overrides (2026-07-03) ---
+    # Optional ``VerticalEstimator`` field overrides, splatted as
+    # ``VerticalEstimator(use_gate_vz_fusion=..., **(vertical_estimator_overrides or {}))`` at the
+    # _initialize construction seam -- the same opt-in dict pattern as
+    # ``DeployProfile.seeker_overrides`` / ``controller_overrides``. None (default) == no overrides
+    # == byte-identical estimator construction (VQ1/case-A never construct one at all; the pre-A28
+    # vq2 path is unchanged). vq2_case_c sets {"use_zoff_filter": True, "export_clip_mps": 2.5}:
+    # the A28 2-state complementary filter on (z_off, vz_rel) -- IMU predicts (phase lead), fresh
+    # poses correct both states via alpha-beta position innovations, innovation gate 2 m +
+    # reseed-after-4, internal state unclamped -- see the vertical_estimator module docstring and
+    # handoff/vq2_a28_vertical_stability_spec_2026-07-03.md.
+    vertical_estimator_overrides: dict | None = None
 
 
 @dataclass
@@ -579,7 +595,11 @@ class Navigator:
         # capture window (grounded -- true vz is 0). No z state (the washout carries no absolute
         # altitude). OFF path: stays None (byte-identical).
         if self.config.use_vertical_estimator:
-            self._vert_est = VerticalEstimator(use_gate_vz_fusion=self.config.use_gate_vz_fusion)
+            # A28: splat the optional construction overrides (use_zoff_filter etc.) -- None/{}
+            # keeps the pre-A28 construction byte-identical.
+            self._vert_est = VerticalEstimator(
+                use_gate_vz_fusion=self.config.use_gate_vz_fusion,
+                **(self.config.vertical_estimator_overrides or {}))
             self._vert_est.seed()
         self._last_sim_time_ns = int(ds.sim_time_ns)
         self._reset_counter = int(ds.reset_counter)

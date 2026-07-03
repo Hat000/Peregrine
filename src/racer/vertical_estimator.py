@@ -72,6 +72,35 @@ genuine descent. Gated behind ``use_gate_vz_fusion`` (default False -- VQ1/case-
 True only on the vq2_case_c estimator, mirroring how ``NavigatorConfig.use_vertical_estimator`` is
 threaded). No gate visible -> pure washout, no mode switch (the fusion only ever nudges an already-
 running washout state; it never substitutes for it).
+
+THE A28 FIX (this file, 2026-07-03, structural -- see
+handoff/vq2_a28_vertical_stability_spec_2026-07-03.md): A26 flew (run 20260703_013748) and the
+vertical loop DIVERGED floor->ceiling. Diagnosis (spec §1): ``vz`` was fiction three distinct
+ways -- (a) sustained SUB-threshold contact accel (~-2.4 m/s^2 while scraping the floor; zero
+samples over the 20 m/s^2 contact gate) poisoned the washout to its +1.5 rail, arming ANTI-damping
+thrust surges during a real climb; (b) the A26 gate-offset-rate fusion finite-differences two
+noisy poses ~0.1 s apart -- accepted samples were still garbage (a standing -0.67 m/s DC fiction
+while the truth was 0); (c) the washout's DC is tau*(any accel residual) by construction, so a
+0.33 m/s^2 attitude-projection residual = +/-0.65 m/s of standing fictional velocity. THE FIX is
+the 2-STATE COMPLEMENTARY FILTER on ``(z_off, vz_rel)`` -- the vertical marginal of the roadmap's
+gate-landmark VIO: the IMU PREDICTS both states (phase lead -- the exported state is current-time,
+so pose age stops eating loop phase margin) and each fresh pose CORRECTS both states via a
+POSITION innovation (alpha-beta): ``z_off += alpha*innov``, ``vz_rel -= beta*innov/dt_accept``.
+The beta line bleeds off exactly the sustained sub-threshold contact poison of (a) within a few
+pose periods (the washout's only defense was a 2 s leak; 5 s of -2.4 m/s^2 fully corrupted it),
+and the velocity correction comes from position innovations instead of differencing two noisy
+poses (kills (b) at the root -- same information as the A26 fusion, correct structure). An
+INNOVATION GATE (2 m) rejects gate-track jumps (observed +/-8 m offset_z steps), with a
+reseed-after-4-consecutive-rejects re-lock for REAL retargets (gate handoff). NO leak while
+innovations flow (the vision carries the DC); after ``blind_coast_after_s`` without an accepted
+innovation the washout leak resumes -- degrading to exactly today's bounded behaviour when vision
+disappears. The internal state is UNCLAMPED (the A25 +/-3 state clamp pinned at +3.00 the entire
+lodged back half, destroying all information; the clamp moves to the controller consumption
+point, see ``controller.Controller.gate_pd_vertical``). Gated behind ``use_zoff_filter`` (default
+False -- VQ1/case-A + today's vq2 path byte-identical; True only via vq2_case_c's
+``NavigatorConfig.vertical_estimator_overrides``). ``use_gate_vz_fusion`` is SUPERSEDED by the
+beta innovations and is skipped whenever ``use_zoff_filter`` is on (the profile also sets it
+False; the flag itself stays for byte-compat).
 """
 from __future__ import annotations
 
@@ -172,6 +201,35 @@ class VerticalEstimator:
     a_contact_mps2: float = 20.0
     contact_hold_s: float = 0.25
 
+    # --- A28: 2-state complementary filter on (z_off, vz_rel) -- see the module docstring -------
+    # Master gate. False (default) = the A24/A25/A26 washout path, byte-identical (VQ1/case-A AND
+    # every pre-A28 vq2 path). True (vq2_case_c via NavigatorConfig.vertical_estimator_overrides):
+    # IMU predicts both states (no leak while innovations flow, z_off UNCLAMPED), fresh poses
+    # correct both states via alpha-beta position innovations, innovation-gated + reseed-on-retarget.
+    use_zoff_filter: bool = False
+    # alpha-beta correction gains (spec §2.1, sized for ~10 Hz fresh-pose cadence and
+    # sigma_z ~= 0.3-0.5 m; retune +/-50% via offline latch-stream replay if cadence/noise differ):
+    #   z_off  += alpha * innov
+    #   vz_rel += -beta * innov / max(dt_since_last_accept, zoff_beta_dt_floor_s)
+    # SIGN of the beta line: positive innovation => the state under-predicted z_off growth =>
+    # zdot_off = -vz_rel was under-predicted => vz_rel was too POSITIVE => subtract. Pinned by
+    # test_zoff_filter_sign_descending_toward_gate_drives_vz_positive (mirrors the A26 sign test).
+    zoff_alpha: float = 0.4
+    zoff_beta: float = 0.15
+    # Floor (s) on the beta line's dt divisor: two accepts can land ~one control tick apart; an
+    # unfloored divisor would turn a modest innovation into a huge velocity kick.
+    zoff_beta_dt_floor_s: float = 0.15
+    # Innovation gate (m): |z_meas - z_off| beyond this is a gate-track jump / bad pose (the
+    # observed +/-8 m offset_z steps, e.g. 6.9 -> 15.5 in 0.4 s), REJECTED (state untouched)...
+    innov_gate_m: float = 2.0
+    # ...unless it persists: reseed_after CONSECUTIVE rejects = a REAL retarget (gate handoff),
+    # not noise -> re-lock z_off = z_meas (vz_rel untouched -- the drone's motion didn't jump).
+    reseed_after: int = 4
+    # No ACCEPTED innovation for longer than this (s) => blind coast: re-apply the washout leak
+    # (tau=washout_tau_s) to vz_rel so the filter degrades to exactly today's bounded behaviour
+    # when vision disappears. While innovations flow there is NO leak (the vision owns the DC).
+    blind_coast_after_s: float = 1.0
+
     _vz: float = field(default=float("nan"), repr=False)
     _b_hat: float = field(default=float("nan"), repr=False)
     _seeded: bool = field(default=False, repr=False)
@@ -192,6 +250,17 @@ class VerticalEstimator:
     # the first fresh latch.
     _prev_fresh_offset_z: float | None = field(default=None, repr=False)
     _prev_fresh_offset_t_s: float | None = field(default=None, repr=False)
+    # -- A28 complementary-filter state (only ever written when use_zoff_filter is True) --
+    # Elapsed-clock time (same monotonic clock as _contact_elapsed_s) of the last ACCEPTED
+    # innovation (or initial lock / reseed). None until the first latch -> blind coast (leak on).
+    _zoff_last_accept_t_s: float | None = field(default=None, repr=False)
+    # Consecutive innovation-gate rejects (the reseed counter).
+    _zoff_miss: int = field(default=0, repr=False)
+    # Instrumentation (spec §2.6, read by the nav-estimate logger; never fed back into the filter):
+    # the last latch's innovation (m) and whether it was accepted (None until the first post-lock
+    # latch; a reseed logs accepted=False -- it was gated, then force-relocked).
+    _zoff_last_innov: float = field(default=float("nan"), repr=False)
+    _zoff_last_accepted: bool | None = field(default=None, repr=False)
 
     # -- lifecycle ------------------------------------------------------------
     def seed(self) -> None:
@@ -212,6 +281,10 @@ class VerticalEstimator:
         self._contact_until_s = -1.0
         self._prev_fresh_offset_z = None
         self._prev_fresh_offset_t_s = None
+        self._zoff_last_accept_t_s = None
+        self._zoff_miss = 0
+        self._zoff_last_innov = float("nan")
+        self._zoff_last_accepted = None
 
     @property
     def seeded(self) -> bool:
@@ -227,10 +300,36 @@ class VerticalEstimator:
     def z_off(self) -> float:
         """Gate-relative vertical offset ẑ_off (m, NED down-positive: drone→gate; positive = drone
         ABOVE the gate). NaN until the first :meth:`latch_offset` call (no gate ever seen) -- the
-        consumer's absent-marker, mirrored exactly on ``NavState.z_off_est`` (A25)."""
+        consumer's absent-marker, mirrored exactly on ``NavState.z_off_est`` (A25).
+
+        A28 (``use_zoff_filter``): exported UNCLAMPED -- the A25 +/-3 read clip destroyed all
+        back-half information when the true offset exceeded it (pinned at +3.00 the entire lodged
+        phase of run 20260703_013748). The clamp moves to the CONTROLLER consumption point
+        (``Controller.gate_pd_vertical``: ``clip(z_off, +/-3)`` inside the PD law), so the
+        estimate stays honest while the control authority stays bounded. Legacy (flag OFF) keeps
+        the A25 clip -- byte-identical."""
         if not self._z_off_seen:
             return float("nan")
+        if self.use_zoff_filter:
+            return float(self._z_off)
         return float(np.clip(self._z_off, -self.z_off_clip_m, self.z_off_clip_m))
+
+    @property
+    def zoff_miss(self) -> int:
+        """A28 instrumentation: consecutive innovation-gate rejects (the reseed counter)."""
+        return self._zoff_miss
+
+    @property
+    def zoff_last_innov(self) -> float:
+        """A28 instrumentation: the last latch's innovation (m); NaN until the first post-lock
+        latch under ``use_zoff_filter``."""
+        return self._zoff_last_innov
+
+    @property
+    def zoff_last_accepted(self) -> bool | None:
+        """A28 instrumentation: whether the last latch's innovation was accepted (None until the
+        first post-lock latch under ``use_zoff_filter``)."""
+        return self._zoff_last_accepted
 
     def contact_frozen(self) -> bool:
         """True while a contact event (or its refractory hold) is active -- the vz washout update
@@ -290,6 +389,23 @@ class VerticalEstimator:
         if self.contact_frozen():
             return   # HOLD: skip both the vz washout update and the z_off propagate this tick
 
+        if self.use_zoff_filter:
+            # A28 complementary-filter PREDICT: pure integration (NO leak) while accepted
+            # innovations are flowing -- the beta corrections own the DC, so leaking here would
+            # fight them (and the leak's tau*b standing fiction is exactly failure (c) of the
+            # diagnosis). Once blind for > blind_coast_after_s (or never latched), the washout
+            # leak resumes and the filter degrades to exactly today's bounded behaviour.
+            if self._zoff_meas_fresh():
+                self._vz = self._vz + (a_dn - self._b_hat) * dt
+            else:
+                leak = float(np.exp(-dt / self.washout_tau_s))
+                self._vz = leak * self._vz + (a_dn - self._b_hat) * dt
+            # z_off propagate, UNCLAMPED (same sign/lock-step discipline as the A25 line below;
+            # the clamp lives at the controller consumption point now -- see the z_off property).
+            if self._z_off_seen:
+                self._z_off = float(self._z_off - self._vz * dt)
+            return
+
         alpha = float(np.exp(-dt / self.washout_tau_s))
         self._vz = alpha * self._vz + (a_dn - self._b_hat) * dt
 
@@ -299,6 +415,15 @@ class VerticalEstimator:
         if self._z_off_seen:
             self._z_off = float(np.clip(self._z_off - self._vz * dt,
                                         -self.z_off_clip_m, self.z_off_clip_m))
+
+    def _zoff_meas_fresh(self) -> bool:
+        """A28: True while the innovation stream is FRESH -- an accepted innovation (or initial
+        lock / reseed) landed within ``blind_coast_after_s`` of the current elapsed clock. Governs
+        the predict-side leak (fresh => no leak, the vision owns the DC; stale/never => washout
+        leak, today's bounded blind-coast behaviour)."""
+        return (self._zoff_last_accept_t_s is not None
+                and (self._contact_elapsed_s - self._zoff_last_accept_t_s)
+                <= self.blind_coast_after_s)
 
     # -- A25 gate-relative latch -----------------------------------------------
     def latch_offset(self, offset_z_world: float, obs_age_s: float) -> None:
@@ -325,8 +450,16 @@ class VerticalEstimator:
         the z_off latch above is overwritten (so the "previous" offset is still the prior one), and
         the previous-offset bookkeeping is updated unconditionally on every fresh latch (whether or
         not this particular sample passed the fusion gates) so the NEXT latch always compares
-        against the immediately-prior fresh pose."""
+        against the immediately-prior fresh pose.
+
+        A28 (``use_zoff_filter``): the latch becomes the complementary filter's CORRECT step --
+        see :meth:`_zoff_filter_correct`. The A26 fusion is SUPERSEDED by the beta innovations and
+        skipped entirely on this path (differencing two noisy poses ~0.1 s apart was diagnosis
+        failure (b)); the latency comp is shared and unchanged."""
         if not self._seeded:
+            return
+        if self.use_zoff_filter:
+            self._zoff_filter_correct(float(offset_z_world), float(obs_age_s))
             return
         if self.use_gate_vz_fusion:
             self._fuse_gate_vz(float(offset_z_world))
@@ -335,6 +468,62 @@ class VerticalEstimator:
             float(offset_z_world) - vz_for_latency * float(obs_age_s),
             -self.z_off_clip_m, self.z_off_clip_m))
         self._z_off_seen = True
+
+    # -- A28 complementary-filter correct ----------------------------------------
+    def _zoff_filter_correct(self, offset_z_world: float, obs_age_s: float) -> None:
+        """One fresh-pose CORRECT step of the A28 (z_off, vz_rel) complementary filter.
+
+        ``z_meas`` is the latency-compensated measurement (same comp as the legacy latch: over
+        ``obs_age_s`` the drone moved ``-vz*obs_age_s``, so the captured offset is adjusted to
+        now-time). Then:
+
+          * FIRST-EVER latch: initial lock -- ``z_off = z_meas`` (there is no prior state to
+            innovate against), start the accept clock.
+          * ``|innov| <= innov_gate_m``: alpha-beta correct BOTH states::
+
+                z_off  += zoff_alpha * innov
+                vz_rel += -zoff_beta * innov / max(dt_since_last_accept, zoff_beta_dt_floor_s)
+
+            (beta SIGN: positive innov => z_off grew faster than the state predicted => the
+            propagate zdot_off = -vz_rel under-predicted that growth => vz_rel too positive =>
+            subtract. Equivalently: DESCENDING toward the gate makes the measured offsets shrink
+            faster than predicted => negative innov => vz_rel is pushed MORE POSITIVE, matching
+            the down-positive "descending = +" convention. Pinned by
+            ``test_zoff_filter_sign_descending_toward_gate_drives_vz_positive``.)
+          * ``|innov| > innov_gate_m``: REJECT (state untouched -- a gate-track jump / bad pose),
+            bump the consecutive-miss counter; at ``reseed_after`` consecutive rejects this is a
+            REAL retarget (gate handoff), so RE-LOCK ``z_off = z_meas`` with ``vz_rel`` untouched
+            (the drone's physical motion did not jump with the track).
+
+        The state is UNCLAMPED throughout (see the ``z_off`` property)."""
+        vz_for_latency = self._vz if np.isfinite(self._vz) else 0.0
+        z_meas = float(offset_z_world) - vz_for_latency * float(obs_age_s)
+        now_t = self._contact_elapsed_s
+        if not self._z_off_seen:
+            self._z_off = z_meas                       # initial lock: nothing to innovate against
+            self._z_off_seen = True
+            self._zoff_last_accept_t_s = now_t
+            self._zoff_miss = 0
+            return
+        innov = z_meas - float(self._z_off)
+        self._zoff_last_innov = innov
+        if abs(innov) > self.innov_gate_m:
+            self._zoff_last_accepted = False
+            self._zoff_miss += 1
+            if self._zoff_miss >= self.reseed_after:   # persistent => a REAL retarget: re-lock
+                self._z_off = z_meas                   # vz_rel untouched (motion didn't jump)
+                self._zoff_miss = 0
+                self._zoff_last_accept_t_s = now_t     # measurements flow again: leak stays off
+            return
+        self._zoff_last_accepted = True
+        dt_accept = (now_t - self._zoff_last_accept_t_s
+                     if self._zoff_last_accept_t_s is not None else self.zoff_beta_dt_floor_s)
+        dt_div = max(float(dt_accept), self.zoff_beta_dt_floor_s)
+        self._z_off = float(self._z_off + self.zoff_alpha * innov)
+        if np.isfinite(self._vz):
+            self._vz = float(self._vz - self.zoff_beta * innov / dt_div)
+        self._zoff_miss = 0
+        self._zoff_last_accept_t_s = now_t
 
     # -- A26 gate-offset-rate fusion --------------------------------------------
     def _fuse_gate_vz(self, offset_z_world: float) -> None:

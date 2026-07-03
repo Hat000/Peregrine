@@ -321,11 +321,17 @@ def test_seed_resets_fusion_history():
 # ---------------------------------------------------------------------------
 # (g) deploy-profile flag: vq2_case_c ON, vq1_case_a untouched (default OFF)
 # ---------------------------------------------------------------------------
-def test_vq2_case_c_enables_gate_vz_fusion():
+def test_vq2_case_c_gate_vz_fusion_superseded_off_by_a28():
+    """A28 (2026-07-03): the fusion is SUPERSEDED by the complementary filter's beta position-
+    innovations (run 20260703_013748 proved the finite-difference fusion is a noise/bias injector,
+    A28 spec §1.3b) -- vq2_case_c now ships it OFF again; the flag itself survives for byte-compat
+    / A-B replay of the A26 behaviour, and the A28 filter is opted in via
+    nav_config.vertical_estimator_overrides instead."""
     from racer.deploy_profile import vq2_case_c
 
     prof = vq2_case_c()
-    assert prof.nav_config.use_gate_vz_fusion is True
+    assert prof.nav_config.use_gate_vz_fusion is False
+    assert (prof.nav_config.vertical_estimator_overrides or {}).get("use_zoff_filter") is True
 
 
 def test_vq1_case_a_gate_vz_fusion_stays_default_off():

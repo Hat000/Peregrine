@@ -179,16 +179,29 @@ def vq2_case_c() -> DeployProfile:
         # Default (1) is byte-identical; these are the estimator-safety-study tuned values.
         vp_yaw_decimate=5,
         floor_height_decimate=3,
-        # --- A26 gate-offset-rate washout fusion (vertical-brake fix, 2026-07-02) ---
-        # ON for vq2_case_c only (VQ1/case-A stay at the NavigatorConfig default False -> byte-
-        # identical). Only meaningful under use_vertical_estimator (True above, via the
-        # use_vertical_estimator seam this profile already opts into) -- see
-        # handoff/vq2_a26_vertical_brake_2026-07-02.md FIX 2 for the full derivation: the washout
-        # vz rails to its export clip and reads ~0 during real sustained descent (never brakes the
-        # A25 overshoot into the floor); this fuses a real gate-relative descent rate (finite-
-        # difference of consecutive fresh offset_z_world latches) into the washout so the damping
-        # term stops reading zero on descent.
-        use_gate_vz_fusion=True,
+        # --- A26 gate-offset-rate washout fusion -- SUPERSEDED by A28 (2026-07-03) ---
+        # Was True (2026-07-02). Run 20260703_013748 proved the fusion is a noise/bias injector:
+        # the finite difference of two noisy poses ~0.1 s apart swings +/-5 m/s tick-to-tick, and
+        # even ACCEPTED samples dragged vz_est to a standing -0.67 m/s while the truth was 0 (A28
+        # spec §1.3b). The A28 complementary filter's beta position-innovations carry the SAME
+        # information with the correct structure, so the fusion goes back OFF here (the flag stays
+        # for byte-compat / A-B replay of the A26 behaviour).
+        use_gate_vz_fusion=False,
+        # --- A28 2-state complementary filter on (z_off, vz_rel) (2026-07-03) ---
+        # Splatted into VerticalEstimator(...) at Navigator._initialize (same opt-in dict pattern
+        # as controller_overrides). use_zoff_filter=True: IMU predicts BOTH states per tick (phase
+        # lead -- the exported state is current-time, so the ~137 ms / p90 345 ms pose age stops
+        # eating loop phase margin), each fresh pose corrects both via alpha-beta position
+        # innovations (alpha=0.4 / beta=0.15 field defaults, sized for ~10 Hz fresh-pose cadence,
+        # sigma_z ~0.3-0.5 m; the beta line bleeds off the sub-threshold contact-accel poison that
+        # railed the washout, spec §1.3a), innovation gate 2 m + reseed-after-4 handles the
+        # observed +/-8 m gate-track jumps, and the internal state is UNCLAMPED (the A25 +/-3
+        # state clamp destroyed all back-half information; the clamp moves to the controller's
+        # gate_pd_vertical consumption point). export_clip_mps 1.5 -> 2.5: the legitimate steady
+        # descent at full clamped offset is (Kp/Kd)*3 = 2.0 m/s under the A28 gains, and with
+        # kd=0.06 the worst damping contribution is +/-0.15 collective -- the old +/-1.5 anti-slam
+        # rationale no longer binds. VQ1/case-A never construct the estimator -- byte-identical.
+        vertical_estimator_overrides={"use_zoff_filter": True, "export_clip_mps": 2.5},
     )
     return DeployProfile(
         name="vq2_case_c",
@@ -258,50 +271,52 @@ def vq2_case_c() -> DeployProfile:
         #     ``thrust = hover + ff_vertical_kd_alt*(vz - vz_t)``, clamped -- the z_target-ramp
         #     machinery goes inert (only fed by the now-zeroed kp_alt term) but is left in place,
         #     unused.
-        #   * ff_vertical_kd_alt = 0.25 (down from the Controller default 0.5): at 0.5 the inner
-        #     crossover G=c*Kd (c=g/hover~=36.9) = 18.5 rad/s ~= 2.9 Hz -- SITTING ON the observed
-        #     2.5-3 Hz vertical bob (~37deg phase margin at a 50 ms delay). 0.25 -> 9.2 rad/s
-        #     (~1.5 Hz, PM~=64deg), doubling the linear window to (vz-vz_t) in [-0.86, +1.34] m/s.
-        #   * ff_vertical_vz_lp_alpha = 0.8 (up from the Controller default 0.5): re-enables a LIGHT
-        #     low-pass on the vz_meas branch (the A24 washout export) -- ~19 Hz @ 30 Hz control rate,
-        #     under 5deg of lag at the 1.5 Hz crossover, just enough to catch single-tick glitches.
-        #     0.5 (~3 Hz cutoff, ~40deg lag) would be destabilizing paired with Kd=0.25.
-        #   * kp_gate = 0.06 (the A25 gate-relative altitude fix, 2026-07-02): gives the alt-hold a
-        #     POSITION reference it never had (kp_alt=0 kills the old z-position term above). The
-        #     washout alone can null a velocity but cannot SEEK a gate-relative height -- diagnosis
-        #     run 20260702_203428 showed the drone climbing monotonically into gate 0's ceiling
-        #     (z +3.7 m, vz +3.5 m/s at impact, 3.5x the +/-1 m/s cap) with nothing to arrest it.
-        #     kp_gate*36.9 (thrust->accel gain at hover) ~= 2.21 s^-2 -> omega_n ~= 1.49 rad/s
-        #     (tau~=0.67s to correct a height error); paired with the 26%-effective washout damping,
-        #     zeta~=0.81 (well-damped, no ceiling overshoot) -- see the A25 spec §3.3 for the full
-        #     derivation. The term is ``-kp_gate*z_off`` (NEGATIVE: above-gate/z_off>0 => less
-        #     thrust => sink onto gate height); z_off rides the SAME use_vertical_estimator gate as
-        #     vz_est (NaN/off -> 0, zero altitude authority, benign).
-        # See the A24 washout spec (handoff/vq2_vertical_washout_spec_2026-07-02.md) and the A25
-        # gate-relative altitude spec (handoff/vq2_gate_relative_altitude_spec_2026-07-02.md) for the
-        # full derivation of these values; they are gated to vq2_case_c only via this override dict
-        # (the Controller field defaults are untouched, so VQ1/case-A stay byte-identical).
-        #   * alt_thrust_lo = 0.15 (the A27 forward-decouple fix, 2026-07-03, raised from the
-        #     Controller default 0.05): diagnosis of run 20260703_002244 -- the seeker's forward
-        #     pursuit itself is correct (commands/achieves the -7deg forward tilt, +1.2 m/s^2 demand),
-        #     but a ~2 Hz vertical bob rail-slams the collective down to the 0.05 floor repeatedly,
-        #     and forward aerodynamic force scales with the collective magnitude -- so the forward
-        #     push collapses from +1.02 to +0.14 m/s^2 on every low-thrust half-cycle and the drone
-        #     cannot translate forward past gate 1. Raising the floor to 0.15 (hover is 0.2656) still
-        #     allows a real descent but keeps enough collective on the floor half-cycle that forward
-        #     thrust never collapses to near-zero. VQ1/case-A keep the Controller default 0.05 --
-        #     byte-identical.
-        #   * alt_thrust_slew_per_s = 2.0 (the A27 fix, paired with the raised floor above): rate-
-        #     limits the FINAL commanded collective so it cannot slam floor<->ceiling in one tick --
-        #     a full 0.15->0.6 swing now takes ~0.22 s instead of a single tick, killing the 2 Hz
-        #     bang-bang while still allowing legitimate thrust response. Initial tuning value --
-        #     revisit against live flight data. VQ1/case-A keep the Controller default None (no
-        #     limiter) -- byte-identical.
+        #   * gate_pd_vertical = True (the A28 vertical-stability fix, 2026-07-03 -- see
+        #     handoff/vq2_a28_vertical_stability_spec_2026-07-03.md §2.2): the vertical law becomes
+        #     the SINGLE PD ``thrust = hover - kp_gate*clip(z_off,+/-3) + ff_vertical_kd_alt*vz_lp``
+        #     with vz_t REMOVED from the law. Diagnosis of run 20260703_013748 (reconstruction-
+        #     exact, |err|~1e-3): the old law hid a SECOND position path inside the damping term
+        #     (-kd*vz_t = -kd*clip(0.8*z_off,+/-1), slope 0.20 thrust/m vs the explicit 0.06 ->
+        #     effective stiffness ~0.26 thrust/m, omega_n ~3.1 rad/s) whose ONLY damping rode a
+        #     three-ways-corrupted vz_est (anti-damping surges reproduced exactly at t=9.17), AND
+        #     the hold-last-demand bridge flicked the controller's ACTUAL vz_t 0<->+/-1 at 2.3 Hz
+        #     (62 flips/27 s), stepping thrust by 0.25 = 94% of hover as a square wave. With vz_t
+        #     out, both vanish with NO seeker change (the seeker keeps emitting vz_t for
+        #     instrumentation; the bridge flicker becomes harmless).
+        #   * kp_gate = 0.04 (A28, was 0.06 explicit + the 0.20 hidden path): with the plant gain
+        #     c ~= 37 m/s^2 per unit collective (MEASURED this flight, t=1.3-2.0 burst) ->
+        #     omega_n = sqrt(37*0.04) = 1.21 rad/s (T ~5 s to close a full 3 m clamped offset --
+        #     slow-lap appropriate, 6.5x softer than the 3.1 rad/s that limit-cycled). Sign
+        #     unchanged (-kp_gate*z_off: above-gate => sink), pinned by the A25 sign tests.
+        #   * ff_vertical_kd_alt = 0.06 (A28, was 0.25 on a garbage signal): zeta = 37*0.06/
+        #     (2*1.21) = 0.92 -- critically-ish damped, no overshoot to re-excite the floor<->
+        #     ceiling swing. Steady descent at full clamped offset = (Kp/Kd)*3 = 2.0 m/s -- the
+        #     velocity cap now EMERGES from the gain ratio instead of a saturating vz_t path. The
+        #     damping rides the A28 filter's IMU-predicted vz_rel (effective delay ~1 tick ~7deg at
+        #     the 2.3 rad/s PD crossover, vs 52deg for a vision-rate signal -- why the filter, not
+        #     the raw washout, must carry it).
+        #   * ff_vertical_vz_lp_alpha = 0.8 (unchanged from A26): light LP on the vz_meas branch,
+        #     ~19 Hz @ 30 Hz control rate, negligible lag at the 1.21 rad/s loop.
+        # See the A28 spec §2.3 for the full omega_n/zeta sizing; values are gated to vq2_case_c
+        # only via this override dict (Controller field defaults untouched -> VQ1/case-A stay
+        # byte-identical).
+        #   * alt_thrust_lo = 0.15 + alt_thrust_slew_per_s = 2.0 (the A27 forward-decouple pair,
+        #     2026-07-03): KEPT under A28, explicitly re-scoped as DORMANT SAFETY NETS, not
+        #     stabilizers (A28 spec §2.4 verdict). The raised floor did NOT cause the 20260703_013748
+        #     failure (the divergence was up-going anti-damping surges; the back-half floor-pinning
+        #     was CORRECT commanded descent while lodged) and its forward-coupling rationale was
+        #     validated (translation improved). At the floor the plant still yields -4.3 m/s^2 of
+        #     descent authority ~= the A28 loop's max commanded descent accel -- not binding. The
+        #     2.0/s slew needs at most ~0.5/s in linear A28 operation -- dormant, as it should be.
+        #     PRE-REGISTERED REVERT CRITERION (spec §2.4): if a future flight shows z_off > 1 m
+        #     with thrust pinned at 0.15 for > 2 s while vz_rel < 0.5 m/s of descent, lower
+        #     alt_thrust_lo to 0.10 for vq2_case_c.
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True,
                               "body_rate_sign": (1.0, 1.0, 1.0),
-                              "kp_alt": 0.0, "ff_vertical_kd_alt": 0.25,
-                              "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.06,
+                              "kp_alt": 0.0, "gate_pd_vertical": True,
+                              "ff_vertical_kd_alt": 0.06,
+                              "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,
                               "alt_thrust_lo": 0.15, "alt_thrust_slew_per_s": 2.0},
         # A20 async-detect (2026-07-01): decouple the ~250 ms GPU-stalled YOLO detect from the
         # control loop (worker thread + latest-wins snapshot; racer.vision.async_detect). Fixes

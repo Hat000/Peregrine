@@ -46,6 +46,14 @@ EXPECTED_KEYS = {
     "offset_z_world",   # A25 raw latched gate->drone vertical offset (null when no pose/no align)
     "pose_age_s",       # A25 per-tick pose observation age (null when no pose this tick)
     "contact_frozen",   # A26 contact-gate export (null when off/unseeded)
+    "vz_t_consumed",    # A28 §2.6: the vz_t the CONTROLLER actually used this tick (the seeker-side
+                        # "vz_t" above is stale on hold-last-demand bridge ticks -- the 2.3 Hz flicker)
+    "term_gate",        # A28 §2.6: per-term vertical-law decomposition (pre tilt-comp/clip)
+    "term_damp",
+    "thrust_pre_clip",
+    "zoff_innov",       # A28 §2.6: complementary-filter last-latch innovation (null when off/none)
+    "zoff_innov_accepted",
+    "zoff_miss",        # A28 §2.6: consecutive innovation-gate rejects (the reseed counter)
     "body_rate",
     "thrust",
     "yaw_des_rad",

@@ -470,12 +470,14 @@ def test_vq2_profile_opts_in():
 
 
 def test_vq2_profile_sets_kp_alt_zero_and_new_kd_lp():
-    """R0 + the tuned Kd/LP-alpha (spec section 4/5): vq2_case_c overrides kp_alt=0.0 (kill the
-    position term), ff_vertical_kd_alt=0.25 (down from 0.5), ff_vertical_vz_lp_alpha=0.8."""
+    """R0 + the tuned Kd/LP-alpha: vq2_case_c overrides kp_alt=0.0 (kill the position term),
+    ff_vertical_kd_alt=0.06 (the A28 single-PD sizing, zeta=0.92 at kp_gate=0.04 on the measured
+    c~=37 plant -- was 0.25 under A26, on a signal the A28 diagnosis proved garbage), and
+    ff_vertical_vz_lp_alpha=0.8 (unchanged)."""
     ov = vq2_case_c().controller_overrides
     assert ov is not None
     assert ov["kp_alt"] == pytest.approx(0.0)
-    assert ov["ff_vertical_kd_alt"] == pytest.approx(0.25)
+    assert ov["ff_vertical_kd_alt"] == pytest.approx(0.06)
     assert ov["ff_vertical_vz_lp_alpha"] == pytest.approx(0.8)
 
 

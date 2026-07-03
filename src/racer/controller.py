@@ -243,6 +243,31 @@ class Controller:
     # ONLY in vq2_case_c's controller_overrides (deploy_profile.py); see the A25 build spec
     # (handoff/vq2_gate_relative_altitude_spec_2026-07-02.md §3.3) for the ω/ζ sizing derivation.
     kp_gate: float = 0.0
+    # SINGLE-PD VERTICAL LAW, vz_t OUT (the A28 vertical-stability fix, 2026-07-03 -- see
+    # handoff/vq2_a28_vertical_stability_spec_2026-07-03.md §2.2). Diagnosis of run 20260703_013748:
+    # the old law ``hover + kp_alt*(z-z_t) - kp_gate*z_off + kd*(vz_lp - vz_t)`` hid a SECOND,
+    # LARGER position path inside the damping term (``-kd*vz_t = -kd*clip(0.8*z_off, +/-1)``, slope
+    # 0.20 thrust/m vs the explicit 0.06), making the effective stiffness ~0.26 thrust/m (omega_n ~=
+    # 3.1 rad/s) with its ONLY damping riding a corrupted signal (effective zeta ~= 0/negative) --
+    # AND the hold-last-demand bridge flicks vz_t 0<->+/-1 at ~2.3 Hz, stepping the damping term by
+    # 0.25 collective (94% of hover) as a square wave straight into the thrust channel (62 flips in
+    # 27 s, reconstruction-exact). When ON, the law becomes the textbook PD on the A28 filter pair:
+    #     thrust = hover - kp_gate*clip(z_off, +/-gate_pd_z_off_clip_m) + ff_vertical_kd_alt*vz_lp
+    # -- ``vz_t`` NO LONGER APPEARS (the seeker's descend-onto-the-gate intent IS the P term's job;
+    # the hidden parallel path and the bridge flicker both vanish with NO seeker change -- the
+    # seeker keeps sending vz_t for instrumentation, and the z_target-ramp machinery stays inert
+    # exactly as today with kp_alt=0). The z_off clamp moves HERE from the estimator state (which
+    # is now unclamped, honest at the rails): bounded authority, unbounded knowledge. Sizing (spec
+    # §2.3, plant c ~= 37 m/s^2/collective MEASURED this flight): kp_gate=0.04, kd=0.06 ->
+    # omega_n = sqrt(37*0.04) = 1.21 rad/s, zeta = 37*0.06/(2*1.21) = 0.92, steady descent at full
+    # clamped offset = (Kp/Kd)*3 = 2.0 m/s -- the velocity cap now EMERGES from the gain ratio
+    # instead of a separate saturating vz_t path. None/False => byte-identical (VQ1 / case-A AND
+    # today's vq2 law); vq2_case_c flips it ON via controller_overrides. [VQ2 A28, 2026-07-03]
+    gate_pd_vertical: bool = False
+    # Consumption-point clamp (m) on z_off inside the gate-PD law (only read when gate_pd_vertical
+    # is ON). Replaces the estimator-state clamp the A28 filter removed: P-term authority stays
+    # bounded at kp_gate*3 = 0.12 collective while the estimate itself stays honest beyond +/-3.
+    gate_pd_z_off_clip_m: float = 3.0
     # COLLECTIVE (THRUST) SLEW-RATE LIMIT (the A27 forward-decouple fix, 2026-07-03). Diagnosis of run
     # 20260703_002244: the gate-seeker's FORWARD pursuit is correct (it commands/achieves the -7deg
     # forward tilt, +1.2 m/s^2 demand), but a ~2 Hz VERTICAL bob rail-slams the collective to its
@@ -274,6 +299,14 @@ class Controller:
     # if a controller instance's config ever changed paths mid-flight (it does not today, but the
     # states are logically distinct signals and should not share a filter).
     _alt_vzmeas_lp: float = field(default=0.0, repr=False, compare=False)
+    # A28 instrumentation (spec §2.6): the ACTUAL per-tick vertical-law inputs/terms, stashed on
+    # every _ff_owns_vertical_thrust call for the nav-estimate logger (the seeker-side logged vz_t
+    # was STALE on the 21% bridge ticks -- run 20260703_013748's flicker was invisible for it).
+    # Never read back into control; None until the ff-owns-vertical path first runs.
+    _last_vz_t_consumed: float | None = field(default=None, repr=False, compare=False)
+    _last_term_gate: float | None = field(default=None, repr=False, compare=False)
+    _last_term_damp: float | None = field(default=None, repr=False, compare=False)
+    _last_thrust_pre_clip: float | None = field(default=None, repr=False, compare=False)
 
     def _apply_body_rate_slew(self, omega: np.ndarray, sim_time_ns: int) -> np.ndarray:
         """Per-axis slew-rate limit on the commanded body rate (anti-bang-bang). Clamps
@@ -343,7 +376,14 @@ class Controller:
             every tick, so a mid-flight ``vz_meas`` dropout (estimator not seeded) degrades seamlessly
             to the fd.
         Stateful (latched on first engage); the OFF path never calls this, so its state stays untouched
-        and the OFF-path thrust is byte-identical."""
+        and the OFF-path thrust is byte-identical.
+
+        A28 (``gate_pd_vertical``, 2026-07-03): when ON the returned law is the SINGLE PD
+        ``hover - kp_gate*clip(z_off, +/-gate_pd_z_off_clip_m) + ff_vertical_kd_alt*vz_lp`` --
+        ``vz_t`` and the ``kp_alt`` z-target term are OUT of the law entirely (see the
+        ``gate_pd_vertical`` field comment for the full diagnosis: the hidden -kd*vz_t position
+        path + the 2.3 Hz bridge-flicker square wave). All the state maintenance above (z_target
+        ramp, fd LP, vz_meas LP) is unchanged either way; only the returned expression forks."""
         if self._alt_z_target is None:                 # first ff-owns-vertical tick: latch the target
             self._alt_z_target = z
             self._alt_prev_z = z
@@ -363,10 +403,31 @@ class Controller:
         else:
             self._alt_vzmeas_lp = a * float(vz_meas) + (1.0 - a) * self._alt_vzmeas_lp
             vz = self._alt_vzmeas_lp
-        return (self.hover_thrust
-                + self.kp_alt * (z - self._alt_z_target)
-                - self.kp_gate * z_off
-                + self.ff_vertical_kd_alt * (vz - vz_t))
+        self._last_vz_t_consumed = float(vz_t)         # A28 §2.6 instrumentation: the ACTUAL vz_t
+        if self.gate_pd_vertical:
+            # A28 SINGLE PD, vz_t OUT of the law (see the gate_pd_vertical field comment):
+            #   thrust = hover - Kp*clip(z_off, +/-3) + Kd*vz_lp      (u = hover - Kp*e - Kd*edot,
+            # e = z_off, edot = -vz_rel). Above the gate (z_off>0) -> less thrust -> sink;
+            # descending (vz>0) -> more thrust -> brake: same pinned signs as A25/A24, one
+            # position path, one phase-consistent velocity path, no vz_t square wave. z_off is
+            # clamped HERE (the estimator state is unclamped under use_zoff_filter); the z_target
+            # ramp/fd-LP state above is still maintained (inert -- kept for the OFF path / A-B).
+            term_gate = -self.kp_gate * float(np.clip(z_off, -self.gate_pd_z_off_clip_m,
+                                                      self.gate_pd_z_off_clip_m))
+            term_damp = self.ff_vertical_kd_alt * vz
+            self._last_term_gate = term_gate
+            self._last_term_damp = term_damp
+            out = self.hover_thrust + term_gate + term_damp
+            self._last_thrust_pre_clip = out
+            return out
+        self._last_term_gate = -self.kp_gate * z_off
+        self._last_term_damp = self.ff_vertical_kd_alt * (vz - vz_t)
+        out = (self.hover_thrust
+               + self.kp_alt * (z - self._alt_z_target)
+               + self._last_term_gate
+               + self._last_term_damp)
+        self._last_thrust_pre_clip = out
+        return out
 
     def command(self, nav: NavState, setpoint: Setpoint) -> ControlCommand:
         """Compute the control command for the current state + reference."""
