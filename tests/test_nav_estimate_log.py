@@ -45,6 +45,7 @@ EXPECTED_KEYS = {
     "vz_t",             # A25 seeker's commanded vertical-velocity target (null when no pursuit tick)
     "offset_z_world",   # A25 raw latched gate->drone vertical offset (null when no pose/no align)
     "pose_age_s",       # A25 per-tick pose observation age (null when no pose this tick)
+    "contact_frozen",   # A26 contact-gate export (null when off/unseeded)
     "body_rate",
     "thrust",
     "yaw_des_rad",

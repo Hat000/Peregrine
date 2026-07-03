@@ -405,6 +405,13 @@ class NavigatorConfig:
     # opts in via DeployProfile.vertical_estimator (the fly_rl construction seam).
     use_vertical_estimator: bool = False
 
+    # --- A26 gate-offset-rate washout fusion (brake fix, 2026-07-02) ---
+    # Threads straight into ``VerticalEstimator(use_gate_vz_fusion=...)`` at construction (only
+    # meaningful when ``use_vertical_estimator`` is also True -- no estimator, no fusion). Default
+    # OFF -> byte-identical to A25/A24. vq2_case_c opts in via DeployProfile.gate_vz_fusion (mirrors
+    # the vertical_estimator seam exactly).
+    use_gate_vz_fusion: bool = False
+
 
 @dataclass
 class _VisionDiag:
@@ -572,7 +579,7 @@ class Navigator:
         # capture window (grounded -- true vz is 0). No z state (the washout carries no absolute
         # altitude). OFF path: stays None (byte-identical).
         if self.config.use_vertical_estimator:
-            self._vert_est = VerticalEstimator()
+            self._vert_est = VerticalEstimator(use_gate_vz_fusion=self.config.use_gate_vz_fusion)
             self._vert_est.seed()
         self._last_sim_time_ns = int(ds.sim_time_ns)
         self._reset_counter = int(ds.reset_counter)
@@ -1133,6 +1140,24 @@ class Navigator:
             return int(obs.sim_time_ns) - self._delta_epoch_ns
         return int(ds.sim_time_ns) - int(round(self.config.vision_latency_const_s * 1e9))
 
+    def camera_epoch_to_imu_ns(self, camera_sim_time_ns: int) -> int | None:
+        """Convert a raw camera/server-epoch timestamp (e.g. ``GatePose.sim_time_ns`` /
+        ``GateObservation.sim_time_ns``, sourced from the JPEG-wire header — a DIFFERENT, unix-
+        wall-clock epoch from the IMU master clock, see the ``reconcile_vision_clock`` note above)
+        onto the IMU epoch (``DroneState.sim_time_ns`` / ``NavState.sim_time_ns``), so a caller
+        OUTSIDE the Navigator (e.g. the gate-seeker's own pose-age instrumentation,
+        ``GateSeeker._maybe_latch_z_off``) can compute a meaningful ``now - capture`` age instead
+        of silently mixing epochs (which — since the camera's unix-ns epoch vastly exceeds the
+        IMU's sim-uptime-ns epoch — subtracts to a huge NEGATIVE delta that any ``max(0.0, ...)``
+        staleness guard clamps to exactly 0.0 every tick, masking the real pose age).
+
+        Returns ``None`` when the epoch offset has not been learned yet (``reconcile_vision_clock``
+        off, or no paired (frame, ds) has landed yet — mirrors ``_vision_fix_time_imu_ns``'s guard);
+        callers should treat ``None`` the same as "age unknown" rather than fabricate a value."""
+        if not self.config.reconcile_vision_clock or self._delta_epoch_ns is None:
+            return None
+        return int(camera_sim_time_ns) - self._delta_epoch_ns
+
     # -- output -------------------------------------------------------------
     def _nav_state(self, ds: DroneState) -> NavState:
         if self.kf is None:                       # not yet initialized (no usable state seen)
@@ -1165,15 +1190,19 @@ class Navigator:
         # None otherwise -> the NavState fields stay NaN (make_nav_state's absent-marker, byte-identical).
         # A25: export the gate-relative z_off the SAME way (mirrored gating) -- None until a gate
         # has ever been latched (VerticalEstimator.z_off is NaN then, same absent-marker contract).
-        vert_z = vert_vz = z_off = None
+        # A26: export the contact-gate state the SAME way (mirrored gating) -- None (not False)
+        # while unseeded, so a consumer can distinguish "never seeded" from "seeded, not frozen".
+        vert_z = vert_vz = z_off = contact_frozen = None
         if self._vert_est is not None and self._vert_est.seeded:
             vert_z, vert_vz = self._vert_est.z, self._vert_est.vz
             z_off = self._vert_est.z_off
+            contact_frozen = self._vert_est.contact_frozen()
         return make_nav_state(self.kf, ds, tsv, nav_inplane_sigma=inplane_sig,
                               nav_along_sigma=along_sig,
                               attitude_rpy_override=att_override,
                               angular_rate_override=rate_override,
-                              vert_z_est=vert_z, vert_vz_est=vert_vz, z_off_est=z_off)
+                              vert_z_est=vert_z, vert_vz_est=vert_vz, z_off_est=z_off,
+                              contact_frozen=contact_frozen)
 
     def obs_drone_state(self, ds: DroneState) -> DroneState:
         """The DroneState the case-C OBS seam should consume (use_ahrs attitude routing, GAP #2).

@@ -1222,6 +1222,14 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["z_off_est"] = None if zoe != zoe else zoe
     except Exception:
         rec["z_off_est"] = None
+    # --- A26 contact-gate instrumentation --- contact_frozen: the VerticalEstimator.contact_frozen()
+    # NavState export (None -> null when off/unseeded; True/False is a real value once seeded, so this
+    # is null-safe like the fields above WITHOUT collapsing False into null).
+    try:
+        cf = getattr(nav_state, "contact_frozen", None)
+        rec["contact_frozen"] = None if cf is None else bool(cf)
+    except Exception:
+        rec["contact_frozen"] = None
     # vz_t: the seeker's commanded vertical-velocity target this tick (down-positive), stashed on
     # the seeker where vz_cmd is set (_vertical_align_vz). None when no pursuit tick has run yet /
     # the seeker isn't wired -- never fabricated.

@@ -277,6 +277,14 @@ class NavState:
     # byte-identical to no term at all). Gated exactly like vert_vz_est (NavigatorConfig.
     # use_vertical_estimator). [VQ2 A25, 2026-07-02]
     z_off_est: float = float("nan")                      # m, NED down-positive gate->drone offset
+    # A26 contact-gate export (racer.vertical_estimator.VerticalEstimator.contact_frozen()): True
+    # while a |specific-force| impact spike (or its refractory hold) is freezing BOTH the vz washout
+    # update and the z_off propagate this tick (A25 §4). ``None`` (not False) when the estimator is
+    # off/unseeded -- the absent-marker for a bool field (mirrors the NaN absent-marker on
+    # vert_vz_est/z_off_est above); consumers must not treat None as "not frozen". Gated exactly like
+    # vert_vz_est/z_off_est (NavigatorConfig.use_vertical_estimator). Instrumentation only -- no
+    # controller currently reads it. [VQ2 A26, 2026-07-02]
+    contact_frozen: bool | None = None
 
 
 # ---------------------------------------------------------------------------

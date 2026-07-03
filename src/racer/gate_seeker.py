@@ -1149,12 +1149,34 @@ class GateSeeker:
         (the point-blank PnP elevation is degenerate there; §5.2 -- ẑ_off HOLDS its last latched
         value and keeps propagating by vz instead of being overwritten by garbage). No-op when no
         estimator is wired/seeded -- VQ1/case-A byte-identical; the seeker's OWN pursuit behaviour
-        never depends on this call."""
+        never depends on this call.
+
+        A26 pose_age_s FIX (2026-07-02): ``pose.sim_time_ns`` is on the CAMERA/server epoch (the
+        JPEG-wire header, unix-wall-clock ns on the live sim) while ``nav.sim_time_ns`` is on the
+        IMU master epoch (``HIGHRES_IMU.time_usec``, sim-uptime ns) -- two DIFFERENT, unreconciled
+        clocks (see ``NavigatorConfig.reconcile_vision_clock``'s note in navigator.py). The camera
+        epoch is always vastly LARGER than the IMU epoch on the live wire, so the raw subtraction
+        ``nav.sim_time_ns - pose.sim_time_ns`` was always hugely NEGATIVE, and the very next
+        ``max(0.0, ...)`` staleness guard silently clamped every tick to exactly 0.0 (confirmed:
+        run 20260702_221235's nav_estimate.jsonl logs pose_age_s==0.0 on all 159 non-null ticks).
+        Convert the pose's camera-epoch stamp onto the IMU epoch FIRST via the Navigator's learned
+        ``delta_epoch`` (``nav_owner.camera_epoch_to_imu_ns``, the same reconciliation the KF's own
+        OOSM fix-time already uses, see ``Navigator._vision_fix_time_imu_ns``) so the subtraction
+        compares like-for-like. ``None`` (epoch not learned yet, or ``nav_owner`` unset -- e.g. the
+        unit-test seeker built without a Navigator) falls back to the RAW stamp: on synthetic/VQ1
+        tests both clocks are the same fabricated epoch (delta==0 either way), so this fallback is
+        byte-identical there; it only under-corrects on a live wire before the first paired
+        (frame, ds) has landed (a handful of startup ticks, harmless -- the estimator isn't seeded
+        that early either)."""
         self._last_pose_age_s = None                          # instrumentation default (no pose this tick)
         vert_est = getattr(self.nav_owner, "_vert_est", None)
         if vert_est is None or not getattr(vert_est, "seeded", False):
             return
-        obs_age_s = max(0.0, (int(nav.sim_time_ns) - int(pose.sim_time_ns)) / 1e9)
+        _to_imu_ns = getattr(self.nav_owner, "camera_epoch_to_imu_ns", None)
+        pose_imu_ns = _to_imu_ns(pose.sim_time_ns) if _to_imu_ns is not None else None
+        if pose_imu_ns is None:
+            pose_imu_ns = int(pose.sim_time_ns)     # fallback: same-epoch tests / pre-reconciliation
+        obs_age_s = max(0.0, (int(nav.sim_time_ns) - int(pose_imu_ns)) / 1e9)
         obs_age_s = min(obs_age_s, 1.0)                        # obs_age_max_s (A25 §2.2): reject a
                                                                 # garbage/negative delta or >1s stale pose
         self._last_pose_age_s = obs_age_s                      # A25 §7 instrumentation (every pursuit tick)

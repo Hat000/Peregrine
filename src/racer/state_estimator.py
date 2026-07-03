@@ -205,6 +205,7 @@ def make_nav_state(
     vert_z_est: float | None = None,
     vert_vz_est: float | None = None,
     z_off_est: float | None = None,
+    contact_frozen: bool | None = None,
 ) -> NavState:
     """Assemble a NavState from the KF (position/velocity) + given attitude/rates.
 
@@ -228,7 +229,11 @@ def make_nav_state(
 
     ``z_off_est`` (A25 gate-relative vertical offset, ``VerticalEstimator.z_off``): default ``None``
     -> ``NavState.z_off_est`` stays NaN, BYTE-IDENTICAL for every existing caller; the Navigator
-    supplies it only under the same ``use_vertical_estimator`` gate."""
+    supplies it only under the same ``use_vertical_estimator`` gate.
+
+    ``contact_frozen`` (A26 contact-gate export, ``VerticalEstimator.contact_frozen()``): default
+    ``None`` -> ``NavState.contact_frozen`` stays ``None`` (absent-marker), BYTE-IDENTICAL for every
+    existing caller; the Navigator supplies it only under the same ``use_vertical_estimator`` gate."""
     if attitude_rpy_override is None:
         roll, pitch, yaw = drone_state.roll, drone_state.pitch, drone_state.yaw
     else:
@@ -253,4 +258,5 @@ def make_nav_state(
         vert_z_est=float("nan") if vert_z_est is None else float(vert_z_est),
         vert_vz_est=float("nan") if vert_vz_est is None else float(vert_vz_est),
         z_off_est=float("nan") if z_off_est is None else float(z_off_est),
+        contact_frozen=None if contact_frozen is None else bool(contact_frozen),
     )

@@ -54,6 +54,24 @@ controller's alt-hold then adds a proportional term ``-kp_gate*z_off`` (NEGATIVE
 z_off>0, must REDUCE thrust to sink) -- see ``racer.controller._ff_owns_vertical_thrust``. Default
 OFF (``Controller.kp_gate=0.0``, ``z_off`` never latched until a pose arrives) -- VQ1/case-A
 byte-identical.
+
+THE A26 FIX (this file, 2026-07-02, brake fix -- see
+handoff/vq2_a26_vertical_brake_2026-07-02.md): A25 flew and worked directionally (reversed the
+climb, sought gate height) but OVERSHOT past gate-1 height to the floor. Root cause: the washout
+``vz`` RAILS to its export clip (18-28% of ticks) -- so the damping term ``kd_alt*(vz-vz_t)``
+swings at 5x the authority of the A25 position term, and thrust bang-bangs the [0.05,0.6] clamps;
+and ``vz`` is BLIND to real sustained descent (reads ~0), so the smooth overshoot into the floor
+was never braked. TWO changes: (1) ``export_clip_mps`` 3.0 -> 1.5 (de-saturate the damper -- the
+worst-case swing no longer dwarfs the position term). (2) the gate-offset-rate fusion this file's
+A24 docstring called "deliberately NOT fused" and the A25 spec's §6 explicitly DEFERRED is now
+BUILT: a real gate-relative descent rate ``vz_gate``, the finite difference of two consecutive
+FRESH ``offset_z_world`` latches (``latch_offset``, called by the seeker only on new poses), is
+blended into the washout state (``vz <- vz + k_gate_vz_fusion*(vz_gate-vz)``, see ``_fuse_gate_vz``
+for the accept/reject gates and the sign derivation) so the damping term stops reading ~0 during a
+genuine descent. Gated behind ``use_gate_vz_fusion`` (default False -- VQ1/case-A byte-identical;
+True only on the vq2_case_c estimator, mirroring how ``NavigatorConfig.use_vertical_estimator`` is
+threaded). No gate visible -> pure washout, no mode switch (the fusion only ever nudges an already-
+running washout state; it never substitutes for it).
 """
 from __future__ import annotations
 
@@ -99,7 +117,14 @@ class VerticalEstimator:
     a_up_clamp_mps2: float = 30.0
     # Export clip (m/s), applied on read: the ABSOLUTE, unconditional cannot-diverge guarantee
     # regardless of what garbage the input stream carries.
-    export_clip_mps: float = 3.0
+    # A26 FIX 1 (2026-07-02, de-saturate the damper): 3.0 -> 1.5. At +/-3 the damping term
+    # ``ff_vertical_kd_alt*(vz-vz_t)`` reaches +/-1.0 collective (4x hover) -> a guaranteed
+    # clamp-slam that outguns the A25 position term (``-kp_gate*z_off``, +/-0.065 at kp_gate=
+    # 0.06/z_off_clip=3) by 5x -- the A25 position term was correct-but-outgunned (thrust
+    # bang-banged the [0.05,0.6] clamps 48% of ticks on the flown run). At +/-1.5 the worst-case
+    # swing is ``0.25*(1.5-(-1))=+/-0.625`` -- still strong damping authority, no longer dwarfing
+    # the position term. See handoff/vq2_a26_vertical_brake_2026-07-02.md FIX 1.
+    export_clip_mps: float = 1.5
     # Pre-arm bias capture window (s): the first this-many seconds after seed (grounded -- true
     # vz=0), a running mean of a_dn (post input-clamp) is captured into b_hat, then frozen.
     bias_capture_s: float = 1.0
@@ -111,6 +136,32 @@ class VerticalEstimator:
     # Clamp on the ẑ_off state (m): the gate-relative vertical offset is physically bounded on a
     # slow lap; this is the structural cannot-run-away guard mirroring ``export_clip_mps`` for vz.
     z_off_clip_m: float = 3.0
+
+    # --- A26 FIX 2: gate-offset-rate washout fusion (§6 of the A25 spec, previously DEFERRED) --
+    # The washout ``vz`` rails to its export clip (18-28% of ticks on the flown run) and is BLIND
+    # to real sustained descent (reads ~0 during genuine sinking) -- it is not a brakeable velocity
+    # signal. Fuse a REAL gate-relative descent rate ``vz_gate`` (finite-difference of two FRESH
+    # ``offset_z_world`` latches) into the washout state so the damping term stops reading ~0 on
+    # descent. Gated behind ``use_gate_vz_fusion`` (default False -- VQ1/case-A byte-identical;
+    # True only on the vq2_case_c estimator, mirroring how ``use_vertical_estimator`` is threaded).
+    use_gate_vz_fusion: bool = False
+    # Fusion blend gain: vz <- vz + k_gate_vz_fusion*(vz_gate - vz). 0.15 (spec-fixed) -- at the
+    # ~118 ms TRT pose cadence this is an effective ~0.6 rad/s complementary crossover, just above
+    # the washout's own leak (tau=2.0s -> ~0.5 rad/s), so it corrects the washout's DC descent blind
+    # spot without out-voting the IMU-rate integration between poses.
+    k_gate_vz_fusion: float = 0.15
+    # Accept window for the finite-difference dt between two FRESH latched poses (s): too small (
+    # <=0.05s) and the difference is dominated by pose-timestamp jitter/noise; too large (>0.8s) and
+    # the two offsets no longer describe one coherent velocity (gate re-acquire after a long gap,
+    # possible gate-index handoff). Outside this window, the fused sample is REJECTED (skip fusion
+    # this latch, pure washout continues unchanged).
+    gate_vz_fusion_dt_min_s: float = 0.05
+    gate_vz_fusion_dt_max_s: float = 0.8
+    # Reject a computed vz_gate whose magnitude exceeds this (m/s) -- a slow-lap drone cannot
+    # sustain faster gate-relative closure than this; larger values are a bad pose / mismatched
+    # latch (e.g. a gate-index handoff retargeting z_off to a different gate) rather than real
+    # motion. Mirrors the spirit of ``a_up_clamp_mps2``/``export_clip_mps``: reject at the source.
+    gate_vz_fusion_reject_mps: float = 2.5
     # CONTACT-GATE (A25 §4, LOAD-BEARING): a |specific-force| spike above this (m/s^2, ~2g of
     # kinematic vertical accel a slow-lap drone cannot sustain) marks a contact tick (impact /
     # ceiling scrape). On a contact tick -- and for ``contact_hold_s`` after the LAST spike (a
@@ -135,12 +186,19 @@ class VerticalEstimator:
     # -- A25 contact-gate state: sim-time-like elapsed clock (seconds), monotonic via predict's dt --
     _contact_elapsed_s: float = field(default=0.0, repr=False)
     _contact_until_s: float = field(default=-1.0, repr=False)
+    # -- A26 gate-offset-rate fusion state: the previous FRESH-pose offset_z_world (pre-latency-
+    # comp, raw captured value) + the elapsed-clock timestamp it was latched at (same monotonic
+    # clock as ``_contact_elapsed_s``, advanced by ``predict``'s dt -- NOT wall time). None until
+    # the first fresh latch.
+    _prev_fresh_offset_z: float | None = field(default=None, repr=False)
+    _prev_fresh_offset_t_s: float | None = field(default=None, repr=False)
 
     # -- lifecycle ------------------------------------------------------------
     def seed(self) -> None:
         """(Re)initialise at rest: vz=0, b_hat=0, and re-arm the pre-arm bias-capture window.
-        Also resets the A25 z_off state (un-seen, NaN) and the contact-gate clock -- a re-seed
-        (sim epoch restart) must forget any latched gate-relative offset from the prior epoch."""
+        Also resets the A25 z_off state (un-seen, NaN), the contact-gate clock, and the A26
+        gate-offset-rate fusion history -- a re-seed (sim epoch restart) must forget any latched
+        gate-relative offset (and its fusion history) from the prior epoch."""
         self._vz = 0.0
         self._b_hat = 0.0
         self._seeded = True
@@ -152,6 +210,8 @@ class VerticalEstimator:
         self._z_off_seen = False
         self._contact_elapsed_s = 0.0
         self._contact_until_s = -1.0
+        self._prev_fresh_offset_z = None
+        self._prev_fresh_offset_t_s = None
 
     @property
     def seeded(self) -> bool:
@@ -255,11 +315,79 @@ class VerticalEstimator:
         (spec §2.3, sign-pinned by ``test_latency_comp_climb_makes_latched_offset_more_positive``).
         Uses the CURRENT washout ``vz`` as a first-order proxy for the (unobserved) velocity during
         the blind interval -- acceptable over the sub-1s obs ages on this wire; no full OOSM buffer.
-        No-op while un-seeded (mirrors ``predict``)."""
+        No-op while un-seeded (mirrors ``predict``).
+
+        A26 FIX 2 (gate-offset-rate washout fusion, spec §6, previously DEFERRED): when
+        ``use_gate_vz_fusion`` is on, ALSO derive a real gate-relative descent rate ``vz_gate``
+        from the finite difference of this fresh RAW (pre-latency-comp) ``offset_z_world`` against
+        the previous fresh RAW offset, and blend it into the washout ``vz`` -- see
+        :meth:`_fuse_gate_vz` for the sign derivation and the accept/reject gates. This runs BEFORE
+        the z_off latch above is overwritten (so the "previous" offset is still the prior one), and
+        the previous-offset bookkeeping is updated unconditionally on every fresh latch (whether or
+        not this particular sample passed the fusion gates) so the NEXT latch always compares
+        against the immediately-prior fresh pose."""
         if not self._seeded:
             return
+        if self.use_gate_vz_fusion:
+            self._fuse_gate_vz(float(offset_z_world))
         vz_for_latency = self._vz if np.isfinite(self._vz) else 0.0
         self._z_off = float(np.clip(
             float(offset_z_world) - vz_for_latency * float(obs_age_s),
             -self.z_off_clip_m, self.z_off_clip_m))
         self._z_off_seen = True
+
+    # -- A26 gate-offset-rate fusion --------------------------------------------
+    def _fuse_gate_vz(self, offset_z_world: float) -> None:
+        """Derive ``vz_gate`` from two consecutive FRESH ``offset_z_world`` latches and blend it
+        into the washout ``vz``.
+
+        SIGN DERIVATION (must match ``vz``'s NED down-positive, "drone descending = positive"
+        convention): ``offset_z_world`` is down-positive drone->gate (positive = gate is BELOW the
+        drone). As the drone DESCENDS TOWARD a static gate, the drone gets closer to the gate, so
+        the below-positive distance offset_z_world SHRINKS (decreases) over time --
+        ``offset_z_now < offset_z_prev``. We need ``vz_gate > 0`` on that same descent, so:
+
+            vz_gate = (offset_z_prev - offset_z_now) / dt          # NOT (now - prev)/dt
+
+        (descending -> offset_z shrinks -> prev>now -> vz_gate>0 ✓). This is exactly the same
+        relationship as the existing ``predict`` propagate (``z_off <- z_off - vz*dt``, i.e.
+        ``vz = (z_off_old - z_off_new)/dt``) -- same sign convention, same filter. Pinned by
+        ``test_vz_gate_sign_descending_toward_gate_is_positive``.
+
+        Gates (reject -> leave ``_vz`` untouched, pure washout unchanged this latch):
+          * no previous fresh latch yet (first-ever latch has nothing to difference against).
+          * dt outside ``(gate_vz_fusion_dt_min_s, gate_vz_fusion_dt_max_s]`` -- too small is
+            dominated by pose-timestamp jitter, too large no longer describes one coherent
+            velocity (long blind gap / gate handoff).
+          * ``|vz_gate| > gate_vz_fusion_reject_mps`` -- a slow-lap drone cannot sustain faster
+            gate-relative closure; larger values are a bad pose / mismatched latch, not real motion.
+          * NOTE: the spec also calls for a point-blank (<2 m range) reject. Range is NOT available
+            at this layer -- ``VerticalEstimator`` only ever sees ``offset_z_world`` + ``obs_age_s``
+            (see ``latch_offset``'s signature and the module docstring's §1.2 rationale: the
+            estimator is deliberately kept pose/range-agnostic, that guard lives at the SEEKER,
+            which already suppresses the z_off LATCH itself below ``min_trust_elevation_range_m``
+            -- see ``gate_seeker._maybe_latch_z_off`` §5.2). Since a point-blank pose never reaches
+            ``latch_offset`` in the first place below that range, the fusion input is already
+            range-guarded one layer up; this method does not duplicate a range check it cannot see.
+
+        On acceptance: blend ``vz <- vz + k_gate_vz_fusion*(vz_gate - vz)`` (a first-order
+        complementary step toward the measured rate, NOT a hard overwrite -- keeps the IMU-rate
+        washout as the primary signal between poses)."""
+        prev_z = self._prev_fresh_offset_z
+        prev_t = self._prev_fresh_offset_t_s
+        now_t = self._contact_elapsed_s
+        # unconditionally roll the "previous fresh" bookkeeping forward so the NEXT latch compares
+        # against THIS one, regardless of whether this sample passes the fusion gates below.
+        self._prev_fresh_offset_z = offset_z_world
+        self._prev_fresh_offset_t_s = now_t
+
+        if prev_z is None or prev_t is None:
+            return   # first-ever fresh latch: nothing to difference against yet
+        dt = now_t - prev_t
+        if not (self.gate_vz_fusion_dt_min_s < dt <= self.gate_vz_fusion_dt_max_s):
+            return   # outside the accept window: reject this sample, pure washout continues
+        vz_gate = (prev_z - offset_z_world) / dt
+        if abs(vz_gate) > self.gate_vz_fusion_reject_mps:
+            return   # implausible gate-relative rate: reject, do not corrupt the washout
+        if np.isfinite(self._vz):
+            self._vz = float(self._vz + self.k_gate_vz_fusion * (vz_gate - self._vz))

@@ -179,6 +179,16 @@ def vq2_case_c() -> DeployProfile:
         # Default (1) is byte-identical; these are the estimator-safety-study tuned values.
         vp_yaw_decimate=5,
         floor_height_decimate=3,
+        # --- A26 gate-offset-rate washout fusion (vertical-brake fix, 2026-07-02) ---
+        # ON for vq2_case_c only (VQ1/case-A stay at the NavigatorConfig default False -> byte-
+        # identical). Only meaningful under use_vertical_estimator (True above, via the
+        # use_vertical_estimator seam this profile already opts into) -- see
+        # handoff/vq2_a26_vertical_brake_2026-07-02.md FIX 2 for the full derivation: the washout
+        # vz rails to its export clip and reads ~0 during real sustained descent (never brakes the
+        # A25 overshoot into the floor); this fuses a real gate-relative descent rate (finite-
+        # difference of consecutive fresh offset_z_world latches) into the washout so the damping
+        # term stops reading zero on descent.
+        use_gate_vz_fusion=True,
     )
     return DeployProfile(
         name="vq2_case_c",

@@ -219,7 +219,15 @@ def test_cannot_diverge_under_sustained_bias_bounded_by_tau_times_b():
 # ---------------------------------------------------------------------------
 def test_steady_climb_washes_to_zero_over_tau():
     """A step to a_dn=0 after an initial nonzero vz decays exponentially to 0 with time constant
-    tau (no sustained input to hold it up) -- 'vz washes to 0 over tau (a_dn~=0)' per spec."""
+    tau (no sustained input to hold it up) -- 'vz washes to 0 over tau (a_dn~=0)' per spec.
+
+    Uses the internal (unclamped) ``_vz`` as the pre-decay reference, not the exported ``vz``
+    property: A26 FIX 1 (2026-07-02) tightened ``export_clip_mps`` 3.0 -> 1.5 (de-saturate the
+    washout damper, see handoff/vq2_a26_vertical_brake_2026-07-02.md), and this kick's TRUE
+    internal magnitude (~1.9 m/s) now exceeds that read-side clip -- referencing the clamped
+    ``vz`` as "the kicked value" would silently under-state the real decay ratio being checked.
+    The export clip is a read-side guarantee only; it does not change the washout recurrence
+    itself, which is what this test verifies."""
     est = VerticalEstimator(washout_tau_s=2.0)
     est.seed()
     dt = IMU_DT
@@ -229,12 +237,12 @@ def test_steady_climb_washes_to_zero_over_tau():
     # kick vz up with one big (but clamp-legal) impulse-ish burst, then hold a_dn=0
     for _ in range(int(0.2 / dt)):
         est.predict(-10.0, dt)              # a_dn=+10 for 0.2s -> some positive vz
-    vz_kicked = est.vz
+    vz_kicked = est._vz                     # TRUE internal magnitude, pre-export-clip
     assert vz_kicked > 0.5, "setup: kick did not raise vz"
     # now hold zero input for ~2 tau and confirm decay toward 0
     for _ in range(int(2 * est.washout_tau_s / dt)):
         est.predict(0.0, dt)
-    assert abs(est.vz) < 0.15 * vz_kicked, ("vz did not wash out toward 0", est.vz, vz_kicked)
+    assert abs(est._vz) < 0.15 * vz_kicked, ("vz did not wash out toward 0", est._vz, vz_kicked)
 
 
 def test_washout_alpha_matches_exp_minus_dt_over_tau():
