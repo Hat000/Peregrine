@@ -437,8 +437,13 @@ def test_off_learns_delta_exactly_once():
 # ===========================================================================
 def test_profile_wiring_a29():
     ov = get_profile("vq2_case_c").seeker_overrides
-    assert ov["use_los_rate_damping"] is True
-    assert ov["pursuit_yaw_slew_rps"] == 1.5
+    # A30 (2026-07-03): the LOS-rate damping proved UNSTABLE in flight (run 20260703_150755 —
+    # derivative-of-noise x untrusted range; vt_est |58| m/s, ~2.1 s lateral limit cycle) and is
+    # DISABLED in the profile: the key is REMOVED (default False), not set. The code + these
+    # tests stay so the mechanism remains replayable. See test_vq2_a30_image_servo.py for the
+    # replacement wiring pins.
+    assert "use_los_rate_damping" not in ov
+    assert ov["pursuit_yaw_slew_rps"] == 1.5     # the A29 delay trim is KEPT under A30
     assert vq2_case_c().nav_config.reconcile_vision_clock_continuous is True
     # VQ1 / case-A: no overrides, every A29 flag at its OFF default.
     assert vq1_case_a().seeker_overrides is None
@@ -460,12 +465,14 @@ def test_profile_wiring_a29():
 
 
 def test_make_seeker_threads_a29_for_vq2_case_c_only():
-    """A seeker built from vq2_case_c overrides has LOS-rate damping ON + the 1.5 slew; one from
-    vq1_case_a (no overrides) keeps both at the OFF/legacy defaults (mirrors rl.fly_rl.make_seeker)."""
+    """A seeker built from vq2_case_c overrides keeps the A29 1.5 slew but — since A30 — has the
+    LOS-rate damping OFF (the unstable lateral is replaced by the image servo; the flag rides its
+    False default). vq1_case_a (no overrides) keeps every legacy default (mirrors
+    rl.fly_rl.make_seeker)."""
     def _seeker(name):
         return GateSeeker(config=GateSeekerConfig(
             cruise_speed=3.0, **(get_profile(name).seeker_overrides or {})))
-    assert _seeker("vq2_case_c").config.use_los_rate_damping is True
+    assert _seeker("vq2_case_c").config.use_los_rate_damping is False   # A30: damping disabled
     assert _seeker("vq2_case_c").config.pursuit_yaw_slew_rps == 1.5
     assert _seeker("vq1_case_a").config.use_los_rate_damping is False
     assert _seeker("vq1_case_a").config.pursuit_yaw_slew_rps == 1.0

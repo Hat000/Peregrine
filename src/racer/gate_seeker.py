@@ -425,6 +425,46 @@ class GateSeekerConfig:
     # Clamp the range used in v_t (m): a mis-depthed far candidate can't demand a huge lateral.
     los_range_cap_m: float = 25.0
 
+    # --- A30 IMAGE-SERVO LATERAL: roll toward the APPARENT gate (2026-07-03) ---
+    # A30 (run 20260703_150755): the A29 LOS-rate damping went UNSTABLE -- it differentiated a
+    # noisy, self-motion-contaminated bearing (corr(raw sample, own yaw rate) = 0.65) and
+    # multiplied by an untrusted range (track pinned at the 25 m cap on 62% of ticks), producing
+    # a |58| m/s vt_est and a saturating ~2.1 s lateral limit cycle (alat sign-flip every 1.15 s,
+    # 80% saturated) that thrashed the drone over gate 0. THE REPLACEMENT (this block): the
+    # operator's image-proportional law -- roll toward where the gate APPEARS in the frame.
+    # Per pursuit tick: az = wrap(psi_world - yaw_now) (the gate's apparent horizontal offset,
+    # +right), a_lat = clip(k_az * dead(az), +/-cap) along e_right(yaw_now), composed with the
+    # forward drive scaled by max(cos(az),0)^2 (point before pushing). NO derivative, NO range,
+    # NO filter state: the input is a per-frame-measured LEVEL bounded by the FOV -- it
+    # structurally cannot produce a 58 m/s internal state because it has no internal state.
+    # WHY IT BRAKES THE ORBIT: when an orbit tries to form the LOS sweeps and the yaw servo LAGS
+    # (measured on A28: az = 0.208*psi_dot, corr 0.64), so the gate sits off-center IN THE SWEEP
+    # DIRECTION and the lateral accel toward it points anti-tangential -- the "differentiation"
+    # is done by the yaw-servo physics, not numerics on a noisy signal. Replayed over the real
+    # A28 gate-1 kinematics: net tangential delta-v = -16.4 m/s of braking available vs the
+    # ~3 m/s carried. Near-centered it is the SAME braking direction A29 wanted at gain
+    # k_az*b ~= 1.7 instead of kd*r = 20 -- 12x cooler, underived, range-free.
+    # OFF (default) => byte-identical (VQ1 / case-A untouched). If both this and
+    # use_los_rate_damping are ON, the image servo WINS (the A29 branch is unreachable).
+    use_image_servo_lateral: bool = False
+    # Lateral gain (m/s^2 per rad of apparent azimuth): saturates the cap beyond ~10.7 deg az;
+    # linear-regime brake tau ~= r/(k_az*b) ~= 6 s at r=10 m (b ~= 0.21 s measured yaw lag);
+    # PnP bearing noise 1-2 deg -> 0.14-0.28 m/s^2 command noise (benign, below deadband most ticks).
+    image_kaz_mps2_per_rad: float = 8.0
+    # Deadband on the apparent azimuth (rad): ~= the PnP bearing noise floor (1.7 deg) so a
+    # centered gate commands NO lateral hunting. Applied CONTINUOUSLY (sign(az)*max(|az|-db,0))
+    # so the lateral demand has no jump at the deadband edge.
+    image_az_deadband_rad: float = 0.03
+    # Cap the image-servo lateral demand (m/s^2): 1.5 ~= an 8.7 deg lean. The worst possible
+    # transient (a track hop across the whole FOV) clips here, sign-correct the next fresh frame.
+    image_lat_cap_mps2: float = 1.5
+    # Capture-time attitude ring buffer depth (ticks): ~1.2 s at 30 Hz -- covers the observed
+    # pose-age spread (p50 138 ms / p90 265 ms / max 334 ms under the A29 clock fix).
+    image_att_hist_len: int = 36
+    # Fall back to the CURRENT attitude when the nearest buffered attitude is farther than this
+    # from the pose capture instant (s): a stale buffer must not rotate the lever with garbage.
+    image_att_max_gap_s: float = 0.5
+
     # --- TRUE-ATTITUDE FROM AHRS (the 2026-06-30 A14 yaw-mirror fix) ---
     # ROOT CAUSE (A14): under ``use_ahrs`` (vq2_case_c) the case-C Navigator re-encodes the TRUE
     # AHRS attitude into the legacy ODOMETRY conjugation before writing ``NavState`` (an R_y(pi)
@@ -608,6 +648,14 @@ class GateSeeker:
     _last_vt_est: float | None = field(default=None, repr=False)            # v_t = -r*theta_dot (m/s)
     _last_alat: float | None = field(default=None, repr=False)              # applied lateral accel (m/s^2)
     _last_track_range_m: float | None = field(default=None, repr=False)     # range used in v_t (m)
+    # -- A30 image-servo state: capture-time attitude ring buffer (a deque of
+    #    (sim_time_ns, (roll, pitch, yaw)), created lazily on the first flag-ON tick so the OFF
+    #    path allocates nothing) + instrumentation stashes (spec §4; logging only, None when the
+    #    flag is off / no pursuit tick yet). _last_alat above is REUSED for the applied image-servo
+    #    lateral when the flag is on. --
+    _att_hist: object | None = field(default=None, repr=False)              # deque[(t_ns, rpy)]
+    _last_az_err: float | None = field(default=None, repr=False)            # apparent azimuth az (rad, +right)
+    _last_fwd_scale: float | None = field(default=None, repr=False)         # cos^2(az) forward-pointing scale
     # -- A29 regime stash (spec §4.4): which command_visual regime returned this tick, first-class
     #    (settle/anchor/egress/pass/bridge/hold/pursuit) -- the A29 run's regime had to be
     #    reconstructed from field-change fingerprints. Logging only. --
@@ -855,6 +903,12 @@ class GateSeeker:
         self._last_index = int(active_gate_index)
         if self._last_yaw is None:
             self._last_yaw = self._att_yaw(nav)
+        # A30: record this tick's attitude into the capture-time ring buffer (one entry per
+        # command_visual tick), so a later pursuit tick can interpret an AGED pose's camera lever
+        # with the attitude AT THE MOMENT THE FRAME WAS CAPTURED (kills the omega*age false
+        # lateral, spec §3.3). Flag-gated append -> ZERO side effects on the OFF path.
+        if self.config.use_image_servo_lateral:
+            self._append_att_hist(int(nav.sim_time_ns), self._att_rpy(nav))
 
         # ACQUIRE-NEXT track reset: once we are past the dead-reckon GLIDE (the pass_coast_s window) the
         # just-passed gate is behind us; the temporal track may still be stale-locked on it (a fresh
@@ -1168,9 +1222,17 @@ class GateSeeker:
         frame (the fixed camera mount), then into world NED with the estimator's gravity-known
         attitude (roll/pitch from the AHRS accel-levelled tilt, yaw from the vision-pinned heading).
         NO absolute self-position enters — only the DIRECTION to the seen gate."""
+        return self._gate_dir_world_rpy(pose, self._att_rpy(nav))
+
+    def _gate_dir_world_rpy(self, pose: GatePose, rpy: tuple[float, float, float]) -> np.ndarray:
+        """:meth:`_gate_dir_world` with an EXPLICIT (roll, pitch, yaw) — the A30 seam that lets the
+        image servo rotate the camera lever with the attitude AT CAPTURE TIME (:meth:`_rpy_at`)
+        instead of the current-tick attitude (which injects a spurious +omega*age into the world
+        azimuth of an aged pose). Same math, same order of operations — calling it with
+        ``self._att_rpy(nav)`` is bit-identical to the pre-A30 ``_gate_dir_world`` body."""
         d_cam = _unit(np.asarray(pose.t_cam_gate, dtype=np.float64))
         d_body = R_camera_from_body().T @ d_cam
-        tr, tp, ty = self._att_rpy(nav)
+        tr, tp, ty = rpy
         R_wb = R_world_from_body(tr, tp, ty)
         return _unit(R_wb @ d_body, fallback=np.array([np.cos(ty), np.sin(ty), 0.0]))
 
@@ -1362,6 +1424,78 @@ class GateSeeker:
         self._last_alat = a_lat_applied
         return _clip_norm(a_vec, self.config.total_accel_cap_mps2)
 
+    # =======================================================================
+    # A30 IMAGE-SERVO LATERAL  (roll toward the APPARENT gate — the orbit killer)
+    # =======================================================================
+    def _append_att_hist(self, sim_time_ns: int, rpy: tuple[float, float, float]) -> None:
+        """Record one (sim_time_ns, (roll, pitch, yaw)) into the capture-time attitude ring buffer
+        (A30 §3.3). Created lazily at the configured depth so a flag-OFF seeker allocates nothing."""
+        from collections import deque
+        if self._att_hist is None:
+            self._att_hist = deque(maxlen=max(1, int(self.config.image_att_hist_len)))
+        self._att_hist.append((int(sim_time_ns),
+                               (float(rpy[0]), float(rpy[1]), float(rpy[2]))))
+
+    def _rpy_at(self, pose_sim_time_ns: int) -> tuple[float, float, float] | None:
+        """The buffered attitude NEAREST the pose's capture instant, or ``None`` when unusable
+        (empty buffer / nearest entry farther than ``image_att_max_gap_s`` — the caller then falls
+        back to the current attitude, exactly the pre-A30 rotation).
+
+        ``pose_sim_time_ns`` is on the CAMERA epoch (the JPEG-wire header) while the buffer is
+        stamped on the IMU master epoch, so convert FIRST via the Navigator's learned delta
+        (``nav_owner.camera_epoch_to_imu_ns`` — the A29 continuous reconciliation makes this stamp
+        trustworthy; the same conversion :meth:`_maybe_latch_z_off` uses). No converter (unit-test
+        seeker without a Navigator) => the raw stamp: on synthetic same-epoch tests delta==0, and
+        on a mixed-epoch feed the gap guard rejects the garbage lookup -> current-attitude fallback."""
+        if not self._att_hist:
+            return None
+        _to_imu = getattr(self.nav_owner, "camera_epoch_to_imu_ns", None)
+        t_imu = _to_imu(int(pose_sim_time_ns)) if _to_imu is not None else None
+        if t_imu is None:
+            t_imu = int(pose_sim_time_ns)       # fallback: same-epoch tests / pre-reconciliation
+        t_near, rpy = min(self._att_hist, key=lambda e: abs(e[0] - t_imu))
+        if abs(int(t_near) - int(t_imu)) / 1e9 > self.config.image_att_max_gap_s:
+            return None
+        return rpy
+
+    def _compose_image_servo_accel(self, nav: NavState, los: np.ndarray, psi_world: float,
+                                   eff_ramp: float, fwd_ramp: float) -> np.ndarray:
+        """Compose the A30 pursuit horizontal-accel VECTOR (spec §3.1):
+
+        ``az    = wrap(psi_world - yaw_now)``  (the gate's APPARENT horizontal offset, rad, +right;
+                  psi_world is capture-consistent, yaw_now is current -> az stays LIVE at tick rate
+                  even between fresh poses — yaw motion updates it, a ZOH pose does not freeze it)
+        ``a_lat = clip(k_az * dead(az, az_db), +/-image_lat_cap_mps2)`` along ``e_right(yaw_now)``
+        ``a_fwd = forward_accel * eff_ramp * fwd_ramp * max(cos(az), 0)^2``  (point before pushing)
+        ``a_vec = clip_norm(a_fwd * los + a_lat * e_right, total_accel_cap_mps2)``
+
+        SIGN (safety-critical — pinned by test_gate_right_rolls_right + the true-kinematics orbit
+        pins in test_vq2_a30_image_servo): ``e_right(psi) = [-sin(psi), cos(psi), 0]`` is the
+        drone's RIGHT in world NED at yaw psi, and +az = gate appears RIGHT of the nose, so
+        ``a_lat > 0`` accelerates RIGHT — toward the apparent gate. When an orbit sweeps the LOS,
+        the yaw servo LAGS and the gate sits off-center in the SWEEP direction, so this same
+        demand points anti-tangential: the brake. A flipped sign here pushes AWAY from the
+        apparent gate and feeds the orbit.
+
+        The deadband is CONTINUOUS (``sign(az)*max(|az|-db, 0)``) so the demand has no step at
+        the deadband edge (no 0.24 m/s^2 chatter at |az|==db). NO derivative, NO range, NO filter
+        state anywhere in this function. Instrumentation stashes (_last_az_err / _last_fwd_scale /
+        _last_alat) are written every flag-ON pursuit tick."""
+        yaw_now = self._att_yaw(nav)
+        az = float(np.arctan2(np.sin(psi_world - yaw_now), np.cos(psi_world - yaw_now)))
+        self._last_az_err = az                                  # A30 instrumentation (raw, pre-deadband)
+        db = max(float(self.config.image_az_deadband_rad), 0.0)
+        az_eff = float(np.sign(az)) * max(abs(az) - db, 0.0)    # continuous deadband
+        cap = abs(float(self.config.image_lat_cap_mps2))
+        a_lat = float(np.clip(self.config.image_kaz_mps2_per_rad * az_eff, -cap, cap))
+        fwd_scale = float(max(np.cos(az), 0.0)) ** 2            # push hardest centered, yield off-axis
+        self._last_fwd_scale = fwd_scale
+        a_fwd = self.config.forward_accel_mps2 * float(eff_ramp) * float(fwd_ramp) * fwd_scale
+        e_right = np.array([-np.sin(yaw_now), np.cos(yaw_now), 0.0])
+        a_vec = a_fwd * np.asarray(los, dtype=np.float64) + a_lat * e_right
+        self._last_alat = a_lat                                 # reuse the A29 lateral stash (alat_mps2)
+        return _clip_norm(a_vec, self.config.total_accel_cap_mps2)
+
     def _visual_pursuit_command(self, nav: NavState, pose: GatePose) -> ControlCommand:
         """Build the slow pursuit CTBR from the SEEN gate's relative bearing (no map, no abs position).
 
@@ -1377,7 +1511,18 @@ class GateSeeker:
         LAYER-2b smoothing (the A3 roll-over fix, retained): the commanded heading is RATE-LIMITED so
         a noisy bearing can't STEP the yaw setpoint; a post-release PURSUIT RAMP scales lean authority
         up from a small floor over ``pursuit_ramp_s``; the ROLL command is capped below saturation."""
-        gdir = self._gate_dir_world(nav, pose)
+        # A30 (§3.3): under the image servo, rotate the camera lever with the attitude AT CAPTURE
+        # TIME (nearest ring-buffer entry to the pose stamp; current attitude when unusable), so
+        # psi_world/yaw_des is exact for a fixed gate up to translation-over-age — the +omega*age
+        # contamination (8-17 deg during a 1-2 rad/s yaw = a 1.2-2.3 m/s^2 false lateral at k_az=8)
+        # never enters az, the slewed yaw setpoint, or the yaw_des instrumentation. Flag OFF =>
+        # the pre-A30 current-attitude rotation, bit-identical.
+        if self.config.use_image_servo_lateral:
+            rpy_cap = self._rpy_at(int(pose.sim_time_ns))
+            gdir = self._gate_dir_world_rpy(
+                pose, rpy_cap if rpy_cap is not None else self._att_rpy(nav))
+        else:
+            gdir = self._gate_dir_world(nav, pose)
         horiz = np.array([gdir[0], gdir[1], 0.0])
         _ty = self._att_yaw(nav)
         los = _unit(horiz, fallback=np.array([np.cos(_ty), np.sin(_ty), 0.0]))
@@ -1414,6 +1559,21 @@ class GateSeeker:
             # altitude memory; latching it is not gated on whether vz_t itself fired this tick.
             self._maybe_latch_z_off(nav, pose)
             fwd_ramp = self._forward_accel_ramp(int(nav.sim_time_ns))
+            # A30 IMAGE-SERVO LATERAL (the orbit fix that replaced A29): roll toward the gate's
+            # APPARENT azimuth + cos^2(az) forward-pointing scale, composed into ONE vector and
+            # passed through the SAME accel_vec seam as A29 (ramps + norm cap already inside; the
+            # bridge cache stores unit(a_vec) + |a_vec| so a bridged tick re-issues the decayed
+            # COMPOSED vector on the frozen heading). Checked BEFORE the A29 branch: if both
+            # flags are ever on, the image servo WINS (see the config note). Flag OFF => fall
+            # through unchanged (byte-identical pre-A30 paths below).
+            if self.config.use_image_servo_lateral:
+                a_vec = self._compose_image_servo_accel(nav, los, yaw_des,
+                                                        float(eff_ramp), float(fwd_ramp))
+                self._record_last_demand(_unit(a_vec), yaw, float(np.linalg.norm(a_vec)),
+                                         int(nav.sim_time_ns))
+                return self._feedforward_command(nav, los, yaw, eff_ramp,
+                                                 self.config.forward_accel_mps2,
+                                                 fwd_ramp, vz_cmd=vz, accel_vec=a_vec)
             # A29 LOS-RATE DAMPING (the orbit fix): compose the forward feedforward + the lateral
             # tangential-velocity brake into ONE vector, then pass it through the SAME machinery
             # (accel_vec bypasses only the scalar accel*ramp*los product -- the ramps are already
@@ -1807,6 +1967,11 @@ class GateSeeker:
         self._last_alat = None
         self._last_track_range_m = None
         self._last_regime = None
+        # A30 image servo: drop the capture-time attitude history (a fresh epoch's clocks differ)
+        # + the instrumentation stashes.
+        self._att_hist = None
+        self._last_az_err = None
+        self._last_fwd_scale = None
         for k in self.diag_counts:
             self.diag_counts[k] = 0
 

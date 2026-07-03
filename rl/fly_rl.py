@@ -1325,6 +1325,18 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
             rec[key] = float(val) if val is not None else None
     except Exception:
         rec["los_rate_rps"] = rec["vt_est_mps"] = rec["alat_mps2"] = rec["track_range_m"] = None
+    # --- A30 image-servo instrumentation (spec §4; never feeds control) ---
+    # az_err_rad: the gate's APPARENT horizontal azimuth az = wrap(psi_world - yaw_now) (rad,
+    # +right) the lateral term acted on; fwd_scale: the cos^2(az) forward-pointing scale in [0,1].
+    # Stashed each flag-ON pursuit tick with the same stale-retention semantics as the A29 fields;
+    # None when the A30 flag is off / no pursuit tick yet. alat_mps2 above carries the image-servo
+    # lateral when A30 is on (the stash is shared with A29 -- exactly one law composes per tick).
+    try:
+        for key, attr in (("az_err_rad", "_last_az_err"), ("fwd_scale", "_last_fwd_scale")):
+            val = getattr(seeker, attr, None) if seeker is not None else None
+            rec[key] = float(val) if val is not None else None
+    except Exception:
+        rec["az_err_rad"] = rec["fwd_scale"] = None
     # seeker_regime: which command_visual regime returned THIS tick
     # (settle/anchor/egress/pass/bridge/hold/pursuit) -- first-class, so the next post-mortem does
     # not have to reconstruct the regime from field-change fingerprints (A29 §4.4).

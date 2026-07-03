@@ -229,19 +229,28 @@ def vq2_case_c() -> DeployProfile:
         # on the RIGHT steered the nose LEFT. true_attitude_from_ahrs makes the seeker consume the TRUE
         # euler (-nav.roll, nav.pitch, -nav.yaw) and pass the controller a yaw-negated nav so R_cur is
         # R_true -- no sign knob touched. VQ1 / case-A byte-identical (default OFF).
-        # A29 orbit fix (2026-07-03): LOS-rate damping kills the tangential drift that made the
-        # drone yaw at gate 1 while coasting a 392-deg orbit around it (21.1 m/s of commanded
-        # delta-v, net vector 2.6 m/s, coherence 0.12 -- run 20260703_024023). The lateral term
-        # v_t = -r*theta_dot is a pure vision observable (tracked PnP range x filtered LOS rate),
-        # so no dead-reckoned velocity re-enters the loop (A15b/A23 stand). Sub-field defaults
-        # (kd=0.8, lateral cap 2.0, total cap 2.5, deadband 0.3, EMA 0.4) live on GateSeekerConfig.
-        # A29 delay trim: the 115-deg gate-1 acquire turn tracked a RECEDING bearing at ~1.05 rad/s
-        # realized; pursuit_yaw_slew_rps 1.0 -> 1.5 matches visual_yaw_rate_cap so the SLEW is no
-        # longer the binding constraint (the cap + slew-limit still bound steps; the A3
-        # roll-saturation guard was about heading STEPS, which the 1.5 slew still rate-limits).
+        # A30 image-servo pursuit (2026-07-03, replaces the A29 LOS-rate damping): run
+        # 20260703_150755 proved the A29 lateral UNSTABLE -- it differentiated a noisy,
+        # self-motion-contaminated bearing (corr with own yaw rate 0.65) and multiplied by an
+        # untrusted range (track pinned at the 25 m cap on 62% of ticks) -> vt_est hit |58| m/s
+        # and alat limit-cycled at ~2.1 s (sign flip per 1.15 s, 80% saturated), thrashing the
+        # drone over gate 0. ``use_los_rate_damping`` is therefore REMOVED from this dict
+        # (default False -> A29 damping DISABLED; the code + tests stay in the tree for replay).
+        # THE REPLACEMENT: use_image_servo_lateral -- roll toward where the gate APPEARS in the
+        # frame (a_lat = clip(8*az, +/-1.5) on the per-frame image azimuth: no derivative, no
+        # range, no filter state) + a cos^2(az) forward-pointing scale + the capture-time-attitude
+        # ring buffer that keeps omega*age out of az. Replayed over the real A28 gate-1
+        # kinematics this law had -16.4 m/s of tangential braking available vs the ~3 m/s
+        # carried. Sub-field defaults (k_az=8, az deadband 0.03, lateral cap 1.5, att hist 36
+        # ticks / 0.5 s gap guard) live on GateSeekerConfig; total_accel_cap_mps2 is OVERRIDDEN
+        # 2.5 -> 2.0 here (11.5 deg max composed lean; the field default stays 2.5 = A29's
+        # shipped value, so flag-off byte-identity is untouched).
+        # A29 KEPT: pursuit_yaw_slew_rps 1.5 (the delay trim) and the continuous clock
+        # reconciliation in nav_config above (pose_age p50 138 ms / 62% fresh -- a confirmed win).
         seeker_overrides={"egress_freeze_attitude": True, "hold_last_demand_s": 0.6,
                           "true_attitude_from_ahrs": True,
-                          "use_los_rate_damping": True,
+                          "use_image_servo_lateral": True,
+                          "total_accel_cap_mps2": 2.0,
                           "pursuit_yaw_slew_rps": 1.5},
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so

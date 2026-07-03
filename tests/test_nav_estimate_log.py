@@ -62,6 +62,8 @@ EXPECTED_KEYS = {
     "vt_est_mps",       # A29 §4.4: estimated tangential velocity v_t = -r*theta_dot (null when off)
     "alat_mps2",        # A29 §4.4: applied lateral damping accel (0.0 inside the deadband)
     "track_range_m",    # A29 §4.4: the range used in v_t (EMA track, fallback PnP; null when off)
+    "az_err_rad",       # A30 §4: the apparent gate azimuth az = wrap(psi_world - yaw_now) (null when off)
+    "fwd_scale",        # A30 §4: the cos^2(az) forward-pointing scale in [0,1] (null when off)
     "seeker_regime",    # A29 §4.4: which command_visual regime returned this tick (first-class)
 }
 
