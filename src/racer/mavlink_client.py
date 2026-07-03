@@ -215,6 +215,15 @@ class MavlinkClient:
         self.actuator_outputs: dict | None = None     # latest ACTUATOR_OUTPUT_STATUS (motor cmds)
         self._track_chunks: dict[int, dict[int, bytes]] = {}   # transfer_id -> {seqnr: bytes}
         self._track_expected: dict[int, int] = {}              # transfer_id -> expected chunk count
+        # A32 IMU-rate ring buffer (2026-07-03): every parsed HIGHRES_IMU sample
+        # (sim_time_ns, accel_body, gyro_body POST-gyro_sign) is appended here, and the deque
+        # REFERENCE rides each DroneState snapshot (contracts.DroneState.imu_ring) so a consumer
+        # can step its AHRS on the FULL ~185 Hz stream instead of the aliasing latest-sample-per-
+        # tick hold (spec F3: the +45 deg/tick contact-spike step). 64 deep ~= 0.35 s at 185 Hz --
+        # several nav ticks of headroom. Append-only here; consumers read, never mutate. Purely
+        # additive: no existing consumer reads it -> byte-identical unless drained.
+        from collections import deque
+        self.imu_ring: deque = deque(maxlen=64)
 
     def connect(self, wait_heartbeat: bool = True, timeout_s: float = 15.0) -> None:
         self.conn = mavutil.mavlink_connection(
@@ -269,24 +278,32 @@ class MavlinkClient:
             self.state = replace(self.state, recv_monotonic_ns=recv)
         elif t == "HIGHRES_IMU":
             # Sole driver of sim_time_ns — the master sim timeline (see ATTITUDE above).
+            _imu_t_ns = int(msg.time_usec) * 1_000
+            _accel = np.array([msg.xacc, msg.yacc, msg.zacc], dtype=np.float64)
+            # RAW HIGHRES_IMU gyro (rad/s, body FRD; same convention as accel_body). The
+            # non-blocked gyro source for the VQ2 AHRS (case-C). Distinct from the ODOMETRY-
+            # derived angular_rate_body (blocked in VQ2). ``gyro_sign`` (default (1,1,1) ==
+            # identity / no change) applies the LIVE-WIRE per-axis convention correction here,
+            # at the wire, before the AHRS -- see __init__ for why and the consumer enumeration.
+            # Defensive: real HIGHRES_IMU always carries gyro, but message variants/fakes may
+            # omit it; gyro_body stays None then (only consumed when use_ahrs=True), so ingest
+            # never crashes and the default (use_ahrs=False) path is byte-identical.
+            _gyro = (
+                np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=np.float64) * self.gyro_sign
+                if hasattr(msg, "xgyro")
+                else None
+            )
+            # A32: append EVERY sample to the shared ring (post-sign gyro -- the exact arrays the
+            # snapshot carries) so an IMU-rate consumer never sees only 1-in-10 of the stream.
+            if _gyro is not None:
+                self.imu_ring.append((_imu_t_ns, _accel, _gyro))
             self.state = replace(
                 self.state,
-                sim_time_ns=int(msg.time_usec) * 1_000,
+                sim_time_ns=_imu_t_ns,
                 recv_monotonic_ns=recv,
-                accel_body=np.array([msg.xacc, msg.yacc, msg.zacc], dtype=np.float64),
-                # RAW HIGHRES_IMU gyro (rad/s, body FRD; same convention as accel_body). The
-                # non-blocked gyro source for the VQ2 AHRS (case-C). Distinct from the ODOMETRY-
-                # derived angular_rate_body (blocked in VQ2). ``gyro_sign`` (default (1,1,1) ==
-                # identity / no change) applies the LIVE-WIRE per-axis convention correction here,
-                # at the wire, before the AHRS -- see __init__ for why and the consumer enumeration.
-                # Defensive: real HIGHRES_IMU always carries gyro, but message variants/fakes may
-                # omit it; gyro_body stays None then (only consumed when use_ahrs=True), so ingest
-                # never crashes and the default (use_ahrs=False) path is byte-identical.
-                gyro_body=(
-                    np.array([msg.xgyro, msg.ygyro, msg.zgyro], dtype=np.float64) * self.gyro_sign
-                    if hasattr(msg, "xgyro")
-                    else None
-                ),
+                accel_body=_accel,
+                gyro_body=_gyro,
+                imu_ring=self.imu_ring,
                 # RAW pre-sign gyro stash (instrumentation only, A14 yaw-steer-sign probe): the parsed
                 # HIGHRES_IMU gyro BEFORE gyro_sign is applied. NEVER consumed by control/estimate; only
                 # logged. gyro_body above (post-sign) is unchanged -> VQ1/case-A byte-identical.

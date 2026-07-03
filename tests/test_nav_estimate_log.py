@@ -69,6 +69,12 @@ EXPECTED_KEYS = {
     "pass_wire",        # A31: the authoritative wire gate-pass fast-turn signal (null when off)
     "bearing_dev_rad",  # A31: IMU-consistency bearing gate's last measured deviation (null when off)
     "bearing_allow_rad",  # A31: the bearing gate's noise+parallax allowance for that tick (null when off)
+    "theta_g_deg",      # A32: angle(measured specific-force dir, predicted) -- "how wrong is down" (null when off)
+    "accel_deweight_total",  # A32: total effective accel down-weight, post-cap (null when off)
+    "ahrs_watchdog_fired",   # A32: cumulative gravity-recovery watchdog fires (null when no AHRS)
+    "imu_samples_ingested",  # A32: HIGHRES_IMU ring samples consumed this tick (null when off)
+    "bearing_w",        # A32: soft Cauchy bearing weight of the last accepted pose (null when off)
+    "zoff_w",           # A32: vertical filter's last applied Huber*bearing weight (null when off)
 }
 
 

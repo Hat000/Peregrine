@@ -344,6 +344,24 @@ class NavigatorConfig:
     ahrs_accel_motion_reject: bool = False # ESKF accel rejection under SUSTAINED linear accel (the A8 fix:
                                            # |a|~=g but direction tilted -> magnitude gate misses it). OFF =
                                            # byte-identical; vq2_case_c turns it ON. → eskf.use_accel_motion_reject
+    # --- A32 robust "always find down" AHRS (2026-07-03; spec handoff/vq2_a32_robust_estimation_
+    # spec_2026-07-03.md §3.1). The A8 motion-reject above proved to be a SELF-LOCKING distrust
+    # loop (unbounded attitude-referenced R inflation: median 671x in normal flight, 4950-10000x
+    # railed in the inverted tail of run 20260703_172104 -> the gravity pull was effectively OFF
+    # and the filter never recovered "down"). ahrs_accel_trust_v2 -> eskf.use_accel_trust_v2:
+    # bounded inflation (25x cap, 1.0 m/s^2 knee), R_ref free-run time limit (1 s), chi2 hard gate
+    # -> Huber-soft, TOTAL deweight cap 100x whenever |a|~g (the structural ~0.6 s recovery
+    # guarantee), and a persistence-triggered gravity-recovery watchdog (P bump + R_ref re-anchor).
+    # OFF = byte-identical (the ESKF never reads the v2 fields); vq2_case_c turns it ON.
+    ahrs_accel_trust_v2: bool = False
+    # ahrs_imu_rate_ingest: drain the FULL ~185 Hz HIGHRES_IMU ring (DroneState.imu_ring, the
+    # MavlinkClient's shared deque) each nav tick and step the ESKF PER SAMPLE (dt from consecutive
+    # sample stamps) instead of the latest-sample-per-tick sample-and-hold that discarded ~90% of
+    # the gyro stream and aliased the contact spike into a +45 deg single-tick attitude step (spec
+    # F3). ~10 extra 6x6 filter steps per tick -- trivial CPU. Requires use_ahrs; falls back to the
+    # legacy single-sample step whenever the ring is absent (fabricated states / tests) or empty.
+    # OFF = byte-identical (the ring is never read).
+    ahrs_imu_rate_ingest: bool = False
 
     # --- Mag-free vision YAW + Z corrections into the ESKF/KF (magfree-vision-yaw-scope.md, Option B) ---
     # VQ2 has NO magnetometer + NO barometer, so the ESKF accel update is yaw-blind (eskf.py:301) and
@@ -538,6 +556,11 @@ class Navigator:
     _ahrs: object | None = field(default=None, repr=False)
     _ahrs_odo_quat: np.ndarray | None = field(default=None, repr=False)   # TRUE attitude re-encoded
     _ahrs_odo_rate: np.ndarray | None = field(default=None, repr=False)   # to the ODOMETRY-wire convention
+    # A32 IMU-rate ingestion (ahrs_imu_rate_ingest): the sim-time watermark of the last ring
+    # sample the AHRS consumed (None until the first ring tick / after a reset) + the number of
+    # samples ingested on the last dt>0 tick (instrumentation, read by the nav_estimate logger).
+    _ahrs_imu_last_ns: int | None = field(default=None, repr=False)
+    _ahrs_imu_ingested: int | None = field(default=None, repr=False)  # None when the flag is off
     # Mag-free gate-bearing yaw lock: the latest RACE_STATUS active gate index (from ds.active_gate_index),
     # refreshed each update(). None until a RACE_STATUS arrives -> the gate-bearing yaw lock no-ops.
     _active_gate_index: int | None = field(default=None, repr=False)
@@ -597,11 +620,14 @@ class Navigator:
             self._ahrs = AHRSAttitudeSource(
                 eskf=ESKFAHRS(gyro_noise_std=self.config.ahrs_gyro_noise_std,
                               accel_gate_alpha=self.config.ahrs_accel_gate_alpha,
-                              use_accel_motion_reject=self.config.ahrs_accel_motion_reject)
+                              use_accel_motion_reject=self.config.ahrs_accel_motion_reject,
+                              use_accel_trust_v2=self.config.ahrs_accel_trust_v2)
             )
             self._ahrs.seed(AHRSAttitudeSource.level_seed_from_accel(ds.accel_body))
             self._ahrs_odo_quat = None
             self._ahrs_odo_rate = None
+            self._ahrs_imu_last_ns = None      # A32: restart the ring watermark with the filter
+            self._ahrs_imu_ingested = None
         # A24 vertical-velocity washout: seed at rest (vz=0, b_hat=0) and arm the pre-arm bias-
         # capture window (grounded -- true vz is 0). No z state (the washout carries no absolute
         # altitude). OFF path: stays None (byte-identical).
@@ -628,6 +654,8 @@ class Navigator:
         self._ahrs = None                  # L1: re-seed the AHRS on the next _initialize (sim restart)
         self._ahrs_odo_quat = None
         self._ahrs_odo_rate = None
+        self._ahrs_imu_last_ns = None      # A32: drop the ring watermark with the AHRS
+        self._ahrs_imu_ingested = None
         self._vert_est = None              # A24: re-seed the vertical channel (re-arms bias capture)
 
     # -- per-tick -----------------------------------------------------------
@@ -718,7 +746,18 @@ class Navigator:
         if gyro is None:
             # No raw gyro yet (pre-first HIGHRES_IMU): hold the seed attitude, zero rate.
             gyro = np.zeros(3)
-        self._ahrs.ingest(ds.accel_body, gyro, float(dt), mag_body=ds.mag_body)
+        # A32 IMU-rate ingestion (ahrs_imu_rate_ingest): consume the FULL HIGHRES_IMU stream from
+        # the shared ring instead of latest-sample-and-hold. Falls back to the legacy single-sample
+        # step when the ring is absent/empty or yields nothing new (fabricated states / tests /
+        # ring overflow) -- so this path can only ADD samples, never lose the tick.
+        if self.config.ahrs_imu_rate_ingest and dt > 0:
+            n = self._ingest_imu_ring(ds, float(dt))
+            if n == 0:
+                self._ahrs.ingest(ds.accel_body, gyro, float(dt), mag_body=ds.mag_body)
+                n = 1
+            self._ahrs_imu_ingested = n
+        else:
+            self._ahrs.ingest(ds.accel_body, gyro, float(dt), mag_body=ds.mag_body)
         q_true = np.asarray(self._ahrs.q_wxyz, dtype=np.float64)
         # TRUE FRD body rate the AHRS just integrated (bias-corrected). On a dt<=0 tick body_rate
         # holds the last dt>0 value, so the cached ODOMETRY-convention rate stays consistent.
@@ -726,6 +765,52 @@ class Navigator:
         self._ahrs_odo_quat = q_true * ODO_QUAT_TRUE_CONJ_WXYZ
         self._ahrs_odo_rate = -rate_true_frd
         return self._ahrs.R_wb
+
+    def _ingest_imu_ring(self, ds: DroneState, dt: float) -> int:
+        """A32 IMU-rate ingestion: drain the shared HIGHRES_IMU ring (``ds.imu_ring``) of every
+        sample newer than the watermark (and not newer than this tick's master clock) and step the
+        ESKF PER SAMPLE, dt from consecutive sample stamps. Returns the number of samples ingested
+        (0 = nothing usable -> the caller falls back to the legacy single-sample step).
+
+        WHY: the Navigator ticks at ~18 Hz while HIGHRES_IMU streams at ~185 Hz; latest-sample-and-
+        hold integrates ONE instantaneous rate sample across a ~55 ms tick -- through a contact
+        spike that aliased a ~14 rad/s sample into a +45 deg single-tick attitude step (spec F3).
+        Per-sample stepping integrates the true profile (the per-sample dts sum to the tick delta
+        exactly, since the tick clock IS the last HIGHRES_IMU stamp).
+
+        FIRST tick after seed/reset: no watermark yet -- consume just the current snapshot sample
+        with the full tick dt (exactly the legacy step) and set the watermark, so the NEXT tick
+        drains incrementally. Ring snapshot via list() with a defensive retry-free fallback (deque
+        appends are atomic; a concurrent-mutation RuntimeError just means "use the legacy step
+        this tick")."""
+        ring = getattr(ds, "imu_ring", None)
+        if ring is None:
+            return 0
+        try:
+            samples = list(ring)
+        except RuntimeError:
+            return 0
+        if not samples:
+            return 0
+        tick_ns = int(ds.sim_time_ns)
+        if self._ahrs_imu_last_ns is None:
+            gyro = ds.gyro_body if ds.gyro_body is not None else np.zeros(3)
+            self._ahrs.ingest(ds.accel_body, gyro, float(dt), mag_body=ds.mag_body)
+            self._ahrs_imu_last_ns = tick_ns
+            return 1
+        wm = int(self._ahrs_imu_last_ns)
+        new = [(int(t), a, g) for (t, a, g) in samples if wm < int(t) <= tick_ns]
+        if not new:
+            return 0
+        prev = wm
+        for (t_ns, accel, gyro) in new:
+            dt_i = (t_ns - prev) / 1e9
+            # mag rides the snapshot, not the ring; the ESKF mag update is gated off on VQ2
+            # (mag_ned=None) so per-sample mag would be inert anyway -- pass None for clarity.
+            self._ahrs.ingest(accel, gyro, float(dt_i), mag_body=None)
+            prev = t_ns
+        self._ahrs_imu_last_ns = int(new[-1][0])
+        return len(new)
 
     def _refresh_ahrs_attitude_cache(self) -> np.ndarray:
         """Recompute the cached ODOMETRY-convention attitude quat + the TRUE R_wb from the ESKF's

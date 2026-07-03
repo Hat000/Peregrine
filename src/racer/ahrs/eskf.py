@@ -257,6 +257,59 @@ class ESKFAHRS:
                                           # contamination, so normal slow flight keeps re-anchoring cleanly.
     accel_motion_max_inflate: float = 1e4 # ceiling on the inflation factor (numerical guard; a huge
                                           # |a_lin| effectively skips the update without a hard branch).
+    # ----------------------------------------------------------------------------------------------
+    # A32 "ALWAYS FIND DOWN" robust accel trust (2026-07-03) -- spec:
+    # handoff/vq2_a32_robust_estimation_spec_2026-07-03.md §3.1. Replay of run 20260703_172104
+    # proved the A8 motion-reject inflation above is a SELF-LOCKING DISTRUST LOOP: the residual
+    # ``a_lin = R_ref@f + g`` is ATTITUDE-REFERENCED, so once the attitude is wrong by theta the
+    # gravity no longer cancels (|a_lin| ~ 2g*sin(theta/2) even for a perfectly clean, resting
+    # accelerometer), the inflation rails at 1e4 (median 4,950x in the inverted tail, 671x even in
+    # NORMAL flight at scale=0.1), the Kalman gain on the gravity pull goes to ~0, and theta never
+    # shrinks -- the filter sat at ~150 deg roll while |a| = 9.81 exactly implied 180 deg, forever.
+    # The fix is the Mahony-2008 / PX4 / ArduPilot pattern grafted into the ESKF: every rejection
+    # mechanism BOUNDED and SOFT, the accel's pull toward gravity floored whenever |a| ~ g (the
+    # structural recovery guarantee), the gyro-anchored reference TIME-LIMITED, and a persistence-
+    # triggered attitude-reset watchdog. ALL of it behind this one flag (default False =
+    # byte-identical: none of the fields below are even read on the OFF path). vq2_case_c opts in
+    # via NavigatorConfig.ahrs_accel_trust_v2.
+    use_accel_trust_v2: bool = False
+    # v2 motion-inflation bounds (replace the three A8 values above when the flag is ON):
+    accel_trust_v2_motion_scale: float = 1.0   # m/s^2 knee where R DOUBLES. Real maneuvers (~2-3
+                                               # m/s^2) now inflate 5-10x, not 400-1600x -- the
+                                               # gravity pull (and gyro-bias observability) stays
+                                               # ALIVE through the whole flight (kills F2).
+    accel_trust_v2_max_inflate: float = 25.0   # NEVER more than 25x distrust from this mechanism:
+                                               # with gate=1 the correction can be slowed, never
+                                               # severed (kills F1's lockout arm).
+    accel_trust_v2_anchor_thr: float = 0.75    # m/s^2; re-anchor R_ref in realistic quasi-steady
+                                               # flight (0.3 required near-perfect equilibrium --
+                                               # in flight essentially never -> R_ref free-ran on
+                                               # the gyro indefinitely, positive feedback).
+    accel_ref_max_freerun_s: float = 1.0       # R_ref free-run TIME BOUND: a reference not
+                                               # re-anchored within 1 s is itself gyro-drifted and
+                                               # no longer evidence -> force re-anchor to the live
+                                               # estimate ("no permanent grudge").
+    # (3) THE RECOVERY GUARANTEE -- the single load-bearing line of A32: whenever |a|/g is inside
+    # this band (the gravity direction is meaningful well inside the free-fall skip band), the
+    # TOTAL effective down-weighting of the accel tilt update ((1/gate) * motion_inflate * huber)
+    # is capped. At the cap, R_eff = (accel_noise_std/g)^2 * 100 ~= 9.4e-2 -> per-tick gain
+    # K ~= P/(P+R) ~= 0.096 even at the 1e-2 P seed -> error time-constant ~0.6 s at 18 Hz:
+    # "down" recovers within ~1 s of ANY spike no matter what the trust heuristics believe, while
+    # 100x still keeps honest high-g contamination to <1% influence per tick.
+    accel_trust_v2_deweight_cap: float = 100.0
+    accel_trust_v2_g_band_lo: float = 0.5      # |a|/g band where the cap (and the watchdog) engage
+    accel_trust_v2_g_band_hi: float = 1.5
+    # (4) GRAVITY-RECOVERY WATCHDOG (PX4/ArduPilot attitude-reset pattern; belt-and-suspenders over
+    # the cap): theta_g = angle(measured specific-force dir, predicted specific-force dir) tracked
+    # each in-band tick. A genuine maneuver cannot hold a STEADY >25 deg gravity residual with
+    # |a| ~ g for 0.5 s -- that is a wrong attitude, so confess ignorance (P bump, NOT a hard set;
+    # the very next ordinary accel updates then close the error in 2-3 ticks at K~0.84) and
+    # re-anchor the motion-reject reference to the accel-implied level (current yaw kept -- yaw is
+    # unobservable from gravity and the vision yaw path is untouched).
+    accel_wd_theta_deg: float = 25.0           # sustained disagreement threshold
+    accel_wd_hold_s: float = 0.5               # persistence required before firing
+    accel_wd_p_bump_deg: float = 20.0          # attitude-covariance confession (1-sigma, per axis)
+    accel_wd_cooldown_s: float = 1.0           # min time between fires
     mag_ned: Optional[np.ndarray] = None
     mag_noise_std: float = 0.1          # normalised
 
@@ -267,6 +320,17 @@ class ESKFAHRS:
     # Gyro-anchored reference rotation (body->world) for the acceleration-aware reject. Propagated by
     # the bias-corrected gyro only; re-anchored to the estimate at equilibrium. Identity until used.
     _R_ref: np.ndarray = field(default_factory=lambda: np.eye(3))
+    # -- A32 v2 internal state (only ever advanced when use_accel_trust_v2; inert otherwise) --
+    _ref_freerun_s: float = field(default=0.0, repr=False)     # time since R_ref last re-anchored
+    _elapsed_s: float = field(default=0.0, repr=False)         # internal elapsed clock (sum of dt)
+    _last_dt: float = field(default=0.0, repr=False)           # dt of the current step (watchdog)
+    _wd_theta_s: float = field(default=0.0, repr=False)        # consecutive in-band theta_g>thr time
+    _wd_cooldown_until_s: float = field(default=-1.0, repr=False)
+    # -- A32 instrumentation (read by the nav-estimate logger; NEVER fed back into the filter).
+    # Written only on the v2 path -> null/NaN off-path, zero numeric impact either way. --
+    last_theta_g_deg: float = field(default=float("nan"), repr=False)
+    last_deweight_total: float = field(default=float("nan"), repr=False)
+    watchdog_fires: int = field(default=0, repr=False)
 
     def __post_init__(self) -> None:
         self._q = np.array([1., 0., 0., 0.], dtype=np.float64)
@@ -317,6 +381,15 @@ class ESKFAHRS:
         self._b_g = np.zeros(3)
         self._P = np.diag([1e-2]*3 + [1e-6]*3).astype(np.float64)
         self._R_ref = _quat_to_R_wxyz(self._q)
+        # A32 v2 state resets with the filter (inert unless use_accel_trust_v2).
+        self._ref_freerun_s = 0.0
+        self._elapsed_s = 0.0
+        self._last_dt = 0.0
+        self._wd_theta_s = 0.0
+        self._wd_cooldown_until_s = -1.0
+        self.last_theta_g_deg = float("nan")
+        self.last_deweight_total = float("nan")
+        self.watchdog_fires = 0
 
     def step(
         self,
@@ -360,6 +433,12 @@ class ESKFAHRS:
         # It is re-anchored to the live estimate at equilibrium inside _accel_motion_inflation.
         if self.use_accel_motion_reject:
             self._R_ref = self._R_ref @ _quat_to_R_wxyz(dq)
+        # A32 v2 clocks: the R_ref free-run bound + the watchdog persistence/cooldown timers all
+        # need real elapsed time. Advanced ONLY under the flag (OFF path byte-identical).
+        if self.use_accel_trust_v2:
+            self._ref_freerun_s += dt
+            self._elapsed_s += dt
+            self._last_dt = dt
 
         # Linearised error-state transition
         #   delta_phi_{k+1} = (I - [omega_corr] * dt) * delta_phi - dt * delta_b_g
@@ -427,12 +506,31 @@ class ESKFAHRS:
         suspect powered window. g_ned = [0,0,+g] adds the gravity reaction back."""
         if not self.use_accel_motion_reject:
             return 1.0
+        # A32 v2 (spec §3.1(1)): TIME-LIMIT the gyro-anchored free-run. A reference that has not
+        # re-anchored within accel_ref_max_freerun_s is itself gyro-drifted and no longer evidence
+        # of accel contamination -- force re-anchor to the live estimate BEFORE computing the
+        # residual, so a wrong reference can never hold a grudge past the bound.
+        if self.use_accel_trust_v2 and self._ref_freerun_s > self.accel_ref_max_freerun_s:
+            self._R_ref = _quat_to_R_wxyz(self._q)
+            self._ref_freerun_s = 0.0
         a_lin = self._R_ref @ accel + G_NED          # kinematic accel implied by the GYRO reference
         a_lin_mag = float(np.linalg.norm(a_lin))
         # Re-anchor the reference to the trusted estimate while at/near equilibrium (keeps the gyro
-        # reference from drifting on bias when there is nothing to reject).
-        if a_lin_mag < self.accel_motion_anchor_thr:
+        # reference from drifting on bias when there is nothing to reject). v2 widens the anchor
+        # threshold (0.3 -> 0.75 m/s^2: realistic quasi-steady flight re-anchors; 0.3 required
+        # near-perfect equilibrium and in flight essentially never fired -> indefinite free-run).
+        anchor_thr = (self.accel_trust_v2_anchor_thr if self.use_accel_trust_v2
+                      else self.accel_motion_anchor_thr)
+        if a_lin_mag < anchor_thr:
             self._R_ref = _quat_to_R_wxyz(self._q)
+            if self.use_accel_trust_v2:
+                self._ref_freerun_s = 0.0
+        if self.use_accel_trust_v2:
+            # BOUNDED inflation (spec §3.1(1)): knee 1.0 m/s^2 (real maneuvers inflate 5-10x, not
+            # 400-1600x) and a 25x hard cap -- the gravity pull can be slowed, never severed.
+            scale = max(self.accel_trust_v2_motion_scale, 1e-9)
+            factor = 1.0 + (a_lin_mag / scale) ** 2
+            return float(min(factor, self.accel_trust_v2_max_inflate))
         scale = max(self.accel_motion_scale, 1e-9)
         factor = 1.0 + (a_lin_mag / scale) ** 2
         return float(min(factor, self.accel_motion_max_inflate))
@@ -499,6 +597,42 @@ class ESKFAHRS:
         # leveling is starved before it can drag the attitude off true). Applied BEFORE the chi2 gate
         # so the gate's S reflects the down-weighted trust too.
         sigma_a = self.accel_noise_std / GRAVITY  # normalised units
+
+        if self.use_accel_trust_v2:
+            # -------------------- A32 v2: bounded-trust + always-find-down --------------------
+            # Everything composes into ONE total deweight factor on R (the pattern to copy, one
+            # line: R_eff = R_base / w(nu), w continuous, w > 0 everywhere; hard consequences
+            # only on PERSISTENCE -- the watchdog).
+            deweight = self._accel_motion_inflation(accel) / gate   # (1/gate) * motion_inflate
+            # (2) chi2 hard gate -> Huber-soft (Karlgaard & Schaub one-pass IRLS): a measurement
+            # at the consistency boundary passes untouched, a 10x outlier is ~10x-damped, NOTHING
+            # is discarded, and readmission is instant when consistency returns (kills F4's
+            # minutes-long lockout: P grows at only gyro_noise_std^2 = 1e-4 rad^2/s).
+            if self.accel_chi2_thresh > 0.0:
+                S = H @ self._P @ H.T + (sigma_a**2 * deweight) * np.eye(3)
+                try:
+                    md = float(innovation @ np.linalg.solve(S, innovation))
+                except np.linalg.LinAlgError:
+                    return
+                if md > self.accel_chi2_thresh:
+                    deweight *= md / self.accel_chi2_thresh
+            # (3) THE RECOVERY GUARANTEE: whenever |a| ~ g the accel IS an unbiased absolute
+            # reference for "down" -- cap the TOTAL deweight so the gravity pull is never severed
+            # (structural ~0.6 s recovery time-constant; the load-bearing line of A32).
+            in_band = (self.accel_trust_v2_g_band_lo * GRAVITY <= accel_mag
+                       <= self.accel_trust_v2_g_band_hi * GRAVITY)
+            if in_band:
+                deweight = min(deweight, self.accel_trust_v2_deweight_cap)
+            self.last_deweight_total = float(deweight)   # instrumentation (nav_estimate logger)
+            # (4) gravity-recovery watchdog: theta_g = angle(measured specific-force dir,
+            # predicted specific-force dir). Persistent gross disagreement while in-band =>
+            # attitude reset (P bump + R_ref re-anchor). Runs BEFORE the update so the bumped P
+            # makes THIS in-band accel sample immediately authoritative (K ~ 0.84).
+            self._accel_trust_v2_watchdog(a_hat, h_hat, accel_mag, in_band)
+            R_meas = (sigma_a**2) * deweight * np.eye(3)
+            self._apply_eskf_update(innovation, H, R_meas)
+            return
+
         R_meas = (sigma_a**2 / gate) * self._accel_motion_inflation(accel) * np.eye(3)
 
         # Direction-aware innovation gate (Mahalanobis / chi-square consistency test).
@@ -516,6 +650,51 @@ class ESKFAHRS:
 
         # Kalman update on error state
         self._apply_eskf_update(innovation, H, R_meas)
+
+    # -- A32 gravity-recovery watchdog (v2 only) --------------------------------
+
+    def _accel_trust_v2_watchdog(self, a_hat: np.ndarray, h_hat: np.ndarray,
+                                 accel_mag: float, in_band: bool) -> None:
+        """PX4/ArduPilot-style attitude reset on PERSISTENT gross gravity disagreement (spec
+        §3.1(4)). ``theta_g = angle(a_hat, h_hat)`` is the angle between the MEASURED specific-force
+        direction and the attitude-PREDICTED one (== angle(a_hat, -g_hat_pred)); with |a| ~ g a
+        genuine maneuver cannot hold a steady >``accel_wd_theta_deg`` residual for
+        ``accel_wd_hold_s`` -- that is a wrong attitude estimate. FIRE = confess attitude ignorance
+        (``P[:3,:3] += (accel_wd_p_bump_deg 1-sigma)^2`` -- a covariance bump, NOT a hard state set;
+        the next ordinary accel updates close the error in 2-3 ticks) + re-anchor the motion-reject
+        reference ``R_ref`` to the accel-implied LEVEL at the CURRENT estimated yaw (yaw untouched:
+        unobservable from gravity; the vision yaw path is unchanged), with a
+        ``accel_wd_cooldown_s`` refractory. The persistence clock accumulates only on IN-BAND ticks
+        (|a| ~ g is precisely when the accel is an honest witness) and resets the moment an in-band
+        tick agrees; out-of-band ticks neither accumulate nor reset (the witness is absent, the
+        case stays open). Instrumentation: ``last_theta_g_deg`` / ``watchdog_fires``."""
+        theta_g = float(np.degrees(np.arccos(np.clip(float(a_hat @ h_hat), -1.0, 1.0))))
+        self.last_theta_g_deg = theta_g
+        if not in_band:
+            return
+        if theta_g > self.accel_wd_theta_deg:
+            self._wd_theta_s += self._last_dt
+        else:
+            self._wd_theta_s = 0.0
+            return
+        if (self._wd_theta_s < self.accel_wd_hold_s
+                or self._elapsed_s < self._wd_cooldown_until_s):
+            return
+        # FIRE: covariance confession on the attitude block ...
+        bump = float(np.radians(self.accel_wd_p_bump_deg)) ** 2
+        self._P[:3, :3] = self._P[:3, :3] + np.eye(3) * bump
+        # ... and re-anchor the gyro reference to the accel-implied level (roll/pitch from the
+        # measured gravity direction, yaw from the CURRENT estimate -- gravity says nothing about
+        # yaw and the a_lin residual is yaw-insensitive w.r.t. gravity cancellation anyway).
+        g_body = -a_hat                                   # gravity direction in body (unit)
+        roll_acc = float(np.arctan2(g_body[1], g_body[2]))
+        pitch_acc = float(np.arctan2(-g_body[0], float(np.hypot(g_body[1], g_body[2]))))
+        yaw_est = float(Rotation.from_matrix(_quat_to_R_wxyz(self._q)).as_euler("ZYX")[0])
+        self._R_ref = Rotation.from_euler("ZYX", [yaw_est, pitch_acc, roll_acc]).as_matrix()
+        self._ref_freerun_s = 0.0
+        self._wd_theta_s = 0.0
+        self._wd_cooldown_until_s = self._elapsed_s + self.accel_wd_cooldown_s
+        self.watchdog_fires += 1
 
     # -- Magnetometer update (optional) ----------------------------------------
 

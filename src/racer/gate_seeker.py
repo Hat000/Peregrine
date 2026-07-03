@@ -641,6 +641,32 @@ class GateSeekerConfig:
     # rail-snap is. 0.0 => off (legacy snap, byte-identical).
     image_lat_slew_mps3: float = 0.0
 
+    # ===================================================================
+    # A32 — SOFT-WEIGHTED VISION FUSION (2026-07-03; operator directive "don't throw away
+    # measurements that don't match -- take every one in and WEIGHT it"; spec
+    # handoff/vq2_a32_robust_estimation_spec_2026-07-03.md §3.2). The A31 IMU-consistency
+    # bearing gate above is the RIGHT physics with the WRONG consequence: binary reject. Run
+    # 20260703_172104 measured 59.9% of evaluated frames hard-rejected, median rejected frame
+    # only 1.87x over the allowance -- honest information thrown away wholesale, the seeker
+    # starved (continuity_reject -> coast -> track drop -> re-acquisition churn), and an
+    # accel-starved AHRS attitude error masqueraded as vision inconsistency that the gate then
+    # AMPLIFIED. When ON, the dev/allow computation stays EXACTLY as-is but the consequence
+    # becomes a continuous Cauchy weight
+    #     nu = dev/allow; nu_r = |range jump|/track_max_range_jump_m; w = 1/(1 + nu^2 + nu_r^2)
+    # scaling the track EMA update (alpha_eff = track_ema_alpha * w) and the downstream demand
+    # steps (the image-servo az term; the z_off latch weight) -- EVERY frame contributes
+    # (w(1)=0.5, w(1.87)~0.22, w(4)~0.06, never 0), starvation is impossible by construction,
+    # and hard consequences (coast/track-drop) fire only on PERSISTENCE (w below the coast
+    # threshold for track_max_coast_ticks). Requires use_imu_bearing_gate machinery for the
+    # dev/allow physics; when the IMU gate is not live for a frame (no capture-time attitude /
+    # no reference) the legacy fixed checks run unchanged. OFF (default) = the A31 binary path,
+    # byte-identical (VQ1 / case-A untouched).
+    use_soft_bearing_weight: bool = False
+    # Tick the coast/track-drop counter only when the accepted frame's weight is below this
+    # (nu ~ 3): a track whose EVERY frame is grossly inconsistent for track_max_coast_ticks is a
+    # real track loss, not noise.
+    bearing_w_coast_thresh: float = 0.1
+
 
 @dataclass
 class GateSeeker:
@@ -756,6 +782,10 @@ class GateSeeker:
     _last_chase_dpsi: float | None = field(default=None, repr=False)
     _last_bearing_dev_rad: float | None = field(default=None, repr=False)
     _last_bearing_allow_rad: float | None = field(default=None, repr=False)
+    # A32 soft bearing weight of the LAST accepted (returned) pose: consumed by the image-servo
+    # az term + passed into the z_off latch, and logged as ``bearing_w``. None when the soft
+    # path is off / no pose yet; 1.0 on a soft-path pose the IMU gate could not evaluate.
+    _last_bearing_w: float | None = field(default=None, repr=False)
     # -- A29 regime stash (spec §4.4): which command_visual regime returned this tick, first-class
     #    (settle/anchor/egress/pass/bridge/hold/pursuit) -- the A29 run's regime had to be
     #    reconstructed from field-change fingerprints. Logging only. --
@@ -897,6 +927,7 @@ class GateSeeker:
                 self._reset_bearing_gate()   # A31: the prediction reference dies with the track
             return None
 
+        soft_w: float | None = None      # A32: the chosen candidate's Cauchy weight (soft path only)
         if self._track_range_m is None or self._track_bearing is None:
             # FIRST acquisition: choose the gate we must fly FIRST. (A5 BLOCKER 2) Pure prefer-centered
             # locked a DISTANT off-axis gate over the NEAR start-line gate; the near gate is the next one
@@ -924,46 +955,84 @@ class GateSeeker:
                                  and self._bg_prev_dir_world is not None
                                  and self._bg_prev_pose_ns is not None)
 
-            def _consistent(p: GatePose) -> bool:
-                if abs(p.range_m - pred_r) > self.config.track_max_range_jump_m:
-                    return False
-                if imu_gate_live:
-                    return self._imu_bearing_consistent(p, rpy_cap, pred_r)
-                return (float(np.linalg.norm(self._pose_bearing(p) - pred_b))
-                        <= self.config.track_max_bearing_jump_rad)
+            # A32 SOFT PATH (use_soft_bearing_weight + the IMU gate live): consistency becomes a
+            # continuous Cauchy WEIGHT on the chosen candidate, not a filter -- every frame
+            # contributes, selection is unchanged (rank by closeness to the prediction), and the
+            # coast/track-drop counter ticks only on w < bearing_w_coast_thresh (persistence).
+            # The binary reject below is REMOVED on this path (the A31 starvation source); it
+            # remains bit-identical when the flag is off or the gate is not live for this frame.
+            soft = self.config.use_soft_bearing_weight and imu_gate_live
+            if soft:
+                cands = poses
+            else:
+                def _consistent(p: GatePose) -> bool:
+                    if abs(p.range_m - pred_r) > self.config.track_max_range_jump_m:
+                        return False
+                    if imu_gate_live:
+                        return self._imu_bearing_consistent(p, rpy_cap, pred_r)
+                    return (float(np.linalg.norm(self._pose_bearing(p) - pred_b))
+                            <= self.config.track_max_bearing_jump_rad)
 
-            cands = [p for p in poses if _consistent(p)]
-            if not cands:
-                # every candidate jumped -> COAST on the track (do not lock onto a flapper).
-                self._last_none_reason = "continuity_reject"   # the dominant A13 pose=None source
-                self._track_coast_ticks += 1
-                if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
-                    self._track_range_m, self._track_bearing = None, None
-                    self._reset_los_rate()   # A29: tracked-gate identity gone -> LOS-rate history with it
-                    self._reset_bearing_gate()   # A31: the prediction reference dies with the track
-                return None
+                cands = [p for p in poses if _consistent(p)]
+                if not cands:
+                    # every candidate jumped -> COAST on the track (do not lock onto a flapper).
+                    self._last_none_reason = "continuity_reject"   # the dominant A13 pose=None source
+                    self._track_coast_ticks += 1
+                    if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                        self._track_range_m, self._track_bearing = None, None
+                        self._reset_los_rate()   # A29: tracked-gate identity gone -> LOS-rate history with it
+                        self._reset_bearing_gate()   # A31: the prediction reference dies with the track
+                    return None
             # among the consistent candidates, the one closest to the predicted bearing+range.
             chosen = min(
                 cands,
                 key=lambda p: float(np.linalg.norm(self._pose_bearing(p) - pred_b))
                 + abs(p.range_m - pred_r) / max(self.config.track_max_range_jump_m, 1e-6),
             )
+            if soft:
+                dev, allow = self._imu_bearing_dev(chosen, rpy_cap, pred_r)
+                nu = dev / max(allow, 1e-9)
+                nu_r = (abs(float(chosen.range_m) - pred_r)
+                        / max(self.config.track_max_range_jump_m, 1e-6))
+                soft_w = 1.0 / (1.0 + nu * nu + nu_r * nu_r)   # Cauchy: w(0)=1, never 0
 
-        # accept -> update the smoothed track and reset the coast counter.
-        a = float(np.clip(self.config.track_ema_alpha, 0.0, 1.0))
+        # A32 soft-path persistence bookkeeping (BEFORE the EMA so a drop tick never half-updates
+        # the track): a grossly-inconsistent frame (w < thresh) still nudges the track by its tiny
+        # weight, but ticks the coast counter; track_max_coast_ticks of them = a REAL track loss.
+        if soft_w is not None and soft_w < self.config.bearing_w_coast_thresh:
+            self._track_coast_ticks += 1
+            if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                self._track_range_m, self._track_bearing = None, None
+                self._reset_los_rate()
+                self._reset_bearing_gate()
+                self._last_none_reason = "continuity_reject"   # a real loss, same reason taxonomy
+                return None
+        # accept -> update the smoothed track (EMA scaled by the soft weight) and the coast counter.
+        w_acc = 1.0 if soft_w is None else float(soft_w)
+        a = float(np.clip(self.config.track_ema_alpha, 0.0, 1.0)) * w_acc
         b_meas = self._pose_bearing(chosen)
         if self._track_range_m is None or self._track_bearing is None:
             self._track_range_m, self._track_bearing = float(chosen.range_m), b_meas
         else:
             self._track_range_m = (1.0 - a) * float(self._track_range_m) + a * float(chosen.range_m)
             self._track_bearing = (1.0 - a) * np.asarray(self._track_bearing, dtype=np.float64) + a * b_meas
-        self._track_coast_ticks = 0
+        if soft_w is None or soft_w >= self.config.bearing_w_coast_thresh:
+            self._track_coast_ticks = 0
         self._last_none_reason = None    # a usable pose this tick (clear the stale reason)
+        # A32: stash the weight for the downstream consumers (image-servo az term, z_off latch,
+        # the ``bearing_w`` log key). 1.0 when the soft flag is on but this frame had no live IMU
+        # gate (first acquisition / cold buffer -- nothing to weigh against); None when flag off.
+        self._last_bearing_w = (w_acc if self.config.use_soft_bearing_weight else None)
         # A31: refresh the IMU-consistency reference on EVERY accepted pose (first acquisition
         # seeds it). The world direction is rotated with the attitude AT THE CAPTURE INSTANT so
         # the next frame's prediction carries the measured rotation exactly; no capture-time
         # attitude available => no reference => the next frame falls back to the legacy check.
+        # A32 soft path: a low-weight frame (w < coast thresh) does NOT re-anchor the reference --
+        # the prediction stays on the last trusted direction and the allowance keeps widening with
+        # dt, so a garbage stretch cannot drag the prediction with it.
         if self.config.use_imu_bearing_gate:
+            if soft_w is not None and soft_w < self.config.bearing_w_coast_thresh:
+                return chosen
             rpy_acc = self._rpy_at(int(chosen.sim_time_ns))
             if rpy_acc is not None:
                 self._bg_prev_dir_world = self._gate_dir_world_rpy(chosen, rpy_acc)
@@ -972,18 +1041,20 @@ class GateSeeker:
                 self._reset_bearing_gate()
         return chosen
 
-    def _imu_bearing_consistent(self, p: GatePose, rpy_cap: tuple[float, float, float],
-                                pred_r: float) -> bool:
-        """A31: is candidate ``p``'s bearing consistent with the drone's OWN measured motion since
-        the last accepted pose? Predicted bearing = the last accepted pose's WORLD direction (a
-        static gate's world bearing is quasi-constant; the capture-time attitude rotation has
-        already compensated the measured rotation between the frames -- the IMU prediction).
-        Deviation = the angle between the candidate's world direction (rotated with the attitude
-        at ITS capture instant, ``rpy_cap``) and that prediction. Allowance = the sensor-noise
-        floor + the translation-parallax bound ``trans_mps * dt / range`` (dt on the CAMERA-epoch
-        stamps, same clock both sides so the A29 epoch-rate skew cancels; the gate widens ∝ dt so
-        it predicts THROUGH short pose gaps, and ∝ 1/range so an honest close-range sweep passes).
-        Rejects REGARDLESS of the deviation's absolute size -- no fixed threshold to slide under."""
+    def _imu_bearing_dev(self, p: GatePose, rpy_cap: tuple[float, float, float],
+                         pred_r: float) -> tuple[float, float]:
+        """A31/A32 shared physics: the candidate's motion-consistency ``(deviation, allowance)``.
+
+        Predicted bearing = the last accepted pose's WORLD direction (a static gate's world
+        bearing is quasi-constant; the capture-time attitude rotation has already compensated the
+        measured rotation between the frames -- the IMU prediction). Deviation = the angle between
+        the candidate's world direction (rotated with the attitude at ITS capture instant,
+        ``rpy_cap``) and that prediction. Allowance = the sensor-noise floor + the translation-
+        parallax bound ``trans_mps * dt / range`` (dt on the CAMERA-epoch stamps, same clock both
+        sides so the A29 epoch-rate skew cancels; the allowance widens ∝ dt so it predicts THROUGH
+        short pose gaps, and ∝ 1/range so an honest close-range sweep passes). Consumed as a
+        binary test by :meth:`_imu_bearing_consistent` (A31) and as the normalized innovation of
+        the Cauchy soft weight (A32). Writes the dev/allow instrumentation stashes."""
         d_world = self._gate_dir_world_rpy(p, rpy_cap)
         prev = np.asarray(self._bg_prev_dir_world, dtype=np.float64)
         dev = float(np.arccos(np.clip(float(d_world @ prev), -1.0, 1.0)))
@@ -993,7 +1064,26 @@ class GateSeeker:
                  + float(self.config.bearing_gate_trans_mps) * dt / r)
         self._last_bearing_dev_rad = dev            # A31 instrumentation (logging only)
         self._last_bearing_allow_rad = allow
+        return dev, allow
+
+    def _imu_bearing_consistent(self, p: GatePose, rpy_cap: tuple[float, float, float],
+                                pred_r: float) -> bool:
+        """A31: is candidate ``p``'s bearing consistent with the drone's OWN measured motion since
+        the last accepted pose? (See :meth:`_imu_bearing_dev` for the physics.) Rejects REGARDLESS
+        of the deviation's absolute size -- no fixed threshold to slide under. The BINARY
+        consequence this implements is replaced by the A32 Cauchy weight on the vq2_case_c path
+        (``use_soft_bearing_weight``); this method remains the flag-off/VQ1 behaviour."""
+        dev, allow = self._imu_bearing_dev(p, rpy_cap, pred_r)
         return dev <= allow
+
+    def _bearing_w_ctl(self) -> float:
+        """A32: the soft bearing weight the DOWNSTREAM demand steps consume for the current pose
+        (the stash rides ZOH re-feeds of the same capture, so a bridged/re-fed tick keeps its
+        frame's weight). 1.0 whenever the soft path is off / has not evaluated a pose yet --
+        every flag-off consumer is byte-identical."""
+        if not self.config.use_soft_bearing_weight or self._last_bearing_w is None:
+            return 1.0
+        return float(self._last_bearing_w)
 
     def _reset_bearing_gate(self) -> None:
         """Drop the A31 bearing-gate reference. The reference describes ONE tracked gate, so it is
@@ -1522,7 +1612,10 @@ class GateSeeker:
         if int(pose.sim_time_ns) == self._last_latched_pose_ns:
             return                                              # same capture (async ZOH re-feed): not fresh
         offset_z_world = float(self._gate_lever_world(nav, pose)[2])
-        vert_est.latch_offset(offset_z_world, obs_age_s)
+        # A32 (spec §3.2): thread the frame's soft bearing weight into the latch -- a bearing-
+        # inconsistent frame's z_off measurement is suspect for the same reason. 1.0 (no-op)
+        # whenever the soft path is off.
+        vert_est.latch_offset(offset_z_world, obs_age_s, weight=self._bearing_w_ctl())
         self._last_latched_pose_ns = int(pose.sim_time_ns)
 
     def _vertical_align_ramp(self, sim_time_ns: int) -> float:
@@ -1678,6 +1771,10 @@ class GateSeeker:
         self._last_az_err = az                                  # A30 instrumentation (raw, pre-deadband)
         db = max(float(self.config.image_az_deadband_rad), 0.0)
         az_eff = float(np.sign(az)) * max(abs(az) - db, 0.0)    # continuous deadband
+        # A32 (spec §3.2): scale the az error term by the frame's soft bearing weight -- a
+        # low-consistency frame steers gently instead of being (A31) thrown away or (pre-A31)
+        # trusted fully. 1.0 whenever the soft path is off (byte-identical).
+        az_eff *= self._bearing_w_ctl()
         cap = abs(float(self.config.image_lat_cap_mps2))
         a_lat = float(np.clip(self.config.image_kaz_mps2_per_rad * az_eff, -cap, cap))
         # A31 LATERAL-DEMAND SLEW (defense-in-depth for hops that pass any gate): rate-limit the
@@ -2336,6 +2433,7 @@ class GateSeeker:
         self._last_chase_dpsi = None
         self._last_bearing_dev_rad = None
         self._last_bearing_allow_rad = None
+        self._last_bearing_w = None            # A32: the soft weight dies with the epoch
         for k in self.diag_counts:
             self.diag_counts[k] = 0
 

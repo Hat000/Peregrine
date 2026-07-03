@@ -94,6 +94,15 @@ class DroneState:
                                               # is NEVER consumed by control/estimate. None until first IMU.
     mag_body: np.ndarray | None = None        # FRD; None if unpopulated -> no free mag yaw
     baro_pressure_hpa: float | None = None    # absolute pressure; None if unpopulated -> no free baro z
+    # A32 IMU-rate ring buffer (2026-07-03): a REFERENCE to the MavlinkClient's shared deque of
+    # (sim_time_ns, accel_body, gyro_body_post_sign) HIGHRES_IMU samples -- the SAME deque object
+    # rides every snapshot (the snapshot itself stays value-immutable; the ring is an append-only
+    # side channel). The ~185 Hz IMU stream aliased through the ~18 Hz latest-sample-per-tick
+    # nav ingestion (a ~14 rad/s contact-spike sample held for a 55 ms tick = the +45 deg/tick
+    # attitude step, A32 spec F3); a consumer that drains this ring (the case-C Navigator behind
+    # ``NavigatorConfig.ahrs_imu_rate_ingest``) steps the AHRS per-sample instead. None on
+    # fabricated/test states and pre-first-IMU -> every non-draining consumer is byte-identical.
+    imu_ring: object | None = None
 
     # Provided pose/vel — the big hedge. Normally None; if the sim emits them the
     # localisation problem collapses, so msg_audit must check and we capture eagerly.

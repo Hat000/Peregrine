@@ -1365,6 +1365,37 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["chase_dpsi_rad"] = rec["pass_wire"] = None
         rec["bearing_dev_rad"] = rec["bearing_allow_rad"] = None
 
+    # --- A32 instrumentation (spec §3.4; never feeds control) ---
+    # theta_g_deg: angle between the measured specific-force direction and the attitude-predicted
+    # one (the "how wrong is down" observable; only written on the v2 accel path -> null off-path).
+    # accel_deweight_total: the TOTAL effective accel down-weighting applied ((1/gate) * motion
+    # inflate * huber, post-cap) -- the recovery guarantee is this staying <= 100 while |a|~g.
+    # ahrs_watchdog_fired: cumulative gravity-recovery watchdog fires. imu_samples_ingested: how
+    # many HIGHRES_IMU ring samples the AHRS consumed this tick (null when ring ingestion is off).
+    try:
+        eskf = getattr(getattr(nav, "_ahrs", None), "eskf", None)
+        tg = getattr(eskf, "last_theta_g_deg", None) if eskf is not None else None
+        rec["theta_g_deg"] = None if (tg is None or tg != tg) else float(tg)
+        dw = getattr(eskf, "last_deweight_total", None) if eskf is not None else None
+        rec["accel_deweight_total"] = None if (dw is None or dw != dw) else float(dw)
+        wf = getattr(eskf, "watchdog_fires", None) if eskf is not None else None
+        rec["ahrs_watchdog_fired"] = int(wf) if wf is not None else None
+        ing = getattr(nav, "_ahrs_imu_ingested", None)
+        rec["imu_samples_ingested"] = int(ing) if ing is not None else None
+    except Exception:
+        rec["theta_g_deg"] = rec["accel_deweight_total"] = None
+        rec["ahrs_watchdog_fired"] = rec["imu_samples_ingested"] = None
+    # bearing_w: the soft Cauchy weight of the last accepted pose (null when the soft path is
+    # off); zoff_w: the vertical filter's last applied Huber*bearing correction weight.
+    try:
+        bw = getattr(seeker, "_last_bearing_w", None) if seeker is not None else None
+        rec["bearing_w"] = float(bw) if bw is not None else None
+        vest = getattr(nav, "_vert_est", None)
+        zw = getattr(vest, "zoff_last_w", None) if vest is not None else None
+        rec["zoff_w"] = None if (zw is None or zw != zw) else float(zw)
+    except Exception:
+        rec["bearing_w"] = rec["zoff_w"] = None
+
     return rec
 
 

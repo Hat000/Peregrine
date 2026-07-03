@@ -460,7 +460,8 @@ def test_vq2_profile_ships_the_a28_bundle():
     assert ov["kp_gate"] == pytest.approx(0.04)
     assert ov["ff_vertical_kd_alt"] == pytest.approx(0.06)
     veo = prof.nav_config.vertical_estimator_overrides
-    assert veo == {"use_zoff_filter": True, "export_clip_mps": 2.5}
+    assert veo == {"use_zoff_filter": True, "export_clip_mps": 2.5,
+                   "use_soft_innov_weight": True}   # A32: Huber-soft innovation weighting
     assert prof.nav_config.use_gate_vz_fusion is False   # A26 fusion superseded
 
 

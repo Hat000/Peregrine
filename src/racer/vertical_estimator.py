@@ -230,6 +230,25 @@ class VerticalEstimator:
     # when vision disappears. While innovations flow there is NO leak (the vision owns the DC).
     blind_coast_after_s: float = 1.0
 
+    # --- A32: soft (Huber) innovation weighting on the A28 correct step (2026-07-03; spec
+    # handoff/vq2_a32_robust_estimation_spec_2026-07-03.md §3.2). The A28 innovation gate above is
+    # a HARD 2 m cliff: run 20260703_172104 rejected 130 ticks (|innov| p90 7.3 m) and the reseed
+    # teleported z_off repeatedly -- a 2.1 m innovation (possibly honest after a blind stretch)
+    # contributed NOTHING while a 1.9 m one contributed fully. When ON, every latch corrects the
+    # state, scaled by a Huber weight on the normalized innovation nu = |innov|/zoff_sigma_z_m:
+    # full weight for nu <= zoff_huber_k, k/nu beyond (4 m -> ~0.35, 8 m -> ~0.18, never 0), and
+    # further scaled by the seeker's bearing weight for the same frame (a bearing-inconsistent
+    # frame's z_off is suspect for the same reason). RESEED-ON-PERSISTENCE RETAINED: the miss
+    # counter increments when nu > zoff_miss_nu (~2.8 m, near-today's cliff) and reseed_after
+    # consecutive misses still re-lock z_off = z_meas -- but those miss latches each still nudged
+    # the state by their (small) weight, so the filter degrades gracefully INTO the reseed
+    # instead of freezing then teleporting. Only meaningful under use_zoff_filter. OFF (default)
+    # = the A28 binary gate, byte-identical (VQ1/case-A + today's vq2 path untouched).
+    use_soft_innov_weight: bool = False
+    zoff_sigma_z_m: float = 0.7    # honest pose 1-sigma incl. latency comp (median innov 0.60 m)
+    zoff_huber_k: float = 2.0      # full weight for nu <= k (<=1.4 m: today's typical innovations)
+    zoff_miss_nu: float = 4.0      # miss/reseed persistence threshold (2.8 m at sigma=0.7)
+
     _vz: float = field(default=float("nan"), repr=False)
     _b_hat: float = field(default=float("nan"), repr=False)
     _seeded: bool = field(default=False, repr=False)
@@ -261,6 +280,9 @@ class VerticalEstimator:
     # latch; a reseed logs accepted=False -- it was gated, then force-relocked).
     _zoff_last_innov: float = field(default=float("nan"), repr=False)
     _zoff_last_accepted: bool | None = field(default=None, repr=False)
+    # A32 instrumentation: the last latch's TOTAL applied weight (huber * bearing), NaN until the
+    # first post-lock latch under use_soft_innov_weight. Logged as ``zoff_w``; never fed back.
+    _zoff_last_w: float = field(default=float("nan"), repr=False)
 
     # -- lifecycle ------------------------------------------------------------
     def seed(self) -> None:
@@ -285,6 +307,7 @@ class VerticalEstimator:
         self._zoff_miss = 0
         self._zoff_last_innov = float("nan")
         self._zoff_last_accepted = None
+        self._zoff_last_w = float("nan")
 
     @property
     def seeded(self) -> bool:
@@ -330,6 +353,12 @@ class VerticalEstimator:
         """A28 instrumentation: whether the last latch's innovation was accepted (None until the
         first post-lock latch under ``use_zoff_filter``)."""
         return self._zoff_last_accepted
+
+    @property
+    def zoff_last_w(self) -> float:
+        """A32 instrumentation: the last latch's TOTAL applied correction weight (huber * bearing);
+        NaN until the first post-lock latch under ``use_soft_innov_weight``."""
+        return self._zoff_last_w
 
     def contact_frozen(self) -> bool:
         """True while a contact event (or its refractory hold) is active -- the vz washout update
@@ -426,7 +455,8 @@ class VerticalEstimator:
                 <= self.blind_coast_after_s)
 
     # -- A25 gate-relative latch -----------------------------------------------
-    def latch_offset(self, offset_z_world: float, obs_age_s: float) -> None:
+    def latch_offset(self, offset_z_world: float, obs_age_s: float,
+                     weight: float = 1.0) -> None:
         """Latch a FRESH gate-relative vertical-offset measurement (called by the seeker ONLY on a
         newly-detected pose, never a re-used cached one -- see the spec §1.4).
 
@@ -455,11 +485,15 @@ class VerticalEstimator:
         A28 (``use_zoff_filter``): the latch becomes the complementary filter's CORRECT step --
         see :meth:`_zoff_filter_correct`. The A26 fusion is SUPERSEDED by the beta innovations and
         skipped entirely on this path (differencing two noisy poses ~0.1 s apart was diagnosis
-        failure (b)); the latency comp is shared and unchanged."""
+        failure (b)); the latency comp is shared and unchanged.
+
+        A32 ``weight`` (default 1.0 == byte-identical): the seeker's soft bearing weight for this
+        frame, consumed ONLY by the ``use_soft_innov_weight`` correct step (a bearing-inconsistent
+        frame's z_off measurement is suspect for the same reason); every other path ignores it."""
         if not self._seeded:
             return
         if self.use_zoff_filter:
-            self._zoff_filter_correct(float(offset_z_world), float(obs_age_s))
+            self._zoff_filter_correct(float(offset_z_world), float(obs_age_s), float(weight))
             return
         if self.use_gate_vz_fusion:
             self._fuse_gate_vz(float(offset_z_world))
@@ -470,7 +504,8 @@ class VerticalEstimator:
         self._z_off_seen = True
 
     # -- A28 complementary-filter correct ----------------------------------------
-    def _zoff_filter_correct(self, offset_z_world: float, obs_age_s: float) -> None:
+    def _zoff_filter_correct(self, offset_z_world: float, obs_age_s: float,
+                             weight: float = 1.0) -> None:
         """One fresh-pose CORRECT step of the A28 (z_off, vz_rel) complementary filter.
 
         ``z_meas`` is the latency-compensated measurement (same comp as the legacy latch: over
@@ -495,7 +530,17 @@ class VerticalEstimator:
             REAL retarget (gate handoff), so RE-LOCK ``z_off = z_meas`` with ``vz_rel`` untouched
             (the drone's physical motion did not jump with the track).
 
-        The state is UNCLAMPED throughout (see the ``z_off`` property)."""
+        The state is UNCLAMPED throughout (see the ``z_off`` property).
+
+        A32 (``use_soft_innov_weight``, spec §3.2): the binary gate above becomes a HUBER-WEIGHTED
+        correction -- EVERY latch corrects the state, scaled by ``w = min(1, k/nu)`` on the
+        normalized innovation ``nu = |innov|/zoff_sigma_z_m`` and by the seeker's bearing
+        ``weight`` for the same frame; the miss counter (and the retained reseed-on-persistence)
+        keys on ``nu > zoff_miss_nu`` instead of the 2 m cliff. A 2.1 m innovation after a blind
+        stretch now contributes ~65% weight instead of 0; a gross 8 m gate-track jump contributes
+        ~18% per latch while the reseed persistence machinery decides whether it is a REAL
+        retarget -- the filter degrades gracefully INTO the reseed instead of freezing then
+        teleporting."""
         vz_for_latency = self._vz if np.isfinite(self._vz) else 0.0
         z_meas = float(offset_z_world) - vz_for_latency * float(obs_age_s)
         now_t = self._contact_elapsed_s
@@ -507,6 +552,9 @@ class VerticalEstimator:
             return
         innov = z_meas - float(self._z_off)
         self._zoff_last_innov = innov
+        if self.use_soft_innov_weight:
+            self._zoff_soft_correct(innov, z_meas, now_t, weight)
+            return
         if abs(innov) > self.innov_gate_m:
             self._zoff_last_accepted = False
             self._zoff_miss += 1
@@ -522,6 +570,38 @@ class VerticalEstimator:
         self._z_off = float(self._z_off + self.zoff_alpha * innov)
         if np.isfinite(self._vz):
             self._vz = float(self._vz - self.zoff_beta * innov / dt_div)
+        self._zoff_miss = 0
+        self._zoff_last_accept_t_s = now_t
+
+    def _zoff_soft_correct(self, innov: float, z_meas: float, now_t: float,
+                           weight: float) -> None:
+        """A32 Huber-weighted alpha-beta correct (see :meth:`_zoff_filter_correct`). The applied
+        correction is ALWAYS non-zero (w > 0 everywhere -- soft-weight, never hard-reject); the
+        accept clock (which governs the predict-side leak) and the miss counter (which governs
+        the retained reseed) key on the persistence threshold ``zoff_miss_nu``."""
+        nu = abs(innov) / max(self.zoff_sigma_z_m, 1e-6)
+        w_huber = 1.0 if nu <= self.zoff_huber_k else self.zoff_huber_k / nu
+        w = float(w_huber) * float(np.clip(weight, 0.0, 1.0))
+        self._zoff_last_w = w
+        # weighted correction: every measurement contributes, scaled by its consistency.
+        dt_accept = (now_t - self._zoff_last_accept_t_s
+                     if self._zoff_last_accept_t_s is not None else self.zoff_beta_dt_floor_s)
+        dt_div = max(float(dt_accept), self.zoff_beta_dt_floor_s)
+        self._z_off = float(self._z_off + self.zoff_alpha * w * innov)
+        if np.isfinite(self._vz):
+            self._vz = float(self._vz - self.zoff_beta * w * innov / dt_div)
+        if nu > self.zoff_miss_nu:
+            # gross outlier: nudged above, but counted toward the RETAINED reseed persistence
+            # (a gate handoff still needs the re-lock; the accept/leak clock is NOT refreshed --
+            # a suspect stream must not keep the blind-coast leak off forever).
+            self._zoff_last_accepted = False
+            self._zoff_miss += 1
+            if self._zoff_miss >= self.reseed_after:
+                self._z_off = z_meas                   # REAL retarget: re-lock (vz_rel untouched)
+                self._zoff_miss = 0
+                self._zoff_last_accept_t_s = now_t
+            return
+        self._zoff_last_accepted = True
         self._zoff_miss = 0
         self._zoff_last_accept_t_s = now_t
 

@@ -162,6 +162,19 @@ def vq2_case_c() -> DeployProfile:
         use_ahrs=True,
         ahrs_accel_motion_reject=True,   # A8 fix: reject accel-leveling under sustained linear accel
                                          # (|a|~=g but tilted) — the nose-up-and-retreat divergence
+        # --- A32 robust "always find down" AHRS (2026-07-03; spec
+        # handoff/vq2_a32_robust_estimation_spec_2026-07-03.md §3.1). The A8 inflation above is
+        # kept as the MECHANISM but v2 makes it BOUNDED + soft: replay of run 20260703_172104
+        # proved it a self-locking distrust loop (median 671x inflation in NORMAL flight,
+        # 4950-10000x railed in the inverted tail while |a| = 9.81 exactly implied 180 deg roll --
+        # the gravity pull was OFF and "down" never recovered). v2 = 25x inflation cap @ 1.0 m/s^2
+        # knee, R_ref free-run limit 1 s, chi2 hard gate -> Huber-soft, TOTAL deweight cap 100x
+        # whenever |a|~g (structural ~0.6 s recovery), gravity-recovery watchdog (25 deg / 0.5 s
+        # -> P bump + re-anchor). ahrs_imu_rate_ingest: step the ESKF on the FULL ~185 Hz
+        # HIGHRES_IMU ring instead of latest-sample-per-tick (the +45 deg/tick contact-spike
+        # aliasing, spec F3).
+        ahrs_accel_trust_v2=True,
+        ahrs_imu_rate_ingest=True,
         # --- map-free vision yaw + z (no mag / no baro) ---
         use_vp_yaw=True,
         use_gate_bearing_yaw=True,
@@ -209,7 +222,13 @@ def vq2_case_c() -> DeployProfile:
         # descent at full clamped offset is (Kp/Kd)*3 = 2.0 m/s under the A28 gains, and with
         # kd=0.06 the worst damping contribution is +/-0.15 collective -- the old +/-1.5 anti-slam
         # rationale no longer binds. VQ1/case-A never construct the estimator -- byte-identical.
-        vertical_estimator_overrides={"use_zoff_filter": True, "export_clip_mps": 2.5},
+        # A32 (2026-07-03): use_soft_innov_weight — the A28 2 m innovation cliff (130 hard-rejected
+        # ticks, |innov| p90 7.3 m, reseed-teleports on run 20260703_172104) becomes a Huber-
+        # weighted correction (sigma 0.7 m, full weight <= 1.4 m, never 0) with the reseed-on-
+        # persistence RETAINED (miss at nu > 4 ~ 2.8 m). Every pose now moves the filter, scaled
+        # by its consistency x the seeker's bearing weight for the same frame.
+        vertical_estimator_overrides={"use_zoff_filter": True, "export_clip_mps": 2.5,
+                                      "use_soft_innov_weight": True},
     )
     return DeployProfile(
         name="vq2_case_c",
@@ -304,6 +323,14 @@ def vq2_case_c() -> DeployProfile:
                           "orbit_break_s": 1.0,
                           "orbit_yaw_clamp_rad": 2.4,         # never chase a gate to backwards
                           "use_imu_bearing_gate": True,       # IMU-consistency bearing gate (hop killer)
+                          # --- A32 (2026-07-03): the A31 gate's BINARY consequence hard-rejected
+                          # 59.9% of evaluated frames (median rejected frame only 1.87x over the
+                          # allowance) and starved the seeker. Soft Cauchy weight instead:
+                          # w = 1/(1 + (dev/allow)^2 + (range jump/max)^2) scales the track EMA,
+                          # the image-servo az term, and the z_off latch -- every frame
+                          # contributes, coast/track-drop only on PERSISTENT w < 0.1. The
+                          # dev/allow physics above is unchanged (the gate machinery computes it).
+                          "use_soft_bearing_weight": True,
                           "image_lat_slew_mps3": 6.0,         # no one-frame lateral rail-snap
                           "hold_thrust_lo_frac": 0.90,        # settle = conservative hover ...
                           "hold_thrust_hi_frac": 1.12},       # ... not garbage alt-hold
