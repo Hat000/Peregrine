@@ -648,7 +648,10 @@ def test_settle_hold_band_bounds_the_cold_collective():
 def test_profile_wiring_a31():
     ov = get_profile("vq2_case_c").seeker_overrides
     # FIX 1/2: immediate turn + spend momentum + re-ramp + slow approach.
-    assert ov["pass_wire_coast_s"] == 0.25
+    # A33 H-1(b) SUPERSEDES the A31 wire window: the just-passed gate is now excluded by GEOMETRY
+    # (pass_exclude_prev_gate), so the eligibility clock collapses (wire 0.25 -> 0.0, vis 1.2 -> 0.3).
+    assert ov["pass_wire_coast_s"] == 0.0
+    assert ov["pass_coast_s"] == 0.3
     assert ov["pass_coast_accel_mps2"] == 0.0
     assert ov["reramp_forward_after_pass"] is True
     assert ov["forward_accel_mps2"] == 0.8
@@ -674,7 +677,12 @@ def test_profile_wiring_a31():
     assert prof.vertical_estimator is True
     # the effective config constructs cleanly.
     eff = GateSeekerConfig(**ov)
-    assert eff.pass_wire_coast_s == 0.25 and eff.use_imu_bearing_gate is True
+    assert eff.pass_wire_coast_s == 0.0 and eff.use_imu_bearing_gate is True   # A33 H-1(b)
+    # A33 flags wired: geometric old-gate exclusion, turn-through-occlusion, hard range reject, cos^4.
+    assert eff.pass_exclude_prev_gate is True
+    assert eff.pass_turn_through is True
+    assert eff.soft_range_hard_reject is True
+    assert eff.fwd_scale_pow == 4.0
     # VQ1 / case-A: no overrides at all (byte-identical).
     assert vq1_case_a().seeker_overrides is None
     assert vq1_case_a().controller_overrides is None

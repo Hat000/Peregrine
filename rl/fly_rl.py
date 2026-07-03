@@ -1365,6 +1365,17 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["chase_dpsi_rad"] = rec["pass_wire"] = None
         rec["bearing_dev_rad"] = rec["bearing_allow_rad"] = None
 
+    # --- A33 instrumentation (spec §H-1c FC-9; never feeds control) ---
+    # pass_turn_yaw_rad: the BLIND TURN TARGET latched at the pass commit (turn-through-occlusion) --
+    # the heading the coast slews toward while the gate frame occludes the camera. None when the
+    # turn-through flag is off / no pass committed. FC-9 checks the yaw rate never stalls while this
+    # differs from the current yaw by > 0.1 rad.
+    try:
+        pty = getattr(seeker, "_pass_turn_yaw", None) if seeker is not None else None
+        rec["pass_turn_yaw_rad"] = float(pty) if pty is not None else None
+    except Exception:
+        rec["pass_turn_yaw_rad"] = None
+
     # --- A32 instrumentation (spec §3.4; never feeds control) ---
     # theta_g_deg: angle between the measured specific-force direction and the attitude-predicted
     # one (the "how wrong is down" observable; only written on the v2 accel path -> null off-path).

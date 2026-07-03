@@ -227,8 +227,14 @@ def vq2_case_c() -> DeployProfile:
         # weighted correction (sigma 0.7 m, full weight <= 1.4 m, never 0) with the reseed-on-
         # persistence RETAINED (miss at nu > 4 ~ 2.8 m). Every pose now moves the filter, scaled
         # by its consistency x the seeker's bearing weight for the same frame.
+        # A33 V-1 (2026-07-03): weight-qualified reseed. The A32 reseed-on-persistence teleported
+        # z_off onto low-weight smear/garbage frames twice on run 20260703_210632 (cmd 67 w
+        # 0.11-0.31, cmd 164 w 0.00-0.04), arming the balloon climb. zoff_reseed_min_w=0.3: a garbage
+        # frame no longer counts toward the reseed; an honest handoff (fresh-track frames w=1.0) still
+        # reseeds in reseed_after frames. See handoff/vq2_a33_gate2_intercept_spec_2026-07-03.md §V-1.
         vertical_estimator_overrides={"use_zoff_filter": True, "export_clip_mps": 2.5,
-                                      "use_soft_innov_weight": True},
+                                      "use_soft_innov_weight": True,
+                                      "zoff_reseed_min_w": 0.3},
     )
     return DeployProfile(
         name="vq2_case_c",
@@ -315,7 +321,7 @@ def vq2_case_c() -> DeployProfile:
                           "total_accel_cap_mps2": 2.0,
                           "pursuit_yaw_slew_rps": 1.5,
                           # --- A31 ---
-                          "pass_wire_coast_s": 0.25,          # immediate turn on the wire pass
+                          # (pass_wire_coast_s was 0.25 here; A33 H-1b sets it 0.0 below)
                           "pass_coast_accel_mps2": 0.0,       # spend momentum through the pass
                           "reramp_forward_after_pass": True,  # point before pushing, enforced
                           "forward_accel_mps2": 0.8,          # slow the approach (converge, don't overfly)
@@ -333,7 +339,30 @@ def vq2_case_c() -> DeployProfile:
                           "use_soft_bearing_weight": True,
                           "image_lat_slew_mps3": 6.0,         # no one-frame lateral rail-snap
                           "hold_thrust_lo_frac": 0.90,        # settle = conservative hover ...
-                          "hold_thrust_hi_frac": 1.12},       # ... not garbage alt-hold
+                          "hold_thrust_hi_frac": 1.12,        # ... not garbage alt-hold
+                          # --- A33 (2026-07-03; spec vq2_a33_gate2_intercept_spec) ---
+                          # H-1(a) GEOMETRIC old-gate exclusion: the RACE_STATUS index leads the
+                          # physical plane by ~3 m (run 20260703_210632 cmd 49), so the acquire-next
+                          # re-lock must exclude the just-passed gate by GEOMETRY, not by a time
+                          # window -- then the windows can collapse (H-1b) to kill the 1.2 s
+                          # frozen-yaw stall that discarded well-detected gate-2 frames.
+                          "pass_exclude_prev_gate": True,
+                          # H-1(b) collapse the eligibility windows (the exclusion now rejects the
+                          # old gate, so the clock no longer has to): wire 0.25 -> 0.0, vis 1.2 -> 0.3.
+                          "pass_wire_coast_s": 0.0,           # (overrides the A31 0.25 above)
+                          "pass_coast_s": 0.3,
+                          # H-1(c) TURN-THROUGH-OCCLUSION: begin the yaw slew on the pass TRIGGER
+                          # (blind turn target), ride through the gate-frame occlusion, refine when
+                          # gate-2 clears -- do NOT wait for a gate-2 pose (operator amendment 1).
+                          "pass_turn_through": True,
+                          # H-3 hard RANGE reject on the A32 soft track path: an 8+ m range jump is a
+                          # DIFFERENT gate, not a noisy same-gate measurement -- it smeared the track
+                          # gate-1 -> gate-2 over ~10 frames. Bearing leg stays soft.
+                          "soft_range_hard_reject": True,
+                          # S-1 sharpen the off-axis forward cut cos^2 -> cos^4: cuts overfly speed
+                          # (and the translational-lift up-bias it drives) without touching centered
+                          # pace; keeps the immediate turn (H-1c) from also being an immediate lunge.
+                          "fwd_scale_pow": 4.0},
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
         # the egress->pursuit HANDOFF (held ~-18deg nose-down vs ~-5deg cruise = ~13deg error) commands
@@ -428,7 +457,18 @@ def vq2_case_c() -> DeployProfile:
                               "kp_alt": 0.0, "gate_pd_vertical": True,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,
-                              "alt_thrust_lo": 0.15, "alt_thrust_slew_per_s": 2.0},
+                              # A33 V-2a (2026-07-03): OPEN the floor 0.15 -> 0.05. Run 20260703_210632
+                              # reconciliation: at the pinned floor the drone was near-NEUTRAL vertically
+                              # (realized ~-0.55 m/s^2, still rising) with ~+7 m/s^2 translational lift
+                              # and LARGE unused down-authority margin -- the FLOOR, not the plant, was
+                              # the binding constraint (the gate-PD's own worst-case demand is
+                              # hover-0.12-0.15 ~= 0.0). 0.05 lets the bounded PD (+/-3 z_off clip, fixed
+                              # gains) reach its designed descent; the collective can never go below what
+                              # the bounded PD asks, so no wide-open slam surface. The A27 slew (2.0/s,
+                              # RETAINED symmetric) now RAMPS into the (sub-0.15, UNMEASURED) net-down
+                              # region rather than stepping to it -- FC-10 watchdog guards it. See spec
+                              # §V-2 + the flagged low-collective sysid gap (§V-2d).
+                              "alt_thrust_lo": 0.05, "alt_thrust_slew_per_s": 2.0},
         # A20 async-detect (2026-07-01): decouple the ~250 ms GPU-stalled YOLO detect from the
         # control loop (worker thread + latest-wins snapshot; racer.vision.async_detect). Fixes
         # the ~3 Hz loop -> ~300 ms ZOH command-hold -> one held climb command flies into the

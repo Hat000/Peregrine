@@ -249,6 +249,19 @@ class VerticalEstimator:
     zoff_huber_k: float = 2.0      # full weight for nu <= k (<=1.4 m: today's typical innovations)
     zoff_miss_nu: float = 4.0      # miss/reseed persistence threshold (2.8 m at sigma=0.7)
 
+    # --- A33 V-1: WEIGHT-QUALIFIED RESEED (2026-07-03; spec
+    # handoff/vq2_a33_gate2_intercept_spec_2026-07-03.md §V-1). The A32 reseed-on-persistence never
+    # consulted the frame WEIGHT: 4 consecutive big innovations re-lock z_off = z_meas whether they
+    # came from honest OR garbage frames. Run 20260703_210632 teleported z_off twice onto low-weight
+    # smear/garbage frames (cmd 67 on w 0.11-0.31, cmd 164 on w 0.00-0.04) -> a -5 m fictional
+    # "gate above" that armed the balloon climb. When ``zoff_reseed_min_w > 0`` the miss counter (and
+    # thus the reseed) only advances on a frame whose applied weight ``w >= zoff_reseed_min_w`` -- a
+    # garbage frame is NOT retarget evidence. A REAL retarget (gate handoff) arrives on well-scored
+    # frames (a fresh track's first frames carry w=1.0), so an honest handoff still reseeds in
+    # ``reseed_after`` frames. 0.0 (default) => any weight counts == byte-identical A32 reseed. Only
+    # meaningful under ``use_soft_innov_weight``.
+    zoff_reseed_min_w: float = 0.0
+
     _vz: float = field(default=float("nan"), repr=False)
     _b_hat: float = field(default=float("nan"), repr=False)
     _seeded: bool = field(default=False, repr=False)
@@ -595,11 +608,15 @@ class VerticalEstimator:
             # (a gate handoff still needs the re-lock; the accept/leak clock is NOT refreshed --
             # a suspect stream must not keep the blind-coast leak off forever).
             self._zoff_last_accepted = False
-            self._zoff_miss += 1
-            if self._zoff_miss >= self.reseed_after:
-                self._z_off = z_meas                   # REAL retarget: re-lock (vz_rel untouched)
-                self._zoff_miss = 0
-                self._zoff_last_accept_t_s = now_t
+            # A33 V-1: a garbage frame is NOT retarget evidence -- only advance the miss/reseed
+            # counter when this frame's applied weight is credible. zoff_reseed_min_w=0 (default) =>
+            # any weight counts == byte-identical A32. A real handoff arrives on w=1.0 frames.
+            if w >= self.zoff_reseed_min_w:
+                self._zoff_miss += 1
+                if self._zoff_miss >= self.reseed_after:
+                    self._z_off = z_meas               # REAL retarget: re-lock (vz_rel untouched)
+                    self._zoff_miss = 0
+                    self._zoff_last_accept_t_s = now_t
             return
         self._zoff_last_accepted = True
         self._zoff_miss = 0

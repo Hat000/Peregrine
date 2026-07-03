@@ -667,6 +667,50 @@ class GateSeekerConfig:
     # real track loss, not noise.
     bearing_w_coast_thresh: float = 0.1
 
+    # ===================================================================
+    # A33 — GATE-2 COORDINATED INTERCEPT (2026-07-03; spec
+    # handoff/vq2_a33_gate2_intercept_spec_2026-07-03.md). All defaults legacy/off
+    # => VQ1 / case-A byte-identical; activated only via vq2_case_c seeker_overrides.
+    # ===================================================================
+    # --- H-1(a): GEOMETRIC OLD-GATE EXCLUSION. The RACE_STATUS index leads the physical gate plane
+    # by ~3 m on this wire (run 20260703_210632: index advanced at cmd 49 while the tracked gate was
+    # still ~3 m ahead, dead-center). The A31 time-windows (pass_wire_coast_s / pass_coast_s) existed
+    # only to keep the acquire-next re-lock from grabbing the gate being passed; replace that TIME
+    # discrimination with a GEOMETRIC one so the windows can collapse (H-1b). While _passing and this
+    # flag is ON, a candidate whose world direction lies within ``pass_prev_gate_excl_rad`` of the
+    # passed gate's snapshot direction AND is no farther than snapshot-range + ``..._margin_m`` is
+    # EXCLUDED from acquisition (it is the gate we just passed). A gate well off the pass heading (the
+    # next gate, an ~85 deg turn away here) passes at any range; a straight-section next gate dead
+    # ahead passes on the range margin. OFF (default) => no exclusion (byte-identical). Requires the
+    # A30/A31 capture-time attitude ring (already on under vq2_case_c) for the world-direction rotate.
+    pass_exclude_prev_gate: bool = False
+    pass_prev_gate_excl_rad: float = 0.35      # world-direction cone half-angle around the pass heading
+    pass_prev_gate_excl_margin_m: float = 3.0  # range slack beyond the snapshot tracked range
+    # --- H-1(c): TURN-THROUGH-OCCLUSION. At the pass the gate-1 frame occludes much of the camera,
+    # so a gate-2 pose may be absent for a beat -- the turn must NOT wait for one (operator amendment
+    # 1). When ON, ``_begin_pass`` latches a BLIND TURN TARGET (``_pass_turn_yaw``) and
+    # ``_pass_coast_command`` SLEWS toward it (at ``pursuit_yaw_slew_rps``) instead of freezing the
+    # pre-pass heading, so the turn starts on the pass TRIGGER and rides blind through the occlusion;
+    # gate-2 poses refine (not start) it once they clear. The target is the last pre-pass next-gate
+    # world bearing when known (clamped to +/-``pass_blind_turn_cap_rad`` from the pass heading), else
+    # the pass heading + sign(last az/chase drift) * the cap. OFF (default) => ``_pass_coast_command``
+    # freezes the heading exactly as today (byte-identical).
+    pass_turn_through: bool = False
+    pass_blind_turn_cap_rad: float = 1.6   # max blind heading change during the coast (~92 deg)
+    # --- S-1: sharpen the off-axis forward cut. fwd_scale = max(cos(az),0)^fwd_scale_pow. cos^2
+    # (default) still drives 55% forward at az=42 deg while badly mis-pointed; cos^4 gives 30% --
+    # cuts the overfly speed (which also drives the translational-lift up-bias) without touching
+    # near-centered pace (az 0.2 rad: 0.92 vs 0.96). 2.0 (default) == today's cos^2 (byte-identical).
+    fwd_scale_pow: float = 2.0
+    # --- H-3: HARD RANGE-JUMP REJECT on the A32 soft track path. A candidate 8+ m off the track's
+    # range prediction is a DIFFERENT PHYSICAL OBJECT (a gate cannot move 8 m between frames), so
+    # Cauchy-weighting it is a category error -- it smeared the track gate-1 -> gate-2 over ~10 frames
+    # (run 20260703_210632, cmd 60-72). Reinstate the RANGE leg of the continuity check as a HARD
+    # candidate filter on the soft path (the BEARING leg stays soft -- that was the A31 starvation
+    # source). OFF (default) => the A32 soft path takes all poses (byte-identical). Only meaningful
+    # under ``use_soft_bearing_weight``.
+    soft_range_hard_reject: bool = False
+
 
 @dataclass
 class GateSeeker:
@@ -730,6 +774,11 @@ class GateSeeker:
     _pass_t_ns: int | None = field(default=None, repr=False)         # sim time the pass dead-reckon began
     _pass_heading: float | None = field(default=None, repr=False)    # FROZEN pre-pass pursuit heading (coast direction)
     _pass_index: int | None = field(default=None, repr=False)        # active_gate_index at the moment the pass armed
+    # -- A33 H-1(a): old-gate exclusion snapshot (world dir + range of the gate being passed) --
+    _pass_prev_dir_world: np.ndarray | None = field(default=None, repr=False)
+    _pass_prev_range_m: float | None = field(default=None, repr=False)
+    # -- A33 H-1(c): blind turn target latched at pass commit (turn-through-occlusion) --
+    _pass_turn_yaw: float | None = field(default=None, repr=False)
     # -- hold-last-demand bridge (A13): cache the last good pursuit demand so a pose-None tick can
     #    re-issue it (continuous per-tick command) instead of regime-2's zero-coast hold --
     _last_demand_los: np.ndarray | None = field(default=None, repr=False)   # last pursuit world heading unit vec
@@ -909,6 +958,13 @@ class GateSeeker:
             return None
         poses = self._valid_poses(frame)
 
+        # A33 H-1(a): while passing, EXCLUDE the just-passed gate GEOMETRICALLY (its snapshot world
+        # direction + range) so the acquire-next re-lock (or the turn-through acquisition) cannot grab
+        # the gate we are threading. Flag-off / not passing / no snapshot => no-op (byte-identical).
+        if (self.config.pass_exclude_prev_gate and self._passing
+                and self._pass_prev_dir_world is not None):
+            poses = [p for p in poses if not self._is_prev_gate(p)]
+
         if not self.config.use_gate_track:
             best: GatePose | None = None
             for pose in poses:
@@ -963,7 +1019,25 @@ class GateSeeker:
             # remains bit-identical when the flag is off or the gate is not live for this frame.
             soft = self.config.use_soft_bearing_weight and imu_gate_live
             if soft:
-                cands = poses
+                # A33 H-3: keep the BEARING leg soft (the A31 starvation source) but reinstate the
+                # RANGE leg as a HARD candidate filter -- an 8+ m range jump is a DIFFERENT gate, not
+                # a noisy same-gate measurement (it smeared the track gate-1 -> gate-2 over ~10 frames
+                # on run 20260703_210632). Flag-off => cands = poses, byte-identical A32 soft path.
+                if self.config.soft_range_hard_reject:
+                    cands = [p for p in poses
+                             if abs(p.range_m - pred_r) <= self.config.track_max_range_jump_m]
+                    if not cands:
+                        # every candidate jumped in RANGE -> coast on the track (same bookkeeping as
+                        # the binary continuity_reject branch below).
+                        self._last_none_reason = "continuity_reject"
+                        self._track_coast_ticks += 1
+                        if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                            self._track_range_m, self._track_bearing = None, None
+                            self._reset_los_rate()
+                            self._reset_bearing_gate()
+                        return None
+                else:
+                    cands = poses
             else:
                 def _consistent(p: GatePose) -> bool:
                     if abs(p.range_m - pred_r) > self.config.track_max_range_jump_m:
@@ -1091,6 +1165,26 @@ class GateSeeker:
         reset, and :meth:`reset`. The next accepted pose re-seeds it."""
         self._bg_prev_dir_world = None
         self._bg_prev_pose_ns = None
+
+    def _is_prev_gate(self, p: GatePose) -> bool:
+        """A33 H-1(a): is candidate ``p`` the gate we are currently passing through? True when its
+        world direction lies within ``pass_prev_gate_excl_rad`` of the passed gate's snapshot
+        direction AND its range is no farther than the snapshot range + ``pass_prev_gate_excl_margin_m``.
+        Uses the attitude AT THE POSE CAPTURE INSTANT (the A30/A31 ring buffer, ``_rpy_at``) to rotate
+        the camera lever into world NED; falls back to the pass-heading direction (a level frame at the
+        frozen heading) when no capture-time attitude is available. Only ever called while ``_passing``
+        with a snapshot present (the caller guards both)."""
+        rpy = self._rpy_at(int(p.sim_time_ns))
+        if rpy is None:
+            yaw0 = self._pass_heading if self._pass_heading is not None else 0.0
+            rpy = (0.0, 0.0, float(yaw0))
+        d = self._gate_dir_world_rpy(p, rpy)
+        prev = np.asarray(self._pass_prev_dir_world, dtype=np.float64)
+        ang = float(np.arccos(np.clip(float(d @ prev), -1.0, 1.0)))
+        rng_cap = (float(self._pass_prev_range_m) if self._pass_prev_range_m is not None
+                   else float(self.config.pass_arm_range_m))
+        return (ang < float(self.config.pass_prev_gate_excl_rad)
+                and float(p.range_m) <= rng_cap + float(self.config.pass_prev_gate_excl_margin_m))
 
     def _first_acquisition(self, poses: list[GatePose]) -> GatePose:
         """Pick the gate to LOCK on first acquisition (no track yet). (A5 BLOCKER 2 fix.)
@@ -1323,6 +1417,32 @@ class GateSeeker:
         self._pass_wire = bool(wire)
         self._pass_t_ns = int(sim_time_ns)
         self._pass_heading = self._last_yaw if self._last_yaw is not None else 0.0
+        # A33 H-1(a): snapshot the passed gate's world direction + range BEFORE _reset_bearing_gate
+        # nulls the reference, so _is_prev_gate can exclude it from re-acquisition.
+        if self.config.pass_exclude_prev_gate:
+            if self._bg_prev_dir_world is not None:
+                self._pass_prev_dir_world = np.asarray(self._bg_prev_dir_world, dtype=np.float64).copy()
+            else:
+                yaw0 = self._pass_heading
+                self._pass_prev_dir_world = np.array([np.cos(yaw0), np.sin(yaw0), 0.0])
+            self._pass_prev_range_m = (float(self._track_range_m)
+                                       if self._track_range_m is not None
+                                       else float(self.config.pass_arm_range_m))
+        # A33 H-1(c): latch the BLIND TURN TARGET so the coast slews toward the next gate through the
+        # occlusion instead of freezing the heading. Aim at the last-known next-gate drift direction:
+        # sign(last apparent azimuth az, else the chase LOS drift), the pass heading + sign*cap. This
+        # runs BEFORE _reset_chase drops _last_az_err's companions -- read the stashes here.
+        if self.config.pass_turn_through:
+            drift = 0.0
+            if self._last_az_err is not None and abs(float(self._last_az_err)) > 1e-3:
+                drift = float(self._last_az_err)
+            elif self._chase_rate is not None and abs(float(self._chase_rate)) > 1e-6:
+                drift = float(self._chase_rate)
+            cap = abs(float(self.config.pass_blind_turn_cap_rad))
+            sgn = float(np.sign(drift)) if drift != 0.0 else 0.0
+            turn = float(np.arctan2(np.sin(self._pass_heading + sgn * cap),
+                                    np.cos(self._pass_heading + sgn * cap)))
+            self._pass_turn_yaw = turn
         # reset the temporal track so the next-gate re-acquisition starts clean (a different gate).
         self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
         self._reset_los_rate()   # A29: the LOS-rate state describes the JUST-PASSED gate -> drop it
@@ -1342,6 +1462,10 @@ class GateSeeker:
         self._pass_t_ns = None
         self._pass_heading = None
         self._pass_index = self._last_index
+        # A33 H-1: the exclusion snapshot + blind turn target describe the JUST-PASSED gate -> drop.
+        self._pass_prev_dir_world = None
+        self._pass_prev_range_m = None
+        self._pass_turn_yaw = None
         self._reset_los_rate()   # A29: a NEW gate begins here -- seed its LOS-rate filter fresh
         self._reset_chase()      # A31: a NEW acquisition -- fresh chase baseline (+ trips)
         if self.config.reramp_forward_after_pass and sim_time_ns is not None:
@@ -1395,6 +1519,13 @@ class GateSeeker:
             return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
                                       attitude_safe=True)
         yaw0 = self._pass_heading if self._pass_heading is not None else self._att_yaw(nav)
+        # A33 H-1(c): TURN-THROUGH-OCCLUSION. When a blind turn target is latched, SLEW the coast
+        # heading toward it (at pursuit_yaw_slew_rps, the same turn-rate cap pursuit uses) instead of
+        # freezing yaw -- the turn begins on the pass trigger and rides blind through the occlusion;
+        # gate-2 poses refine it once they clear (_pass_acquired_next -> _end_pass -> pursuit). Flag
+        # off / no target => freeze the heading exactly as today (byte-identical).
+        if self.config.pass_turn_through and self._pass_turn_yaw is not None:
+            yaw0 = self._slew_heading(float(self._pass_turn_yaw), int(nav.sim_time_ns))
         self._last_yaw = yaw0
         los = np.array([np.cos(yaw0), np.sin(yaw0), 0.0])
         launch = self._launch_ramp(int(nav.sim_time_ns))
@@ -1791,7 +1922,7 @@ class GateSeeker:
                                       float(self._alat_slew_prev) + _step))
             self._alat_slew_prev = a_lat
             self._alat_slew_t_ns = _now
-        fwd_scale = float(max(np.cos(az), 0.0)) ** 2            # push hardest centered, yield off-axis
+        fwd_scale = float(max(np.cos(az), 0.0)) ** float(self.config.fwd_scale_pow)  # push hardest centered, yield off-axis (A33 S-1: cos^pow)
         self._last_fwd_scale = fwd_scale
         a_fwd = self.config.forward_accel_mps2 * float(eff_ramp) * float(fwd_ramp) * fwd_scale
         e_right = np.array([-np.sin(yaw_now), np.cos(yaw_now), 0.0])
@@ -2403,6 +2534,10 @@ class GateSeeker:
         self._pass_t_ns = None
         self._pass_heading = None
         self._pass_index = None
+        # A33 H-1: drop the old-gate exclusion snapshot + the blind turn target.
+        self._pass_prev_dir_world = None
+        self._pass_prev_range_m = None
+        self._pass_turn_yaw = None
         # hold-last-demand bridge (A13): drop the cached demand + the pose-None reason; zero the
         # per-flight diagnostic counters so a fresh epoch starts clean.
         self._last_demand_los = None

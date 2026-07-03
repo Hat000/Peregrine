@@ -75,6 +75,7 @@ EXPECTED_KEYS = {
     "imu_samples_ingested",  # A32: HIGHRES_IMU ring samples consumed this tick (null when off)
     "bearing_w",        # A32: soft Cauchy bearing weight of the last accepted pose (null when off)
     "zoff_w",           # A32: vertical filter's last applied Huber*bearing weight (null when off)
+    "pass_turn_yaw_rad",  # A33 H-1c: blind turn target during turn-through-occlusion (null when off)
 }
 
 

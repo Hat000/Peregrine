@@ -487,7 +487,8 @@ def test_profile_wiring_a30():
     assert prof.vertical_estimator is True
     assert prof.nav_config.vertical_estimator_overrides == {"use_zoff_filter": True,
                                                             "export_clip_mps": 2.5,
-                                                            "use_soft_innov_weight": True}
+                                                            "use_soft_innov_weight": True,
+                                                            "zoff_reseed_min_w": 0.3}  # A33 V-1
     # VQ1 / case-A: byte-identical (no overrides; every A30 field at its OFF/neutral default).
     assert vq1_case_a().seeker_overrides is None
     assert vq1_case_a().controller_overrides is None

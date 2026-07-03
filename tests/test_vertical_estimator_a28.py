@@ -440,13 +440,14 @@ def test_gate_pd_off_is_byte_identical_to_a27_law():
 
 
 def test_a27_floor_and_slew_kept_as_dormant_safety():
-    """A28 spec §2.4 verdict: the A27 raised floor (0.15) + thrust slew (2.0) STAY in the profile
-    (dormant safety nets -- the floor did not cause the 013748 failure and the forward-coupling
-    rationale holds). Pre-registered revert criterion lives in the profile comment."""
+    """A28 spec §2.4 kept the A27 floor (0.15) + slew (2.0) as dormant safety. A33 V-2a (2026-07-03)
+    then OPENED the floor 0.15 -> 0.05 (run 20260703_210632 reconciliation: the FLOOR, not the plant,
+    capped the gate-PD's ~0.0 worst-case descent demand while ~+7 m/s^2 translational lift kept the
+    drone rising). The slew (2.0/s) STAYS -- now the ramp guard into the sub-0.15 net-down region."""
     from racer.deploy_profile import vq2_case_c
     ov = vq2_case_c().controller_overrides
-    assert ov["alt_thrust_lo"] == 0.15
-    assert ov["alt_thrust_slew_per_s"] == 2.0
+    assert ov["alt_thrust_lo"] == 0.05          # A33 V-2a: floor OPENED
+    assert ov["alt_thrust_slew_per_s"] == 2.0   # slew RETAINED (ramp guard)
 
 
 # ===========================================================================
@@ -461,7 +462,8 @@ def test_vq2_profile_ships_the_a28_bundle():
     assert ov["ff_vertical_kd_alt"] == pytest.approx(0.06)
     veo = prof.nav_config.vertical_estimator_overrides
     assert veo == {"use_zoff_filter": True, "export_clip_mps": 2.5,
-                   "use_soft_innov_weight": True}   # A32: Huber-soft innovation weighting
+                   "use_soft_innov_weight": True,      # A32: Huber-soft innovation weighting
+                   "zoff_reseed_min_w": 0.3}           # A33 V-1: weight-qualified reseed
     assert prof.nav_config.use_gate_vz_fusion is False   # A26 fusion superseded
 
 

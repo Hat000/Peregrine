@@ -197,11 +197,15 @@ def test_thrust_slew_state_independent_of_body_rate_slew_state():
 # 4. DEPLOY PROFILE seam: alt_thrust_lo + alt_thrust_slew_per_s carried for vq2_case_c only
 # ===========================================================================
 def test_deploy_profile_vq2_case_c_carries_raised_floor_and_slew():
+    # A33 V-2a (2026-07-03) OPENED the floor 0.15 -> 0.05: run 20260703_210632 reconciliation showed
+    # the FLOOR (not the plant) capped the gate-PD's own ~0.0 worst-case descent demand while ~+7
+    # m/s^2 translational lift kept the drone rising. The A27 slew (2.0/s) STAYS -- now the ramp guard
+    # into the sub-0.15 (unmeasured) net-down region. See vq2_a33 spec §V-2.
     ov = get_profile("vq2_case_c").controller_overrides
-    assert ov["alt_thrust_lo"] == 0.15
+    assert ov["alt_thrust_lo"] == 0.05
     assert ov["alt_thrust_slew_per_s"] == 2.0
     ov2 = vq2_case_c().controller_overrides
-    assert ov2["alt_thrust_lo"] == 0.15
+    assert ov2["alt_thrust_lo"] == 0.05
     assert ov2["alt_thrust_slew_per_s"] == 2.0
 
 
@@ -217,11 +221,11 @@ def test_make_seeker_controller_threads_a27_overrides_for_vq2_case_c_only():
     (2.0); one from vq1_case_a (no overrides) keeps the original floor (0.05) + slew OFF -- VQ1 /
     case-A byte-identical."""
     c_vq2 = make_seeker_controller(**(get_profile("vq2_case_c").controller_overrides or {}))
-    assert c_vq2.alt_thrust_lo == 0.15
+    assert c_vq2.alt_thrust_lo == 0.05          # A33 V-2a: floor OPENED 0.15 -> 0.05
     assert c_vq2.alt_thrust_slew_per_s == 2.0
     c_vq1 = make_seeker_controller(**(get_profile("vq1_case_a").controller_overrides or {}))
-    assert c_vq1.alt_thrust_lo == 0.05
-    assert c_vq1.alt_thrust_slew_per_s is None
+    assert c_vq1.alt_thrust_lo == 0.05          # VQ1 default (no override) -- coincides post-A33
+    assert c_vq1.alt_thrust_slew_per_s is None  # ... but VQ1 keeps the slew OFF (byte-identical)
 
 
 def test_gate_seeker_built_with_profile_controller_has_a27_fix():
@@ -231,7 +235,7 @@ def test_gate_seeker_built_with_profile_controller_has_a27_fix():
                        controller=make_seeker_controller(
                            **(get_profile("vq2_case_c").controller_overrides or {})))
     default = GateSeeker(config=GateSeekerConfig())   # default factory controller
-    assert fixed.controller.alt_thrust_lo == 0.15
+    assert fixed.controller.alt_thrust_lo == 0.05     # A33 V-2a: floor OPENED 0.15 -> 0.05
     assert fixed.controller.alt_thrust_slew_per_s == 2.0
-    assert default.controller.alt_thrust_lo == 0.05
+    assert default.controller.alt_thrust_lo == 0.05   # default (unchanged); vq2 now coincides
     assert default.controller.alt_thrust_slew_per_s is None
