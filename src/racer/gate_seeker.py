@@ -564,6 +564,83 @@ class GateSeekerConfig:
     # never pitches up or stalls). Generous -- the next gate may be briefly out of frame after the pass.
     acquire_next_s: float = 3.0
 
+    # ===================================================================
+    # A31 — IMMEDIATE TURN ON THE WIRE PASS + ORBIT-BREAKER + IMU-CONSISTENCY
+    # BEARING GATE + LATERAL-DEMAND SLEW (2026-07-03; spec
+    # handoff/vq2_a31_immediate_turn_spec_2026-07-03.md). All defaults legacy/off
+    # => VQ1 / case-A byte-identical; activated only via vq2_case_c seeker_overrides.
+    # ===================================================================
+    # --- FIX 1: wire-pass fast window. When the pass was committed (or confirmed while already
+    # committed) by the AUTHORITATIVE wire signal (RACE_STATUS.active_gate_index increment), the
+    # drone is PAST the gate plane -- the 1.2 s blind dead-reckon glide is pure lost time (run
+    # 20260703_160715: gate 1 was detected DURING the glide; pursuit resumed at exactly coast
+    # expiry, 1.22 s late, carrying ~3.9 m/s). Use this much shorter acquire-eligibility window
+    # instead (just enough to physically clear the frame the camera is inside). A vision-committed
+    # pass that the wire then confirms MID-GLIDE upgrades to this window (the _pass_wire seam).
+    # None => pass_coast_s everywhere (legacy, byte-identical).
+    pass_wire_coast_s: float | None = None
+    # --- FIX 2b: re-ramp the forward feedforward from zero over forward_ramp_s again after EVERY
+    # pass ends (next gate acquired), not just from the spawn release: the post-pass geometry is a
+    # fresh acquisition (bearing typically 30-60 deg off) and the A30 orbit data shows feeding
+    # forward drive while the yaw converges is what sustains the tail-chase ("point before
+    # pushing", enforced). False => legacy (ramp measured from spawn release only; byte-identical).
+    reramp_forward_after_pass: bool = False
+    # --- FIX 3: ORBIT-BREAKER. Run 20260703_160715: after overflying gate 1 the world LOS rotated
+    # 203 deg in 4.9 s and the yaw lag-followed it all the way to BACKWARDS -- while the
+    # INSTANTANEOUS camera bearing stayed small (+0.17 rad mean, in-FOV the whole whip), so an
+    # instantaneous-bearing guard is structurally blind to it. The guard observable is therefore
+    # the CUMULATIVE unwrapped LOS rotation since (re)acquisition of the current gate: a pursuit
+    # whose LOS has rotated this far is orbiting its gate, not approaching it -- following further
+    # is always wrong. Trip => a bounded "orbit_break" regime: forward accel 0, lateral =
+    # image_lat_cap_mps2 toward the CURRENT apparent gate (the brake, same e_right composition),
+    # yaw setpoint HELD (stop following the sweep -- let the LOS come back as v_t dies). Early
+    # exit when the gate re-centers with a low fresh-pose LOS drift; hard exit at orbit_break_s.
+    # A SECOND trip on the same acquisition drops the track and falls to the no-detection hold:
+    # refuse the spin, wait level, reacquire clean. 0.0 => guard off (byte-identical).
+    orbit_guard_rad: float = 0.0          # trip when |unwrapped psi_world - psi_at_acquire| exceeds this
+    orbit_break_s: float = 1.0            # bounded brake regime length
+    orbit_break_exit_az_rad: float = 0.15   # early exit: gate re-centered ...
+    orbit_break_exit_rate_rps: float = 0.3  # ... AND fresh-pose LOS drift below this
+    # Hard clamp on the slewed pursuit yaw setpoint, relative to the yaw at (re)acquisition of the
+    # current gate: the "never turn to backwards chasing a gate" pin. 0.0 => off (byte-identical).
+    orbit_yaw_clamp_rad: float = 0.0
+    # --- THE UPGRADE (operator directive, replaces the tightened-fixed-threshold band-aid): the
+    # IMU-CONSISTENCY BEARING GATE -- the horizontal analog of the A28 vertical complementary
+    # filter. Gates are STATIC: over one inter-frame dt the gate's bearing can only change as fast
+    # as the drone's OWN MEASURED motion -- rotation (the AHRS attitude delta between the two
+    # capture instants, which we measure cleanly via the A30 capture-time attitude ring buffer)
+    # plus a translation-parallax term (∝ motion/range, larger at close range). We gate in the
+    # WORLD frame: each accepted pose's camera lever is rotated with the attitude AT ITS CAPTURE
+    # TIME (_rpy_at), so the measured rotation is compensated EXACTLY and a static gate's world
+    # direction is quasi-constant -- the only honest change left is translation parallax, which we
+    # bound explicitly (bearing_gate_trans_mps * dt / range, so the gate WIDENS ∝ dt and ∝ 1/range
+    # and a legitimate close-range sweep or a short pose gap is never falsely rejected). A vision
+    # bearing whose world-direction deviation from the prediction exceeds noise + parallax is
+    # REJECTED (track coasts; the A13 bridge covers the gap) -- REGARDLESS of the deviation's
+    # absolute size: no fixed threshold a right-sized hop can defeat (the t=3.25 0.33 rad hop slid
+    # under the 0.35 rad fixed gate; against a ~0.1 rad motion-consistency allowance it is 3x out).
+    # When ON this REPLACES the fixed track_max_bearing_jump_rad check; the fixed check remains
+    # the fallback when no capture-time attitude is available (cold buffer / gap-guard miss) and
+    # the entire path is skipped when OFF (VQ1 byte-identical). The range-jump check is unchanged.
+    use_imu_bearing_gate: bool = False
+    # Sensor-noise floor of the deviation (rad): PnP bearing noise 1-2 deg + AHRS attitude-delta
+    # error margin => ~3.4 deg. Honest per-frame world-bearing change at zero translation is ~0.
+    bearing_gate_noise_rad: float = 0.06
+    # Translation bound (m/s) for the parallax allowance: the slow-lap never exceeds ~3 m/s
+    # commanded build-up; 4.0 keeps margin so an honest close-range crossing sweep passes.
+    bearing_gate_trans_mps: float = 4.0
+    # Clamp the range used in the parallax term (m): 1/range blows up at point-blank. NOTE the
+    # range here is the track's EMA prediction; close-range PnP OVER-reports range on this wire
+    # (spec §1.3), which UNDER-sizes the allowance -- the strict direction (rejects route to the
+    # bridge-covered coast, recoverable; a missed hop is not).
+    bearing_gate_min_range_m: float = 1.0
+    # --- FIX 4 (defense-in-depth): rate-limit the A30 image-servo lateral demand (m/s^3) so even
+    # an ACCEPTED noisy bearing can't snap the roll to the rail in one tick (the t=3.25 hop put
+    # alat 0 -> -1.5 in ONE tick). 6.0 => a full-scale reversal (-1.5 -> +1.5) takes 0.5 s; an
+    # honest az ramp (<=0.7 rad/s sweep x k_az=8 = 5.6 m/s^3 worst) is never limited, a one-frame
+    # rail-snap is. 0.0 => off (legacy snap, byte-identical).
+    image_lat_slew_mps3: float = 0.0
+
 
 @dataclass
 class GateSeeker:
@@ -656,6 +733,29 @@ class GateSeeker:
     _att_hist: object | None = field(default=None, repr=False)              # deque[(t_ns, rpy)]
     _last_az_err: float | None = field(default=None, repr=False)            # apparent azimuth az (rad, +right)
     _last_fwd_scale: float | None = field(default=None, repr=False)         # cos^2(az) forward-pointing scale
+    # -- A31 state (all inert on the flag-off paths; see the A31 config block) --
+    _pass_wire: bool = field(default=False, repr=False)            # pass committed/confirmed by the WIRE
+    _fwd_ramp_t_ns: int | None = field(default=None, repr=False)   # forward re-ramp clock (reramp_forward_after_pass)
+    # chase / orbit-breaker: cumulative unwrapped LOS rotation since (re)acquisition of the gate.
+    _chase_psi0: float | None = field(default=None, repr=False)    # yaw_des baseline at acquisition
+    _chase_yaw0: float | None = field(default=None, repr=False)    # slewed yaw at acquisition (the clamp anchor)
+    _chase_dpsi: float = field(default=0.0, repr=False)            # accumulated shortest-path yaw_des delta
+    _chase_prev_psi: float | None = field(default=None, repr=False)     # last fresh-pose yaw_des
+    _chase_prev_pose_ns: int | None = field(default=None, repr=False)   # its camera-epoch stamp (dedupe)
+    _chase_rate: float | None = field(default=None, repr=False)    # per-fresh-pose LOS drift (rad/s, break exit)
+    _orbit_break_t_ns: int | None = field(default=None, repr=False)     # break regime start (None = not braking)
+    _orbit_trips: int = field(default=0, repr=False)               # guard trips on the current acquisition
+    # A30 lateral-demand slew state (image_lat_slew_mps3 > 0 only).
+    _alat_slew_prev: float | None = field(default=None, repr=False)
+    _alat_slew_t_ns: int | None = field(default=None, repr=False)
+    # IMU-consistency bearing gate: the last ACCEPTED tracked pose's world direction (rotated with
+    # the attitude AT ITS CAPTURE TIME) + its camera-epoch stamp -- the static-gate prediction.
+    _bg_prev_dir_world: np.ndarray | None = field(default=None, repr=False)
+    _bg_prev_pose_ns: int | None = field(default=None, repr=False)
+    # A31 instrumentation stashes (logging only, never consumed by control).
+    _last_chase_dpsi: float | None = field(default=None, repr=False)
+    _last_bearing_dev_rad: float | None = field(default=None, repr=False)
+    _last_bearing_allow_rad: float | None = field(default=None, repr=False)
     # -- A29 regime stash (spec §4.4): which command_visual regime returned this tick, first-class
     #    (settle/anchor/egress/pass/bridge/hold/pursuit) -- the A29 run's regime had to be
     #    reconstructed from field-change fingerprints. Logging only. --
@@ -794,6 +894,7 @@ class GateSeeker:
             if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                 self._track_range_m, self._track_bearing = None, None
                 self._reset_los_rate()   # A29: tracked-gate identity gone -> LOS-rate history with it
+                self._reset_bearing_gate()   # A31: the prediction reference dies with the track
             return None
 
         if self._track_range_m is None or self._track_bearing is None:
@@ -810,9 +911,25 @@ class GateSeeker:
             pred_r = float(self._track_range_m)
             pred_b = np.asarray(self._track_bearing, dtype=np.float64)
 
+            # A31 IMU-CONSISTENCY BEARING GATE (see the config block): when live, the bearing leg
+            # of the continuity check becomes a MOTION-CONSISTENCY test against the static-gate
+            # prediction instead of the fixed frame-to-frame threshold. All candidates in a frame
+            # share the capture stamp, so one capture-time attitude lookup serves them all. Falls
+            # back to the legacy fixed check when no capture-time attitude / no reference exists.
+            rpy_cap = None
+            imu_gate_live = False
+            if self.config.use_imu_bearing_gate:
+                rpy_cap = self._rpy_at(int(poses[0].sim_time_ns))
+                imu_gate_live = (rpy_cap is not None
+                                 and self._bg_prev_dir_world is not None
+                                 and self._bg_prev_pose_ns is not None)
+
             def _consistent(p: GatePose) -> bool:
-                return (abs(p.range_m - pred_r) <= self.config.track_max_range_jump_m
-                        and float(np.linalg.norm(self._pose_bearing(p) - pred_b))
+                if abs(p.range_m - pred_r) > self.config.track_max_range_jump_m:
+                    return False
+                if imu_gate_live:
+                    return self._imu_bearing_consistent(p, rpy_cap, pred_r)
+                return (float(np.linalg.norm(self._pose_bearing(p) - pred_b))
                         <= self.config.track_max_bearing_jump_rad)
 
             cands = [p for p in poses if _consistent(p)]
@@ -823,6 +940,7 @@ class GateSeeker:
                 if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                     self._track_range_m, self._track_bearing = None, None
                     self._reset_los_rate()   # A29: tracked-gate identity gone -> LOS-rate history with it
+                    self._reset_bearing_gate()   # A31: the prediction reference dies with the track
                 return None
             # among the consistent candidates, the one closest to the predicted bearing+range.
             chosen = min(
@@ -841,7 +959,48 @@ class GateSeeker:
             self._track_bearing = (1.0 - a) * np.asarray(self._track_bearing, dtype=np.float64) + a * b_meas
         self._track_coast_ticks = 0
         self._last_none_reason = None    # a usable pose this tick (clear the stale reason)
+        # A31: refresh the IMU-consistency reference on EVERY accepted pose (first acquisition
+        # seeds it). The world direction is rotated with the attitude AT THE CAPTURE INSTANT so
+        # the next frame's prediction carries the measured rotation exactly; no capture-time
+        # attitude available => no reference => the next frame falls back to the legacy check.
+        if self.config.use_imu_bearing_gate:
+            rpy_acc = self._rpy_at(int(chosen.sim_time_ns))
+            if rpy_acc is not None:
+                self._bg_prev_dir_world = self._gate_dir_world_rpy(chosen, rpy_acc)
+                self._bg_prev_pose_ns = int(chosen.sim_time_ns)
+            else:
+                self._reset_bearing_gate()
         return chosen
+
+    def _imu_bearing_consistent(self, p: GatePose, rpy_cap: tuple[float, float, float],
+                                pred_r: float) -> bool:
+        """A31: is candidate ``p``'s bearing consistent with the drone's OWN measured motion since
+        the last accepted pose? Predicted bearing = the last accepted pose's WORLD direction (a
+        static gate's world bearing is quasi-constant; the capture-time attitude rotation has
+        already compensated the measured rotation between the frames -- the IMU prediction).
+        Deviation = the angle between the candidate's world direction (rotated with the attitude
+        at ITS capture instant, ``rpy_cap``) and that prediction. Allowance = the sensor-noise
+        floor + the translation-parallax bound ``trans_mps * dt / range`` (dt on the CAMERA-epoch
+        stamps, same clock both sides so the A29 epoch-rate skew cancels; the gate widens ∝ dt so
+        it predicts THROUGH short pose gaps, and ∝ 1/range so an honest close-range sweep passes).
+        Rejects REGARDLESS of the deviation's absolute size -- no fixed threshold to slide under."""
+        d_world = self._gate_dir_world_rpy(p, rpy_cap)
+        prev = np.asarray(self._bg_prev_dir_world, dtype=np.float64)
+        dev = float(np.arccos(np.clip(float(d_world @ prev), -1.0, 1.0)))
+        dt = max((int(p.sim_time_ns) - int(self._bg_prev_pose_ns)) / 1e9, 0.0)
+        r = max(float(pred_r), float(self.config.bearing_gate_min_range_m))
+        allow = (float(self.config.bearing_gate_noise_rad)
+                 + float(self.config.bearing_gate_trans_mps) * dt / r)
+        self._last_bearing_dev_rad = dev            # A31 instrumentation (logging only)
+        self._last_bearing_allow_rad = allow
+        return dev <= allow
+
+    def _reset_bearing_gate(self) -> None:
+        """Drop the A31 bearing-gate reference. The reference describes ONE tracked gate, so it is
+        dropped wherever the track identity can change: track drop, pass begin, acquire-next
+        reset, and :meth:`reset`. The next accepted pose re-seeds it."""
+        self._bg_prev_dir_world = None
+        self._bg_prev_pose_ns = None
 
     def _first_acquisition(self, poses: list[GatePose]) -> GatePose:
         """Pick the gate to LOCK on first acquisition (no track yet). (A5 BLOCKER 2 fix.)
@@ -906,8 +1065,10 @@ class GateSeeker:
         # A30: record this tick's attitude into the capture-time ring buffer (one entry per
         # command_visual tick), so a later pursuit tick can interpret an AGED pose's camera lever
         # with the attitude AT THE MOMENT THE FRAME WAS CAPTURED (kills the omega*age false
-        # lateral, spec §3.3). Flag-gated append -> ZERO side effects on the OFF path.
-        if self.config.use_image_servo_lateral:
+        # lateral, spec §3.3). A31: the IMU-consistency bearing gate consumes the SAME buffer
+        # (its rotation prediction is the capture-time attitude delta), so it also gates the
+        # append. Flag-gated append -> ZERO side effects on the OFF path.
+        if self.config.use_image_servo_lateral or self.config.use_imu_bearing_gate:
             self._append_att_hist(int(nav.sim_time_ns), self._att_rpy(nav))
 
         # ACQUIRE-NEXT track reset: once we are past the dead-reckon GLIDE (the pass_coast_s window) the
@@ -918,8 +1079,9 @@ class GateSeeker:
         # straight and deliberately not steering on any gate.)
         if (self.config.use_pass_dead_reckon and self._passing
                 and self._pass_t_ns is not None
-                and (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9 >= self.config.pass_coast_s):
+                and (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9 >= self._effective_pass_coast_s()):
             self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+            self._reset_bearing_gate()   # A31: the prediction reference dies with the track
 
         # Detect the gate to chase (idempotent across re-feeds of the same frame_id; a re-fed frame
         # keeps the cached bearing decision rather than re-running the detector).
@@ -989,9 +1151,12 @@ class GateSeeker:
                 # a fresh NEXT gate re-acquisition ends the pass and resumes normal pursuit on it;
                 # otherwise keep the bounded forward coast (bounded by the coast+acquire window).
                 if self._pass_acquired_next(nav, pose):
-                    self._end_pass()                # next gate re-acquired -> resume pursuit below
+                    self._end_pass(int(nav.sim_time_ns))   # next gate re-acquired -> pursuit below
                 else:
-                    self._last_regime = "pass"      # A29 §4.4 instrumentation (logging only)
+                    # A29 §4.4 instrumentation, A31-suffixed by the commit source (logging only):
+                    # "pass_wire" = committed/confirmed by the RACE_STATUS index (fast window
+                    # eligible), "pass_vis" = vision-committed (degenerate/lost-after-arm).
+                    self._last_regime = "pass_wire" if self._pass_wire else "pass_vis"
                     return self._pass_coast_command(nav)
 
         # --- regime 2: NO DETECTION -> coast level on the last heading, gentle re-acquire ---
@@ -1046,35 +1211,60 @@ class GateSeeker:
                     self._pass_index = self._last_index
                 self._pass_armed = True
         if self._passing:
+            # A31 UPGRADE SEAM: a vision-committed pass (degenerate/lost-after-arm) that the wire
+            # then confirms MID-GLIDE flips to the fast acquire window (spec §2.1). State write
+            # only -- never read unless pass_wire_coast_s is configured (VQ1 byte-identical).
+            self._pass_wire = self._pass_wire or bool(index_advanced)
             return                                  # already committed -> nothing more to arm
         # COMMIT triggers (only meaningful once anchored + past egress):
         degenerate_close = (self._pass_armed and pose is not None
                             and float(pose.range_m) <= self.config.pass_degenerate_range_m)
         lost_after_arm = self._pass_armed and pose is None
         if degenerate_close or lost_after_arm or index_advanced:
-            self._begin_pass(sim_time_ns)
+            self._begin_pass(sim_time_ns, wire=index_advanced)
 
-    def _begin_pass(self, sim_time_ns: int) -> None:
+    def _begin_pass(self, sim_time_ns: int, wire: bool = False) -> None:
         """Commit to the dead-reckon-through-pass coast: FREEZE the current pursuit heading (the
         straight-through direction) and start the coast clock. Drops the temporal gate track so that,
-        once the coast ends, ACQUIRE-NEXT re-runs first-acquisition on the NEXT gate."""
+        once the coast ends, ACQUIRE-NEXT re-runs first-acquisition on the NEXT gate. ``wire``
+        (A31): the commit came from the AUTHORITATIVE RACE_STATUS index increment -- the drone is
+        past the gate plane, so the fast acquire window applies (when configured)."""
         self._passing = True
+        self._pass_wire = bool(wire)
         self._pass_t_ns = int(sim_time_ns)
         self._pass_heading = self._last_yaw if self._last_yaw is not None else 0.0
         # reset the temporal track so the next-gate re-acquisition starts clean (a different gate).
         self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
         self._reset_los_rate()   # A29: the LOS-rate state describes the JUST-PASSED gate -> drop it
+        self._reset_bearing_gate()   # A31: the prediction reference describes the passed gate
+        self._reset_chase()          # A31: the chase/orbit integrator describes the passed gate
+        self._alat_slew_prev, self._alat_slew_t_ns = None, None   # A31: fresh lateral-slew history
 
-    def _end_pass(self) -> None:
+    def _end_pass(self, sim_time_ns: int | None = None) -> None:
         """End the pass regime (the NEXT gate has been re-acquired) -> resume normal pursuit on it.
-        Re-arms the pass bookkeeping for the next gate."""
+        Re-arms the pass bookkeeping for the next gate. ``sim_time_ns`` (A31): when
+        ``reramp_forward_after_pass`` is on, restart the forward-accel ramp clock here so the
+        forward drive re-ramps from zero into the fresh acquisition (point before pushing)."""
         self._passing = False
+        self._pass_wire = False
         self._pass_armed = False
         self._pass_min_range_m = float("inf")
         self._pass_t_ns = None
         self._pass_heading = None
         self._pass_index = self._last_index
         self._reset_los_rate()   # A29: a NEW gate begins here -- seed its LOS-rate filter fresh
+        self._reset_chase()      # A31: a NEW acquisition -- fresh chase baseline (+ trips)
+        if self.config.reramp_forward_after_pass and sim_time_ns is not None:
+            self._fwd_ramp_t_ns = int(sim_time_ns)
+
+    def _effective_pass_coast_s(self) -> float:
+        """A31: the acquire-eligibility window for the CURRENT pass. The fast wire window applies
+        only when the pass was committed/confirmed by the AUTHORITATIVE wire signal AND
+        ``pass_wire_coast_s`` is configured; otherwise the legacy ``pass_coast_s`` (None default
+        => byte-identical everywhere, including for a wire-committed pass)."""
+        if self._pass_wire and self.config.pass_wire_coast_s is not None:
+            return float(self.config.pass_wire_coast_s)
+        return float(self.config.pass_coast_s)
 
     def _pass_acquired_next(self, nav: NavState, pose: GatePose) -> bool:
         """True iff the seeker is in the ACQUIRE-NEXT window (past the dead-reckon coast) AND a fresh
@@ -1085,9 +1275,11 @@ class GateSeeker:
         if self._pass_t_ns is None or pose is None:
             return False
         elapsed = (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9
-        if elapsed < self.config.pass_coast_s:
+        if elapsed < self._effective_pass_coast_s():   # A31: 0.25 s on a wire-committed pass
             return False                            # still gliding through the opening -> not yet
         # past the dead-reckon coast: a sighting at a real downrange range = the next gate re-acquired.
+        # (range_m > pass_degenerate_range_m keeps the just-passed gate out even on the fast
+        # window: behind the image plane it is rejected upstream, and point-blank it is degenerate.)
         return float(pose.range_m) > self.config.pass_degenerate_range_m
 
     def _in_pass_dead_reckon(self, sim_time_ns: int) -> bool:
@@ -1097,7 +1289,7 @@ class GateSeeker:
         if not self._passing or self._pass_t_ns is None:
             return False
         elapsed = (int(sim_time_ns) - self._pass_t_ns) / 1e9
-        return elapsed < (self.config.pass_coast_s + self.config.acquire_next_s)
+        return elapsed < (self._effective_pass_coast_s() + self.config.acquire_next_s)
 
     def _pass_coast_command(self, nav: NavState) -> ControlCommand:
         """The bounded LEVEL forward COAST through the pass (dead-reckon) + while acquiring the next
@@ -1109,7 +1301,7 @@ class GateSeeker:
         never pitch up), so the dead-reckon glide is always bounded."""
         if not self._in_pass_dead_reckon(int(nav.sim_time_ns)):
             # the bounded coast+acquire window elapsed -> end the pass, revert to the gentle level hold.
-            self._end_pass()
+            self._end_pass(int(nav.sim_time_ns))
             return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
                                       attitude_safe=True)
         yaw0 = self._pass_heading if self._pass_heading is not None else self._att_yaw(nav)
@@ -1488,6 +1680,20 @@ class GateSeeker:
         az_eff = float(np.sign(az)) * max(abs(az) - db, 0.0)    # continuous deadband
         cap = abs(float(self.config.image_lat_cap_mps2))
         a_lat = float(np.clip(self.config.image_kaz_mps2_per_rad * az_eff, -cap, cap))
+        # A31 LATERAL-DEMAND SLEW (defense-in-depth for hops that pass any gate): rate-limit the
+        # per-tick CHANGE of a_lat so even an ACCEPTED one-frame bearing hop cannot snap the roll
+        # demand to the rail in one tick (t=3.25: alat 0 -> -1.5 in ONE tick). An honest az ramp
+        # is far below the limit; the very first slewed tick passes through (no dt reference yet
+        # -- the pursuit ramp owns the acquisition transient). 0.0 => off (legacy, byte-identical).
+        if self.config.image_lat_slew_mps3 > 0.0:
+            _now = int(nav.sim_time_ns)
+            if self._alat_slew_t_ns is not None and self._alat_slew_prev is not None:
+                _dt = max((_now - self._alat_slew_t_ns) / 1e9, 0.0)
+                _step = float(self.config.image_lat_slew_mps3) * _dt
+                a_lat = float(np.clip(a_lat, float(self._alat_slew_prev) - _step,
+                                      float(self._alat_slew_prev) + _step))
+            self._alat_slew_prev = a_lat
+            self._alat_slew_t_ns = _now
         fwd_scale = float(max(np.cos(az), 0.0)) ** 2            # push hardest centered, yield off-axis
         self._last_fwd_scale = fwd_scale
         a_fwd = self.config.forward_accel_mps2 * float(eff_ramp) * float(fwd_ramp) * fwd_scale
@@ -1495,6 +1701,122 @@ class GateSeeker:
         a_vec = a_fwd * np.asarray(los, dtype=np.float64) + a_lat * e_right
         self._last_alat = a_lat                                 # reuse the A29 lateral stash (alat_mps2)
         return _clip_norm(a_vec, self.config.total_accel_cap_mps2)
+
+    # =======================================================================
+    # A31 ORBIT-BREAKER  (cumulative-LOS guard + hard yaw-excursion clamp)
+    # =======================================================================
+    def _reset_chase(self) -> None:
+        """Drop the A31 chase state (the cumulative-LOS integrator + the yaw-clamp anchor + the
+        trip counter). The state describes ONE gate acquisition, so it is dropped at pass
+        begin/end and :meth:`reset`; the next pursuit tick re-seeds the baseline."""
+        self._chase_psi0 = None
+        self._chase_yaw0 = None
+        self._chase_dpsi = 0.0
+        self._chase_prev_psi = None
+        self._chase_prev_pose_ns = None
+        self._chase_rate = None
+        self._orbit_break_t_ns = None
+        self._orbit_trips = 0
+
+    def _rebase_chase(self, yaw_des: float) -> None:
+        """Re-anchor the chase baseline at the CURRENT geometry (an orbit-break exit): the
+        integrator restarts from zero and the yaw clamp re-anchors at the held heading. The trip
+        counter is KEPT -- a second trip on the same acquisition drops the track (spec §2.4.4)."""
+        self._chase_psi0 = float(yaw_des)
+        self._chase_prev_psi = float(yaw_des)
+        self._chase_dpsi = 0.0
+        self._chase_rate = None
+        self._chase_yaw0 = self._last_yaw if self._last_yaw is not None else float(yaw_des)
+        self._last_chase_dpsi = 0.0                 # instrumentation follows the rebase
+
+    def _update_chase(self, yaw_des: float, pose_ns: int) -> None:
+        """Accumulate the CUMULATIVE unwrapped LOS rotation since acquisition (§1.2's observable:
+        the instantaneous az stays small during a whip -- the yaw obediently lag-follows -- so
+        only the integrated sweep exposes the orbit). One sample per FRESH pose (camera-epoch
+        stamp dedupe, same discipline as the A29 LOS-rate sampler); the shortest-path per-pose
+        delta also yields the fresh-pose LOS drift used by the orbit-break early exit."""
+        if self._chase_psi0 is None:
+            self._chase_psi0 = float(yaw_des)
+            self._chase_yaw0 = self._last_yaw if self._last_yaw is not None else float(yaw_des)
+            self._chase_prev_psi = float(yaw_des)
+            self._chase_prev_pose_ns = int(pose_ns)
+            self._chase_dpsi = 0.0
+            self._chase_rate = None
+        elif int(pose_ns) != self._chase_prev_pose_ns:
+            d = float(np.arctan2(np.sin(yaw_des - self._chase_prev_psi),
+                                 np.cos(yaw_des - self._chase_prev_psi)))
+            dt = (int(pose_ns) - int(self._chase_prev_pose_ns)) / 1e9
+            self._chase_dpsi += d
+            if dt > 0.0:
+                self._chase_rate = d / dt
+            self._chase_prev_psi = float(yaw_des)
+            self._chase_prev_pose_ns = int(pose_ns)
+        self._last_chase_dpsi = float(self._chase_dpsi)     # A31 instrumentation (logging only)
+
+    def _maybe_orbit_break(self, nav: NavState, yaw_des: float) -> ControlCommand | None:
+        """The orbit-breaker regime driver (spec §2.4), called each pursuit tick after
+        :meth:`_update_chase` when ``orbit_guard_rad > 0``. Returns the bounded brake command
+        while the break regime is active, the no-detection hold on a second trip (track dropped),
+        or ``None`` to continue normal pursuit.
+
+          * TRIP: |cumulative LOS rotation| exceeds ``orbit_guard_rad`` -> enter ``orbit_break``
+            for at most ``orbit_break_s``: forward accel 0, lateral = the full image cap toward
+            the CURRENT apparent gate (the anti-tangential brake), yaw setpoint HELD (stop
+            following the sweep -- let the LOS come back as the tangential velocity dies).
+          * EXIT: early when the gate re-centers (|az| < exit_az) with the fresh-pose LOS drift
+            below exit_rate, else on the clock. On exit the chase baseline REBASES and pursuit
+            resumes the same tick.
+          * SECOND trip on one acquisition: refuse the spin -- drop the track + the ZOH pose and
+            fall to the level no-detection hold until a NEW frame re-acquires cleanly."""
+        now = int(nav.sim_time_ns)
+        yaw_now = self._att_yaw(nav)
+        az = float(np.arctan2(np.sin(yaw_des - yaw_now), np.cos(yaw_des - yaw_now)))
+        if self._orbit_break_t_ns is None:
+            if abs(self._chase_dpsi) <= self.config.orbit_guard_rad:
+                return None                          # healthy pursuit -> continue
+            self._orbit_trips += 1
+            if self._orbit_trips >= 2:
+                # SECOND trip on the same acquisition: drop the track, wait level, reacquire.
+                self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+                self._reset_los_rate()
+                self._reset_bearing_gate()
+                self._reset_chase()
+                self._last_pose = None               # drop the ZOH too: wait for a NEW frame
+                self._last_regime = "hold"
+                return self._hold_command(nav, yaw_rate_cap=self.config.reacquire_yaw_rate_rps,
+                                          attitude_safe=True)
+            self._orbit_break_t_ns = now             # enter the bounded brake regime
+        else:
+            elapsed = (now - self._orbit_break_t_ns) / 1e9
+            recentered = (abs(az) < self.config.orbit_break_exit_az_rad
+                          and self._chase_rate is not None
+                          and abs(self._chase_rate) < self.config.orbit_break_exit_rate_rps)
+            if elapsed >= self.config.orbit_break_s or recentered:
+                self._orbit_break_t_ns = None
+                self._rebase_chase(yaw_des)          # re-anchor and resume pursuit THIS tick
+                self._last_regime = "pursuit"        # idempotent with command_visual's stamp
+                return None
+        return self._orbit_break_command(nav, az)
+
+    def _orbit_break_command(self, nav: NavState, az: float) -> ControlCommand:
+        """The bounded whip-abort brake: ZERO forward drive, the lateral at the full image cap
+        toward the CURRENT apparent gate (same ``e_right(yaw_now)`` composition as A30 -- during
+        a sweep the gate sits off-center in the sweep direction, so this points anti-tangential),
+        yaw setpoint HELD at the last commanded heading."""
+        yaw_now = self._att_yaw(nav)
+        yaw_hold = self._last_yaw if self._last_yaw is not None else yaw_now
+        a_lat = float(np.sign(az)) * abs(float(self.config.image_lat_cap_mps2))
+        e_right = np.array([-np.sin(yaw_now), np.cos(yaw_now), 0.0])
+        a_vec = a_lat * e_right
+        self._last_az_err = float(az)               # instrumentation (shared A30 stashes)
+        self._last_fwd_scale = 0.0
+        self._last_alat = a_lat
+        self._last_regime = "orbit_break"           # overrides command_visual's "pursuit"
+        self._last_yaw = yaw_hold
+        los = np.array([np.cos(yaw_hold), np.sin(yaw_hold), 0.0])
+        launch = self._launch_ramp(int(nav.sim_time_ns))
+        return self._feedforward_command(nav, los, yaw_hold, launch, 0.0, 1.0,
+                                         vz_cmd=0.0, accel_vec=a_vec)
 
     def _visual_pursuit_command(self, nav: NavState, pose: GatePose) -> ControlCommand:
         """Build the slow pursuit CTBR from the SEEN gate's relative bearing (no map, no abs position).
@@ -1535,9 +1857,32 @@ class GateSeeker:
         # epoch-rate skew cancels; a ZOH re-feed of the same pose_ns is not a new geometry sample).
         if self.config.use_los_rate_damping:
             self._update_los_rate(yaw_des, int(pose.sim_time_ns))
+        # A31 §2.6 instrumentation fix: _last_track_range_m was written ONLY inside the A29 branch
+        # (unreachable under A30 -> track_range_m NULL all flight, run 20260703_160715). Stash it
+        # every pursuit tick -- flight-over-flight range history measures the overfly radius.
+        self._last_track_range_m = (float(self._track_range_m) if self._track_range_m is not None
+                                    else float(pose.range_m))
+        # A31 ORBIT-BREAKER + yaw-excursion clamp (both off by default -> unreachable). The chase
+        # integrator accumulates the unwrapped LOS rotation since acquisition; the guard aborts a
+        # forming whip into a bounded brake instead of following the sweep to backwards.
+        if self.config.orbit_guard_rad > 0.0 or self.config.orbit_yaw_clamp_rad > 0.0:
+            self._update_chase(yaw_des, int(pose.sim_time_ns))
+            if self.config.orbit_guard_rad > 0.0:
+                brk = self._maybe_orbit_break(nav, yaw_des)
+                if brk is not None:
+                    return brk
         # RATE-LIMIT the heading slew: cap the per-tick change of the yaw setpoint so the steering
         # bearing stays SMOOTH (the proximate fix for the swing that saturated roll in A3).
         yaw = self._slew_heading(yaw_des, int(nav.sim_time_ns))
+        # A31 hard yaw-excursion clamp: the slewed pursuit yaw cannot rotate past the clamp from
+        # the yaw at (re)acquisition, whatever the bearing does -- never turn to backwards.
+        if self.config.orbit_yaw_clamp_rad > 0.0 and self._chase_yaw0 is not None:
+            c = abs(float(self.config.orbit_yaw_clamp_rad))
+            d = float(np.arctan2(np.sin(yaw - self._chase_yaw0), np.cos(yaw - self._chase_yaw0)))
+            if abs(d) > c:
+                d = float(np.clip(d, -c, c))
+                yaw = float(np.arctan2(np.sin(self._chase_yaw0 + d),
+                                       np.cos(self._chase_yaw0 + d)))
         self._last_yaw = yaw
         # PURSUIT RAMP: scale the translational lean authority up from a floor over the first
         # pursuit_ramp_s after release (a noisy first bearing can't step-saturate roll), composed with
@@ -1750,10 +2095,18 @@ class GateSeeker:
         tilt eases IN (the first pursuit ticks don't step to the full forward lean). The egress window
         sits inside this ramp, so when pursuit takes over the forward demand is already partly ramped;
         we measure the ramp from RELEASE (not from pursuit start) for a continuous build. 1.0 once the
-        ramp completes / when disabled."""
+        ramp completes / when disabled.
+
+        A31 (``reramp_forward_after_pass``): the ramp clock restarts at EVERY pass end
+        (``_end_pass`` writes ``_fwd_ramp_t_ns``), so the forward drive re-ramps from zero into
+        each fresh acquisition instead of feeding full drive while the yaw converges (the
+        tail-chase feed, spec §2.3). Flag off / no pass yet => the release clock (byte-identical)."""
         if self.config.forward_ramp_s <= 0.0 or self._release_t_ns is None:
             return 1.0
-        elapsed = (int(sim_time_ns) - self._release_t_ns) / 1e9
+        t0 = self._release_t_ns
+        if self.config.reramp_forward_after_pass and self._fwd_ramp_t_ns is not None:
+            t0 = self._fwd_ramp_t_ns
+        elapsed = (int(sim_time_ns) - t0) / 1e9
         return float(np.clip(elapsed / self.config.forward_ramp_s, 0.0, 1.0))
 
     def _slew_heading(self, yaw_des: float, sim_time_ns: int) -> float:
@@ -1972,6 +2325,17 @@ class GateSeeker:
         self._att_hist = None
         self._last_az_err = None
         self._last_fwd_scale = None
+        # A31: wire-pass flag, forward re-ramp clock, chase/orbit state, lateral-slew history,
+        # bearing-gate reference + the instrumentation stashes.
+        self._pass_wire = False
+        self._fwd_ramp_t_ns = None
+        self._reset_chase()
+        self._alat_slew_prev = None
+        self._alat_slew_t_ns = None
+        self._reset_bearing_gate()
+        self._last_chase_dpsi = None
+        self._last_bearing_dev_rad = None
+        self._last_bearing_allow_rad = None
         for k in self.diag_counts:
             self.diag_counts[k] = 0
 

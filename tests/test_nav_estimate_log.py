@@ -65,6 +65,10 @@ EXPECTED_KEYS = {
     "az_err_rad",       # A30 §4: the apparent gate azimuth az = wrap(psi_world - yaw_now) (null when off)
     "fwd_scale",        # A30 §4: the cos^2(az) forward-pointing scale in [0,1] (null when off)
     "seeker_regime",    # A29 §4.4: which command_visual regime returned this tick (first-class)
+    "chase_dpsi_rad",   # A31: cumulative unwrapped LOS rotation since acquisition (orbit/whip guard; null when off)
+    "pass_wire",        # A31: the authoritative wire gate-pass fast-turn signal (null when off)
+    "bearing_dev_rad",  # A31: IMU-consistency bearing gate's last measured deviation (null when off)
+    "bearing_allow_rad",  # A31: the bearing gate's noise+parallax allowance for that tick (null when off)
 }
 
 

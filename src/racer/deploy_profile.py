@@ -247,11 +247,66 @@ def vq2_case_c() -> DeployProfile:
         # shipped value, so flag-off byte-identity is untouched).
         # A29 KEPT: pursuit_yaw_slew_rps 1.5 (the delay trim) and the continuous clock
         # reconciliation in nav_config above (pose_age p50 138 ms / 62% fresh -- a confirmed win).
+        # A31 (2026-07-03, run 20260703_160715 -- immediate turn on the wire gate-pass; see
+        # handoff/vq2_a31_immediate_turn_spec_2026-07-03.md):
+        #   * pass_wire_coast_s 0.25: the RACE_STATUS index increment means the drone is PAST the
+        #     gate plane -- the legacy 1.2 s blind glide was pure lost time (gate 1 was DETECTED
+        #     during it; the turn started 1.22 s late carrying ~3.9 m/s). Poses become eligible
+        #     0.25 s after a wire-committed/confirmed pass -> turn latency <= ~0.4 s.
+        #   * pass_coast_accel_mps2 0.0: spend momentum through the pass, don't build it (+1.5 m/s
+        #     was added across the old accelerating glide, on a FROZEN blind heading).
+        #   * reramp_forward_after_pass: the forward feedforward re-ramps from ZERO after every
+        #     pass -- point before pushing; feeding forward drive while the yaw converges is what
+        #     sustained the tail-chase.
+        #   * forward_accel_mps2 1.2 -> 0.8 (slow the approach, commander directive): the whip is
+        #     a geometry disease -- LOS sweep rate v_t/r ~ 0.7 rad/s outran the closed-loop yaw
+        #     follow. Less carried speed (~sqrt(0.8/1.2) ~ 0.82x build-up, compounding with the
+        #     zero coast accel and the ~1 s earlier turn to roughly HALVE v_t at acquisition)
+        #     drops the sweep toward ~0.2-0.3 rad/s, inside what the yaw servo + the A30 lateral
+        #     brake (saturated 63% of the A30 chase at +/-1.5) can actually kill.
+        #   * orbit_guard_rad 1.75 (~100 deg) + orbit_break_s 1.0: the pre-registered safety net.
+        #     The guard observable is CUMULATIVE unwrapped LOS rotation since acquisition -- the
+        #     203 deg whip kept the instantaneous az SMALL (+0.17 rad mean, yaw lag-following),
+        #     so only the integral exposes it. Trip = a <=1 s brake (forward 0, lateral cap
+        #     toward the apparent gate, yaw held), second trip = drop the track and hold.
+        #   * orbit_yaw_clamp_rad 2.4 (~137 deg): the slewed pursuit yaw physically cannot rotate
+        #     past this from the yaw at acquisition -- never turn to BACKWARDS chasing a gate.
+        #   * use_imu_bearing_gate: the IMU-consistency bearing gate (operator directive --
+        #     REPLACES the "tighten the fixed jump threshold" band-aid; the horizontal analog of
+        #     the A28 vertical complementary filter). Gates are static: predict this frame's
+        #     bearing from the last tracked WORLD direction (capture-time AHRS attitudes
+        #     compensate the measured rotation exactly) and reject a deviation beyond sensor
+        #     noise (0.06 rad) + the translation-parallax bound (4 m/s * dt / range) --
+        #     REGARDLESS of size. The t=3.25 close-range 0.33 rad hop (left roll + the poisoned
+        #     +0.82 m vertical latch -> floor tap) slid UNDER the fixed 0.35 gate; against the
+        #     motion-consistency allowance (~0.10 rad at that dt/range) it is 3x out.
+        #     track_max_bearing_jump_rad deliberately NOT tightened: it stays the 0.35 legacy
+        #     fallback for attitude-unavailable frames (and VQ1's untouched default).
+        #   * image_lat_slew_mps3 6.0 (defense-in-depth): even an accepted noisy bearing can't
+        #     snap the A30 lateral 0 -> +/-1.5 in one tick (full-scale reversal takes 0.5 s; an
+        #     honest az ramp is never limited).
+        #   * hold_thrust_lo/hi_frac 0.90/1.12: the settle hold is a conservative HOVER, not an
+        #     alt-hold on an unseeded estimator -- the old [0.6, 1.4] band let the cold z estimate
+        #     rail the collective (0.159 <-> 0.372) and inject ~+1.2 m/s upward before pursuit
+        #     even began (the startup swell -> overshoot -> floor-tap chain). Worst-case injected
+        #     velocity drops to ~0.3 m/s; the egress thrust floor (1.0x hover) is untouched.
         seeker_overrides={"egress_freeze_attitude": True, "hold_last_demand_s": 0.6,
                           "true_attitude_from_ahrs": True,
                           "use_image_servo_lateral": True,
                           "total_accel_cap_mps2": 2.0,
-                          "pursuit_yaw_slew_rps": 1.5},
+                          "pursuit_yaw_slew_rps": 1.5,
+                          # --- A31 ---
+                          "pass_wire_coast_s": 0.25,          # immediate turn on the wire pass
+                          "pass_coast_accel_mps2": 0.0,       # spend momentum through the pass
+                          "reramp_forward_after_pass": True,  # point before pushing, enforced
+                          "forward_accel_mps2": 0.8,          # slow the approach (converge, don't overfly)
+                          "orbit_guard_rad": 1.75,            # cumulative-LOS whip abort (~100 deg)
+                          "orbit_break_s": 1.0,
+                          "orbit_yaw_clamp_rad": 2.4,         # never chase a gate to backwards
+                          "use_imu_bearing_gate": True,       # IMU-consistency bearing gate (hop killer)
+                          "image_lat_slew_mps3": 6.0,         # no one-frame lateral rail-snap
+                          "hold_thrust_lo_frac": 0.90,        # settle = conservative hover ...
+                          "hold_thrust_hi_frac": 1.12},       # ... not garbage alt-hold
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
         # the egress->pursuit HANDOFF (held ~-18deg nose-down vs ~-5deg cruise = ~13deg error) commands

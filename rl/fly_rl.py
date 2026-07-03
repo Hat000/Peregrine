@@ -1338,13 +1338,32 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
     except Exception:
         rec["az_err_rad"] = rec["fwd_scale"] = None
     # seeker_regime: which command_visual regime returned THIS tick
-    # (settle/anchor/egress/pass/bridge/hold/pursuit) -- first-class, so the next post-mortem does
-    # not have to reconstruct the regime from field-change fingerprints (A29 §4.4).
+    # (settle/anchor/egress/pass_wire/pass_vis/orbit_break/bridge/hold/pursuit) -- first-class, so
+    # the next post-mortem does not have to reconstruct the regime from field-change fingerprints
+    # (A29 §4.4; the pass regime is A31-suffixed by its commit source, wire vs vision).
     try:
         reg = getattr(seeker, "_last_regime", None) if seeker is not None else None
         rec["seeker_regime"] = str(reg) if reg is not None else None
     except Exception:
         rec["seeker_regime"] = None
+
+    # --- A31 instrumentation (spec §2.6; never feeds control) ---
+    # chase_dpsi_rad: the cumulative unwrapped LOS rotation since acquisition (the orbit-guard
+    # integrator); pass_wire: whether the current/last pass was committed or confirmed by the
+    # AUTHORITATIVE wire signal (the fast acquire window); bearing_dev_rad / bearing_allow_rad:
+    # the IMU-consistency bearing gate's last measured deviation vs its noise+parallax allowance
+    # (a rejected hop logs dev >> allow). Same stale-retention semantics as the other stashes.
+    try:
+        cd = getattr(seeker, "_last_chase_dpsi", None) if seeker is not None else None
+        rec["chase_dpsi_rad"] = float(cd) if cd is not None else None
+        rec["pass_wire"] = bool(getattr(seeker, "_pass_wire", False)) if seeker is not None else None
+        for key, attr in (("bearing_dev_rad", "_last_bearing_dev_rad"),
+                          ("bearing_allow_rad", "_last_bearing_allow_rad")):
+            val = getattr(seeker, attr, None) if seeker is not None else None
+            rec[key] = float(val) if val is not None else None
+    except Exception:
+        rec["chase_dpsi_rad"] = rec["pass_wire"] = None
+        rec["bearing_dev_rad"] = rec["bearing_allow_rad"] = None
 
     return rec
 
