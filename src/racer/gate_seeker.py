@@ -709,7 +709,32 @@ class GateSeekerConfig:
     # candidate filter on the soft path (the BEARING leg stays soft -- that was the A31 starvation
     # source). OFF (default) => the A32 soft path takes all poses (byte-identical). Only meaningful
     # under ``use_soft_bearing_weight``.
+    #
+    # A34 (2026-07-03) SUPERSEDES H-3: run 20260703_223956 proved the pred_r-RELATIVE wall STARVES
+    # recovery -- once the track smeared far (pred_r ~49 m, via first-acq's permissive fallback
+    # locking a 52 m mis-depth) a fresh CLOSE 6 m pose is |6-49|=43 m > jump -> REJECTED forever, no
+    # recovery. It also never caught the ORIGINAL A32 smear (gradual EMA walk, 0.8-2.5 m/frame, all
+    # sub-threshold). Replaced by ``track_abs_range_cap_m`` below and DROPPED from vq2_case_c; the
+    # flag stays here (default False, dormant) for A/B replay of the A33 behaviour.
     soft_range_hard_reject: bool = False
+
+    # ===================================================================
+    # A34 — ABSOLUTE COURSE-INFORMED RANGE CAP (2026-07-03; spec
+    # handoff/vq2_a34_pose_feed_regression_spec_2026-07-03.md). Replaces H-3's fragile
+    # pred_r-RELATIVE wall with an ABSOLUTE cap at candidate admission. All defaults OFF =>
+    # VQ1 / case-A byte-identical; activated only via vq2_case_c seeker_overrides.
+    # ===================================================================
+    # A candidate whose PnP range exceeds this (m) is physically impossible on the course (VQ1
+    # inter-gate spacing 23.7-38.5 m, usable PnP detection ~24-32 m -- see gate_mapper.py:36) -> a
+    # DIFFERENT object / mis-depthed garbage: HARD-discard at candidate admission, BEFORE the
+    # first-acquisition / continuity split, so EVERY downstream path (incl. first-acq's permissive
+    # ``if not admissible: admissible = poses`` fallback that locked the 52 m garbage) only ever sees
+    # in-range candidates. This is the category where hard-reject is CORRECT (a >35 m reading is not a
+    # plausible measurement to weight, it is a wrong object) -- it does NOT contradict the
+    # weight-don't-discard principle, which governs plausible poses. 35 m clears every legit close
+    # pose observed (6.4-10.7 m) with 3x margin and discards this flight's 48-52 m garbage. None
+    # (default) => OFF, no filter applied == byte-identical (VQ1 / case-A). vq2_case_c: 35.0.
+    track_abs_range_cap_m: float | None = None
 
 
 @dataclass
@@ -957,6 +982,15 @@ class GateSeeker:
             self._last_none_reason = "other"     # no detector / no frame -> nothing to localize
             return None
         poses = self._valid_poses(frame)
+
+        # A34: ABSOLUTE range cap at candidate admission -- discard any candidate beyond the course's
+        # physical max (a >cap reading is a mis-depth / different object, not a gate to weight). Runs
+        # FIRST, before the H-1(a) exclusion and the first-acq/continuity split, so no downstream path
+        # (incl. first-acq's permissive fallback) can ever lock a >cap garbage. None => OFF, no-op
+        # (byte-identical). Empty result -> normal no-candidate coast tick (valid_poses_empty).
+        if self.config.track_abs_range_cap_m is not None:
+            poses = [p for p in poses
+                     if float(p.range_m) <= self.config.track_abs_range_cap_m]
 
         # A33 H-1(a): while passing, EXCLUDE the just-passed gate GEOMETRICALLY (its snapshot world
         # direction + range) so the acquire-next re-lock (or the turn-through acquisition) cannot grab

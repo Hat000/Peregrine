@@ -355,10 +355,17 @@ def vq2_case_c() -> DeployProfile:
                           # (blind turn target), ride through the gate-frame occlusion, refine when
                           # gate-2 clears -- do NOT wait for a gate-2 pose (operator amendment 1).
                           "pass_turn_through": True,
-                          # H-3 hard RANGE reject on the A32 soft track path: an 8+ m range jump is a
-                          # DIFFERENT gate, not a noisy same-gate measurement -- it smeared the track
-                          # gate-1 -> gate-2 over ~10 frames. Bearing leg stays soft.
-                          "soft_range_hard_reject": True,
+                          # A34 (2026-07-03; spec vq2_a34_pose_feed_regression_spec) REPLACES H-3:
+                          # H-3's pred_r-RELATIVE range wall STARVED recovery on run 20260703_223956
+                          # (once the track smeared to ~49 m via first-acq's permissive fallback
+                          # locking a 52 m mis-depth, a fresh close 6 m pose is |6-49|=43 m > jump ->
+                          # REJECTED forever) and never caught the original gradual A32 smear anyway.
+                          # DROPPED (soft_range_hard_reject no longer set here -> field default False).
+                          # ABSOLUTE cap instead: a >35 m reading is physically impossible on the
+                          # course (max spacing ~30-38 m, usable PnP ~32 m) = garbage, HARD-discarded
+                          # at candidate admission before any acquisition path (closes the permissive-
+                          # fallback hole). 35 m keeps every legit close pose (6.4-10.7 m) with margin.
+                          "track_abs_range_cap_m": 35.0,
                           # S-1 sharpen the off-axis forward cut cos^2 -> cos^4: cuts overfly speed
                           # (and the translational-lift up-bias it drives) without touching centered
                           # pace; keeps the immediate turn (H-1c) from also being an immediate lunge.
