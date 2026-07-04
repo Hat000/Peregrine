@@ -1346,6 +1346,15 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["gate_pd_scale"] = float(gps) if gps is not None else None
     except Exception:
         rec["gate_pd_scale"] = None
+    # --- TURN PACKAGE b1 instrumentation --- track_loww_ticks: the seeker's consecutive
+    # fresh-low-weight frame counter (the poisoned-reference blackout was invisible without it --
+    # observability on exactly this counter drove the b1 discovery). 0 between streaks; None when
+    # no seeker. The SHARED coast counter is intentionally not logged (it mixes no-pose ticks).
+    try:
+        lww = getattr(seeker, "_track_loww_ticks", None) if seeker is not None else None
+        rec["track_loww_ticks"] = int(lww) if lww is not None else None
+    except Exception:
+        rec["track_loww_ticks"] = None
     # seeker_regime: which command_visual regime returned THIS tick
     # (settle/anchor/egress/pass_wire/pass_vis/orbit_break/bridge/hold/pursuit) -- first-class, so
     # the next post-mortem does not have to reconstruct the regime from field-change fingerprints
@@ -1415,6 +1424,16 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["zoff_w"] = None if (zw is None or zw != zw) else float(zw)
     except Exception:
         rec["bearing_w"] = rec["zoff_w"] = None
+    # vert_vz_imu (R2-2 A-1, 2026-07-04): the estimator's PARALLEL IMU-only washout vz -- the
+    # terminal-brake rate source under gate_pd_brake_imu_vz. Logged so the confirm-fly can compare
+    # it against vert_vz_est tick-by-tick (the close-range sign-inversion evidence channel). Null
+    # when the estimator is off/unseeded.
+    try:
+        vest = getattr(nav, "_vert_est", None)
+        vzi = getattr(vest, "vz_imu", None) if vest is not None else None
+        rec["vert_vz_imu"] = None if (vzi is None or vzi != vzi) else float(vzi)
+    except Exception:
+        rec["vert_vz_imu"] = None
 
     return rec
 

@@ -320,6 +320,46 @@ class Controller:
     # ff_vertical_kd_alt*(1 + kb). 1.0 => the brake DOUBLES at the plane (vq2_case_c). Only read when
     # gate_pd_terminal is ON; the far-field (s=1) brake is ff_vertical_kd_alt regardless of kb.
     gate_pd_rate_boost: float = 1.0
+    # --- R2-2 (2026-07-04, gate-2 turn dive on run 20260704_183049; all three fields only read
+    # when gate_pd_vertical is ON, all default-OFF => byte-identical) -------------------------
+    # A-1: TERMINAL BRAKE ON THE IMU-ONLY WASHOUT vz. Diagnosis (ticks 46-57): the close-range bias
+    # sweep injects a SIGN-INVERTED vz into the A28 filter via HIGH-weight accepted innovations
+    # (vz_lp read -1.1 "climbing" during a wire-corroborated sink; zoff_w was 0.85-0.98, so no
+    # weight gate can fire), and the R2-1 boost then AMPLIFIED that wrong-signed brake x1.49-1.67
+    # -> thrust 0.16-0.20 -> -3.9 m/s^2 -> floor at 395.24s. THE FIX: inside the terminal zone
+    # (s < 1) the brake consumes ``NavState.vert_vz_imu`` -- the estimator's PARALLEL pure-A24
+    # washout that vision never corrects -- instead of vz_lp. The offline reconstruction reads
+    # +0.6..+1.8 (the true developing sink) at those exact ticks, so the brake ARRESTS the sink
+    # instead of causing it. s=1 / flag off / vert_vz_imu NaN => the vz_lp path EXACTLY. KNOWN
+    # LIMITATION (commander-accepted 2026-07-04): the washout is DC-blind to a SUSTAINED climb
+    # (tau=2 leak, reads ~35-55% of run 20260704_135554's steady 1.4-1.5 m/s climb) -- but still
+    # right-SIGNED where vz_lp flipped to +1.39 there (anti-braking in R2-1's own design case);
+    # the s-taper position-fade remains the primary sustained-climb terminal fix.
+    gate_pd_brake_imu_vz: bool = False
+    # A-3: NEGATIVE-PULL BOUND on the terminal-zone damping term (collective). Insurance rail: no
+    # rate signal, honest or garbage, may pull more than this below hover inside the terminal zone
+    # (the positive/arrest-the-sink direction is uncapped -- bounded structurally by the estimator
+    # export clip). 0.08 => a capped arrest still yields ~3 m/s^2 of descent authority, killing a
+    # 1.45 m/s climb in ~0.5 s / 0.36 m -- ~2x margin on the 135554 top-bar miss (+0.75 m). None
+    # (default) => no bound, byte-identical. vq2_case_c: 0.08.
+    gate_pd_brake_neg_max: float | None = None
+    # R2-2b: TRUST-TAPER (q-RELEASE) on the gate-PD position term. Diagnosis (ticks 88-105): z_off
+    # dead-reckoned to -6.4 (2x past the +/-3 clip) while the corrective vision was LOW-weight
+    # (zoff_w 0.04-0.15 -- the +20deg camera losing the high gate), pinning term_gate at +0.120 for
+    # ~20 ticks -> thrust 0.548 -> balloon climb. A z_off far past its own consumption clip that
+    # only collapsed-weight vision is feeding is NOT ACTABLE at full authority: fade the position
+    # term to ``zoff_trust_q_floor`` when |z_off| >= ``zoff_trust_m`` AND zoff_w <
+    # ``zoff_trust_w_lo``. A large MEASURED offset at decent weight (the honest gate-2 high-gate
+    # case) keeps q = 1.0 -- the w condition is what separates "vision says so" from "dead
+    # reckoning ran away". Pairs with the estimator-side B1 propagation bound
+    # (VerticalEstimator.zoff_prop_bound_m = 3.5): B1 alone does NOT unpin the position term (the
+    # 3.5 cap still exceeds the 3.0 clip); THIS release is what unpins it on the collapsed-weight
+    # ticks. zoff_trust_m = 3.4 sits just under the B1 cap so the two engage together. OFF
+    # (default False) => q = 1.0 always, byte-identical. [VQ2 R2-2b, 2026-07-04]
+    gate_pd_zoff_trust_taper: bool = False
+    zoff_trust_m: float = 3.4           # |z_off| at/above which the state counts as railed (m)
+    zoff_trust_w_lo: float = 0.15       # zoff_w below which the feeding vision counts as collapsed
+    zoff_trust_q_floor: float = 0.3     # the faded position-term scale while railed+collapsed
     # COLLECTIVE (THRUST) SLEW-RATE LIMIT (the A27 forward-decouple fix, 2026-07-03). Diagnosis of run
     # 20260703_002244: the gate-seeker's FORWARD pursuit is correct (it commands/achieves the -7deg
     # forward tilt, +1.2 m/s^2 demand), but a ~2 Hz VERTICAL bob rail-slams the collective to its
@@ -402,7 +442,9 @@ class Controller:
 
     def _ff_owns_vertical_thrust(self, z: float, vz_t: float, sim_time_ns: int,
                                  vz_meas: float | None = None, z_off: float = 0.0,
-                                 gate_pd_scale: float | None = None) -> float:
+                                 gate_pd_scale: float | None = None,
+                                 vz_imu: float | None = None,
+                                 zoff_w: float | None = None) -> float:
         """Alt-hold collective (pre tilt-comp/clip) for the ff-owns-vertical path (A19c bang-bang fix,
         A25 gate-relative altitude term).
 
@@ -472,9 +514,31 @@ class Controller:
             #   term_gate *= s ; term_damp *= (1 + kb*(1 - s))     [s=1 -> *1, *1 : byte-identical].
             s = (float(np.clip(gate_pd_scale, 0.0, 1.0))
                  if (self.gate_pd_terminal and gate_pd_scale is not None) else 1.0)
-            term_gate = -self.kp_gate * s * float(np.clip(z_off, -self.gate_pd_z_off_clip_m,
-                                                          self.gate_pd_z_off_clip_m))
-            term_damp = self.ff_vertical_kd_alt * (1.0 + self.gate_pd_rate_boost * (1.0 - s)) * vz
+            # R2-2 A-1 (gate_pd_brake_imu_vz, see the field comment): inside the terminal zone the
+            # brake rate source is the IMU-only washout vz -- the channel the close-range bias
+            # sweep cannot sign-invert. s=1 / flag off / NaN => vz_lp EXACTLY (byte-identical).
+            vz_brake = vz
+            if (self.gate_pd_brake_imu_vz and s < 1.0
+                    and vz_imu is not None and np.isfinite(vz_imu)):
+                vz_brake = float(vz_imu)
+            # R2-2b (gate_pd_zoff_trust_taper, see the field comment): fade the position term when
+            # the z_off state is railed past the actable range AND only collapsed-weight vision is
+            # feeding it. A large MEASURED offset at decent weight keeps q = 1.0.
+            q = 1.0
+            if (self.gate_pd_zoff_trust_taper
+                    and zoff_w is not None and np.isfinite(zoff_w)
+                    and abs(z_off) >= self.zoff_trust_m
+                    and zoff_w < self.zoff_trust_w_lo):
+                q = float(self.zoff_trust_q_floor)
+            term_gate = -self.kp_gate * s * q * float(np.clip(z_off, -self.gate_pd_z_off_clip_m,
+                                                              self.gate_pd_z_off_clip_m))
+            term_damp = (self.ff_vertical_kd_alt
+                         * (1.0 + self.gate_pd_rate_boost * (1.0 - s)) * vz_brake)
+            # R2-2 A-3 (gate_pd_brake_neg_max, see the field comment): terminal-zone insurance --
+            # no rate signal may pull more than this below hover; the arrest direction is uncapped.
+            if (self.gate_pd_brake_neg_max is not None and s < 1.0
+                    and term_damp < -float(self.gate_pd_brake_neg_max)):
+                term_damp = -float(self.gate_pd_brake_neg_max)
             self._last_term_gate = term_gate
             self._last_term_damp = term_damp
             out = self.hover_thrust + term_gate + term_damp
@@ -614,16 +678,27 @@ class Controller:
             z_v = float(pos[2])
             vz_v = None
             z_off_v = 0.0
+            vz_imu_v = None
+            zoff_w_v = None
             if self.use_vertical_estimator:
                 vz_est = float(getattr(nav, "vert_vz_est", float("nan")))
                 vz_v = vz_est if np.isfinite(vz_est) else 0.0
                 z_off_est = float(getattr(nav, "z_off_est", float("nan")))
                 z_off_v = z_off_est if np.isfinite(z_off_est) else 0.0
+                # R2-2 (2026-07-04): the IMU-only washout vz (A-1 terminal-brake source) + the last
+                # applied z_off correction weight (R2-2b q-release input), read behind the SAME
+                # gate as vz_est/z_off_est (they ride the same NavState export). NaN -> None ->
+                # the vz_lp path / q=1.0 inside _ff_owns_vertical_thrust (byte-identical).
+                _vzi = float(getattr(nav, "vert_vz_imu", float("nan")))
+                vz_imu_v = _vzi if np.isfinite(_vzi) else None
+                _zw = float(getattr(nav, "zoff_w", float("nan")))
+                zoff_w_v = _zw if np.isfinite(_zw) else None
             # R2-1: the seeker's range-tapered terminal scale (None == 1.0 == byte-identical; only
             # consumed under gate_pd_terminal + gate_pd_vertical inside _ff_owns_vertical_thrust).
             thrust = self._ff_owns_vertical_thrust(z_v, vz_t, int(sp.sim_time_ns),
                                                    vz_meas=vz_v, z_off=z_off_v,
-                                                   gate_pd_scale=sp.gate_pd_scale)
+                                                   gate_pd_scale=sp.gate_pd_scale,
+                                                   vz_imu=vz_imu_v, zoff_w=zoff_w_v)
         else:
             z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
             z_t = z_t - self.alt_offset_m              # fly above the gate line (NED z+ = down)

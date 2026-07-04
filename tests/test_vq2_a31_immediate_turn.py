@@ -654,7 +654,9 @@ def test_profile_wiring_a31():
     assert ov["pass_coast_s"] == 0.3
     assert ov["pass_coast_accel_mps2"] == 0.0
     assert ov["reramp_forward_after_pass"] is True
-    assert ov["forward_accel_mps2"] == 0.65   # A36 Item 1: slowed 0.8 -> 0.65 ("slow is smooth")
+    # TURN PACKAGE a1 (2026-07-04, run 20260704_173948): slowed again 0.65 -> 0.45 (entry
+    # ~3.9 m/s at the gate-0 plane vs ~2.2-2.8 comfortable at the realized lateral authority).
+    assert ov["forward_accel_mps2"] == 0.45
     # FIX 3: orbit-breaker + yaw clamp. (A36 coordinated-turn DEMOTED the guard 1.75 -> 3.0 so it no
     # longer pre-empts the pass-turn -- a rare failsafe.)
     assert ov["orbit_guard_rad"] == 3.0
@@ -665,8 +667,9 @@ def test_profile_wiring_a31():
     # fallback for attitude-unavailable frames).
     assert ov["use_imu_bearing_gate"] is True
     assert "track_max_bearing_jump_rad" not in ov
-    # FIX 4: lateral slew + settle band.
-    assert ov["image_lat_slew_mps3"] == 6.0
+    # FIX 4: lateral slew + settle band. (TURN PACKAGE c2, 2026-07-04: 6.0 -> 9.0 -- the anti-snap
+    # bound scales with the raised k_az=12; full-scale reversal still >= 0.67 s.)
+    assert ov["image_lat_slew_mps3"] == 9.0
     # A35 Fix-3 (2026-07-03): settle hold floor 0.90 -> 1.00 (never sink off the line -- the startup
     # dip that tapped ground on run 20260704_024434). The 1.12 anti-swell cap stays.
     assert ov["hold_thrust_lo_frac"] == 1.00

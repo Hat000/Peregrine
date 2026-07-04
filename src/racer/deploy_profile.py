@@ -241,10 +241,20 @@ def vq2_case_c() -> DeployProfile:
         # exception to V-1's block), and freezes the propagate while distrusted -- a NARROW exception
         # for real excursions; small/noisy offsets keep the A32/A28 behaviour exactly. See
         # handoff/vq2_a35_exposed_control_failures_spec_2026-07-03.md §2.
+        # R2-2 B1 (2026-07-04): zoff_prop_bound_m=3.5 -- dead-reckoning may never GROW |z_off|
+        # beyond max(3.5, |current|). Run 20260704_183049: the predict step dead-reckoned z_off
+        # -3.2 -> -6.4 (later -9.45; four |z_off|>3.5 rail episodes) on a fiction-railed vz while
+        # only collapsed-weight vision was correcting -- every metre past the controller's +/-3
+        # consumption clip adds ZERO authority and only adds recovery lag. Shrink always allowed;
+        # measurements (lock/alpha/reseed) untouched, so an honest large MEASURED offset still
+        # sets the state (the gate-2 high-gate case). Pairs with the controller-side R2-2b
+        # q-release in controller_overrides below (B1 caps the state; the q-release unpins the
+        # position term on the railed + collapsed-weight ticks -- B1 alone cannot, 3.5 > clip 3.0).
         vertical_estimator_overrides={"use_zoff_filter": True, "export_clip_mps": 2.5,
                                       "use_soft_innov_weight": True,
                                       "zoff_reseed_min_w": 0.3,
-                                      "use_zoff_big_trust": True},
+                                      "use_zoff_big_trust": True,
+                                      "zoff_prop_bound_m": 3.5},
     )
     return DeployProfile(
         name="vq2_case_c",
@@ -349,7 +359,9 @@ def vq2_case_c() -> DeployProfile:
                           # contributes, coast/track-drop only on PERSISTENT w < 0.1. The
                           # dev/allow physics above is unchanged (the gate machinery computes it).
                           "use_soft_bearing_weight": True,
-                          "image_lat_slew_mps3": 6.0,         # no one-frame lateral rail-snap
+                          # image_lat_slew_mps3 6.0 -> 9.0 in the TURN PACKAGE block below (c2:
+                          # scale the anti-snap limit with the raised k_az; reversal still >=0.67s).
+                          "image_lat_slew_mps3": 9.0,
                           # A35 Fix-3 (2026-07-03; spec vq2_a35_exposed_control_failures_spec):
                           # 0.90 -> 1.00. Run 20260704_024434 tapped the ground on the line: during
                           # settle/anchor the cold AHRS levels a ~-18 deg spawn pitch (~0.5 s) and the
@@ -447,11 +459,12 @@ def vq2_case_c() -> DeployProfile:
                           #
                           # ITEM 1 -- POINTING GATE on forward drive ("point before you push") + SLOWER
                           #   approach (operator: "even a tad slower would be good"): cut a_fwd to ~0
-                          #   until the gate is roughly centered (sharp turn, not a wide arc), and drop
-                          #   the cruise forward accel 0.8 -> 0.65 (~19% slower). "slow is smooth."
-                          "fwd_point_gate_az_rad": 0.35,
+                          #   until the gate is roughly centered (sharp turn, not a wide arc). A36 set
+                          #   az_rad 0.35 / accel 0.65; the TURN PACKAGE below tightens both (a1/a2:
+                          #   0.65 -> 0.45 and 0.35 -> 0.25; run 20260704_173948 understeer).
+                          "fwd_point_gate_az_rad": 0.25,
                           "fwd_point_gate_full_az_rad": 0.05,
-                          "forward_accel_mps2": 0.65,   # A36 Item 1: slower approach (was A33's 0.8)
+                          "forward_accel_mps2": 0.45,
                           #
                           # ITEM 4 -- LATERAL-FIRST "switch lanes" (ON): bank sideways onto the approach
                           #   line instead of yaw-to-face + being carried past (operator saw "barely any
@@ -489,6 +502,39 @@ def vq2_case_c() -> DeployProfile:
                           #    failsafe (orbit_guard_rad 1.75 -> 3.0, ~172deg) so it stops pre-empting it.
                           "pass_arm_range_m": 4.5,
                           "orbit_guard_rad": 3.0,
+                          #
+                          # === TURN PACKAGE (2026-07-04; run 20260704_173948 gate-1 understeer,
+                          # operator eyes: "flew into it a bit fast, and understeered... could've
+                          # rolled to the right more... the more we overshoot the more the gate
+                          # perspectival turns into a parallelogram"). Measured: entry ~3.4-3.9 m/s
+                          # at the plane vs ~2.2-2.8 comfortable at the REALIZED lateral (~1 m/s^2);
+                          # alat NEVER railed (max 2.39 of the 3.0 cap, 0% cap-bound -> caps stay);
+                          # realized bank p90 5.6 deg; roll was INPUT-crushed, not cap-bound: the
+                          # bearing-gate reference seeded on one outlier pose post-pass, 8 honest
+                          # frames Cauchy-crushed (bw 0.01-0.06) while az was 27-34 deg = 0.76 s of
+                          # zero roll at peak need; bw collapses ~3x past |az|~17 deg (the skew
+                          # feedback: overshoot -> skew -> bw down -> az_eff*bw down -> less roll).
+                          # Five levers, each independently revertible:
+                          #  a1 forward_accel 0.65 -> 0.45 (above): commanded approach dv 1.37 ->
+                          #     ~0.95 m/s, entry ~3.9 -> ~3.3 m/s (the residual ~2.4 m/s is the
+                          #     settle/egress spawn-tilt slide -- a flagged follow-up, not this knob).
+                          #  a2 fwd_point_gate_az_rad 0.35 -> 0.25 (above): full forward cut beyond
+                          #     ~14 deg az (was 20) -- the graze window re-engaged fwd_scale 0.26-1.0
+                          #     at az 8-14 deg while laterally offset, re-feeding the orbit.
+                          #  c1 image_kaz 8 -> 12 (here): in the graze band (az 8-17 deg) alat was
+                          #     0.6-1.5 (bank <=8 deg); killing the ~2-3 m/s carried tangential drift
+                          #     needs ~2-3 m/s^2. k_az=12 delivers 1.5-2.8 there, rails the unchanged
+                          #     3.0 cap only past az~17 deg; k_az*b ~ 2.5 vs the unstable A29's ~20.
+                          "image_kaz_mps2_per_rad": 12.0,
+                          #  c2 image_lat_slew 6 -> 9 (above): honest az-ramp bound scales with k_az
+                          #     (0.7 rad/s * 12 ~ 8.4); full-scale reversal still >= 0.67 s >= 2x the
+                          #     0.21 s yaw lag -- the A31 anti-snap property holds.
+                          #  b1 track_max_loww_ticks (here): SEPARATE fresh-frames-only low-weight
+                          #     persistence limit -- the shared track_max_coast_ticks (8) also bounds
+                          #     honest no-frame droughts (p90 pose age ~345 ms ~ 7 ticks) and cannot
+                          #     be lowered. 4 => the poisoned reference re-seeds on the 5th crushed
+                          #     frame (~0.3 s) instead of the 9th (0.76 s flown). None = byte-identical.
+                          "track_max_loww_ticks": 4,
                           },
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
@@ -649,6 +695,29 @@ def vq2_case_c() -> DeployProfile:
                               # alt_thrust_lo. Far (s=1) => today's A28 law EXACTLY. See the
                               # Controller.gate_pd_terminal field comment.
                               "gate_pd_terminal": True, "gate_pd_rate_boost": 1.0,
+                              # R2-2 (2026-07-04, gate-2 turn dive on run 20260704_183049 -- the
+                              # dip-into-floor + z_off-runaway balloon package; see the Controller
+                              # field comments for the full diagnosis chain):
+                              #  A-1 gate_pd_brake_imu_vz: terminal-zone brake consumes the
+                              #     estimator's PARALLEL IMU-only washout vz (vision cannot
+                              #     sign-invert it; vz_lp read -1.1 "climbing" during the wire-
+                              #     corroborated sink that floored the drone at 395.24s while the
+                              #     R2-1 boost amplified that wrong-signed brake x1.49-1.67).
+                              #  A-3 gate_pd_brake_neg_max 0.08: terminal-zone insurance -- no rate
+                              #     signal pulls more than 0.08 collective below hover (a capped
+                              #     arrest still has ~2x margin on the 135554 top-bar case).
+                              #  R2-2b gate_pd_zoff_trust_taper: fade the position term to 0.3x
+                              #     when |z_off| >= 3.4 AND zoff_w < 0.15 (a railed state fed only
+                              #     by collapsed-weight vision is not actable at full authority --
+                              #     the +0.120/20-tick balloon pin, ticks 88-105). Pairs with the
+                              #     estimator-side zoff_prop_bound_m=3.5 (vertical_estimator_
+                              #     overrides above): B1 caps the state, THIS releases the pin
+                              #     (B1 alone cannot -- 3.5 > the 3.0 consumption clip). Honest
+                              #     large MEASURED offsets at decent weight keep q = 1.0.
+                              # One-line reverts: drop any line (all default OFF).
+                              "gate_pd_brake_imu_vz": True,
+                              "gate_pd_brake_neg_max": 0.08,
+                              "gate_pd_zoff_trust_taper": True,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,
                               # A33 V-2a (2026-07-03): OPEN the floor 0.15 -> 0.05. Run 20260703_210632

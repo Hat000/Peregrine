@@ -489,7 +489,8 @@ def test_profile_wiring_a30():
                                                             "export_clip_mps": 2.5,
                                                             "use_soft_innov_weight": True,
                                                             "zoff_reseed_min_w": 0.3,   # A33 V-1
-                                                            "use_zoff_big_trust": True}  # A35 Fix-2
+                                                            "use_zoff_big_trust": True,  # A35 Fix-2
+                                                            "zoff_prop_bound_m": 3.5}   # R2-2 B1
     # VQ1 / case-A: byte-identical (no overrides; every A30 field at its OFF/neutral default).
     assert vq1_case_a().seeker_overrides is None
     assert vq1_case_a().controller_overrides is None

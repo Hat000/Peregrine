@@ -294,6 +294,21 @@ class NavState:
     # vert_vz_est/z_off_est (NavigatorConfig.use_vertical_estimator). Instrumentation only -- no
     # controller currently reads it. [VQ2 A26, 2026-07-02]
     contact_frozen: bool | None = None
+    # R2-2 A-1 export (racer.vertical_estimator.VerticalEstimator.vz_imu): the PARALLEL IMU-ONLY
+    # washout vz (m/s, NED down-positive) -- the pure A24 recurrence, never corrected by vision, so
+    # the close-range bias sweep that sign-inverts vert_vz_est near the gate plane (run
+    # 20260704_183049 ticks 46-57: vz_est -1.1 "climbing" during a wire-corroborated sink) cannot
+    # touch it. Consumed by the controller's terminal brake under ``gate_pd_brake_imu_vz``. NaN when
+    # the estimator is off/unseeded (absent-marker); gated exactly like vert_vz_est
+    # (NavigatorConfig.use_vertical_estimator). [VQ2 R2-2 A-1, 2026-07-04]
+    vert_vz_imu: float = float("nan")                    # m/s, IMU-only washout zdot (down +)
+    # R2-2 export (racer.vertical_estimator.VerticalEstimator.zoff_last_w): the vertical filter's
+    # last applied Huber*bearing correction weight in [0,1] -- the controller's R2-2b q-release
+    # reads it to fade the gate-PD position term when a railed z_off is being fed only low-weight
+    # vision (``gate_pd_zoff_trust_taper``). NaN until the first post-lock latch under
+    # use_soft_innov_weight, or when the estimator is off/unseeded (absent-marker => q stays 1.0,
+    # byte-identical). Same value the nav-estimate logger writes as ``zoff_w``. [VQ2 R2-2b, 2026-07-04]
+    zoff_w: float = float("nan")                         # last applied z_off correction weight [0,1]
 
 
 # ---------------------------------------------------------------------------

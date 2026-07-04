@@ -1317,17 +1317,25 @@ class Navigator:
         # has ever been latched (VerticalEstimator.z_off is NaN then, same absent-marker contract).
         # A26: export the contact-gate state the SAME way (mirrored gating) -- None (not False)
         # while unseeded, so a consumer can distinguish "never seeded" from "seeded, not frozen".
+        # R2-2 (2026-07-04): export the IMU-only washout vz (the terminal-brake rate source under
+        # gate_pd_brake_imu_vz) and the last applied z_off correction weight (the R2-2b q-release
+        # input) the SAME way (mirrored gating) -- None when off/unseeded -> NavState NaN
+        # (absent-marker, byte-identical for every consumer that does not opt in).
         vert_z = vert_vz = z_off = contact_frozen = None
+        vert_vz_imu = zoff_w = None
         if self._vert_est is not None and self._vert_est.seeded:
             vert_z, vert_vz = self._vert_est.z, self._vert_est.vz
             z_off = self._vert_est.z_off
             contact_frozen = self._vert_est.contact_frozen()
+            vert_vz_imu = self._vert_est.vz_imu
+            zoff_w = self._vert_est.zoff_last_w
         return make_nav_state(self.kf, ds, tsv, nav_inplane_sigma=inplane_sig,
                               nav_along_sigma=along_sig,
                               attitude_rpy_override=att_override,
                               angular_rate_override=rate_override,
                               vert_z_est=vert_z, vert_vz_est=vert_vz, z_off_est=z_off,
-                              contact_frozen=contact_frozen)
+                              contact_frozen=contact_frozen,
+                              vert_vz_imu=vert_vz_imu, zoff_w=zoff_w)
 
     def obs_drone_state(self, ds: DroneState) -> DroneState:
         """The DroneState the case-C OBS seam should consume (use_ahrs attitude routing, GAP #2).

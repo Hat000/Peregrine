@@ -724,6 +724,22 @@ class GateSeekerConfig:
     # (nu ~ 3): a track whose EVERY frame is grossly inconsistent for track_max_coast_ticks is a
     # real track loss, not noise.
     bearing_w_coast_thresh: float = 0.1
+    # --- TURN PACKAGE b1: SEPARATE LOW-WEIGHT PERSISTENCE LIMIT (2026-07-04; run
+    # 20260704_173948 gate-1 understeer). The A31 bearing-gate reference seeded on a single
+    # outlier pose post-pass (az -6.5 deg vs the honest +27 deg stream of the SAME track at the
+    # SAME range), so 8 consecutive HONEST turn-critical frames scored nu 3.8-7.7 -> Cauchy w
+    # 0.01-0.06 -> az_eff*w crushed the roll demand to ~0 for 0.76 s at the moment az was 27-34
+    # deg (the peak roll need of the whole turn). The recovery was the A32 low-weight persistence
+    # drop -> track re-seed -- but its limit is the SHARED ``track_max_coast_ticks`` (8), which
+    # ALSO bounds honest no-frame coasting (GPU-drought pose gaps run to ~7 ticks at p90 345 ms /
+    # ~20 Hz), so the shared limit cannot be lowered without dropping tracks on honest droughts.
+    # THIS limit bounds ONLY the consecutive FRESH low-weight (w < bearing_w_coast_thresh) frames:
+    # no-pose ticks neither advance nor reset it (the streak survives a bridge gap), a healthy
+    # frame resets it. Same ``counter > limit`` idiom as the shared check (limit 4 => drop on the
+    # 5th consecutive crushed frame ~0.3 s, vs the 9th at ~0.76 s flown). None (default) => the
+    # counter is maintained but never consulted -- byte-identical A32 behaviour (VQ1 / case-A
+    # untouched). vq2_case_c: 4.
+    track_max_loww_ticks: int | None = None
 
     # ===================================================================
     # A33 — GATE-2 COORDINATED INTERCEPT (2026-07-03; spec
@@ -887,6 +903,10 @@ class GateSeeker:
     _track_range_m: float | None = field(default=None, repr=False)      # tracked gate range, EMA-smoothed
     _track_bearing: np.ndarray | None = field(default=None, repr=False)  # tracked gate camera bearing (az,el) rad
     _track_coast_ticks: int = field(default=0, repr=False)     # consecutive ticks with no consistent candidate
+    # TURN PACKAGE b1: consecutive FRESH low-weight (w < bearing_w_coast_thresh) frames only --
+    # no-pose ticks neither advance nor reset it (unlike _track_coast_ticks, which counts both).
+    # Consulted only when track_max_loww_ticks is not None; always maintained (cheap, logged).
+    _track_loww_ticks: int = field(default=0, repr=False)
     # -- post-release pursuit ramp (Layer 2b): the sim-time the anchor released --
     _release_t_ns: int | None = field(default=None, repr=False)
     _last_pursuit_t_ns: int | None = field(default=None, repr=False)  # last pursuit tick (heading slew dt)
@@ -1223,9 +1243,19 @@ class GateSeeker:
         # A32 soft-path persistence bookkeeping (BEFORE the EMA so a drop tick never half-updates
         # the track): a grossly-inconsistent frame (w < thresh) still nudges the track by its tiny
         # weight, but ticks the coast counter; track_max_coast_ticks of them = a REAL track loss.
+        # TURN PACKAGE b1: a SECOND, fresh-frames-only counter with its OWN limit. A poisoned
+        # bearing-gate reference (seeded on one outlier pose) crushes every subsequent honest
+        # frame; the shared coast limit (which also bounds honest no-frame droughts) recovers too
+        # slowly (9 frames = 0.76 s of zero roll on run 20260704_173948). track_max_loww_ticks
+        # bounds ONLY the consecutive fresh low-w frames -> the track (and the reference) re-seeds
+        # in ~0.3 s without touching drought tolerance. None => never consulted (byte-identical).
         if soft_w is not None and soft_w < self.config.bearing_w_coast_thresh:
             self._track_coast_ticks += 1
-            if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+            self._track_loww_ticks += 1
+            loww_max = self.config.track_max_loww_ticks
+            if (self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks))
+                    or (loww_max is not None
+                        and self._track_loww_ticks > max(1, int(loww_max)))):
                 self._track_range_m, self._track_bearing = None, None
                 self._reset_los_rate()
                 self._reset_bearing_gate()
@@ -1242,6 +1272,7 @@ class GateSeeker:
             self._track_bearing = (1.0 - a) * np.asarray(self._track_bearing, dtype=np.float64) + a * b_meas
         if soft_w is None or soft_w >= self.config.bearing_w_coast_thresh:
             self._track_coast_ticks = 0
+            self._track_loww_ticks = 0     # b1: a healthy frame ends the low-weight streak
         self._last_none_reason = None    # a usable pose this tick (clear the stale reason)
         # A32: stash the weight for the downstream consumers (image-servo az term, z_off latch,
         # the ``bearing_w`` log key). 1.0 when the soft flag is on but this frame had no live IMU
@@ -1415,6 +1446,7 @@ class GateSeeker:
                 and self._pass_t_ns is not None
                 and (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9 >= self._effective_pass_coast_s()):
             self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+            self._track_loww_ticks = 0     # b1: the low-weight streak dies with the track
             self._reset_bearing_gate()   # A31: the prediction reference dies with the track
 
         # Detect the gate to chase (idempotent across re-feeds of the same frame_id; a re-fed frame
@@ -1617,6 +1649,7 @@ class GateSeeker:
             self._pass_turn_yaw = turn
         # reset the temporal track so the next-gate re-acquisition starts clean (a different gate).
         self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+        self._track_loww_ticks = 0     # b1: the low-weight streak dies with the track
         self._reset_los_rate()   # A29: the LOS-rate state describes the JUST-PASSED gate -> drop it
         self._reset_bearing_gate()   # A31: the prediction reference describes the passed gate
         self._reset_chase()          # A31: the chase/orbit integrator describes the passed gate
@@ -2286,6 +2319,7 @@ class GateSeeker:
             if self._orbit_trips >= 2:
                 # SECOND trip on the same acquisition: drop the track, wait level, reacquire.
                 self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+                self._track_loww_ticks = 0     # b1: the low-weight streak dies with the track
                 self._reset_los_rate()
                 self._reset_bearing_gate()
                 self._reset_chase()
@@ -2855,6 +2889,7 @@ class GateSeeker:
         self._track_range_m = None
         self._track_bearing = None
         self._track_coast_ticks = 0
+        self._track_loww_ticks = 0     # b1: the low-weight streak dies with the track
         self._release_t_ns = None
         self._last_pursuit_t_ns = None
         self._spawn_heading = None

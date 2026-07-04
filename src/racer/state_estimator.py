@@ -206,6 +206,8 @@ def make_nav_state(
     vert_vz_est: float | None = None,
     z_off_est: float | None = None,
     contact_frozen: bool | None = None,
+    vert_vz_imu: float | None = None,
+    zoff_w: float | None = None,
 ) -> NavState:
     """Assemble a NavState from the KF (position/velocity) + given attitude/rates.
 
@@ -233,7 +235,14 @@ def make_nav_state(
 
     ``contact_frozen`` (A26 contact-gate export, ``VerticalEstimator.contact_frozen()``): default
     ``None`` -> ``NavState.contact_frozen`` stays ``None`` (absent-marker), BYTE-IDENTICAL for every
-    existing caller; the Navigator supplies it only under the same ``use_vertical_estimator`` gate."""
+    existing caller; the Navigator supplies it only under the same ``use_vertical_estimator`` gate.
+
+    ``vert_vz_imu`` / ``zoff_w`` (R2-2, 2026-07-04): the IMU-only washout vz
+    (``VerticalEstimator.vz_imu``, the terminal-brake rate source under ``gate_pd_brake_imu_vz``)
+    and the last applied z_off correction weight (``VerticalEstimator.zoff_last_w``, the R2-2b
+    q-release input). BOTH default ``None`` -> the NavState fields stay NaN (absent-marker),
+    BYTE-IDENTICAL for every existing caller; the Navigator supplies them only under the same
+    ``use_vertical_estimator`` gate."""
     if attitude_rpy_override is None:
         roll, pitch, yaw = drone_state.roll, drone_state.pitch, drone_state.yaw
     else:
@@ -259,4 +268,6 @@ def make_nav_state(
         vert_vz_est=float("nan") if vert_vz_est is None else float(vert_vz_est),
         z_off_est=float("nan") if z_off_est is None else float(z_off_est),
         contact_frozen=None if contact_frozen is None else bool(contact_frozen),
+        vert_vz_imu=float("nan") if vert_vz_imu is None else float(vert_vz_imu),
+        zoff_w=float("nan") if zoff_w is None else float(zoff_w),
     )

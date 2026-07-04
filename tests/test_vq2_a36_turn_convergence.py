@@ -542,9 +542,11 @@ def test_profile_flight3_full_turn_package():
     # Fix B:
     assert cfg.yaw_slew_taper_lo_range_m == 3.0
     assert cfg.yaw_slew_taper_floor == 0.35
-    # Item 1 (slower):
-    assert cfg.fwd_point_gate_az_rad == 0.35
-    assert cfg.forward_accel_mps2 == 0.65
+    # Item 1 (slower) -- values tightened by the TURN PACKAGE (2026-07-04, run 20260704_173948
+    # understeer): az_rad 0.35 -> 0.25 (full forward cut beyond ~14 deg, was 20) and accel
+    # 0.65 -> 0.45 (entry ~3.9 m/s vs ~2.2-2.8 comfortable). Pinned in test_vq2_turn_package too.
+    assert cfg.fwd_point_gate_az_rad == 0.25
+    assert cfg.forward_accel_mps2 == 0.45
     # Item 4 (switch lanes):
     assert cfg.use_lateral_first_budget is True
     assert cfg.image_lat_cap_mps2 == 3.0

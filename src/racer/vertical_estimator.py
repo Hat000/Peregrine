@@ -285,9 +285,40 @@ class VerticalEstimator:
     zoff_big_innov_min_w: float = 0.5   # floor on the applied correction weight for a big+consistent offset
     zoff_big_sign_consec: int = 3       # consecutive same-sign big frames before the exception engages
 
+    # --- R2-2 B1: PROPAGATION BOUND on the A28 z_off dead-reckoning (2026-07-04; gate-2 turn dive,
+    # run 20260704_183049). The A28 predict step dead-reckons z_off on the filter vz between poses;
+    # when that vz rails on fiction (floor-scrape sub-threshold contact accel) while the corrective
+    # vision is LOW-WEIGHT (+20deg camera losing a high gate: zoff_w 0.04-0.15), z_off runs AWAY
+    # from the actable range (observed -3.2 -> -6.4 in 1.3 s, later -9.45; FOUR |z_off|>3.5 rail
+    # episodes that flight). Every metre past the controller's +/-3 consumption clip adds ZERO
+    # control authority and only adds recovery lag (the state must be pulled all the way back
+    # before the sign can flip -- the tick 106-113 lag). THE BOUND: dead-reckoning may never GROW
+    # |z_off| beyond max(zoff_prop_bound_m, |current z_off|). Shrinking toward zero is ALWAYS
+    # allowed; the CORRECT step (measurements: initial lock, alpha corrections, reseed) is
+    # UNTOUCHED -- a large MEASURED offset on good weight still sets the state (the honest gate-2
+    # high-gate case), it just cannot be dead-reckoned even further. Control-equivalent above the
+    # 3.0 clip by construction (clip(z_off, +/-3) identical for any |z_off| >= 3). None (default)
+    # => no bound, byte-identical (VQ1/case-A + every pre-R2-2 vq2 path). vq2_case_c: 3.5 (0.5 m
+    # hysteresis over the consumption clip). [VQ2 R2-2 B1, 2026-07-04]
+    zoff_prop_bound_m: float | None = None
+
     _vz: float = field(default=float("nan"), repr=False)
     _b_hat: float = field(default=float("nan"), repr=False)
     _seeded: bool = field(default=False, repr=False)
+    # -- R2-2 A-1: PARALLEL IMU-ONLY WASHOUT vz (2026-07-04; gate-2 turn dive). The A24 washout
+    # recurrence run on the SAME (clamped, bias-corrected, contact-gated) a_dn stream, but NEVER
+    # corrected by vision -- the honest short-horizon rate channel for the controller's terminal
+    # brake. Rationale (run 20260704_183049 ticks 46-57): the close-range bias sweep injects a
+    # SIGN-INVERTED vz into the A28 filter via HIGH-weight accepted beta corrections (vz_est read
+    # -1.1 "climbing" while the offline IMU-only reconstruction read +0.6..+1.8 sinking, wire-
+    # corroborated by the floor touch 0.7 s later), so no weight gate can catch it at consumption
+    # time -- only a channel vision cannot touch. Leak ALWAYS on (A24 semantics: structurally
+    # bounded, DC-blind to sustained rates by design -- the s-taper position-fade remains the
+    # primary sustained-climb terminal fix; commander-accepted limitation 2026-07-04). Pure
+    # additive state: nothing existing reads it, so every existing output is byte-identical.
+    # Exported via the ``vz_imu`` property -> NavState.vert_vz_imu -> the controller's
+    # ``gate_pd_brake_imu_vz`` terminal-brake path. [VQ2 R2-2 A-1, 2026-07-04]
+    _vz_imu: float = field(default=float("nan"), repr=False)
     # Pre-arm bias-capture running state: elapsed time since seed + the running mean accumulator.
     _bias_capture_done: bool = field(default=False, repr=False)
     _bias_capture_elapsed_s: float = field(default=0.0, repr=False)
@@ -336,6 +367,7 @@ class VerticalEstimator:
         gate-offset-rate fusion history -- a re-seed (sim epoch restart) must forget any latched
         gate-relative offset (and its fusion history) from the prior epoch."""
         self._vz = 0.0
+        self._vz_imu = 0.0
         self._b_hat = 0.0
         self._seeded = True
         self._bias_capture_done = False
@@ -421,6 +453,17 @@ class VerticalEstimator:
             return float("nan")
         return float(np.clip(self._vz, -self.export_clip_mps, self.export_clip_mps))
 
+    @property
+    def vz_imu(self) -> float:
+        """R2-2 A-1: the PARALLEL IMU-ONLY washout vz (m/s, NED down-positive), clipped to
+        +/-``export_clip_mps``; NaN until seeded. The pure A24 recurrence -- leak always on,
+        NEVER corrected by vision -- so the close-range bias sweep that sign-inverts the A28
+        filter vz cannot touch it. Consumed by the controller's terminal brake under
+        ``gate_pd_brake_imu_vz`` (via ``NavState.vert_vz_imu``); logged as ``vert_vz_imu``."""
+        if not self._seeded:
+            return float("nan")
+        return float(np.clip(self._vz_imu, -self.export_clip_mps, self.export_clip_mps))
+
     # -- per-IMU-tick propagation ----------------------------------------------
     def predict(self, a_up: float, dt: float) -> None:
         """Integrate one accel sample with an exponential leak: ``a_dn = -a_up`` (a_up UP-positive,
@@ -466,6 +509,12 @@ class VerticalEstimator:
         if self.contact_frozen():
             return   # HOLD: skip both the vz washout update and the z_off propagate this tick
 
+        # R2-2 A-1: the parallel IMU-only washout -- the pure A24 recurrence (leak ALWAYS on),
+        # shared bias/clamp/contact gates above, never touched by any vision correction. Runs on
+        # BOTH branches below; pure additive state (nothing existing reads _vz_imu).
+        leak_imu = float(np.exp(-dt / self.washout_tau_s))
+        self._vz_imu = leak_imu * self._vz_imu + (a_dn - self._b_hat) * dt
+
         if self.use_zoff_filter:
             # A28 complementary-filter PREDICT: pure integration (NO leak) while accepted
             # innovations are flowing -- the beta corrections own the DC, so leaking here would
@@ -484,8 +533,17 @@ class VerticalEstimator:
             # on run 20260704_024434. A large KNOWN offset held beats the same offset drifted to the
             # opposite sign. (_big_persistent_offset is only ever True under use_zoff_big_trust; the
             # default path never freezes -> byte-identical.)
+            # R2-2 B1 (zoff_prop_bound_m, see the field comment): dead-reckoning may never GROW
+            # |z_off| beyond max(bound, |current|) -- shrink always allowed, measurements untouched.
+            # None (default) => the pre-R2-2 line exactly, byte-identical.
             if self._z_off_seen and not self._big_persistent_offset:
-                self._z_off = float(self._z_off - self._vz * dt)
+                new_z = float(self._z_off - self._vz * dt)
+                if (self.zoff_prop_bound_m is not None
+                        and abs(new_z) > max(float(self.zoff_prop_bound_m), abs(self._z_off))):
+                    pass   # B1: hold -- propagation-only growth past the actable range adds zero
+                           # control authority and only adds recovery lag
+                else:
+                    self._z_off = new_z
             return
 
         alpha = float(np.exp(-dt / self.washout_tau_s))

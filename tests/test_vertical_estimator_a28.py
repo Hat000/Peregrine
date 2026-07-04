@@ -464,7 +464,8 @@ def test_vq2_profile_ships_the_a28_bundle():
     assert veo == {"use_zoff_filter": True, "export_clip_mps": 2.5,
                    "use_soft_innov_weight": True,      # A32: Huber-soft innovation weighting
                    "zoff_reseed_min_w": 0.3,           # A33 V-1: weight-qualified reseed
-                   "use_zoff_big_trust": True}         # A35 Fix-2: magnitude-gated trust floor
+                   "use_zoff_big_trust": True,         # A35 Fix-2: magnitude-gated trust floor
+                   "zoff_prop_bound_m": 3.5}           # R2-2 B1: propagation bound (2026-07-04)
     assert prof.nav_config.use_gate_vz_fusion is False   # A26 fusion superseded
 
 
