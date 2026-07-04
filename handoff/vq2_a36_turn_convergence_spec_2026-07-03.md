@@ -159,3 +159,55 @@ A22 +1 sign is still constructible for the counterfactual divergence pin.
 (unit-pinned) not the wire.
 
 **NOT flown** — first re-fly is Item 0 + Item 3, Items 1&4 OFF, per the flight plan.
+
+---
+
+## 7. FLIGHT 2 result + the YAW-OVERSHOOT addendum (2026-07-03)
+
+**Item 0 FLEW + CONFIRMED** (sign-alone, run `20260704_042616`): operator "the yaw is correct, it
+turned towards the second gate"; realized-toward-gate 13%→68%; range closed to 2.8 m (was the
+15-19 m orbit). The 2-day inversion is fixed; `(1,1,-1)` stays.
+
+**New dominant blocker = YAW OVERSHOOT.** Operator: the turn "WAYYY overshot… did a 270 before an
+oscillated stop." Diagnosis (run 20260704_042616): NOT an intrinsically hot attitude loop — the
+pass turn was controlled (~1 rad/s, −20°), then reverted to PURSUIT after 0.3 s and pursuit
+rail-chased for **−207°** (of the ~270° whip). Deeper root: the A33 **blind pass-turn target was
+~147° WRONG** — `pass_turn_yaw` latched −1.91 rad (LEFT, off the passed gate's degenerate close az)
+while the TRUE gate 2 was +0.66 rad (RIGHT); the −207° "whip" is pursuit unwinding from the wrong
+target.
+
+**Fixes built (flight-3 profile):**
+* **REFINE-TO-REAL-GATE** (`pass_turn_refine`): don't guess. `_begin_pass` skips the blind target
+  (coasts straight through the occlusion); the moment a valid DOWNRANGE gate-2 pose is seen
+  (range > degenerate & ≤ 35 m cap, NOT the passed gate via A33 H-1a `_is_prev_gate`, bearing
+  weight ≥ `pass_refine_min_bw` 0.3), RE-AIM `pass_turn_yaw` at that gate's world bearing
+  (capture-time attitude), bounded ±`pass_blind_turn_cap_rad`, latch-follow. Hold-until-pointed then
+  converges to the REAL gate. Fallback if no pose in `pass_turn_coast_s` = straight coast (never a
+  committed wrong turn). This is the "gate-2 poses refine the turn" the A33 spec described but the
+  code never did — via LIVE vision.
+* **FIX B — close-range yaw taper** (`yaw_slew_taper_*`): scale the pursuit yaw slew authority by
+  tracked range (floor 0.35 at ≤3 m → full at ≥10 m) so a fast close-range LOS can't drive the
+  post-release tail-chase rail. Proportional on measured range, no derivative.
+* **Item 1 slower**: `forward_accel_mps2` 0.8 → 0.65 (operator "even a tad slower"), plus the
+  pointing gate 0.35.
+* **Item 4 ON**: `use_lateral_first_budget` + `image_lat_cap_mps2` 3.0 (operator saw "barely any
+  roll").
+* **FIX C** (kd_att bump) built behind a commented override, LEFT OFF (operator: the ringing "isn't
+  bad… went away quickly"). One-line lever if ever needed.
+
+**Flight-3 profile = full turn package ON:** Item 0 + refine + Item 3 (physical-plane +
+hold-until-pointed) + Fix B + Items 1&4; Fix C off.
+
+**OFFLINE PROOF (run-20260704_042616 geometry, `handoff/a36_offline_turn_proof.py`):** true gate 2
+at +37.8°. OLD blind: latched turn target **−127°** (LEFT), settled **−123.8°**, |err| **161.6°**
+(reproduces the bug). NEW refine: re-aims to **+42.7°**, settles **+43.5°**, |err| **5.7°**, max
+overshoot 5.7°, **0 direction reversals** (no second ring). Turns to the REAL gate and stops.
+
+**Suite:** 1754 passed, 73 skipped, 11 pre-existing failures (unchanged baseline), 0 new.
+EXPECTED_KEYS = 46 (refine adds no nav-log field). Regression pins: every new flag default-off
+byte-identical (`pass_turn_refine` off → blind target; Fix B off → no taper). Focused tests: refine
+fires only on a qualifying downrange non-prev gate-2 pose, ignores passed-gate residue / low-bw /
+close-degenerate poses, bounds the target, holds-then-times-out on the fallback; Fix B taper cuts
+close-range authority. Profile-wiring test asserts the full flight-3 package.
+
+**NOT flown** — operator flies the flight-3 package after coordinator verification.

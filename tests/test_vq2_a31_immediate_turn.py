@@ -654,7 +654,7 @@ def test_profile_wiring_a31():
     assert ov["pass_coast_s"] == 0.3
     assert ov["pass_coast_accel_mps2"] == 0.0
     assert ov["reramp_forward_after_pass"] is True
-    assert ov["forward_accel_mps2"] == 0.8
+    assert ov["forward_accel_mps2"] == 0.65   # A36 Item 1: slowed 0.8 -> 0.65 ("slow is smooth")
     # FIX 3: orbit-breaker + yaw clamp.
     assert ov["orbit_guard_rad"] == 1.75
     assert ov["orbit_break_s"] == 1.0

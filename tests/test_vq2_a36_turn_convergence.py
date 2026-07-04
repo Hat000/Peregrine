@@ -183,6 +183,14 @@ def _pass_seeker(**cfg_kw) -> GateSeeker:
     return s
 
 
+def _pose_right(rng=18.0):
+    """A gate-2 pose to the RIGHT of the nose (world bearing ~ +0.35 rad at identity attitude): camera
+    optical x=+12 (right), z=+rng (forward). range_m = |t_cam_gate|."""
+    xoff = 12.0
+    t = np.array([xoff, 0.0, float(np.sqrt(max(rng * rng - xoff * xoff, 1.0)))])
+    return GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3), t_cam_gate=t, reproj_error_px=0.5)
+
+
 def test_item3_wire_requires_near_defers_commit_while_gate_far_ahead():
     """With pass_wire_requires_near ON, a wire index_advanced while the tracked gate is still WELL
     AHEAD (range 9 m > pass_arm_range_m 3) does NOT commit the pass -- it records intent. The
@@ -262,28 +270,187 @@ def test_item3_default_off_no_hold():
 
 
 # ===========================================================================
-# PROFILE WIRING — the FLOWN vq2_case_c state is SIGN-ALONE for the first A36 re-fly:
-# Item 0 (yaw sign) IN; Items 1, 3, 4 all at their OFF defaults (commented out in the
-# profile). Item 3 gets re-enabled for flight-2 by uncommenting the 4 override lines.
+# FIX B — close-range yaw-rate taper (reduces the pursuit yaw slew near a gate)
 # ===========================================================================
-def test_profile_first_fly_is_sign_alone():
-    """The shipped vq2_case_c carries ONLY the yaw-sign flip from A36; Items 1/3/4 fall back to
-    their OFF defaults so the first re-fly isolates the ONE change (the sign). This asserts the
-    FLOWN profile state -- the Item-1/3/4 BEHAVIOR tests above construct configs explicitly and are
-    unaffected by this wiring."""
+def _slew_step(seeker, yaw_des, rng, dt=0.033):
+    """One _slew_heading step from _last_yaw=0 toward yaw_des at tracked range ``rng``. Returns the
+    achieved heading step (rad) -- the effective per-tick yaw authority after any taper."""
+    seeker._last_yaw = 0.0
+    seeker._last_pursuit_t_ns = 0
+    seeker._track_range_m = float(rng)
+    return abs(float(seeker._slew_heading(float(yaw_des), int(dt * _NS))))
+
+
+def test_fixb_taper_reduces_close_range_yaw_authority():
+    """The close-range taper cuts the achievable yaw step at short range vs long range (a big yaw_des
+    so the slew, not the error, is the limiter)."""
+    s = _seeker(pursuit_yaw_slew_rps=1.5, yaw_slew_taper_lo_range_m=3.0,
+                yaw_slew_taper_hi_range_m=10.0, yaw_slew_taper_floor=0.35)
+    near = _slew_step(s, 3.0, rng=3.0)     # at/below lo => floor
+    far = _slew_step(s, 3.0, rng=12.0)     # >= hi => full
+    assert near < far, "the taper must reduce yaw authority at close range"
+    assert near == pytest.approx(far * 0.35, rel=0.05), "near authority ~ floor * far"
+
+
+def test_fixb_default_off_no_taper():
+    """REGRESSION PIN: yaw_slew_taper_lo_range_m default None => full slew authority at all ranges
+    (byte-identical pre-Fix-B)."""
+    s = _seeker(pursuit_yaw_slew_rps=1.5)   # taper off (default None)
+    assert s.config.yaw_slew_taper_lo_range_m is None
+    near = _slew_step(s, 3.0, rng=3.0)
+    far = _slew_step(s, 3.0, rng=12.0)
+    assert near == pytest.approx(far), "no taper => same authority at all ranges"
+
+
+# ===========================================================================
+# REFINE-TO-REAL-GATE — the turn re-aims at a real gate-2 pose, not a blind guess
+# ===========================================================================
+def _refine_seeker(**cfg_kw) -> GateSeeker:
+    base = dict(use_pass_dead_reckon=True, pass_arm_range_m=3.0, pass_degenerate_range_m=2.5,
+                pass_turn_through=True, pass_turn_hold_until_pointed=True, pass_turn_refine=True,
+                pass_exclude_prev_gate=True, pass_blind_turn_cap_rad=1.6, pass_refine_min_bw=0.3,
+                use_soft_bearing_weight=True, track_abs_range_cap_m=35.0)
+    base.update(cfg_kw)
+    s = GateSeeker(config=GateSeekerConfig(**base))
+    s._anchored = True
+    s._last_yaw = 0.0
+    s._pass_heading = 0.0
+    return s
+
+
+def _nav0():
+    return _nav(0)
+
+
+def test_refine_begin_pass_sets_pending_not_blind_target():
+    """With pass_turn_refine ON, _begin_pass does NOT compute a blind sign*cap target -- it leaves
+    _pass_turn_yaw None and sets _pass_turn_pending (coast straight through the occlusion)."""
+    s = _refine_seeker()
+    s._last_az_err = -0.31                       # the run-042616 gate-1 close az (would blind-aim LEFT)
+    s._begin_pass(0, wire=False)
+    assert s._pass_turn_yaw is None, "refine must NOT latch a blind turn target"
+    assert s._pass_turn_pending, "refine must mark the turn pending (target unknown yet)"
+
+
+def test_refine_reaims_at_downrange_gate2_pose():
+    """The MOMENT a valid downrange gate-2 pose is available, re-aim _pass_turn_yaw at THAT gate's
+    world bearing (RIGHT, ~+0.35 rad), clearing the pending flag."""
+    s = _refine_seeker()
+    s._begin_pass(0, wire=False)
+    s._last_pose = _pose_right(rng=18.0)         # RIGHT, downrange
+    s._last_bearing_w = 0.9                       # consistent frame
+    s._maybe_refine_turn_target(_nav0())
+    assert s._pass_turn_yaw is not None, "a valid gate-2 pose must re-aim the turn target"
+    assert s._pass_turn_yaw > 0.2, f"target must aim RIGHT toward the gate; got {s._pass_turn_yaw:+.2f}"
+    assert not s._pass_turn_pending
+
+
+def test_refine_ignores_passed_gate_residue():
+    """A pose that IS the just-passed gate (within the A33 H-1a exclusion cone + range) must NOT
+    re-aim -- it is residue of the gate we passed, not the next one."""
+    s = _refine_seeker()
+    s._begin_pass(0, wire=False)
+    # snapshot: the passed gate was dead ahead at ~3 m (pass_heading 0). A pose ahead at ~4 m is it.
+    s._pass_prev_dir_world = np.array([1.0, 0.0, 0.0])
+    s._pass_prev_range_m = 3.0
+    s._last_pose = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3),
+                            t_cam_gate=np.array([0.0, 0.0, 4.0]), reproj_error_px=0.5)  # dead ahead 4 m
+    s._last_bearing_w = 0.9
+    s._maybe_refine_turn_target(_nav0())
+    assert s._pass_turn_yaw is None, "the passed-gate residue must not re-aim the turn"
+    assert s._pass_turn_pending
+
+
+def test_refine_ignores_low_bearing_weight_pose():
+    """A low-consistency (bearing_w < pass_refine_min_bw) pose must NOT re-aim -- re-aiming is a
+    commit-grade action; a jittery frame steers gently in pursuit but can't fling the turn target."""
+    s = _refine_seeker(pass_refine_min_bw=0.3)
+    s._begin_pass(0, wire=False)
+    s._last_pose = _pose_right(rng=18.0)
+    s._last_bearing_w = 0.1                       # below the gate
+    s._maybe_refine_turn_target(_nav0())
+    assert s._pass_turn_yaw is None, "a low-weight pose must not re-aim the turn target"
+
+
+def test_refine_ignores_close_degenerate_pose():
+    """A pose in the degenerate close band (range <= pass_degenerate_range_m) must NOT re-aim -- it is
+    the gate being passed at point-blank, not a downrange next gate."""
+    s = _refine_seeker()
+    s._begin_pass(0, wire=False)
+    s._last_pose = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3),
+                            t_cam_gate=np.array([0.5, 0.0, 2.0]), reproj_error_px=0.5)  # 2.06 m < 2.5
+    s._last_bearing_w = 0.9
+    s._maybe_refine_turn_target(_nav0())
+    assert s._pass_turn_yaw is None
+
+
+def test_refine_target_bounded_to_cap():
+    """A gate-2 bearing beyond +/-pass_blind_turn_cap_rad from the pass heading is clamped to the cap
+    (implausible for the next gate = likely residue; never fling the target)."""
+    s = _refine_seeker(pass_blind_turn_cap_rad=0.5)   # tight cap for the test
+    s._begin_pass(0, wire=False)
+    s._last_pose = _pose_right(rng=18.0)          # ~+0.35 rad, but cap it to 0.5 from heading 0 (no clamp)
+    s._last_bearing_w = 0.9
+    s._maybe_refine_turn_target(_nav0())
+    assert abs(s._pass_turn_yaw) <= 0.5 + 1e-9, "target must be bounded to +/-cap from the pass heading"
+
+
+def test_refine_fallback_pending_holds_then_times_out():
+    """With the turn PENDING (no gate-2 pose yet), _turn_hold_active holds (defers acquire-next) so
+    we don't end the pass before aiming -- but it is time-boxed by pass_turn_coast_s (never forever)."""
+    s = _refine_seeker(pass_turn_coast_s=1.5)
+    s._passing = True
+    s._pass_t_ns = 0
+    s._pass_turn_pending = True
+    s._pass_turn_yaw = None
+    assert s._turn_hold_active(int(0.3 * _NS)), "pending turn must hold (defer acquire-next) while aiming"
+    assert not s._turn_hold_active(int(1.6 * _NS)), "hold must time out at pass_turn_coast_s (fallback)"
+
+
+def test_refine_default_off_uses_blind_target():
+    """REGRESSION PIN: pass_turn_refine default False => _begin_pass latches the A33 blind sign*cap
+    target and _maybe_refine_turn_target is a no-op (byte-identical pre-refine)."""
+    s = _refine_seeker(pass_turn_refine=False)
+    assert s.config.pass_turn_refine is False
+    s._last_az_err = -0.31
+    s._begin_pass(0, wire=False)
+    assert s._pass_turn_yaw is not None, "blind target must latch when refine is OFF"
+    assert s._pass_turn_yaw < 0.0, "blind target off a LEFT az aims LEFT (the pre-refine behavior)"
+    assert not s._pass_turn_pending
+    # and refine is a no-op with the flag off
+    blind = s._pass_turn_yaw
+    s._last_pose = _pose_right(rng=18.0)
+    s._last_bearing_w = 0.9
+    s._maybe_refine_turn_target(_nav0())
+    assert s._pass_turn_yaw == blind, "refine must not touch the target when the flag is off"
+
+
+# ===========================================================================
+# PROFILE WIRING — the FLOWN vq2_case_c is the FULL A36 turn package (flight-3):
+# Item 0 sign + refine-to-real-gate + Item 3 + Fix B + Items 1 & 4 ON; Fix C (kd_att) OFF.
+# ===========================================================================
+def test_profile_flight3_full_turn_package():
+    """The shipped vq2_case_c carries the full A36 turn package: yaw sign (1,1,-1), refine-to-real-
+    gate + Item 3 (physical-plane + hold-until-pointed), Fix B (yaw taper), Item 1 (pointing gate +
+    slower 0.65), Item 4 (lateral-first + cap 3.0). Fix C (kd_att bump) stays OFF (default 0.30)."""
     prof = vq2_case_c()
     so = prof.seeker_overrides or {}
-    # Item 0: the yaw sign IS flipped (lives in controller_overrides).
-    np.testing.assert_allclose(
-        np.asarray(prof.controller_overrides["body_rate_sign"], float), [1.0, 1.0, -1.0])
-    # Items 1/3/4: ABSENT from the profile (=> OFF defaults) for the sign-alone first fly.
-    for k in ("pass_wire_requires_near", "pass_turn_hold_until_pointed",
-              "fwd_point_gate_az_rad", "use_lateral_first_budget", "image_lat_cap_mps2"):
-        assert k not in so, f"{k} must be OFF (absent) in the sign-alone first-fly profile"
-    # And the built config confirms the OFF defaults:
+    co = prof.controller_overrides or {}
+    # Item 0: yaw sign flipped; Fix C OFF (no kd_att override => controller default 0.30).
+    np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, -1.0])
+    assert "kd_att" not in co, "Fix C (kd_att bump) must stay OFF (no override) per operator"
     cfg = GateSeekerConfig(**so)
-    assert cfg.pass_wire_requires_near is False
-    assert cfg.pass_turn_hold_until_pointed is False
-    assert cfg.fwd_point_gate_az_rad is None
-    assert cfg.use_lateral_first_budget is False
-    assert cfg.image_lat_cap_mps2 == 1.5   # default cap, not the Item-4 raised 3.0
+    # Refine + Item 3:
+    assert cfg.pass_turn_refine is True
+    assert cfg.pass_wire_requires_near is True
+    assert cfg.pass_turn_hold_until_pointed is True
+    assert cfg.pass_refine_min_bw == 0.3
+    # Fix B:
+    assert cfg.yaw_slew_taper_lo_range_m == 3.0
+    assert cfg.yaw_slew_taper_floor == 0.35
+    # Item 1 (slower):
+    assert cfg.fwd_point_gate_az_rad == 0.35
+    assert cfg.forward_accel_mps2 == 0.65
+    # Item 4 (switch lanes):
+    assert cfg.use_lateral_first_budget is True
+    assert cfg.image_lat_cap_mps2 == 3.0

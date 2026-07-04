@@ -334,7 +334,8 @@ def vq2_case_c() -> DeployProfile:
                           # (pass_wire_coast_s was 0.25 here; A33 H-1b sets it 0.0 below)
                           "pass_coast_accel_mps2": 0.0,       # spend momentum through the pass
                           "reramp_forward_after_pass": True,  # point before pushing, enforced
-                          "forward_accel_mps2": 0.8,          # slow the approach (converge, don't overfly)
+                          # forward_accel_mps2 set to A36 Item-1's 0.65 in the A36 block below
+                          # (was A33's 0.8; slower approach per operator "slow is smooth").
                           "orbit_guard_rad": 1.75,            # cumulative-LOS whip abort (~100 deg)
                           "orbit_break_s": 1.0,
                           "orbit_yaw_clamp_rad": 2.4,         # never chase a gate to backwards
@@ -388,40 +389,58 @@ def vq2_case_c() -> DeployProfile:
                           # pace; keeps the immediate turn (H-1c) from also being an immediate lunge.
                           "fwd_scale_pow": 4.0,
                           # === A36 (2026-07-03; spec vq2_a36_turn_convergence_spec) ===
-                          # Headline fix is Item 0 (body_rate_sign -> (1,1,-1), in
-                          # controller_overrides). FLIGHT PLAN: the FIRST A36 re-fly is SIGN-ALONE --
-                          # Items 1, 3 AND 4 all OFF -- so the yaw sign (which has burned us both ways)
-                          # is read on the CLEANEST possible single change (operator's eyes + the direct
-                          # cmd-vs-gyro metric). Item 3 is re-enabled for flight-2 once the sign is
-                          # confirmed; Items 1&4 for later. All three are wired + tuned below and each is
-                          # a one-line uncomment to enable.
+                          # Item 0 (body_rate_sign -> (1,1,-1), in controller_overrides) FLEW + is
+                          # CONFIRMED (run 20260704_042616: yaw turns toward gate 2, range closed to
+                          # 2.8 m). FLIGHT 2 exposed a YAW OVERSHOOT: the turn WHIPPED ~270 deg because
+                          # the pass turn (controlled ~1 rad/s) reverted to PURSUIT after 0.3 s and
+                          # pursuit rail-chased the rotating close-range LOS for -207 deg. This build
+                          # (flight-3 profile) enables FIX A (Item 3 hold-until-pointed) + FIX B
+                          # (close-range yaw taper) to kill the overshoot, plus Items 1 & 4 (slow +
+                          # switch-lanes) per operator. FIX C (kd_att bump) is built but LEFT OFF (the
+                          # attitude loop is not the dominant cause; enable only if A+B leave residual
+                          # ring).
                           #
-                          # ITEM 3 -- PHYSICAL-PLANE TURN (OFF for the first re-fly; RE-ENABLE for
-                          #   flight-2 by UNCOMMENTING the four lines below -> back to pre-A36 pass
-                          #   behavior while commented): commit the turn at the physical plane
-                          #   (rng ~pass_arm_range_m) not the ~9 m-early wire (which self-cancels via
-                          #   H-1b's 0.0 coast + acquire-next), and HOLD the turn coast until POINTED
-                          #   (~10 deg of the ~95 deg target, bounded 1.5 s) instead of reverting at the
-                          #   fixed 0.3 s pass_coast_s so the ~95 deg slew actually completes.
-                          # "pass_wire_requires_near": True,
-                          # "pass_turn_hold_until_pointed": True,
-                          # "pass_turn_coast_s": 1.5,
-                          # "pass_turn_point_tol_rad": 0.17,
+                          # FIX A / ITEM 3 -- PHYSICAL-PLANE TURN + HOLD-UNTIL-POINTED (ON): commit the
+                          #   turn at the physical plane (rng ~pass_arm_range_m) not the ~9 m-early wire
+                          #   (self-cancels via H-1b's 0.0 coast + acquire-next), and HOLD the turn coast
+                          #   until POINTED (~10 deg of the target, bounded 1.5 s) so the turn COMPLETES
+                          #   as a controlled slew and hands off pointed -- instead of dumping a half-turn
+                          #   into the saturated pursuit chase (the -207 deg whip).
+                          "pass_wire_requires_near": True,
+                          "pass_turn_hold_until_pointed": True,
+                          "pass_turn_coast_s": 1.5,
+                          "pass_turn_point_tol_rad": 0.17,
+                          # REFINE-TO-REAL-GATE: the blind sign*cap turn target was ~147 deg WRONG on
+                          # run 20260704_042616 (LEFT off the passed gate's close az while gate 2 was
+                          # RIGHT). Instead coast straight through the occlusion, RE-AIM at the first
+                          # valid downrange gate-2 pose (past degenerate + <=35m, NOT the passed gate via
+                          # H-1a, bearing_w>=0.3), latch-follow, hold-until-pointed to the REAL gate.
+                          # Fallback if none seen = straight coast (never a committed wrong turn).
+                          "pass_turn_refine": True,
+                          "pass_refine_min_bw": 0.3,
                           #
-                          # ITEM 1 -- POINTING GATE on forward drive ("point before you push"), OFF for
-                          #   the first re-fly: cut a_fwd to ~0 until the gate is roughly centered so the
-                          #   turn is SHARP not a wide arc. Enable with the az radius (ramp spans
-                          #   full_az..this). None => off.
-                          # "fwd_point_gate_az_rad": 0.35,
+                          # FIX B -- CLOSE-RANGE YAW-RATE TAPER (ON): scale the pursuit yaw setpoint-slew
+                          #   authority by tracked range (floor 0.35 near, full by 10 m) so a fast
+                          #   close-range LOS can't drive the post-release tail-chase rail. Proportional
+                          #   on measured range, no derivative.
+                          "yaw_slew_taper_lo_range_m": 3.0,
+                          "yaw_slew_taper_hi_range_m": 10.0,
+                          "yaw_slew_taper_floor": 0.35,
+                          #
+                          # ITEM 1 -- POINTING GATE on forward drive ("point before you push") + SLOWER
+                          #   approach (operator: "even a tad slower would be good"): cut a_fwd to ~0
+                          #   until the gate is roughly centered (sharp turn, not a wide arc), and drop
+                          #   the cruise forward accel 0.8 -> 0.65 (~19% slower). "slow is smooth."
+                          "fwd_point_gate_az_rad": 0.35,
                           "fwd_point_gate_full_az_rad": 0.05,
+                          "forward_accel_mps2": 0.65,   # A36 Item 1: slower approach (was A33's 0.8)
                           #
-                          # ITEM 4 -- LATERAL-FIRST "switch lanes", OFF for the first re-fly: bank
-                          #   sideways onto the approach line instead of yaw-to-face + being carried past.
-                          #   Enable use_lateral_first_budget AND raise the lateral cap so a big
-                          #   cross-track drives a real translation (3.0 ~= a 17 deg bank; A31 lat-slew
-                          #   still rate-limits it).
-                          # "use_lateral_first_budget": True,
-                          # "image_lat_cap_mps2": 3.0,
+                          # ITEM 4 -- LATERAL-FIRST "switch lanes" (ON): bank sideways onto the approach
+                          #   line instead of yaw-to-face + being carried past (operator saw "barely any
+                          #   roll"). Raise the lateral cap so a big cross-track drives a real
+                          #   translation (3.0 ~= a 17 deg bank; the A31 lat-slew still rate-limits it).
+                          "use_lateral_first_budget": True,
+                          "image_lat_cap_mps2": 3.0,
                           },
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
@@ -513,6 +532,13 @@ def vq2_case_c() -> DeployProfile:
         #     alt_thrust_lo to 0.10 for vq2_case_c.
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True,
+                              # A36 FIX C (built but LEFT OFF): yaw-rate DAMPING bump kd_att 0.30 ->
+                              # ~0.7 for better-damped attitude tracking. The yaw-overshoot diagnosis
+                              # (run 20260704_042616) attributes the whip to the pursuit tail-chase
+                              # (Fixes A+B), NOT an intrinsically hot attitude loop, so this stays OFF
+                              # to keep attribution clean. ENABLE only if a flight shows residual
+                              # RINGING after A+B (attitude under-damping): uncomment the next line.
+                              # "kd_att": 0.7,
                               # A36 ITEM 0 (2026-07-03; spec vq2_a36_turn_convergence_spec):
                               # (1,1,1) -> (1,1,-1) -- REVERT the A22 yaw actuation sign. A22
                               # (d1bca4b) set yaw +1 off ONE run (20260702_152528) that PREDATED

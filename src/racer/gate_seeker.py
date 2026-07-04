@@ -243,6 +243,20 @@ class GateSeekerConfig:
     # saturating roll/yaw. Capping the heading slew keeps the steering bearing SMOOTH frame-to-frame
     # (the proximate fix for the swing that saturated roll). rad per tick-second.
     pursuit_yaw_slew_rps: float = 1.0
+    # --- A36 FIX B: CLOSE-RANGE YAW-RATE TAPER (2026-07-03; spec vq2_a36_turn_convergence_spec,
+    # yaw-overshoot addendum). Run 20260704_042616: with the sign corrected the drone TURNED toward
+    # gate 2 but WHIPPED ~270 deg -- the pass turn was controlled (~1 rad/s, -20 deg) but then PURSUIT
+    # took over and rail-chased the rotating CLOSE-RANGE LOS at the yaw slew cap for -207 deg (az held
+    # ~36 deg off = a tail chase; parallax LOS-rate ~ v/r blows up as range shrinks). The taper cuts
+    # the pursuit yaw SETPOINT-SLEW authority by MEASURED range: full authority far (approaching a
+    # distant gate needs the fast slew), reduced near (a close rotating LOS can no longer drive a
+    # rail-chase). g_yaw = clip((rng - lo)/(hi - lo), floor, 1) scales pursuit_yaw_slew_rps in
+    # _slew_heading. Pure proportional on the tracked range -- NO derivative (not the A29
+    # differentiated-noise failure). None (default) => no taper (byte-identical). vq2_case_c: lo 3 m,
+    # hi 10 m, floor 0.35.
+    yaw_slew_taper_lo_range_m: float | None = None
+    yaw_slew_taper_hi_range_m: float = 10.0
+    yaw_slew_taper_floor: float = 0.35
     # Cap the ROLL (FRD body-rate X) command in pursuit so a residual bearing swing can never
     # saturate roll into a roll-over (A3's crash axis). Well below the controller's max_body_rate_rps.
     pursuit_roll_rate_cap_rps: float = 1.5
@@ -752,6 +766,30 @@ class GateSeekerConfig:
     pass_turn_hold_until_pointed: bool = False
     pass_turn_coast_s: float = 1.5         # hard upper bound on the hold-until-pointed turn coast (s)
     pass_turn_point_tol_rad: float = 0.17  # "pointed" tolerance vs the turn target (~10 deg)
+    # --- A36 REFINE-TO-REAL-GATE (2026-07-03; spec vq2_a36 yaw-overshoot addendum). The A33 H-1c
+    # BLIND turn target (sign(last az)*cap off the PASSED gate) is actively WRONG-SIGNED: run
+    # 20260704_042616 latched pass_turn_yaw = -1.91 (turn LEFT ~110 deg) off the gate-1 close az
+    # while the TRUE gate 2 was at world bearing +0.66 (RIGHT ~38 deg) -- a ~147 deg error the wrong
+    # way, and the -207 deg "whip" was pursuit unwinding from it. Hold-until-pointed to that blind
+    # target would DRIVE the wrong turn confidently = worse. FIX: don't guess. When ON:
+    #   * _begin_pass does NOT compute the blind target (leaves _pass_turn_yaw None + sets
+    #     _pass_turn_pending) -> _pass_coast_command coasts STRAIGHT through the brief occlusion.
+    #   * The MOMENT a valid DOWNRANGE gate-2 pose is seen (range > pass_degenerate_range_m and
+    #     <= track_abs_range_cap_m, NOT the passed gate via the A33 H-1a _is_prev_gate exclusion, and
+    #     bearing weight >= pass_refine_min_bw), RE-AIM _pass_turn_yaw at THAT gate's world bearing
+    #     (capture-time attitude, the same geometry pursuit's yaw_des uses), bounded to
+    #     +/-pass_blind_turn_cap_rad from the pass heading. Latch-FOLLOW (keep updating as the
+    #     bearing refines); hold-until-pointed then converges to the REAL gate and releases pointed.
+    #   * FALLBACK: if no qualifying pose appears within pass_turn_coast_s, the hold expires on a
+    #     STRAIGHT coast (never a committed wrong turn) -> pursuit picks up gate 2 when it re-appears.
+    # Requires pass_turn_through + pass_turn_hold_until_pointed + pass_exclude_prev_gate (the H-1a
+    # snapshot). OFF (default) => the A33 blind-target behavior, byte-identical.
+    pass_turn_refine: bool = False
+    # Minimum soft bearing weight for a gate-2 pose to RE-AIM the turn target: re-aiming is a
+    # commit-grade action (like zoff_reseed_min_w), so require a consistent frame -- a low-weight
+    # pose steers gently in pursuit but must not fling the turn target. 0.0 => any weight (only
+    # meaningful under use_soft_bearing_weight; else _bearing_w_ctl() is 1.0 and this never gates).
+    pass_refine_min_bw: float = 0.3
     # --- S-1: sharpen the off-axis forward cut. fwd_scale = max(cos(az),0)^fwd_scale_pow. cos^2
     # (default) still drives 55% forward at az=42 deg while badly mis-pointed; cos^4 gives 30% --
     # cuts the overfly speed (which also drives the translational-lift up-bias) without touching
@@ -863,6 +901,9 @@ class GateSeeker:
     #    (pass_wire_requires_near) so the PHYSICAL commit (degenerate/lost) upgrades to the fast wire
     #    window; cleared on _end_pass / reset. --
     _pass_wire_pending: bool = field(default=False, repr=False)
+    # -- A36 REFINE-TO-REAL-GATE: "turn intended but target not yet known" (pass_turn_refine): set at
+    #    _begin_pass instead of the blind target; cleared once a gate-2 pose re-aims _pass_turn_yaw. --
+    _pass_turn_pending: bool = field(default=False, repr=False)
     # -- hold-last-demand bridge (A13): cache the last good pursuit demand so a pose-None tick can
     #    re-issue it (continuous per-tick command) instead of regime-2's zero-coast hold --
     _last_demand_los: np.ndarray | None = field(default=None, repr=False)   # last pursuit world heading unit vec
@@ -1540,7 +1581,14 @@ class GateSeeker:
         # occlusion instead of freezing the heading. Aim at the last-known next-gate drift direction:
         # sign(last apparent azimuth az, else the chase LOS drift), the pass heading + sign*cap. This
         # runs BEFORE _reset_chase drops _last_az_err's companions -- read the stashes here.
-        if self.config.pass_turn_through:
+        if self.config.pass_turn_through and self.config.pass_turn_refine:
+            # A36 REFINE-TO-REAL-GATE: do NOT commit a blind sign*cap guess (it points at the PASSED
+            # gate's degenerate close az, wrong-signed). Coast STRAIGHT through the occlusion
+            # (_pass_turn_yaw None => _pass_coast_command freezes the heading) and re-aim at the first
+            # valid downrange gate-2 pose in _pass_coast_command.
+            self._pass_turn_yaw = None
+            self._pass_turn_pending = True
+        elif self.config.pass_turn_through:
             drift = 0.0
             if self._last_az_err is not None and abs(float(self._last_az_err)) > 1e-3:
                 drift = float(self._last_az_err)
@@ -1566,6 +1614,7 @@ class GateSeeker:
         self._passing = False
         self._pass_wire = False
         self._pass_wire_pending = False   # A36 ITEM 3: intent consumed at commit -> clear
+        self._pass_turn_pending = False   # A36 REFINE: turn resolved (or pass ended) -> clear
         self._pass_armed = False
         self._pass_min_range_m = float("inf")
         self._pass_t_ns = None
@@ -1598,11 +1647,18 @@ class GateSeeker:
         through => always False (byte-identical)."""
         if not (self.config.pass_turn_hold_until_pointed and self.config.pass_turn_through):
             return False
-        if self._pass_turn_yaw is None or self._pass_t_ns is None or self._last_yaw is None:
+        if self._pass_t_ns is None:
             return False
         elapsed = (int(sim_time_ns) - self._pass_t_ns) / 1e9
         if elapsed >= self.config.pass_turn_coast_s:
-            return False                            # bounded: the turn coast timed out
+            return False                            # bounded: the turn coast timed out (fallback)
+        # A36 REFINE-TO-REAL-GATE: while the turn is intended but the target is not yet known (still
+        # coasting straight through the occlusion awaiting a gate-2 pose), HOLD -- defer acquire-next
+        # so we don't end the pass before the turn has even aimed. (Bounded by pass_turn_coast_s above.)
+        if self._pass_turn_pending and self._pass_turn_yaw is None:
+            return True
+        if self._pass_turn_yaw is None or self._last_yaw is None:
+            return False
         err = abs(float(np.arctan2(np.sin(self._last_yaw - self._pass_turn_yaw),
                                    np.cos(self._last_yaw - self._pass_turn_yaw))))
         return err > self.config.pass_turn_point_tol_rad   # still turning -> hold
@@ -1640,6 +1696,47 @@ class GateSeeker:
         elapsed = (int(sim_time_ns) - self._pass_t_ns) / 1e9
         return elapsed < (self._effective_pass_coast_s() + self.config.acquire_next_s)
 
+    def _maybe_refine_turn_target(self, nav: NavState) -> None:
+        """A36 REFINE-TO-REAL-GATE: while passing with pass_turn_refine ON, RE-AIM the turn target at
+        a valid DOWNRANGE gate-2 pose (instead of the wrong-signed blind guess). Gates on: a usable
+        pose past the degenerate close band and within the absolute range cap, NOT the just-passed
+        gate (A33 H-1a ``_is_prev_gate`` geometric exclusion), with soft bearing weight >=
+        ``pass_refine_min_bw``. The refined target is the gate's WORLD bearing (capture-time attitude,
+        the same geometry pursuit's yaw_des uses), bounded to +/-``pass_blind_turn_cap_rad`` from the
+        pass heading so a wild pose can't fling it. Latch-FOLLOW (updates every qualifying tick as the
+        bearing refines). No-op when the flag is off / no pose / pose doesn't qualify."""
+        if not (self.config.pass_turn_through and self.config.pass_turn_refine):
+            return
+        pose = self._last_pose
+        if pose is None:
+            return
+        rng = float(pose.range_m)
+        # DOWNRANGE band: past the degenerate close gate, within the absolute course cap.
+        if rng <= float(self.config.pass_degenerate_range_m):
+            return
+        if (self.config.track_abs_range_cap_m is not None
+                and rng > float(self.config.track_abs_range_cap_m)):
+            return
+        # NOT the passed gate (A33 H-1a geometric exclusion; needs the snapshot from pass_exclude_prev_gate).
+        if self._pass_prev_dir_world is not None and self._is_prev_gate(pose):
+            return
+        # Consistency gate: re-aiming is commit-grade -- require a decent-weight frame.
+        if self._bearing_w_ctl() < float(self.config.pass_refine_min_bw):
+            return
+        # Gate-2 WORLD bearing via the capture-time attitude (same path as pursuit's yaw_des).
+        rpy_cap = self._rpy_at(int(pose.sim_time_ns))
+        gdir = self._gate_dir_world_rpy(pose, rpy_cap if rpy_cap is not None
+                                        else self._att_rpy(nav))
+        yaw_des = float(np.arctan2(gdir[1], gdir[0]))
+        # Bound the target to +/-cap from the pass heading (a gate-2 bearing beyond ~92 deg of the
+        # pass heading is implausible for the next gate = likely residue; clamp the shortest path).
+        ph = self._pass_heading if self._pass_heading is not None else yaw_des
+        cap = abs(float(self.config.pass_blind_turn_cap_rad))
+        d = float(np.arctan2(np.sin(yaw_des - ph), np.cos(yaw_des - ph)))
+        d = float(np.clip(d, -cap, cap))
+        self._pass_turn_yaw = float(np.arctan2(np.sin(ph + d), np.cos(ph + d)))
+        self._pass_turn_pending = False
+
     def _pass_coast_command(self, nav: NavState) -> ControlCommand:
         """The bounded LEVEL forward COAST through the pass (dead-reckon) + while acquiring the next
         gate. Holds the FROZEN pre-pass heading and commands the same bounded feedforward forward tilt
@@ -1648,6 +1745,9 @@ class GateSeeker:
         vertical-align (the lever is degenerate at the pass). If the coast+acquire window has elapsed
         without re-acquiring the next gate, fall back to the gentle no-detection level coast (which can
         never pitch up), so the dead-reckon glide is always bounded."""
+        # A36 REFINE-TO-REAL-GATE: re-aim the turn target at a valid downrange gate-2 pose BEFORE the
+        # coast slews (so the hold converges to the real gate, not a blind guess).
+        self._maybe_refine_turn_target(nav)
         if not self._in_pass_dead_reckon(int(nav.sim_time_ns)):
             # the bounded coast+acquire window elapsed -> end the pass, revert to the gentle level hold.
             self._end_pass(int(nav.sim_time_ns))
@@ -2507,6 +2607,23 @@ class GateSeeker:
         noisy bearing can't demand a heading jump the controller turns into a saturating roll/yaw."""
         last = self._last_yaw if self._last_yaw is not None else yaw_des
         slew = float(self.config.pursuit_yaw_slew_rps)
+        # A36 FIX B: close-range yaw-rate taper. Scale the slew authority by the tracked range so a
+        # fast close-range LOS sweep cannot drive a rail-chase (the run-042616 -207 deg pursuit whip).
+        # g_yaw ramps floor..1 over [lo, hi] on the MEASURED range (no derivative). None => no taper.
+        if self.config.yaw_slew_taper_lo_range_m is not None:
+            rng = (float(self._track_range_m) if self._track_range_m is not None
+                   else (float(self._last_track_range_m)
+                         if self._last_track_range_m is not None else None))
+            if rng is not None:
+                lo = float(self.config.yaw_slew_taper_lo_range_m)
+                hi = float(self.config.yaw_slew_taper_hi_range_m)
+                floor = float(self.config.yaw_slew_taper_floor)
+                if hi > lo:
+                    g_yaw = (rng - lo) / (hi - lo)
+                else:
+                    g_yaw = 1.0 if rng >= hi else floor
+                g_yaw = float(min(max(g_yaw, floor), 1.0))
+                slew = slew * g_yaw
         if slew <= 0.0 or self._last_pursuit_t_ns is None:
             self._last_pursuit_t_ns = int(sim_time_ns)
             return yaw_des
@@ -2699,6 +2816,7 @@ class GateSeeker:
         self._pass_heading = None
         self._pass_index = None
         self._pass_wire_pending = False   # A36 ITEM 3: drop deferred wire intent
+        self._pass_turn_pending = False   # A36 REFINE: drop pending turn intent
         # A33 H-1: drop the old-gate exclusion snapshot + the blind turn target.
         self._pass_prev_dir_world = None
         self._pass_prev_range_m = None
