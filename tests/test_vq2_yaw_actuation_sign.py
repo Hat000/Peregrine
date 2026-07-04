@@ -326,12 +326,15 @@ def test_closed_loop_diverges_with_the_mode_b_minus_one_yaw_sign():
 # VQ1 / the seeker default stay byte-identical (their wire is not yaw-mirrored).
 # ===========================================================================
 def test_vq2_profile_carries_noninverting_yaw_body_rate_sign():
-    """The flown vq2_case_c carries body_rate_sign yaw=+1 (the VQ2 yaw path does NOT invert) paired
-    with the A36 yaw_steer_mode="A" R_cur-yaw recovery. OPERATOR-EYES-RESOLVED (2026-07-04 run 120357
-    mode A: "yawed in the correct direction, RIGHT"); NOT re-derived from the cmd-vs-gyro metric."""
+    """The flown vq2_case_c carries body_rate_sign yaw=+1 (the VQ2 yaw path does NOT invert) with
+    yaw_steer_mode="off": the A14 recovery is ALREADY wired once via _controller_nav
+    (gate_seeker.py _controller_nav -> controller), so mode "A" double-negated R_cur yaw back into
+    the mirrored frame -> positive-feedback runaway (A37 camera-truth audit, run 20260704_130314).
+    OPERATOR-EYES-RESOLVED (2026-07-04 run 20260704_135554, mode off: "no more turning to the right
+    before the gate"); 120357's mode-A "correct RIGHT" was right-for-the-wrong-reason at turn onset."""
     co = vq2_case_c().controller_overrides
     np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, 1.0])
-    assert co.get("yaw_steer_mode") == "A"
+    assert co.get("yaw_steer_mode") == "off"
 
 
 def test_vq1_and_seeker_default_signs_unchanged():

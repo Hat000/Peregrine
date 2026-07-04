@@ -609,7 +609,17 @@ def vq2_case_c() -> DeployProfile:
                               # A/B produce OPPOSITE yaw direction; roll/pitch/thrust identical between
                               # them. Physical winner = OPERATOR-EYES-resolved on the confirm-fly
                               # (offline can't see the yaw mirror). VQ1/case-A untouched (mode "off").
-                              "yaw_steer_mode": "A",
+                              # A37 (2026-07-04, run 20260704_130314 camera-truth audit): the STEP-0
+                              # premise above is FALSE on the live path -- _controller_nav
+                              # (gate_seeker.py:1855-1864) ALREADY hands the controller nav.yaw=+true
+                              # (A14 recovery IS wired), so mode "A"'s yaw_asign=-1 negates a SECOND
+                              # time -> mirrored R_cur yaw -> positive-feedback runaway (nose swung
+                              # +40deg off gate 0, pixel-anchored; eyes-confirmed "nose very obviously
+                              # right"). 120357's mode-A "correct RIGHT" was right-for-the-wrong-reason
+                              # (mirror err ~ +sp at yaw~0 passes any onset check). "off" + brs (1,1,1)
+                              # = the A14-correct state, never yet flown on today's stack. One-line
+                              # revert: set "A" back. Operator eyes adjudicate on the confirm-fly.
+                              "yaw_steer_mode": "off",
                               "kp_alt": 0.0, "gate_pd_vertical": True,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,

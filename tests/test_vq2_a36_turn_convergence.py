@@ -527,9 +527,11 @@ def test_profile_flight3_full_turn_package():
     co = prof.controller_overrides or {}
     # Fix C OFF (no kd_att override => controller default 0.30).
     assert "kd_att" not in co, "Fix C (kd_att bump) must stay OFF (no override) per operator"
-    # Yaw fix EYES-RESOLVED (run 20260704_120357 mode A): yaw_steer_mode="A" + body_rate_sign yaw=+1
-    # (the VQ2 yaw path does NOT invert; mode B yawed the wrong way). NOT from the cmd-vs-gyro metric.
-    assert co.get("yaw_steer_mode") == "A"
+    # Yaw fix EYES-RESOLVED rev A37 (run 20260704_135554 mode off: "no more turning to the right
+    # before the gate"): yaw_steer_mode="off" + body_rate_sign yaw=+1. Mode "A" double-negated the
+    # A14 recovery already wired via _controller_nav -> mirrored R_cur yaw -> positive-feedback
+    # runaway (camera-truth audit of run 20260704_130314). NOT from the cmd-vs-gyro metric.
+    assert co.get("yaw_steer_mode") == "off"
     np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, 1.0])
     cfg = GateSeekerConfig(**so)
     # Refine + Item 3:
