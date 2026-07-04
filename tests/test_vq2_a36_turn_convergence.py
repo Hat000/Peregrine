@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from racer.contracts import GatePose, NavState  # noqa: E402
+from racer.deploy_profile import vq2_case_c  # noqa: E402
 from racer.gate_seeker import GateSeeker, GateSeekerConfig, _clip_norm  # noqa: E402
 
 _NS = 1_000_000_000
@@ -258,3 +259,31 @@ def test_item3_default_off_no_hold():
     s._pass_turn_yaw = 1.6
     s._last_yaw = 0.0
     assert not s._turn_hold_active(int(0.3 * _NS)), "no hold when the flag is off"
+
+
+# ===========================================================================
+# PROFILE WIRING — the FLOWN vq2_case_c state is SIGN-ALONE for the first A36 re-fly:
+# Item 0 (yaw sign) IN; Items 1, 3, 4 all at their OFF defaults (commented out in the
+# profile). Item 3 gets re-enabled for flight-2 by uncommenting the 4 override lines.
+# ===========================================================================
+def test_profile_first_fly_is_sign_alone():
+    """The shipped vq2_case_c carries ONLY the yaw-sign flip from A36; Items 1/3/4 fall back to
+    their OFF defaults so the first re-fly isolates the ONE change (the sign). This asserts the
+    FLOWN profile state -- the Item-1/3/4 BEHAVIOR tests above construct configs explicitly and are
+    unaffected by this wiring."""
+    prof = vq2_case_c()
+    so = prof.seeker_overrides or {}
+    # Item 0: the yaw sign IS flipped (lives in controller_overrides).
+    np.testing.assert_allclose(
+        np.asarray(prof.controller_overrides["body_rate_sign"], float), [1.0, 1.0, -1.0])
+    # Items 1/3/4: ABSENT from the profile (=> OFF defaults) for the sign-alone first fly.
+    for k in ("pass_wire_requires_near", "pass_turn_hold_until_pointed",
+              "fwd_point_gate_az_rad", "use_lateral_first_budget", "image_lat_cap_mps2"):
+        assert k not in so, f"{k} must be OFF (absent) in the sign-alone first-fly profile"
+    # And the built config confirms the OFF defaults:
+    cfg = GateSeekerConfig(**so)
+    assert cfg.pass_wire_requires_near is False
+    assert cfg.pass_turn_hold_until_pointed is False
+    assert cfg.fwd_point_gate_az_rad is None
+    assert cfg.use_lateral_first_budget is False
+    assert cfg.image_lat_cap_mps2 == 1.5   # default cap, not the Item-4 raised 3.0

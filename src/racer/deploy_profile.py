@@ -389,21 +389,24 @@ def vq2_case_c() -> DeployProfile:
                           "fwd_scale_pow": 4.0,
                           # === A36 (2026-07-03; spec vq2_a36_turn_convergence_spec) ===
                           # Headline fix is Item 0 (body_rate_sign -> (1,1,-1), in
-                          # controller_overrides). FLIGHT PLAN: the FIRST A36 re-fly is sign + Item 3
-                          # (physical-plane turn) ON, Items 1&4 OFF -- so the yaw sign is read cleanly
-                          # (does the drone now TURN toward gate 2 instead of orbiting) with the turn
-                          # commit/hold correct but WITHOUT the slow/switch-lanes refinements yet.
-                          # Items 1&4 are wired + tuned + INDIVIDUALLY enableable for follow-up flights.
+                          # controller_overrides). FLIGHT PLAN: the FIRST A36 re-fly is SIGN-ALONE --
+                          # Items 1, 3 AND 4 all OFF -- so the yaw sign (which has burned us both ways)
+                          # is read on the CLEANEST possible single change (operator's eyes + the direct
+                          # cmd-vs-gyro metric). Item 3 is re-enabled for flight-2 once the sign is
+                          # confirmed; Items 1&4 for later. All three are wired + tuned below and each is
+                          # a one-line uncomment to enable.
                           #
-                          # ITEM 3 -- PHYSICAL-PLANE TURN (ON): commit the turn at the physical plane
+                          # ITEM 3 -- PHYSICAL-PLANE TURN (OFF for the first re-fly; RE-ENABLE for
+                          #   flight-2 by UNCOMMENTING the four lines below -> back to pre-A36 pass
+                          #   behavior while commented): commit the turn at the physical plane
                           #   (rng ~pass_arm_range_m) not the ~9 m-early wire (which self-cancels via
                           #   H-1b's 0.0 coast + acquire-next), and HOLD the turn coast until POINTED
                           #   (~10 deg of the ~95 deg target, bounded 1.5 s) instead of reverting at the
                           #   fixed 0.3 s pass_coast_s so the ~95 deg slew actually completes.
-                          "pass_wire_requires_near": True,
-                          "pass_turn_hold_until_pointed": True,
-                          "pass_turn_coast_s": 1.5,
-                          "pass_turn_point_tol_rad": 0.17,
+                          # "pass_wire_requires_near": True,
+                          # "pass_turn_hold_until_pointed": True,
+                          # "pass_turn_coast_s": 1.5,
+                          # "pass_turn_point_tol_rad": 0.17,
                           #
                           # ITEM 1 -- POINTING GATE on forward drive ("point before you push"), OFF for
                           #   the first re-fly: cut a_fwd to ~0 until the gate is roughly centered so the
