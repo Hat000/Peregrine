@@ -181,9 +181,9 @@ def test_gate_on_the_right_commands_wire_positive_yaw():
     assert wire_yaw > 0.0, (
         f"gate on the RIGHT must command wire-POSITIVE yaw (non-inverting wire turns right); "
         f"got {wire_yaw:+.3f}")
-    # ADEQUATE MAGNITUDE: az=0.46 rad at kp_att=4 demands ~1.84 -> the visual yaw cap (1.5)
-    # saturates; after the slew limiter converges the wire command must sit AT the +cap.
-    assert wire_yaw >= 1.4, f"steady saturated yaw expected at the +1.5 cap, got {wire_yaw:+.3f}"
+    # ADEQUATE MAGNITUDE: az=0.46 rad saturates the visual yaw cap; after the slew limiter converges
+    # the wire command sits AT the +cap (A36 coordinated-turn cut it 1.5 -> 0.9 to be roll-led).
+    assert wire_yaw >= 0.85, f"steady saturated yaw expected at the +0.9 cap, got {wire_yaw:+.3f}"
 
 
 def test_gate_on_the_left_commands_wire_negative_yaw():
@@ -195,7 +195,7 @@ def test_gate_on_the_left_commands_wire_negative_yaw():
     assert wire_yaw < 0.0, (
         f"gate on the LEFT must command wire-NEGATIVE yaw (non-inverting wire turns left); "
         f"got {wire_yaw:+.3f}")
-    assert wire_yaw <= -1.4, f"steady saturated yaw expected at the -1.5 cap, got {wire_yaw:+.3f}"
+    assert wire_yaw <= -0.85, f"steady saturated yaw expected at the -0.9 cap, got {wire_yaw:+.3f}"
 
 
 def test_centered_gate_commands_near_zero_yaw():
@@ -207,16 +207,18 @@ def test_centered_gate_commands_near_zero_yaw():
 
 
 def test_saturated_turn_authority_completes_a_90deg_turn_in_time():
-    """AUTHORITY: the saturated wire yaw (cap x cmd_rate_scale) at the live-measured ~2.1x
-    realization gain MAGNITUDE must complete a 90-deg gate-to-gate turn in well under 2 s — i.e. the
-    cmd_rate_scale=0.4 + the 1.5 rad/s visual cap leave ENOUGH yaw rate once the sign is right.
-    (run 20260702_152528: |realized/wire| 2.13; the profile assumes 2.5 — use the smaller.)"""
+    """AUTHORITY: the saturated wire yaw (cap x cmd_rate_scale) at the ~2.1x realization gain must
+    still complete a 90-deg gate-to-gate turn in a reasonable time. A36 coordinated-turn cut the
+    visual yaw cap 1.5 -> 0.9 DELIBERATELY (the turn is now ROLL-led / banked, not yaw-spun, per the
+    operator: "yawed a lot more than needed") -- so the yaw-alone 90 deg time is ~2.8 s and the ROLL
+    does the cross-track. We assert the yaw authority is still meaningful (< ~3.5 s for 90 deg
+    yaw-alone), not that yaw alone completes it fast."""
     cmd = _pursue(_vq2_seeker([_gate([10.0, 5.0, -2.5], normal=[1, 0, 0])]))
     realized_rps = abs(float(cmd.body_rate[2])) * VQ2_CMD_RATE_SCALE * _VQ2_REALIZED_GAIN_MAG
     t_90deg = (np.pi / 2) / realized_rps
-    assert t_90deg < 2.0, (
+    assert t_90deg < 3.5, (
         f"saturated yaw realizes only {realized_rps:.2f} rad/s -> {t_90deg:.2f} s for 90 deg; "
-        "not enough authority for a gate-to-gate turn")
+        "yaw authority too low even for a roll-led turn")
 
 
 # ===========================================================================

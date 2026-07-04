@@ -655,8 +655,9 @@ def test_profile_wiring_a31():
     assert ov["pass_coast_accel_mps2"] == 0.0
     assert ov["reramp_forward_after_pass"] is True
     assert ov["forward_accel_mps2"] == 0.65   # A36 Item 1: slowed 0.8 -> 0.65 ("slow is smooth")
-    # FIX 3: orbit-breaker + yaw clamp.
-    assert ov["orbit_guard_rad"] == 1.75
+    # FIX 3: orbit-breaker + yaw clamp. (A36 coordinated-turn DEMOTED the guard 1.75 -> 3.0 so it no
+    # longer pre-empts the pass-turn -- a rare failsafe.)
+    assert ov["orbit_guard_rad"] == 3.0
     assert ov["orbit_break_s"] == 1.0
     assert ov["orbit_yaw_clamp_rad"] == 2.4
     # THE UPGRADE: IMU-consistency bearing gate REPLACES the tightened fixed threshold —
@@ -670,10 +671,10 @@ def test_profile_wiring_a31():
     # dip that tapped ground on run 20260704_024434). The 1.12 anti-swell cap stays.
     assert ov["hold_thrust_lo_frac"] == 1.00
     assert ov["hold_thrust_hi_frac"] == 1.12
-    # A30/A29/A28 kept.
+    # A30/A29/A28 kept. (A36 coordinated-turn: yaw slew 1.5->0.9, total_accel_cap 2.0->3.0.)
     assert ov["use_image_servo_lateral"] is True
-    assert ov["pursuit_yaw_slew_rps"] == 1.5
-    assert ov["total_accel_cap_mps2"] == 2.0
+    assert ov["pursuit_yaw_slew_rps"] == 0.9
+    assert ov["total_accel_cap_mps2"] == 3.0
     prof = vq2_case_c()
     assert prof.nav_config.reconcile_vision_clock_continuous is True
     assert prof.vertical_estimator is True

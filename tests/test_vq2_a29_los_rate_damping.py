@@ -443,7 +443,7 @@ def test_profile_wiring_a29():
     # tests stay so the mechanism remains replayable. See test_vq2_a30_image_servo.py for the
     # replacement wiring pins.
     assert "use_los_rate_damping" not in ov
-    assert ov["pursuit_yaw_slew_rps"] == 1.5     # the A29 delay trim is KEPT under A30
+    assert ov["pursuit_yaw_slew_rps"] == 0.9     # A36 coordinated-turn cut yaw 1.5 -> 0.9 (roll-led)
     assert vq2_case_c().nav_config.reconcile_vision_clock_continuous is True
     # VQ1 / case-A: no overrides, every A29 flag at its OFF default.
     assert vq1_case_a().seeker_overrides is None
@@ -473,6 +473,6 @@ def test_make_seeker_threads_a29_for_vq2_case_c_only():
         return GateSeeker(config=GateSeekerConfig(
             cruise_speed=3.0, **(get_profile(name).seeker_overrides or {})))
     assert _seeker("vq2_case_c").config.use_los_rate_damping is False   # A30: damping disabled
-    assert _seeker("vq2_case_c").config.pursuit_yaw_slew_rps == 1.5
+    assert _seeker("vq2_case_c").config.pursuit_yaw_slew_rps == 0.9      # A36 coordinated-turn (roll-led)
     assert _seeker("vq1_case_a").config.use_los_rate_damping is False
     assert _seeker("vq1_case_a").config.pursuit_yaw_slew_rps == 1.0

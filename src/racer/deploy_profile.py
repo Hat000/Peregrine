@@ -328,15 +328,16 @@ def vq2_case_c() -> DeployProfile:
         seeker_overrides={"egress_freeze_attitude": True, "hold_last_demand_s": 0.6,
                           "true_attitude_from_ahrs": True,
                           "use_image_servo_lateral": True,
-                          "total_accel_cap_mps2": 2.0,
-                          "pursuit_yaw_slew_rps": 1.5,
+                          # total_accel_cap_mps2 / pursuit_yaw_slew_rps set in the A36 COORDINATED-TURN
+                          # block below (2.0->3.0 and 1.5->0.9); the A31 values here are superseded.
                           # --- A31 ---
                           # (pass_wire_coast_s was 0.25 here; A33 H-1b sets it 0.0 below)
                           "pass_coast_accel_mps2": 0.0,       # spend momentum through the pass
                           "reramp_forward_after_pass": True,  # point before pushing, enforced
                           # forward_accel_mps2 set to A36 Item-1's 0.65 in the A36 block below
                           # (was A33's 0.8; slower approach per operator "slow is smooth").
-                          "orbit_guard_rad": 1.75,            # cumulative-LOS whip abort (~100 deg)
+                          # orbit_guard_rad set in the A36 COORDINATED-TURN block below (1.75 -> 3.0):
+                          # DEMOTED to a rare failsafe so it no longer PRE-EMPTS the pass-turn.
                           "orbit_break_s": 1.0,
                           "orbit_yaw_clamp_rad": 2.4,         # never chase a gate to backwards
                           "use_imu_bearing_gate": True,       # IMU-consistency bearing gate (hop killer)
@@ -441,6 +442,36 @@ def vq2_case_c() -> DeployProfile:
                           #   translation (3.0 ~= a 17 deg bank; the A31 lat-slew still rate-limits it).
                           "use_lateral_first_budget": True,
                           "image_lat_cap_mps2": 3.0,
+                          #
+                          # === A36 COORDINATED TURN (2026-07-04) — rebalance yaw->roll + make the
+                          # PASS-TURN own the turn, not the orbit-brake. Grounded in run 20260704_120357
+                          # (mode A, yaw now correct): the drone "yawed a lot more than needed, not
+                          # rolling nearly enough," and the pass-turn NEVER fired (pass_turn_yaw null all
+                          # flight) -- the A31 ORBIT-BREAKER ran the turn instead. Diagnosis:
+                          #  * roll DEMAND maxed (alat 3.0) but realized bank only ~5deg -- the orbit-
+                          #    break FREEZES yaw while the drone yaws hard, so the attitude-error rotvec
+                          #    is yaw-dominated and the omega norm-clip STARVES roll (roll cmd 1.19 when
+                          #    yaw-aligned -> 0.59 at 90deg yaw divergence, matching the run).
+                          #  * the pass never ARMED: tracked range floored at ~4.3m (gate fills/exits FOV
+                          #    on the pass) and never reached pass_arm_range_m=3.0.
+                          # FIX (A+B+C, one coordinated package):
+                          # A) UNTHROTTLE ROLL: total_accel_cap 2.0 -> 3.0 so image_lat_cap=3.0 actually
+                          #    applies (~17deg bank). Lateral-first already caps a_fwd by
+                          #    forward_accel_mps2 (0.65) FIRST, so forward does NOT balloon -- the added
+                          #    budget goes entirely to ROLL ("more roll, still slow").
+                          "total_accel_cap_mps2": 3.0,
+                          # B) CUT YAW so the turn is roll-led not yaw-dominated (also un-starves the roll
+                          #    budget): yaw setpoint slew + the visual yaw-rate cap 1.5 -> 0.9.
+                          "pursuit_yaw_slew_rps": 0.9,
+                          "visual_yaw_rate_cap_rps": 0.9,
+                          # C) MAKE THE PASS-TURN ARM + DEMOTE THE ORBIT-BRAKE: arm the pass at the
+                          #    achievable ~4.3m closest approach (raise pass_arm_range_m 3.0 -> 4.5) so
+                          #    the coordinated pass-turn (refine-to-real-gate + hold-until-pointed, which
+                          #    SLEWS yaw toward the target instead of freezing it -> yaw error small ->
+                          #    roll survives) OWNS the turn; and DEMOTE the orbit-breaker to a rare
+                          #    failsafe (orbit_guard_rad 1.75 -> 3.0, ~172deg) so it stops pre-empting it.
+                          "pass_arm_range_m": 4.5,
+                          "orbit_guard_rad": 3.0,
                           },
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so

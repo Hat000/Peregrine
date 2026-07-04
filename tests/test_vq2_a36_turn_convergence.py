@@ -546,3 +546,43 @@ def test_profile_flight3_full_turn_package():
     # Item 4 (switch lanes):
     assert cfg.use_lateral_first_budget is True
     assert cfg.image_lat_cap_mps2 == 3.0
+    # A36 COORDINATED TURN (A+B+C): unthrottle roll, cut yaw, arm the pass + demote orbit-brake.
+    assert cfg.total_accel_cap_mps2 == 3.0            # A: cap 2.0 -> 3.0 (image_lat_cap now applies)
+    assert cfg.pursuit_yaw_slew_rps == 0.9            # B: yaw slew 1.5 -> 0.9
+    assert cfg.visual_yaw_rate_cap_rps == 0.9         # B: yaw cap 1.5 -> 0.9
+    assert cfg.pass_arm_range_m == 4.5               # C: arm at the ~4.3m vision floor (was 3.0)
+    assert cfg.orbit_guard_rad == 3.0                # C: orbit-brake demoted (was 1.75)
+
+
+# ===========================================================================
+# A36 COORDINATED TURN — the pass-turn (not the orbit-brake) owns the turn, roll-led.
+# ===========================================================================
+def test_coordturn_pass_arms_at_the_vision_floor():
+    """C: with pass_arm_range_m raised to 4.5, the pass ARMS at the ~4.3 m tracked-range floor (the
+    gate fills/exits FOV on the pass and range never reaches the old 3.0), so the coordinated
+    pass-turn can fire instead of the orbit-breaker. At the old 3.0 it does NOT arm at 4.3 m."""
+    def arms(arm_range):
+        s = _pass_seeker(pass_arm_range_m=arm_range)
+        s._update_pass_state(0, _pose(4.3), index_advanced=False)
+        return s._pass_armed
+    assert arms(4.5) is True, "NEW (4.5) must arm the pass at the 4.3 m floor"
+    assert arms(3.0) is False, "OLD (3.0) does not arm at 4.3 m -> the orbit-brake ran (the bug)"
+
+
+def test_coordturn_orbit_guard_demoted():
+    """C: the A31 orbit-breaker guard is raised 1.75 -> 3.0 rad (~172 deg) so it is a RARE failsafe
+    that no longer pre-empts the pass-turn."""
+    assert vq2_case_c().seeker_overrides["orbit_guard_rad"] == 3.0
+
+
+def test_coordturn_forward_drive_not_ballooned_by_cap_raise():
+    """A + Fork-1 constraint: raising total_accel_cap 2.0->3.0 must NOT increase forward drive.
+    In the lateral-first path a_fwd is capped by forward_accel_mps2 FIRST, so the forward component of
+    the composed accel never exceeds forward_accel_mps2 -- the added budget goes to LATERAL/roll."""
+    s = _seeker(use_image_servo_lateral=True, use_lateral_first_budget=True,
+                image_lat_cap_mps2=3.0, total_accel_cap_mps2=3.0, forward_accel_mps2=0.65,
+                fwd_scale_pow=2.0)
+    # centered gate (az~0): fwd_scale~1, lateral~0 -> forward is the full forward_accel, and must not
+    # exceed it even with the raised cap.
+    _, fwd, _ = _compose(s, az=0.0)
+    assert fwd <= 0.65 + 1e-9, f"forward must stay <= forward_accel_mps2 (0.65); got {fwd:.3f}"

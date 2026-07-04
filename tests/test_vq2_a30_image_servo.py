@@ -474,8 +474,8 @@ def test_orbit_sim_a29_law_fails_the_same_harness():
 def test_profile_wiring_a30():
     ov = get_profile("vq2_case_c").seeker_overrides
     assert ov["use_image_servo_lateral"] is True
-    assert ov["total_accel_cap_mps2"] == 2.0          # 11.5 deg max composed lean (override only)
-    assert ov["pursuit_yaw_slew_rps"] == 1.5          # the A29 delay trim, KEPT
+    assert ov["total_accel_cap_mps2"] == 3.0          # A36 coordinated-turn: 2.0->3.0 (17 deg bank; roll)
+    assert ov["pursuit_yaw_slew_rps"] == 0.9          # A36 coordinated-turn: yaw 1.5 -> 0.9 (roll-led)
     assert "use_los_rate_damping" not in ov           # A29 damping DISABLED (default False)
     # the effective vq2_case_c seeker config: A30 on, A29 lateral off.
     eff = GateSeekerConfig(**ov)
@@ -512,7 +512,7 @@ def test_make_seeker_threads_a30_for_vq2_case_c_only():
     c = _seeker("vq2_case_c").config
     assert c.use_image_servo_lateral is True
     assert c.use_los_rate_damping is False
-    assert c.total_accel_cap_mps2 == 2.0
+    assert c.total_accel_cap_mps2 == 3.0    # A36 coordinated-turn: 2.0 -> 3.0 (unthrottle the bank)
     a = _seeker("vq1_case_a").config
     assert a.use_image_servo_lateral is False
     assert a.total_accel_cap_mps2 == 2.5
