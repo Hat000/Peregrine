@@ -428,6 +428,23 @@ def vq2_case_c() -> DeployProfile:
                           "yaw_slew_taper_hi_range_m": 10.0,
                           "yaw_slew_taper_floor": 0.35,
                           #
+                          # R2-1 VERTICAL TERMINAL-CROSSING TAPER (2026-07-04; the vertical twin of
+                          # FIX B). Run 20260704_135554: the entire flight was a climb -- the drone
+                          # flew higher than gate 1's centerpoint and hit the CENTER OF THE TOP BAR
+                          # (+0.75 m). The gate-PD sought gate height correctly on the approach
+                          # (z_off -2.8 -> -0.14 climbing off the floor) but the CLOSE-RANGE vision
+                          # fix reads systematically HIGH (the stack believed it was centred at
+                          # trk_range 3.7 m while physically ~1 m above). The bias is UNIFORM
+                          # (theta_g-uncorrelated: terminal corr 0.01, so R2-2i down-weighting can't
+                          # remove it). FIX: taper the gate-PD POSITION authority to 0 near the plane
+                          # (stop tracking the biased offset) + boost the rate brake (arrest any
+                          # residual climb -> cross LEVEL). g_v = clip((rng - lo)/(hi - lo), 0, 1),
+                          # NO floor. lo 3.0 (= pass_degenerate_range_m: below it the PnP lever is
+                          # degenerate anyway), hi 8.0. Pairs with gate_pd_terminal + gate_pd_rate_boost
+                          # in controller_overrides below.
+                          "gate_pd_terminal_lo_range_m": 3.0,
+                          "gate_pd_terminal_hi_range_m": 8.0,
+                          #
                           # ITEM 1 -- POINTING GATE on forward drive ("point before you push") + SLOWER
                           #   approach (operator: "even a tad slower would be good"): cut a_fwd to ~0
                           #   until the gate is roughly centered (sharp turn, not a wide arc), and drop
@@ -621,6 +638,17 @@ def vq2_case_c() -> DeployProfile:
                               # revert: set "A" back. Operator eyes adjudicate on the confirm-fly.
                               "yaw_steer_mode": "off",
                               "kp_alt": 0.0, "gate_pd_vertical": True,
+                              # R2-1 TERMINAL AUTHORITY TAPER + RATE-ARREST BOOST (2026-07-04):
+                              # under the seeker's range-tapered gate_pd_scale (gate_pd_terminal_lo/hi
+                              # in seeker_overrides above), the gate-PD position term FADES to 0 and
+                              # the rate brake BOOSTS to kd*(1+kb) at the plane -> cross LEVEL instead
+                              # of tracking the close-range vision fix that reads HIGH (run
+                              # 20260704_135554 hit the gate-1 top bar +0.75 m). kb=1.0 => kd 0.06 ->
+                              # 0.12 at the plane. Floor-smack bound: the boosted brake is TRANSIENT
+                              # (self-limiting as vz_lp->0) and bounded by the A27 alt_thrust_slew +
+                              # alt_thrust_lo. Far (s=1) => today's A28 law EXACTLY. See the
+                              # Controller.gate_pd_terminal field comment.
+                              "gate_pd_terminal": True, "gate_pd_rate_boost": 1.0,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,
                               # A33 V-2a (2026-07-03): OPEN the floor 0.15 -> 0.05. Run 20260703_210632

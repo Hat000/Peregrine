@@ -1337,6 +1337,15 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
             rec[key] = float(val) if val is not None else None
     except Exception:
         rec["az_err_rad"] = rec["fwd_scale"] = None
+    # --- R2-1 instrumentation (never feeds control) --- gate_pd_scale: the gate-PD terminal
+    # authority scale s in [0,1] the seeker sent on the Setpoint this pursuit tick (1.0 far, ->0 at
+    # the plane; the controller fades the position term + boosts the rate brake by it). None when
+    # the taper is off / no tracked range / no pursuit tick. Same stale-retention as the A30 stashes.
+    try:
+        gps = getattr(seeker, "_last_gate_pd_scale", None) if seeker is not None else None
+        rec["gate_pd_scale"] = float(gps) if gps is not None else None
+    except Exception:
+        rec["gate_pd_scale"] = None
     # seeker_regime: which command_visual regime returned THIS tick
     # (settle/anchor/egress/pass_wire/pass_vis/orbit_break/bridge/hold/pursuit) -- first-class, so
     # the next post-mortem does not have to reconstruct the regime from field-change fingerprints

@@ -76,6 +76,7 @@ EXPECTED_KEYS = {
     "bearing_w",        # A32: soft Cauchy bearing weight of the last accepted pose (null when off)
     "zoff_w",           # A32: vertical filter's last applied Huber*bearing weight (null when off)
     "pass_turn_yaw_rad",  # A33 H-1c: blind turn target during turn-through-occlusion (null when off)
+    "gate_pd_scale",    # R2-1: gate-PD terminal authority scale s in [0,1] this pursuit tick (null when off)
 }
 
 

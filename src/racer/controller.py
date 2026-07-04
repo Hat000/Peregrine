@@ -296,6 +296,30 @@ class Controller:
     # is ON). Replaces the estimator-state clamp the A28 filter removed: P-term authority stays
     # bounded at kp_gate*3 = 0.12 collective while the estimate itself stays honest beyond +/-3.
     gate_pd_z_off_clip_m: float = 3.0
+    # TERMINAL AUTHORITY TAPER + RATE-ARREST BOOST (the R2-1 vertical terminal-crossing fix,
+    # 2026-07-04 -- only read when gate_pd_vertical is ON). Diagnosis of run 20260704_135554: the
+    # gate-PD sought gate height correctly on the approach (z_off -2.8 -> -0.14 as the drone climbed
+    # off the floor), but the CLOSE-RANGE vision fix reads systematically HIGH -- the stack believed
+    # it was centred at trk_range 3.7 m while physically ~1 m above (it hit the CENTER OF THE TOP BAR,
+    # +0.75 m). The measurement bias is UNIFORM (theta_g-uncorrelated on this run: terminal corr 0.01),
+    # so down-weighting cannot remove it; instead FADE the position authority near the plane (stop
+    # tracking the biased close-range offset) and BOOST the rate brake (arrest any residual climb so
+    # the drone crosses LEVEL). With ``s = gate_pd_scale or 1.0`` (the seeker's range taper; None ==
+    # 1.0 far), the gate-PD law becomes::
+    #     thrust = hover - kp_gate*clip(z_off)*s + ff_vertical_kd_alt*(1 + kb*(1 - s))*vz_lp
+    # Far (s=1): today's A28 law EXACTLY (byte-identical). At the plane (s->0): position term fades to
+    # zero, rate brake -> ff_vertical_kd_alt*(1 + kb). ``kb = gate_pd_rate_boost`` (vq2_case_c: 1.0 =>
+    # kd 0.06 -> 0.12 at the plane). Floor-smack bound: worst brake ~= hover - kd*(1+kb)*|vz_lp| is
+    # TRANSIENT (self-limiting -- as vz_lp -> 0 the demand returns to hover) and further bounded by the
+    # A27 alt_thrust_slew + alt_thrust_lo. OFF (default False) => ``s`` forced to 1.0 regardless of the
+    # setpoint => byte-identical (VQ1 / case-A AND today's vq2 gate-PD law). vq2_case_c flips it ON via
+    # controller_overrides; the seeker supplies ``gate_pd_scale`` under its own ``gate_pd_terminal``
+    # flag. [VQ2 R2-1, 2026-07-04]
+    gate_pd_terminal: bool = False
+    # Rate-arrest boost factor ``kb`` (dimensionless): at the plane (s->0) the damping gain scales to
+    # ff_vertical_kd_alt*(1 + kb). 1.0 => the brake DOUBLES at the plane (vq2_case_c). Only read when
+    # gate_pd_terminal is ON; the far-field (s=1) brake is ff_vertical_kd_alt regardless of kb.
+    gate_pd_rate_boost: float = 1.0
     # COLLECTIVE (THRUST) SLEW-RATE LIMIT (the A27 forward-decouple fix, 2026-07-03). Diagnosis of run
     # 20260703_002244: the gate-seeker's FORWARD pursuit is correct (it commands/achieves the -7deg
     # forward tilt, +1.2 m/s^2 demand), but a ~2 Hz VERTICAL bob rail-slams the collective to its
@@ -377,7 +401,8 @@ class Controller:
         return out
 
     def _ff_owns_vertical_thrust(self, z: float, vz_t: float, sim_time_ns: int,
-                                 vz_meas: float | None = None, z_off: float = 0.0) -> float:
+                                 vz_meas: float | None = None, z_off: float = 0.0,
+                                 gate_pd_scale: float | None = None) -> float:
         """Alt-hold collective (pre tilt-comp/clip) for the ff-owns-vertical path (A19c bang-bang fix,
         A25 gate-relative altitude term).
 
@@ -440,9 +465,16 @@ class Controller:
             # position path, one phase-consistent velocity path, no vz_t square wave. z_off is
             # clamped HERE (the estimator state is unclamped under use_zoff_filter); the z_target
             # ramp/fd-LP state above is still maintained (inert -- kept for the OFF path / A-B).
-            term_gate = -self.kp_gate * float(np.clip(z_off, -self.gate_pd_z_off_clip_m,
-                                                      self.gate_pd_z_off_clip_m))
-            term_damp = self.ff_vertical_kd_alt * vz
+            #
+            # R2-1 TERMINAL TAPER (gate_pd_terminal): s in [0,1] FADES the position authority and
+            # BOOSTS the rate brake near the plane (see the gate_pd_terminal field comment). s=1.0
+            # (far, OR the flag OFF, OR the seeker sent no scale) => the A28 law EXACTLY:
+            #   term_gate *= s ; term_damp *= (1 + kb*(1 - s))     [s=1 -> *1, *1 : byte-identical].
+            s = (float(np.clip(gate_pd_scale, 0.0, 1.0))
+                 if (self.gate_pd_terminal and gate_pd_scale is not None) else 1.0)
+            term_gate = -self.kp_gate * s * float(np.clip(z_off, -self.gate_pd_z_off_clip_m,
+                                                          self.gate_pd_z_off_clip_m))
+            term_damp = self.ff_vertical_kd_alt * (1.0 + self.gate_pd_rate_boost * (1.0 - s)) * vz
             self._last_term_gate = term_gate
             self._last_term_damp = term_damp
             out = self.hover_thrust + term_gate + term_damp
@@ -587,8 +619,11 @@ class Controller:
                 vz_v = vz_est if np.isfinite(vz_est) else 0.0
                 z_off_est = float(getattr(nav, "z_off_est", float("nan")))
                 z_off_v = z_off_est if np.isfinite(z_off_est) else 0.0
+            # R2-1: the seeker's range-tapered terminal scale (None == 1.0 == byte-identical; only
+            # consumed under gate_pd_terminal + gate_pd_vertical inside _ff_owns_vertical_thrust).
             thrust = self._ff_owns_vertical_thrust(z_v, vz_t, int(sp.sim_time_ns),
-                                                   vz_meas=vz_v, z_off=z_off_v)
+                                                   vz_meas=vz_v, z_off=z_off_v,
+                                                   gate_pd_scale=sp.gate_pd_scale)
         else:
             z_t = float(sp.position_ned[2]) if sp.position_ned is not None else float(pos[2])
             z_t = z_t - self.alt_offset_m              # fly above the gate line (NED z+ = down)

@@ -324,6 +324,15 @@ class Setpoint:
     # and tumbles (sim build 1.0.3364, the start-transient knife-edge). ``None`` = full authority
     # (1.0); only the RUN-entry window sets it < 1. Time-based, so it is tick-phase/rate invariant.
     launch_ramp: float | None = None
+    # GATE-PD TERMINAL AUTHORITY SCALE [0, 1] (the R2-1 vertical terminal-crossing fix). A range-
+    # tapered scale the seeker sets each pursuit tick under ``gate_pd_terminal``: 1.0 far from the
+    # gate (today's law EXACTLY), ramping to 0.0 at the plane so the gate-PD POSITION term fades and
+    # the rate brake boosts -> the drone crosses LEVEL instead of tracking a close-range vision fix
+    # that reads systematically HIGH (measured run 20260704_135554: hit the gate-1 top bar, +0.75 m).
+    # Consumed ONLY by the controller's gate-PD vertical law (``_ff_owns_vertical_thrust``). ``None``
+    # == 1.0 == byte-identical: every existing caller leaves it None, so the far-field law is
+    # unchanged. Set from the seeker's tracked range. [VQ2 R2-1, 2026-07-04]
+    gate_pd_scale: float | None = None
 
 
 # ---------------------------------------------------------------------------

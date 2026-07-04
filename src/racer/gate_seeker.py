@@ -257,6 +257,18 @@ class GateSeekerConfig:
     yaw_slew_taper_lo_range_m: float | None = None
     yaw_slew_taper_hi_range_m: float = 10.0
     yaw_slew_taper_floor: float = 0.35
+
+    # --- R2-1: GATE-PD TERMINAL AUTHORITY TAPER (2026-07-04; the vertical terminal-crossing fix).
+    # The seeker supplies a range-tapered scale ``gate_pd_scale`` on the pursuit Setpoint that the
+    # controller's gate-PD vertical law fades near the plane (position authority -> 0, rate brake
+    # boosted -> cross LEVEL instead of tracking the close-range vision fix that reads HIGH; measured
+    # run 20260704_135554 hit the gate-1 top bar +0.75 m). Same taper PATTERN as the A36 yaw taper
+    # (``_slew_heading``) on the SAME tracked range, but NO floor: at the plane the position term must
+    # fade to ZERO. g_v = clip((rng - lo)/(hi - lo), 0, 1). ``None`` (default) => the Setpoint carries
+    # gate_pd_scale=None => the controller uses 1.0 => byte-identical (VQ1 / case-A). vq2_case_c:
+    # lo 3.0 (= pass_degenerate_range_m), hi 8.0. [VQ2 R2-1, 2026-07-04]
+    gate_pd_terminal_lo_range_m: float | None = None
+    gate_pd_terminal_hi_range_m: float = 8.0
     # Cap the ROLL (FRD body-rate X) command in pursuit so a residual bearing swing can never
     # saturate roll into a roll-over (A3's crash axis). Well below the controller's max_body_rate_rps.
     pursuit_roll_rate_cap_rps: float = 1.5
@@ -925,6 +937,10 @@ class GateSeeker:
     _last_vt_est: float | None = field(default=None, repr=False)            # v_t = -r*theta_dot (m/s)
     _last_alat: float | None = field(default=None, repr=False)              # applied lateral accel (m/s^2)
     _last_track_range_m: float | None = field(default=None, repr=False)     # range used in v_t (m)
+    # -- R2-1 instrumentation: the gate-PD terminal authority scale s in [0,1] the seeker sent on
+    #    the Setpoint this pursuit tick (None when the taper is off / no tracked range). Logging
+    #    only; the controller reads the Setpoint field, not this stash. --
+    _last_gate_pd_scale: float | None = field(default=None, repr=False)
     # -- A30 image-servo state: capture-time attitude ring buffer (a deque of
     #    (sim_time_ns, (roll, pitch, yaw)), created lazily on the first flag-ON tick so the OFF
     #    path allocates nothing) + instrumentation stashes (spec §4; logging only, None when the
@@ -2403,6 +2419,9 @@ class GateSeeker:
             # COMPOSED vector on the frozen heading). Checked BEFORE the A29 branch: if both
             # flags are ever on, the image servo WINS (see the config note). Flag OFF => fall
             # through unchanged (byte-identical pre-A30 paths below).
+            # R2-1: the gate-PD terminal authority scale for THIS pursuit tick (None -> 1.0 ==
+            # byte-identical; computed once, passed to whichever pursuit branch returns below).
+            gate_pd_scale = self._gate_pd_scale()
             if self.config.use_image_servo_lateral:
                 a_vec = self._compose_image_servo_accel(nav, los, yaw_des,
                                                         float(eff_ramp), float(fwd_ramp))
@@ -2410,7 +2429,8 @@ class GateSeeker:
                                          int(nav.sim_time_ns))
                 return self._feedforward_command(nav, los, yaw, eff_ramp,
                                                  self.config.forward_accel_mps2,
-                                                 fwd_ramp, vz_cmd=vz, accel_vec=a_vec)
+                                                 fwd_ramp, vz_cmd=vz, accel_vec=a_vec,
+                                                 gate_pd_scale=gate_pd_scale)
             # A29 LOS-RATE DAMPING (the orbit fix): compose the forward feedforward + the lateral
             # tangential-velocity brake into ONE vector, then pass it through the SAME machinery
             # (accel_vec bypasses only the scalar accel*ramp*los product -- the ramps are already
@@ -2423,7 +2443,8 @@ class GateSeeker:
                                          int(nav.sim_time_ns))
                 return self._feedforward_command(nav, los, yaw, eff_ramp,
                                                  self.config.forward_accel_mps2,
-                                                 fwd_ramp, vz_cmd=vz, accel_vec=a_vec)
+                                                 fwd_ramp, vz_cmd=vz, accel_vec=a_vec,
+                                                 gate_pd_scale=gate_pd_scale)
             # HOLD-LAST-DEMAND BRIDGE (A13): cache this fresh pursuit demand so a subsequent pose-None
             # tick can re-issue it (continuous per-tick command) instead of regime-2's zero-coast. We
             # cache the slewed world heading + yaw + the EFFECTIVE forward accel (forward_accel * the
@@ -2434,7 +2455,7 @@ class GateSeeker:
                                      int(nav.sim_time_ns))
             return self._feedforward_command(nav, los, yaw, eff_ramp,
                                               self.config.forward_accel_mps2,
-                                              fwd_ramp, vz_cmd=vz)
+                                              fwd_ramp, vz_cmd=vz, gate_pd_scale=gate_pd_scale)
         # LEGACY: a desired-velocity setpoint (the controller closes it with a velocity-error term).
         sp = Setpoint(
             sim_time_ns=int(nav.sim_time_ns),
@@ -2450,13 +2471,18 @@ class GateSeeker:
     def _feedforward_command(self, nav: NavState, los: np.ndarray, yaw: float,
                              launch_ramp: float | None, accel_mps2: float,
                              demand_ramp: float, vz_cmd: float = 0.0,
-                             accel_vec: np.ndarray | None = None) -> ControlCommand:
+                             accel_vec: np.ndarray | None = None,
+                             gate_pd_scale: float | None = None) -> ControlCommand:
         """Shared bounded-feedforward forward-tilt CTBR (pursuit + egress). Commands a horizontal
         acceleration ``accel_mps2 * demand_ramp`` along the unit world heading ``los`` via
         ``Setpoint.accel_ned`` -- the controller adds it as PURE feedforward (no velocity-error term
         that could wind up map-free) and turns it into a tilt. The pursuit/launch authority ramp,
         yaw cap, roll cap and PITCH cap are then applied so the forward lean is bounded + rate-limited
         + ramped and can NEVER saturate pitch (the A4 crash).
+
+        R2-1: ``gate_pd_scale`` (default None == 1.0 == byte-identical) rides through onto
+        ``Setpoint.gate_pd_scale`` for the controller's gate-PD terminal taper. Only the PURSUIT call
+        sites pass it (egress / pass-coast / bridge / orbit-break leave it None -> unchanged).
 
         VERTICAL (A5 BLOCKER 1): when ``vz_cmd`` != 0 a bounded vertical-velocity target is carried in
         ``Setpoint.velocity_ned`` (HORIZONTAL components ZERO -- only Z), so the controller's altitude
@@ -2482,6 +2508,7 @@ class GateSeeker:
             velocity_ned=velocity_ned,                             # bounded vertical-align vz_t (Z only)
             yaw=yaw,
             launch_ramp=launch_ramp,
+            gate_pd_scale=gate_pd_scale,                           # R2-1 terminal taper (None -> 1.0)
         )
         cmd = self.controller.command(self._controller_nav(nav), sp)
         cmd = self._cap_yaw_rate(cmd, self.config.visual_yaw_rate_cap_rps)
@@ -2634,6 +2661,32 @@ class GateSeeker:
         max_step = slew * dt if dt > 0.0 else abs(derr)
         derr = float(np.clip(derr, -max_step, max_step))
         return float(np.arctan2(np.sin(last + derr), np.cos(last + derr)))
+
+    def _gate_pd_scale(self) -> float | None:
+        """R2-1: the gate-PD terminal authority scale s in [0,1] for THIS pursuit tick, from the
+        MEASURED tracked range -- same taper pattern as ``_slew_heading``'s g_yaw, on the SAME range,
+        but NO floor (at the plane the position authority must fade to ZERO). ``None`` when the taper
+        is disabled (``gate_pd_terminal_lo_range_m`` unset) OR no tracked range is available yet -- the
+        Setpoint then carries gate_pd_scale=None and the controller uses 1.0 (byte-identical). Stashed
+        on ``_last_gate_pd_scale`` for the nav-estimate logger."""
+        if self.config.gate_pd_terminal_lo_range_m is None:
+            self._last_gate_pd_scale = None
+            return None
+        rng = (float(self._track_range_m) if self._track_range_m is not None
+               else (float(self._last_track_range_m)
+                     if self._last_track_range_m is not None else None))
+        if rng is None:
+            self._last_gate_pd_scale = None
+            return None
+        lo = float(self.config.gate_pd_terminal_lo_range_m)
+        hi = float(self.config.gate_pd_terminal_hi_range_m)
+        if hi > lo:
+            s = (rng - lo) / (hi - lo)
+        else:
+            s = 1.0 if rng >= hi else 0.0
+        s = float(min(max(s, 0.0), 1.0))
+        self._last_gate_pd_scale = s
+        return s
 
     def _pursuit_ramp(self, sim_time_ns: int) -> float:
         """Pursuit authority [floor, 1] ramping over ``pursuit_ramp_s`` from the anchor release, so
@@ -2834,6 +2887,7 @@ class GateSeeker:
         self._last_vt_est = None
         self._last_alat = None
         self._last_track_range_m = None
+        self._last_gate_pd_scale = None      # R2-1 terminal-taper instrumentation
         self._last_regime = None
         # A30 image servo: drop the capture-time attitude history (a fresh epoch's clocks differ)
         # + the instrumentation stashes.
