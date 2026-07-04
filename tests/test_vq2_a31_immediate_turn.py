@@ -666,7 +666,9 @@ def test_profile_wiring_a31():
     assert "track_max_bearing_jump_rad" not in ov
     # FIX 4: lateral slew + settle band.
     assert ov["image_lat_slew_mps3"] == 6.0
-    assert ov["hold_thrust_lo_frac"] == 0.90
+    # A35 Fix-3 (2026-07-03): settle hold floor 0.90 -> 1.00 (never sink off the line -- the startup
+    # dip that tapped ground on run 20260704_024434). The 1.12 anti-swell cap stays.
+    assert ov["hold_thrust_lo_frac"] == 1.00
     assert ov["hold_thrust_hi_frac"] == 1.12
     # A30/A29/A28 kept.
     assert ov["use_image_servo_lateral"] is True

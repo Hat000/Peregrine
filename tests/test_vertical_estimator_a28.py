@@ -463,7 +463,8 @@ def test_vq2_profile_ships_the_a28_bundle():
     veo = prof.nav_config.vertical_estimator_overrides
     assert veo == {"use_zoff_filter": True, "export_clip_mps": 2.5,
                    "use_soft_innov_weight": True,      # A32: Huber-soft innovation weighting
-                   "zoff_reseed_min_w": 0.3}           # A33 V-1: weight-qualified reseed
+                   "zoff_reseed_min_w": 0.3,           # A33 V-1: weight-qualified reseed
+                   "use_zoff_big_trust": True}         # A35 Fix-2: magnitude-gated trust floor
     assert prof.nav_config.use_gate_vz_fusion is False   # A26 fusion superseded
 
 

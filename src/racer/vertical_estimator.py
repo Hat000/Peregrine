@@ -262,6 +262,29 @@ class VerticalEstimator:
     # meaningful under ``use_soft_innov_weight``.
     zoff_reseed_min_w: float = 0.0
 
+    # --- A35 Fix-2: MAGNITUDE-GATED TRUST FLOOR (2026-07-03; spec
+    # handoff/vq2_a35_exposed_control_failures_spec_2026-07-03.md §2). Run 20260704_024434: as the
+    # drone climbed ABOVE the gate the +20 deg camera lost it -> bearing_w collapsed to 0.04 -> the
+    # A32 soft weight crushed the HONEST +4.7 m z_off innovation to weight 0.02 and flagged it
+    # rejected -> the estimator IGNORED vision and propagated z_off to the WRONG SIGN (-3.5 m, "climb
+    # more") on a drifting IMU vz for 96 ticks, so the PD held ~hover and never used V-2's open floor.
+    # THE FIX (a NARROW exception -- small/noisy offsets keep the A32/A28 behaviour EXACTLY): a z_off
+    # innovation that is BOTH large (|innov| >= ``zoff_big_innov_m``) AND sign-consistent for
+    # ``zoff_big_sign_consec`` consecutive frames is a REAL vertical excursion, not a noisy frame:
+    #   (a) FLOOR the applied correction weight to at least ``zoff_big_innov_min_w`` (the bearing
+    #       distrust can no longer crush a large honest offset to ~0);
+    #   (b) allow a RESEED even from low bearing weight (the explicit exception to A33 V-1's
+    #       ``zoff_reseed_min_w`` block -- a large+persistent+consistent offset IS retarget-grade);
+    #   (c) while distrusted-and-large, FREEZE the predict-side z_off propagate (do not drift z_off on
+    #       the unfed IMU vz -- a large KNOWN offset held beats the same offset drifted to the opposite
+    #       sign). See ``_big_persistent_offset`` (the predict step reads it).
+    # Only meaningful under ``use_soft_innov_weight``. use_zoff_big_trust=False (default) => the A32
+    # soft path unchanged, byte-identical (VQ1/case-A + every pre-A35 vq2 path). vq2_case_c: True.
+    use_zoff_big_trust: bool = False
+    zoff_big_innov_m: float = 2.5       # "this is a real excursion, not noise" magnitude threshold
+    zoff_big_innov_min_w: float = 0.5   # floor on the applied correction weight for a big+consistent offset
+    zoff_big_sign_consec: int = 3       # consecutive same-sign big frames before the exception engages
+
     _vz: float = field(default=float("nan"), repr=False)
     _b_hat: float = field(default=float("nan"), repr=False)
     _seeded: bool = field(default=False, repr=False)
@@ -296,6 +319,15 @@ class VerticalEstimator:
     # A32 instrumentation: the last latch's TOTAL applied weight (huber * bearing), NaN until the
     # first post-lock latch under use_soft_innov_weight. Logged as ``zoff_w``; never fed back.
     _zoff_last_w: float = field(default=float("nan"), repr=False)
+    # -- A35 Fix-2 state: consecutive same-sign LARGE innovations (>= zoff_big_innov_m). Counts up
+    # while the sign is stable, resets on a sign flip or a sub-threshold offset. The trust floor /
+    # reseed exception / propagate-freeze engage once it reaches zoff_big_sign_consec. --
+    _zoff_big_consec: int = field(default=0, repr=False)
+    _zoff_big_sign: float = field(default=0.0, repr=False)
+    # True while a big+persistent+consistent offset is being distrusted by bearing weight -> the
+    # predict step FREEZES the z_off propagate (does not drift on the unfed IMU vz). Set in the
+    # correct step, read in predict; cleared once the offset is corrected / vision recovers.
+    _big_persistent_offset: bool = field(default=False, repr=False)
 
     # -- lifecycle ------------------------------------------------------------
     def seed(self) -> None:
@@ -321,6 +353,9 @@ class VerticalEstimator:
         self._zoff_last_innov = float("nan")
         self._zoff_last_accepted = None
         self._zoff_last_w = float("nan")
+        self._zoff_big_consec = 0
+        self._zoff_big_sign = 0.0
+        self._big_persistent_offset = False
 
     @property
     def seeded(self) -> bool:
@@ -444,7 +479,12 @@ class VerticalEstimator:
                 self._vz = leak * self._vz + (a_dn - self._b_hat) * dt
             # z_off propagate, UNCLAMPED (same sign/lock-step discipline as the A25 line below;
             # the clamp lives at the controller consumption point now -- see the z_off property).
-            if self._z_off_seen:
+            # A35 Fix-2 (c): FREEZE the propagate while a large offset is being distrusted by bearing
+            # weight -- drifting z_off on the unfed IMU vz is what drove it to the WRONG SIGN (-3.5 m)
+            # on run 20260704_024434. A large KNOWN offset held beats the same offset drifted to the
+            # opposite sign. (_big_persistent_offset is only ever True under use_zoff_big_trust; the
+            # default path never freezes -> byte-identical.)
+            if self._z_off_seen and not self._big_persistent_offset:
                 self._z_off = float(self._z_off - self._vz * dt)
             return
 
@@ -595,6 +635,36 @@ class VerticalEstimator:
         nu = abs(innov) / max(self.zoff_sigma_z_m, 1e-6)
         w_huber = 1.0 if nu <= self.zoff_huber_k else self.zoff_huber_k / nu
         w = float(w_huber) * float(np.clip(weight, 0.0, 1.0))
+
+        # --- A35 Fix-2: MAGNITUDE-GATED TRUST FLOOR ---------------------------------------------
+        # Track consecutive SAME-SIGN LARGE innovations. A z_off innovation that is both large and
+        # sign-consistent for a few frames is a REAL vertical excursion the loop MUST act on --
+        # NOT a noisy frame the bearing weight should crush. (Small/noisy offsets skip this entirely
+        # and keep the A32 soft behaviour byte-for-byte.)
+        big_persistent = False
+        if self.use_zoff_big_trust and abs(innov) >= self.zoff_big_innov_m:
+            s = float(np.sign(innov))
+            if s == self._zoff_big_sign and s != 0.0:
+                self._zoff_big_consec += 1
+            else:
+                self._zoff_big_sign = s
+                self._zoff_big_consec = 1
+            big_persistent = self._zoff_big_consec >= self.zoff_big_sign_consec
+        elif self.use_zoff_big_trust:
+            # sub-threshold offset: the excursion is (being) corrected -> reset the streak + freeze.
+            self._zoff_big_consec = 0
+            self._zoff_big_sign = 0.0
+            self._big_persistent_offset = False
+
+        if big_persistent:
+            # (a) FLOOR the applied correction weight so bearing distrust cannot crush a large honest
+            # offset to ~0 -- the loop corrects toward the true offset (kills the wrong-sign drift).
+            w = max(w, float(self.zoff_big_innov_min_w))
+            # (c) mark distrusted-and-large so the predict step FREEZES the z_off propagate (no drift
+            # on the unfed IMU vz). Only when the frame is ACTUALLY distrusted (bearing weight low);
+            # if vision is trusted the normal correction handles it and no freeze is needed.
+            self._big_persistent_offset = (float(np.clip(weight, 0.0, 1.0))
+                                           < float(self.zoff_big_innov_min_w))
         self._zoff_last_w = w
         # weighted correction: every measurement contributes, scaled by its consistency.
         dt_accept = (now_t - self._zoff_last_accept_t_s
@@ -611,12 +681,16 @@ class VerticalEstimator:
             # A33 V-1: a garbage frame is NOT retarget evidence -- only advance the miss/reseed
             # counter when this frame's applied weight is credible. zoff_reseed_min_w=0 (default) =>
             # any weight counts == byte-identical A32. A real handoff arrives on w=1.0 frames.
-            if w >= self.zoff_reseed_min_w:
+            # A35 Fix-2 (b): a large+persistent+sign-consistent offset IS retarget-grade even from
+            # LOW bearing weight -- the explicit exception to the V-1 block (that is exactly the
+            # +4.7 m sustained excursion that must re-lock, which V-1 alone would strand).
+            if w >= self.zoff_reseed_min_w or big_persistent:
                 self._zoff_miss += 1
                 if self._zoff_miss >= self.reseed_after:
                     self._z_off = z_meas               # REAL retarget: re-lock (vz_rel untouched)
                     self._zoff_miss = 0
                     self._zoff_last_accept_t_s = now_t
+                    self._big_persistent_offset = False   # re-locked -> excursion resolved
             return
         self._zoff_last_accepted = True
         self._zoff_miss = 0

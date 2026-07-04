@@ -232,9 +232,19 @@ def vq2_case_c() -> DeployProfile:
         # 0.11-0.31, cmd 164 w 0.00-0.04), arming the balloon climb. zoff_reseed_min_w=0.3: a garbage
         # frame no longer counts toward the reseed; an honest handoff (fresh-track frames w=1.0) still
         # reseeds in reseed_after frames. See handoff/vq2_a33_gate2_intercept_spec_2026-07-03.md §V-1.
+        # A35 Fix-2 (2026-07-03): magnitude-gated trust floor. Run 20260704_024434 climbed into the
+        # ceiling because as the drone rose ABOVE the gate the +20 deg camera lost it -> bearing_w
+        # collapsed to 0.04 -> the A32 soft weight crushed the honest +4.7 m z_off innovation to 0.02
+        # and z_off_est drifted to the WRONG SIGN (-3.5 m) for 96 ticks; the PD held ~hover, never
+        # using V-2's open floor. use_zoff_big_trust: a LARGE (>=2.5 m) + sign-consistent (3 frames)
+        # offset floors the correction weight (>=0.5), reseeds even from low bearing weight (the
+        # exception to V-1's block), and freezes the propagate while distrusted -- a NARROW exception
+        # for real excursions; small/noisy offsets keep the A32/A28 behaviour exactly. See
+        # handoff/vq2_a35_exposed_control_failures_spec_2026-07-03.md §2.
         vertical_estimator_overrides={"use_zoff_filter": True, "export_clip_mps": 2.5,
                                       "use_soft_innov_weight": True,
-                                      "zoff_reseed_min_w": 0.3},
+                                      "zoff_reseed_min_w": 0.3,
+                                      "use_zoff_big_trust": True},
     )
     return DeployProfile(
         name="vq2_case_c",
@@ -338,8 +348,15 @@ def vq2_case_c() -> DeployProfile:
                           # dev/allow physics above is unchanged (the gate machinery computes it).
                           "use_soft_bearing_weight": True,
                           "image_lat_slew_mps3": 6.0,         # no one-frame lateral rail-snap
-                          "hold_thrust_lo_frac": 0.90,        # settle = conservative hover ...
-                          "hold_thrust_hi_frac": 1.12,        # ... not garbage alt-hold
+                          # A35 Fix-3 (2026-07-03; spec vq2_a35_exposed_control_failures_spec):
+                          # 0.90 -> 1.00. Run 20260704_024434 tapped the ground on the line: during
+                          # settle/anchor the cold AHRS levels a ~-18 deg spawn pitch (~0.5 s) and the
+                          # [0.90,1.12]x hover band let collective sit at 0.239 (below hover 0.2656) --
+                          # 32% of the first 1.6 s sub-hover -> net sink -> ground tap BEFORE egress.
+                          # Floor the settle/anchor hold at hover (never sink; the 1.12 A31 anti-swell
+                          # cap stays). A small climb off the line is recoverable; a ground tap is not.
+                          "hold_thrust_lo_frac": 1.00,        # settle = HOLD hover, never sink (A35 Fix-3)
+                          "hold_thrust_hi_frac": 1.12,        # ... 1.12 anti-swell cap (A31) kept
                           # --- A33 (2026-07-03; spec vq2_a33_gate2_intercept_spec) ---
                           # H-1(a) GEOMETRIC old-gate exclusion: the RACE_STATUS index leads the
                           # physical plane by ~3 m (run 20260703_210632 cmd 49), so the acquire-next
