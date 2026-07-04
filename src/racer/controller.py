@@ -138,6 +138,34 @@ class Controller:
     # flight works) => [-1, +1, +1] for the live sim. Pair with the matching roll flips in
     # body_rate_sign (+1) and odo_rate_sign (-1) so command + rate damping are consistent.
     odo_att_sign: np.ndarray = field(default_factory=lambda: np.ones(3))
+    # A36 YAW-STEER SELECTOR (2026-07-04; spec vq2_a36 yaw-mirror addendum). ROOT (operator eyes,
+    # full-package run 20260704_051851): roll banks correctly toward the gate but yaw rotates the
+    # WRONG physical way ("rolled right, yawed left"). STEP-0 seam (in _decoupled_body_rate): R_cur =
+    # R_world_from_body(nav.roll*asign[0], nav.pitch*asign[1], nav.yaw*asign[2]), asign=[-1,1,1].
+    # Under the seeker's true_attitude_from_ahrs, nav.yaw = -true_yaw and R_des yaw (seeker setpoint)
+    # is +true. So R_cur ROLL = +true_roll (matches R_des -> roll WORKS, operator-confirmed) but
+    # R_cur YAW = -true_yaw (asign[2]=+1, NOT recovered) -> yaw error across opposite conventions ->
+    # inverted yaw. The SEAM BUG is that R_cur yaw doesn't recover true-yaw the way roll does
+    # (odo_yaw should be -1, exactly like roll's odo=-1); this is a VQ2-ONLY recovery because VQ2's
+    # AHRS yaw is mirrored (A9 family) while VQ1's is not (VQ1 flies fine with odo_yaw=+1).
+    #
+    # SELECTOR (VQ2-scoped; VQ1/case-A keeps odo_yaw=+1 + brs_yaw=-1, BYTE-IDENTICAL):
+    #   "off" (default): no change -- R_cur yaw = nav.yaw*asign[2] (byte-identical).
+    #   "B" : recover R_cur yaw ONLY (odo_yaw -> -1) and KEEP the VQ1-PROVEN brs_yaw=-1. This is the
+    #         minimal departure: proven-baseline + exactly ONE VQ2-specific seam correction. The yaw
+    #         WIRE genuinely inverts (A22's brs_yaw=+1 ORBITED = direct flight evidence), so brs_yaw=-1
+    #         stays; only the R_cur seam is fixed. [FLY FIRST -- coordinator's prior.]
+    #   "A" : recover R_cur yaw (odo_yaw -> -1) AND revert brs_yaw -> +1 (match roll's (odo,brs)=(-1,+1)
+    #         pairing literally). Bigger departure (throws away the proven brs_yaw=-1); the FALLBACK if
+    #         B flies yaw-inverted the other way.
+    # A and B produce OPPOSITE yaw command direction; roll/pitch/thrust are byte-identical between
+    # them (the selector touches ONLY the yaw channel). Which of A/B is physically correct is a
+    # coin-flip resolvable ONLY by the operator's eyes on a confirm-fly (offline cannot see the
+    # physical yaw mirror). Stability verified: each of A/B is bounded-convergent under its own plant
+    # polarity and only DIRECTION-flips (not unstable growth) under the other -- neither is a
+    # positive-feedback instability. body_rate_sign for "A" is set VQ2-side in the profile; this knob
+    # owns the R_cur-yaw recovery (odo_yaw) shared by both A and B.
+    yaw_steer_mode: str = "off"       # "off" | "A" | "B" (VQ2-only; "off" == byte-identical)
     # Altitude-hold (vertical thrust) channel: thrust = hover + kp_alt*(z - z_target) +
     # kd_alt*(vz - vz_target), clamped. NED z+ = down, so a SINK (z>target / vz>0) -> more thrust.
     kp_alt: float = 0.0
@@ -636,7 +664,16 @@ class Controller:
             [q_des_wxyz[1], q_des_wxyz[2], q_des_wxyz[3], q_des_wxyz[0]]
         ).as_matrix()
         asign = np.asarray(self.odo_att_sign, dtype=np.float64)
-        R_cur = R_world_from_body(nav.roll * asign[0], nav.pitch * asign[1], nav.yaw * asign[2])
+        # A36 YAW-STEER SELECTOR: modes "A"/"B" both RECOVER R_cur's yaw (odo_yaw -> -1) so it lands
+        # in the +true_yaw frame R_des uses (matching roll's confirmed pairing) -- the yaw steering
+        # then rotates the SAME physical direction the roll banks. (A vs B differ only in body_rate_sign
+        # yaw, set VQ2-side in the profile; that flips the FINAL command sign, not this R_cur recovery.)
+        # "off" (default) => asign[2] untouched (VQ1/case-A byte-identical). Touches ONLY R_cur's yaw
+        # euler; roll/pitch euler, thrust, damping-rate untouched (roll/pitch body-rate change only via
+        # the rotvec's inherent axis coupling when the yaw error is large -- physically correct once
+        # the yaw frame is right).
+        yaw_asign = -asign[2] if self.yaw_steer_mode in ("A", "B") else asign[2]
+        R_cur = R_world_from_body(nav.roll * asign[0], nav.pitch * asign[1], nav.yaw * yaw_asign)
         rotvec = Rotation.from_matrix(R_cur.T @ R_des).as_rotvec()
         rate = np.asarray(nav.angular_rate_body, dtype=np.float64) * np.asarray(self.odo_rate_sign, dtype=np.float64)
         omega = (self.kp_att * rotvec - self.kd_att * rate) / max(self.ff_gain, 1e-6)

@@ -274,7 +274,15 @@ def _closed_loop_final_bearing(controller_sign_override: dict, plant_sign=_VQ2_P
         vertical_align_ramp_s=0.0,
         **(profile.seeker_overrides or {}),
     )
-    overrides = {**(profile.controller_overrides or {}), **controller_sign_override}
+    # A36: this harness is SELF-CONSISTENT in its own (no-yaw-mirror) frame -- it uses
+    # nav.yaw=-psi and _gate_dir_world computed in that same frame, so it isolates the ACTUATION-sign
+    # (body_rate_sign) question these tests are about. The VQ2 R_cur-yaw SEAM (yaw_steer_mode) is a
+    # SEPARATE, real-wire yaw-mirror the harness cannot model (operator eyes disproved the harness's
+    # no-mirror premise on the real wire); it is covered by the A36 selector tests +
+    # confirm-fly. Force yaw_steer_mode "off" here so this harness keeps testing the actuation sign in
+    # its own frame rather than a physical direction it cannot know.
+    overrides = {**(profile.controller_overrides or {}), "yaw_steer_mode": "off",
+                 **controller_sign_override}
     seeker = GateSeeker(config=cfg, controller=make_seeker_controller(**overrides), detector=det)
     psi = 0.0                                                   # TRUE yaw (world), starts north
     for k in range(n_ticks):

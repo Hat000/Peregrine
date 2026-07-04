@@ -211,3 +211,68 @@ close-degenerate poses, bounds the target, holds-then-times-out on the fallback;
 close-range authority. Profile-wiring test asserts the full flight-3 package.
 
 **NOT flown** — operator flies the flight-3 package after coordinator verification.
+
+---
+
+## 8. FLIGHT (full package) result + the YAW-MIRROR fix (yaw-steer selector, 2026-07-04)
+
+**Full-package flight 1 (run `20260704_051851`) — operator eyes (GROUND TRUTH, override telemetry):**
+"did everything right, saw the roll (could be more)... BUT the yaw is once again completely in the
+WRONG direction. Rolled RIGHT and yawed LEFT." So ROLL is correctly signed (banks toward the gate),
+YAW is inverted. Roll and yaw physically DISAGREE.
+
+**Diagnosis (grounded in the eyes, NOT the same-sign metric — which repeatedly mis-concluded):**
+Reconciling BOTH operator verdicts, physical yaw = −(estimator yaw): the VQ2 estimator/vision yaw
+frame is mirrored vs physical (A9 gyro-mirror family, VQ2-specific wire; VQ1's is not mirrored).
+The masking hypothesis is CONFIRMED: sign-alone's blind target was wrong-signed in the estimator
+frame, so pursued through the mirror it came out physically right (two wrongs → "looked correct");
+the refine fixed the target, and the same mirror then drove it physically wrong.
+
+**STEP-0 seam (factual, in the flown `_decoupled_body_rate`):** `R_cur = R_world_from_body(
+nav.roll*asign[0], nav.pitch*asign[1], nav.yaw*asign[2])`, `odo_att_sign=[-1,1,1]`. R_cur **roll**
+= +true_roll (asign[0]=−1 recovers truth → matches R_des → roll WORKS) but R_cur **yaw** = −true_yaw
+(asign[2]=+1, NOT recovered) while R_des yaw (seeker setpoint, `true_attitude_from_ahrs`) is +true →
+the yaw attitude error is across opposite conventions → inverted yaw. **Roll is correct because it's
+a translation demand that recovers true; yaw is wrong because its R_cur pairing doesn't recover
+true the way roll's does.**
+
+**Fix — VQ2-gated YAW-STEER SELECTOR (`yaw_steer_mode` = "off"/"A"/"B"):** both A and B RECOVER
+R_cur's yaw (odo_yaw → −1, exactly like roll's odo_roll=−1) so yaw rotates the same physical way the
+roll banks. They differ only in the yaw actuation sign:
+* **B (fly first):** recover R_cur yaw + KEEP the VQ1-PROVEN `body_rate_sign` yaw=−1 (the yaw WIRE
+  genuinely inverts — A22's +1 ORBITED, direct flight evidence). Minimal departure = proven baseline
+  + exactly one VQ2-specific seam correction.
+* **A (fallback):** recover R_cur yaw + revert `body_rate_sign` yaw=+1 (match roll's (odo,brs)=(−1,+1)
+  pairing literally). Bigger departure; the one-line flip if B flies yaw-inverted the other way.
+The physical winner is a coin-flip only the OPERATOR'S EYES resolve on the confirm-fly (offline
+cannot see the yaw mirror). Coordinator's prior: B. `yaw_steer_mode="off"` (default) = VQ1/case-A
+byte-identical.
+
+**Fix C / kd_att:** operator said the earlier ringing "isn't bad… went away quickly" → Fix C stays
+OFF/parked.
+
+**Offline proof (what IS knowable):** (a) VQ1 byte-identical (mode "off", no overrides). (b) mode
+"off" byte-identical to pre-A36. (c) A vs B differ ONLY in the yaw command sign (A yaw = −B yaw
+exactly) with roll/pitch/thrust BYTE-IDENTICAL between them. (d) STABILITY: each of A/B is
+bounded-convergent under its own plant polarity and only DIRECTION-flips (not unstable growth) under
+the other — neither is a positive-feedback instability (the failing closed-loop signal was a
+direction flip, not divergence). We do NOT assert which of A/B is physically correct — eyes-resolved.
+
+**False-crash finding (run `20260704_052107`):** all 6 COLLISION events are id=1002
+(ENVIRONMENT, not gate 1001), clustered in a 90 ms burst at ~3.66 s; one threat-2 (impulse 1.27)
+during an aggressive full-package bank past gate 0 tripped `final_state=CRASH`. We were losing an
+otherwise-good flight to a single glancing env contact. Resolution (coordinator): the confirm-fly
+uses the already-built `--ignore-collisions` (rl/fly_rl.py:1561, logs + flies on) so a lone threat-2
+env clip doesn't truncate the turn; the operator's eyes are the crash judge. No new threshold code.
+
+**Suite:** 1758 passed, 73 skipped, 11 pre-existing failures (unchanged baseline), 0 new.
+EXPECTED_KEYS = 46 (the selector adds no nav-log field). The `test_vq2_yaw_actuation_sign` closed-loop
+harness was REFRAMED (not reverted): it pins `yaw_steer_mode="off"` so it keeps testing the
+actuation sign in its own self-consistent frame — the R_cur-yaw SEAM is a separate real-wire mirror
+it cannot model (its no-mirror premise was disproved by the eyes) and is covered by the new selector
+tests + confirm-fly.
+
+**Flight plan:** fly **B** first with `--ignore-collisions`; if the operator's eyes say yaw is still
+inverted, one-line flip to A (`yaw_steer_mode="A"` + `body_rate_sign (1,1,1)`) and refly.
+
+**NOT flown.**

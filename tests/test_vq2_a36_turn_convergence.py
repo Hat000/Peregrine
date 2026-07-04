@@ -21,9 +21,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from racer.contracts import GatePose, NavState  # noqa: E402
-from racer.deploy_profile import vq2_case_c  # noqa: E402
-from racer.gate_seeker import GateSeeker, GateSeekerConfig, _clip_norm  # noqa: E402
+from racer.contracts import GatePose, NavState, Setpoint  # noqa: E402
+from racer.deploy_profile import vq1_case_a, vq2_case_c  # noqa: E402
+from racer.gate_seeker import GateSeeker, GateSeekerConfig, _clip_norm, make_seeker_controller  # noqa: E402
 
 _NS = 1_000_000_000
 
@@ -426,8 +426,97 @@ def test_refine_default_off_uses_blind_target():
 
 
 # ===========================================================================
+# YAW-STEER SELECTOR (off / A / B) — the R_cur-yaw recovery that makes yaw rotate the SAME
+# physical way the roll banks (operator eyes, full-package run 20260704_051851: "rolled right,
+# yawed left"). A vs B = opposite yaw direction; the physical winner is OPERATOR-EYES-resolved on
+# the confirm-fly (offline cannot see the VQ2 yaw mirror). These tests assert only what is knowable
+# offline: OFF/VQ1 byte-identical, A vs B opposite yaw with roll/pitch/thrust byte-identical, and
+# neither diverges unstably.
+# ===========================================================================
+def _ctrl_cmd(mode, *, brs_yaw=-1.0, roll=0.1, pitch=-0.05, yaw=-0.3, sp_yaw=0.6,
+              accel=(1.0, 0.5, 0.0), rate=(0.1, 0.2, 0.3)):
+    """One controller command under yaw_steer_mode ``mode`` ("off"/"A"/"B"). brs_yaw is the yaw
+    body_rate_sign the PROFILE would set (A reverts it to +1; B/off keep the proven -1)."""
+    co = dict(vq2_case_c().controller_overrides)
+    co["yaw_steer_mode"] = mode
+    co["body_rate_sign"] = (1.0, 1.0, float(brs_yaw))
+    c = make_seeker_controller(**co)
+    nav = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.zeros(3),
+                   roll=roll, pitch=pitch, yaw=yaw, angular_rate_body=np.asarray(rate, float),
+                   time_since_vision_update_s=0.1)
+    sp = Setpoint(sim_time_ns=0, accel_ned=np.asarray(accel, float), yaw=sp_yaw)
+    cmd = c.command(nav, sp)
+    return np.asarray(cmd.body_rate, float), float(cmd.thrust)
+
+
+def test_yawsel_A_and_B_opposite_yaw_rollpitchthrust_identical():
+    """A (brs_yaw=+1) and B (brs_yaw=-1), both with the R_cur-yaw recovery, produce OPPOSITE yaw
+    command direction; roll, pitch, and thrust are BYTE-IDENTICAL between A and B (the A/B choice is
+    only the yaw actuation sign)."""
+    a, ta = _ctrl_cmd("A", brs_yaw=+1.0)
+    b, tb = _ctrl_cmd("B", brs_yaw=-1.0)
+    assert np.sign(a[2]) != np.sign(b[2]), f"A vs B must be opposite yaw; A={a[2]:+.3f} B={b[2]:+.3f}"
+    assert a[2] == pytest.approx(-b[2], abs=1e-12), "A yaw == -B yaw (same |cmd|, opposite sign)"
+    assert a[0] == pytest.approx(b[0], abs=1e-12), "roll byte-identical A vs B"
+    assert a[1] == pytest.approx(b[1], abs=1e-12), "pitch byte-identical A vs B"
+    assert ta == pytest.approx(tb, abs=1e-12), "thrust byte-identical A vs B"
+
+
+def test_yawsel_recovery_changes_yaw_vs_off():
+    """The R_cur-yaw recovery (mode B) actually changes the yaw command vs OFF (the flag is LIVE, not
+    a silent no-op), at the SAME body_rate_sign so the difference is purely the R_cur-yaw recovery."""
+    off, _ = _ctrl_cmd("off", brs_yaw=-1.0)
+    b, _ = _ctrl_cmd("B", brs_yaw=-1.0)
+    assert abs(off[2] - b[2]) > 1e-3, "the R_cur-yaw recovery must change the yaw command"
+
+
+def test_yawsel_neither_A_nor_B_diverges_unstably():
+    """STABILITY (must hold for BOTH A and B, in an honest matched plant): each converges under its
+    OWN plant polarity and only DIRECTION-flips under the other -- neither is a positive-feedback
+    instability (bounded, not growing). We do NOT assert which polarity is physical (eyes resolve
+    that); we assert that under the polarity where each is negative-feedback it SETTLES."""
+    def sim(mode, brs_yaw, plant_pol, n=80, dt=0.033):
+        co = dict(vq2_case_c().controller_overrides)
+        co["yaw_steer_mode"] = mode
+        co["body_rate_sign"] = (1.0, 1.0, float(brs_yaw))
+        c = make_seeker_controller(**co)
+        true_yaw = 0.0
+        for k in range(n):
+            nav = NavState(sim_time_ns=int(k * dt * 1e9), position_ned=np.zeros(3),
+                           velocity_ned=np.zeros(3), roll=0.0, pitch=0.0, yaw=-true_yaw,
+                           angular_rate_body=np.zeros(3), time_since_vision_update_s=0.1)
+            sp = Setpoint(sim_time_ns=int(k * dt * 1e9), accel_ned=np.array([1.0, 0.5, 0.0]), yaw=0.5)
+            cmd = c.command(nav, sp)
+            true_yaw += plant_pol * 2.1 * (float(cmd.body_rate[2]) * 0.4) * dt
+        return abs(0.5 - true_yaw)
+    # A converges under +1, B under -1 (they are opposites). Each SETTLES under its own polarity.
+    assert sim("A", +1.0, +1) < 0.1, "A must settle onto the gate under its negative-feedback polarity"
+    assert sim("B", -1.0, -1) < 0.1, "B must settle onto the gate under its negative-feedback polarity"
+
+
+def test_yawsel_off_and_vq1_byte_identical():
+    """REGRESSION PIN: yaw_steer_mode default 'off'; VQ1 has no controller overrides so its
+    controller is byte-identical (the shared SEEKER_SIGNS default + odo_att_sign untouched). Mode
+    'off' reproduces the pre-A36 command exactly."""
+    assert make_seeker_controller().yaw_steer_mode == "off"
+    assert vq1_case_a().controller_overrides is None
+    a, _ = _ctrl_cmd("off", brs_yaw=-1.0, sp_yaw=0.9)
+    co = dict(vq2_case_c().controller_overrides)
+    co.pop("yaw_steer_mode", None)       # absent => default "off"
+    co["body_rate_sign"] = (1.0, 1.0, -1.0)
+    c = make_seeker_controller(**co)
+    nav = NavState(sim_time_ns=0, position_ned=np.zeros(3), velocity_ned=np.zeros(3),
+                   roll=0.1, pitch=-0.05, yaw=-0.3, angular_rate_body=np.array([0.1, 0.2, 0.3]),
+                   time_since_vision_update_s=0.1)
+    b = np.asarray(c.command(nav, Setpoint(sim_time_ns=0, accel_ned=np.array([1.0, 0.5, 0.0]),
+                                           yaw=0.9)).body_rate, float)
+    np.testing.assert_allclose(a, b, atol=1e-12)
+
+
+# ===========================================================================
 # PROFILE WIRING — the FLOWN vq2_case_c is the FULL A36 turn package (flight-3):
-# Item 0 sign + refine-to-real-gate + Item 3 + Fix B + Items 1 & 4 ON; Fix C (kd_att) OFF.
+# Item 0 sign + yaw-steer-match-roll + refine-to-real-gate + Item 3 + Fix B + Items 1 & 4 ON;
+# Fix C (kd_att) OFF.
 # ===========================================================================
 def test_profile_flight3_full_turn_package():
     """The shipped vq2_case_c carries the full A36 turn package: yaw sign (1,1,-1), refine-to-real-
@@ -439,6 +528,9 @@ def test_profile_flight3_full_turn_package():
     # Item 0: yaw sign flipped; Fix C OFF (no kd_att override => controller default 0.30).
     np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, -1.0])
     assert "kd_att" not in co, "Fix C (kd_att bump) must stay OFF (no override) per operator"
+    # Yaw-steer selector = B for the first confirm-fly (R_cur-yaw recovery + proven brs_yaw=-1):
+    assert co.get("yaw_steer_mode") == "B"
+    np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, -1.0])
     cfg = GateSeekerConfig(**so)
     # Refine + Item 3:
     assert cfg.pass_turn_refine is True

@@ -554,6 +554,25 @@ def vq2_case_c() -> DeployProfile:
                               # unchanged since A22 (controller.py:513 omega*body_rate_sign); only
                               # this override value moved. VQ1/case-A untouched (seeker default -1).
                               "body_rate_sign": (1.0, 1.0, -1.0),
+                              # A36 YAW-STEER SELECTOR (2026-07-04): full-package flight 1
+                              # (20260704_051851) -- operator eyes: ROLL banks correctly toward the gate
+                              # but YAW rotates the WRONG physical way ("rolled right, yawed left").
+                              # STEP-0 seam: R_cur yaw uses odo_att_sign[2]=+1 (yaw NOT recovered) so
+                              # R_cur yaw = nav.yaw = -true_yaw while R_des yaw (seeker setpoint) is
+                              # +true -> inverted yaw error. Roll is CORRECT because its pairing recovers
+                              # true (odo_roll=-1). FIX = a VQ2-only R_cur-yaw recovery selector:
+                              #   "B" (THIS, fly first): recover R_cur yaw (odo_yaw->-1) and KEEP the
+                              #       VQ1-PROVEN brs_yaw=-1 (the yaw WIRE genuinely inverts -- A22's
+                              #       brs_yaw=+1 ORBITED). Minimal departure: proven baseline + one
+                              #       VQ2-specific seam fix. body_rate_sign above stays (1,1,-1).
+                              #   "A" (fallback if B flies inverted the other way): also revert
+                              #       brs_yaw->+1 (set body_rate_sign (1,1,1)) to match roll's (odo,brs)
+                              #       =(-1,+1) pairing literally. One-line flip: yaw_steer_mode "A" +
+                              #       body_rate_sign (1,1,1).
+                              # A/B produce OPPOSITE yaw direction; roll/pitch/thrust identical between
+                              # them. Physical winner = OPERATOR-EYES-resolved on the confirm-fly
+                              # (offline can't see the yaw mirror). VQ1/case-A untouched (mode "off").
+                              "yaw_steer_mode": "B",
                               "kp_alt": 0.0, "gate_pd_vertical": True,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,
