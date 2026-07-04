@@ -553,7 +553,13 @@ def vq2_case_c() -> DeployProfile:
                               # emit -1 (the VQ1-proven seeker default). The command PATH is
                               # unchanged since A22 (controller.py:513 omega*body_rate_sign); only
                               # this override value moved. VQ1/case-A untouched (seeker default -1).
-                              "body_rate_sign": (1.0, 1.0, -1.0),
+                              # A36 UPDATE (2026-07-04): mode "B" (brs_yaw=-1) FLEW (run
+                              # 20260704_061105) and operator eyes confirmed yaw STILL inverted
+                              # ("everything looks right except yaw, once again wrong direction").
+                              # -> flip to mode "A": brs_yaw=+1 (the operative pursuit yaw is the
+                              # direct seeker yaw-rate sign; flipping odo_yaw alone in B changed
+                              # nothing). This is the pre-staged one-line fallback.
+                              "body_rate_sign": (1.0, 1.0, 1.0),
                               # A36 YAW-STEER SELECTOR (2026-07-04): full-package flight 1
                               # (20260704_051851) -- operator eyes: ROLL banks correctly toward the gate
                               # but YAW rotates the WRONG physical way ("rolled right, yawed left").
@@ -572,7 +578,7 @@ def vq2_case_c() -> DeployProfile:
                               # A/B produce OPPOSITE yaw direction; roll/pitch/thrust identical between
                               # them. Physical winner = OPERATOR-EYES-resolved on the confirm-fly
                               # (offline can't see the yaw mirror). VQ1/case-A untouched (mode "off").
-                              "yaw_steer_mode": "B",
+                              "yaw_steer_mode": "A",
                               "kp_alt": 0.0, "gate_pd_vertical": True,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,

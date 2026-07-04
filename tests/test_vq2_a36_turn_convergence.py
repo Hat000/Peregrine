@@ -525,12 +525,12 @@ def test_profile_flight3_full_turn_package():
     prof = vq2_case_c()
     so = prof.seeker_overrides or {}
     co = prof.controller_overrides or {}
-    # Item 0: yaw sign flipped; Fix C OFF (no kd_att override => controller default 0.30).
-    np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, -1.0])
+    # Fix C OFF (no kd_att override => controller default 0.30).
     assert "kd_att" not in co, "Fix C (kd_att bump) must stay OFF (no override) per operator"
-    # Yaw-steer selector = B for the first confirm-fly (R_cur-yaw recovery + proven brs_yaw=-1):
-    assert co.get("yaw_steer_mode") == "B"
-    np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, -1.0])
+    # Yaw fix EYES-RESOLVED (run 20260704_120357 mode A): yaw_steer_mode="A" + body_rate_sign yaw=+1
+    # (the VQ2 yaw path does NOT invert; mode B yawed the wrong way). NOT from the cmd-vs-gyro metric.
+    assert co.get("yaw_steer_mode") == "A"
+    np.testing.assert_allclose(np.asarray(co["body_rate_sign"], float), [1.0, 1.0, 1.0])
     cfg = GateSeekerConfig(**so)
     # Refine + Item 3:
     assert cfg.pass_turn_refine is True
