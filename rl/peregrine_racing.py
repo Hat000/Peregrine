@@ -468,17 +468,54 @@ class PeregrineRacing(Racing):
         self.gate_half_outer_m = float(getattr(cfg, "gate_outer_m", 2.72)) / 2.0     # 1.36 m
 
         # per-env course tensors (broadcast VQ1 or sampled); + standing-start pads
-        from peregrine_course import (sample_courses, VQ1_SPAWN_POS_ZUP, VQ1_SPAWN_YAW,
-                                      VQ1_SPAWN_PITCH_RAD)
+        from peregrine_course import (sample_courses, DIFFICULTY_PRESETS, DEFAULT_COURSE_RANGES,
+                                      VQ1_SPAWN_POS_ZUP, VQ1_SPAWN_YAW, VQ1_SPAWN_PITCH_RAD)
         self._sample_courses = sample_courses
+        # difficulty preset: named partial overrides for sample_courses (random mode only).
+        # +env.track_difficulty=vq1_like|easy|medium|hard|vq2_like (default "medium" == {} ==
+        # DEFAULT_COURSE_RANGES, so an UNSET key and "medium" both leave the sampler byte-identical to
+        # the pre-preset S1.4 contract). Validated eagerly so a typo fails at construction, not silently.
+        _difficulty = str(getattr(cfg, "track_difficulty", "medium"))
+        if _difficulty not in DIFFICULTY_PRESETS:
+            raise ValueError(f"track_difficulty={_difficulty!r} unknown; "
+                             f"valid: {sorted(DIFFICULTY_PRESETS)}")
+        # Base preset overrides + optional per-RUN sampler narrowing (the VQ2 CURRICULUM stager, spec
+        # T3.2): course_n_gates narrows to a single/near-station-keep gate for early stages, and
+        # course_seg_len_{lo,hi} narrows the spacing band. These are ADDITIVE cfg keys forwarded to
+        # sample_courses on top of the difficulty preset; UNSET -> the preset defaults (byte-identical,
+        # since dict(**preset) with no extra keys == the preset). n_gates only reduces the SAMPLED gate
+        # count; the fixed VQ1 course is unaffected (course_mode=random only).
+        overrides = dict(DIFFICULTY_PRESETS[_difficulty])
+        _cn = getattr(cfg, "course_n_gates", None)
+        if _cn is not None:
+            overrides["n_gates"] = int(_cn)
+        _sl_lo = getattr(cfg, "course_seg_len_lo", None)
+        _sl_hi = getattr(cfg, "course_seg_len_hi", None)
+        if _sl_lo is not None or _sl_hi is not None:
+            base_lo, base_hi = overrides.get("seg_len_m", DEFAULT_COURSE_RANGES["seg_len_m"])
+            overrides["seg_len_m"] = (float(_sl_lo) if _sl_lo is not None else base_lo,
+                                      float(_sl_hi) if _sl_hi is not None else base_hi)
+        self._course_overrides = overrides
         self._spawn_pitch = float(VQ1_SPAWN_PITCH_RAD)
         self._vq1 = {
             "gate_pos": vq1_pos, "gate_yaw": vq1_yaw,
             "spawn_pos": torch.tensor(VQ1_SPAWN_POS_ZUP, device=device, dtype=torch.float32),
             "spawn_yaw": float(VQ1_SPAWN_YAW),
         }
-        self.gate_pos = vq1_pos.unsqueeze(0).expand(n, -1, -1).clone()     # (N, G, 3)
-        self.gate_yaw = vq1_yaw.unsqueeze(0).expand(n, -1).clone()         # (N, G)
+        # RANDOM mode with a curriculum gate-count override sizes the per-env tensors to the SAMPLED
+        # gate count (so an early single-gate stage is a genuine 1-gate course, not a 6-slot tensor with
+        # 5 dead gates). VQ1 / random-without-override keep the VQ1 gate count exactly (byte-identical).
+        _sampled_G = int(overrides["n_gates"]) if (self.course_mode == "random"
+                                                   and "n_gates" in overrides) else self.n_gates
+        if _sampled_G != self.n_gates:
+            self.n_gates = _sampled_G
+            _pos0 = vq1_pos[:1].expand(_sampled_G, -1)       # placeholder rows (overwritten by sampler)
+            _yaw0 = vq1_yaw[:1].expand(_sampled_G)
+            self.gate_pos = _pos0.unsqueeze(0).expand(n, -1, -1).clone()   # (N, G_sampled, 3)
+            self.gate_yaw = _yaw0.unsqueeze(0).expand(n, -1).clone()       # (N, G_sampled)
+        else:
+            self.gate_pos = vq1_pos.unsqueeze(0).expand(n, -1, -1).clone()     # (N, G, 3)
+            self.gate_yaw = vq1_yaw.unsqueeze(0).expand(n, -1).clone()         # (N, G)
         self.spawn_pos = self._vq1["spawn_pos"].unsqueeze(0).expand(n, -1).clone()
         self.spawn_yaw = torch.full((n,), self._vq1["spawn_yaw"], device=device)
         if self.course_mode == "random":
@@ -538,11 +575,13 @@ class PeregrineRacing(Racing):
 
     # ---- course plumbing ---------------------------------------------------------------------
     def _assign_courses(self, env_idx: Tensor) -> None:
-        """Sample fresh courses for ``env_idx`` (random mode) and update the per-env tensors."""
+        """Sample fresh courses for ``env_idx`` (random mode) and update the per-env tensors.
+        Difficulty overrides (self._course_overrides) are forwarded to sample_courses as kwargs;
+        an empty dict ("medium") leaves DEFAULT_COURSE_RANGES unchanged (byte-identical)."""
         m = int(env_idx.numel())
         if m == 0:
             return
-        c = self._sample_courses(m, device=self.device)
+        c = self._sample_courses(m, device=self.device, **self._course_overrides)
         self.gate_pos[env_idx] = c["gate_pos"].to(self.gate_pos.dtype)
         self.gate_yaw[env_idx] = c["gate_yaw"].to(self.gate_yaw.dtype)
         self.spawn_pos[env_idx] = c["spawn_pos"].to(self.spawn_pos.dtype)

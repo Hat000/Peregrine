@@ -143,6 +143,80 @@ VQ1_SPAWN_POS_ZUP = (0.0, 0.0, -0.02)
 VQ1_SPAWN_YAW = 0.0          # body yaw at spawn; gates at yaw pi => tail-first (gate-frame yaw ~ pi)
 VQ1_SPAWN_PITCH_RAD = -0.31  # -17.8 deg tilted pad (measured)
 
+# ---- Difficulty presets (override DEFAULT_COURSE_RANGES for named difficulty tiers) -----------
+# Usage in training: +env.track_difficulty=vq2_like   (PeregrineRacing reads this and forwards
+# DIFFICULTY_PRESETS[difficulty] as sample_courses(**overrides) in _assign_courses). Each preset is a
+# PARTIAL override of DEFAULT_COURSE_RANGES; "medium" == {} == the byte-identical default (so an
+# unset track_difficulty and track_difficulty=medium both leave the sampler EXACTLY as it was before
+# presets existed -- the S1.4 random-course contract is preserved bit-for-bit).
+# "vq1_like" = constrained to roughly VQ1 geometry (early curriculum); "easy"/"medium" bootstrap a
+# fresh policy; "hard" is the hardest generalisation; "vq2_like" is the VQ2 competition target.
+DIFFICULTY_PRESETS = {
+    # Nearly-straight, moderate-length, mostly-descending course ~ VQ1 character.
+    "vq1_like": dict(
+        seg_len_m=(20.0, 40.0),
+        turn_rad=0.35,           # +-20 deg max per segment (VQ1 <= ~20 deg)
+        drop_m=(0.0, 11.0),      # only descending (VQ1 is all descent)
+        max_grade=0.32,
+        yaw_jitter_rad=0.18,
+        spawn_dist_m=(20.0, 26.0),
+        spawn_below_g0_m=(1.0, 2.0),
+        min_pair_dist_m=12.0,
+    ),
+    # Gentle turns, moderate segments -- for bootstrapping a fresh policy.
+    "easy": dict(
+        seg_len_m=(20.0, 40.0),
+        turn_rad=0.52,           # +-30 deg
+        drop_m=(-2.0, 10.0),
+        max_grade=0.38,
+        yaw_jitter_rad=0.18,
+        spawn_dist_m=(18.0, 26.0),
+        spawn_below_g0_m=(0.8, 2.2),
+        min_pair_dist_m=12.0,
+    ),
+    # Default ranges (DEFAULT_COURSE_RANGES): no overrides -> byte-identical to the pre-preset sampler.
+    "medium": dict(),
+    # Full 60-deg turns, short segments, level or climbing segments -- hardest generalisation.
+    "hard": dict(
+        seg_len_m=(12.0, 30.0),  # shorter => tighter turns at speed
+        turn_rad=1.047,          # +-60 deg (full budget)
+        drop_m=(-5.0, 12.0),     # climbs allowed too
+        max_grade=0.50,
+        yaw_jitter_rad=0.21,
+        spawn_dist_m=(15.0, 28.0),
+        spawn_below_g0_m=(0.5, 2.5),
+        min_pair_dist_m=8.0,
+    ),
+    # VQ2-ized preset (vq2_rl_controller_spec_2026-07-04 §T3.1). The gate PRIORS -- upright plane
+    # (roll=pitch=0), inner 1.5 m / outer 2.72 m concentric squares, dark-red appearance -- are ENV /
+    # detector properties, NOT sampler knobs: upright is INTRINSIC to sample_courses (yaw-only gate
+    # frames), and the 1.5/2.72 m opening is set by the env's inner_opening_m/gate_outer_m. What the
+    # sampler OWNS is the TRACK LAYOUT, VQ2-ized here to the measured/spec distributions:
+    #   * seg_len_m (23.7, 38.5): the VQ2 measured inter-gate spacing band (spec §T3.1). NOTE the
+    #     detector's usable-PnP / navigator range cap makes gates beyond ~30 m effectively UN-acquirable
+    #     (memory: A34 abs-range-cap; >35 m mis-depth = garbage-lock), and the reward's fixable band is
+    #     [12,28] m -- so the SLOW curriculum should prefer the low end. The full spec band is kept here
+    #     for realism; the curriculum stager (rl/vq2_curriculum.py) NARROWS seg_len per stage rather than
+    #     the preset hard-capping it, so a later fast rung can open the >30 m tail without a preset edit.
+    #   * drop_m (-6.0, 12.0): descents PLUS a >=+5 m class CLIMB per segment (spec: the "HIGH gate-2-like
+    #     climb" the classical stack kept climbing into -- a LOAD-BEARING curriculum case). +down
+    #     convention, so the NEGATIVE lower edge IS the climb; -6.0 comfortably admits the +5 m class.
+    #   * turn_rad 0.61 (~35 deg): moderate weave -- VQ2 is a descending/vertical course, not a hairpin
+    #     slalom; the slow curriculum wants gentle heading changes so acquisition is not lost mid-turn.
+    #   * warehouse scale: the segment/spawn distances ARE warehouse scale (tens of metres); the frame
+    #     is metres throughout, so no extra scale knob is needed.
+    "vq2_like": dict(
+        seg_len_m=(23.7, 38.5),  # VQ2 measured spacing (spec §T3.1); acquisition-safe band is the low end
+        turn_rad=0.61,           # +-35 deg moderate weave (descending course, not a slalom)
+        drop_m=(-6.0, 12.0),     # descents + a >=+5 m HIGH-gate climb class (the gate-2 climb case)
+        max_grade=0.55,          # steeper grades admitted (vertical VQ2 course)
+        yaw_jitter_rad=0.18,
+        spawn_dist_m=(20.0, 26.0),
+        spawn_below_g0_m=(1.0, 2.5),
+        min_pair_dist_m=12.0,
+    ),
+}
+
 
 def _circ_mean(a, b):
     """Circular mean of two angles (torch tensors), elementwise."""

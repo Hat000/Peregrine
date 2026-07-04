@@ -223,6 +223,36 @@ class EmulConfig:
     vel_std_init: float = 5.0
     imu_accel_noise: float = 0.3
     attitude_noise: float = 0.0          # case-C: IMU+attitude trusted-with-noise (no attitude-err Q)
+    # VISION LATENCY DR (spec T2.3 + Fengyou 2026-07-04): the GPU-contention detect latency is the ONE
+    # genuinely stochastic channel the determinism doctrine DRs (everything else exact-match). It is
+    # modelled FAITHFULLY (not label-only): a per-fix latency Delta DELAYS THE MEASUREMENT CONTENT -- an
+    # accepted fix at step t carries the gate geometry as of the CAPTURE step t-round(Delta/dt), fused
+    # forward at t (the deployed async-detect + RewindKF/OOSM property; here forward-fuse == Option 1, a
+    # STRICTLY-HARDER approximation of the retro-correcting RewindKF: training sees a worse estimator than
+    # deploy = the safe direction). The age channel carries the SAME Delta (no fictional label).
+    #
+    # Delta is drawn per-fix from a BIMODAL mixture (do NOT collapse to one mean): a HEALTHY mode
+    # (async-detect fed, ~70-120 ms) and a CONTENTION mode (GPU-starved, p50 0.25 / p90 0.55 s, clamp
+    # 1.0). Modelled as: with prob lat_healthy_frac draw U[lat_healthy_lo, lat_healthy_hi]; else draw a
+    # (clamped) lognormal-ish spread via U[lat_cont_lo, lat_cont_hi] hitting p50~0.25/p90~0.55. All
+    # clamped to lat_clamp_s. OFF (lat_on False, i.e. lat_max_s<=0) -> NO buffer, NO content lag, the age
+    # reading is EXACTLY the accept-driven clock == byte-identical.
+    lat_healthy_frac: float = 0.0        # fraction of fixes in the healthy (low-latency) mode; 0 => OFF
+    lat_healthy_lo: float = 0.07         # healthy mode Delta ~ U[0.07, 0.12] s (~70-120 ms fed regime)
+    lat_healthy_hi: float = 0.12
+    lat_cont_lo: float = 0.15            # contention mode Delta ~ U[0.15, 0.55] -> p50~0.35/p90~0.51...
+    lat_cont_hi: float = 0.55            #   (a broad uniform; the stall latch + clamp form the 1.0 tail)
+    lat_clamp_s: float = 1.0             # max pose age (the measured hard clamp)
+    lat_max_s: float = 0.0               # buffer horizon = max representable Delta; <=0 => LAG OFF (byte-id)
+    # legacy floor knobs (kept as the OFF-path no-ops; superseded by the bimodal mixture above). A
+    # nonzero floor still lifts the age reading if the bimodal lag is OFF (a cheap label-only fallback).
+    pose_age_floor_lo: float = 0.0
+    pose_age_floor_hi: float = 0.0       # <=0 => the floor is OFF (byte-identical age reading)
+    pose_age_stall_p: float = 0.0        # per-step P(stall -> age ramps to clamp / a dropped fix); 0 => OFF
+    # TERMINAL BLACKOUT (spec T2.3): inside this range the vision fix STOPS updating (gate fills/exits
+    # FoV -> the ~4.3 m measured blackout) so the policy must coast on IMU+belief. 0 => OFF (the accept
+    # band-pass already zeros accept below ~12 m, so this is an EXPLICIT hard cutoff, off by default).
+    blackout_range_m: float = 0.0
 
 
 # ============================================================================ S1 geometry helpers
@@ -452,10 +482,19 @@ class BatchedEstimatorEmulator:
         device = device if device is not None else gate_pos_ned.device
         dtype = dtype if dtype is not None else gate_pos_ned.dtype
         self.device, self.dtype = device, dtype
-        self.G = gate_pos_ned.shape[0]
-        # course geometry in NED: gate centres (G,3) + per-gate NED gate frame (G,3,3).
+        # course geometry in NED. TWO layouts are accepted, gated on tensor RANK:
+        #   * SHARED (SINGLE-course, VQ1): gate_pos_ned (G,3), R_world_gate (G,3,3) -- ALL envs fly the
+        #     same course; indexed self.gate_pos_ned[target_gate] (target_gate (N,) -> (N,3)). This is
+        #     the ORIGINAL path and stays BYTE-IDENTICAL (same op, same tensor rank).
+        #   * PER-ENV (RANDOM courses, vq2_like): gate_pos_ned (N,G,3), R_world_gate (N,G,3,3) -- each
+        #     env has its OWN gate layout; indexed self.gate_pos_ned[env_arange, target_gate] so env i's
+        #     geometry comes from env i's gates (NOT env-0's -- the bug class that would silently poison
+        #     every random-course run). Routed through _gates_for() so the 4 call sites are layout-blind.
+        self._per_env = (gate_pos_ned.dim() == 3)
+        self.G = gate_pos_ned.shape[-2]
         self.gate_pos_ned = gate_pos_ned.to(device=device, dtype=dtype)
         self.R_world_gate = R_world_gate_per_gate.to(device=device, dtype=dtype)
+        self._env_arange = torch.arange(n, device=device)
         self.surrogate = BatchedFixSurrogate(params or TorchSurrogateParams(), device, dtype)
         self.kf = BatchedLinearKF(n, device, dtype,
                                   accel_noise_std=self.cfg.imu_accel_noise,
@@ -467,6 +506,102 @@ class BatchedEstimatorEmulator:
         self._t_since_fix = torch.full((n,), 1e3, device=device, dtype=dtype)
         # last computed per-env geometry to the target gate (for the reward: t_cam / range / in_image)
         self._last_geom: dict | None = None
+        # last synth-IMU specific force FRD (N,3) -- the "felt acceleration" the deployed HIGHRES_IMU
+        # reports (noisy, deployment-faithful); the a_body obs arm (obs[20:23]) reads it. Zeros until the
+        # first step (a rest start reads ~[0,0,-g_body] once flying; zeros pre-step is fine -- no fix yet).
+        self._last_accel_body = torch.zeros(n, 3, device=device, dtype=dtype)
+        # POSE-AGE DR state (spec T2.3; the ONE stochastic channel). Legacy per-episode floor + stall
+        # latch (label-only fallback). OFF -> both stay 0 == byte-identical.
+        self._pose_age_floor = torch.zeros(n, device=device, dtype=dtype)
+        self._pose_stall = torch.zeros(n, device=device, dtype=dtype)   # 0/1 latch: stalled this ep
+        self._blackout_on = (self.cfg.blackout_range_m > 0.0)
+        # VISION LATENCY (content-lag) state. _lat_on gates the WHOLE faithful path (buffer + lagged
+        # content + Delta-driven age). OFF (lat_max_s<=0 & healthy_frac<=0) -> no buffer, no lag ==
+        # byte-identical. The truth ring buffer is allocated LAZILY on the first step (dt is a step arg):
+        # (D_max+1, n, 3) drone pos + (D_max+1, n, 3, 3) R_wb, a rolling write head. _last_fix_age holds
+        # the actual Delta (s) of each env's most recent ACCEPTED fix (the age channel reads it).
+        self._lat_on = (self.cfg.lat_max_s > 0.0) or (self.cfg.lat_healthy_frac > 0.0)
+        self._buf_pos = None            # (D+1, n, 3) lazily
+        self._buf_R = None              # (D+1, n, 3, 3) lazily
+        self._buf_head = 0              # rolling write index
+        self._buf_filled = 0            # how many slots written (< D+1 until warm)
+        self._D_max = 0                 # buffer depth in steps (lat_max_s / dt), set on first step
+        self._last_fix_age = torch.full((n,), self.cfg.lat_clamp_s, device=device, dtype=dtype)
+        # legacy _pose_dr_on now ALSO fires when the faithful lag is on (so confidence_channel folds in
+        # the age); OR any of the label-only knobs.
+        self._pose_dr_on = (self._lat_on or self.cfg.pose_age_floor_hi > 0.0
+                            or self.cfg.pose_age_stall_p > 0.0)
+
+    # ---- gate lookup (layout-blind: SHARED (G,..) OR PER-ENV (N,G,..)) -------
+    def _gates_for(self, target_gate: Tensor):
+        """(gate_pos (N,3), R_world_gate (N,3,3)) for each env's CURRENT target gate. In the SHARED
+        (single-course) layout this is the ORIGINAL op self.gate_pos_ned[target_gate] (byte-identical);
+        in the PER-ENV layout it gathers env i's gates via [env_arange, target_gate] so no env is fed
+        another env's geometry. ``target_gate`` is a (N,) long tensor."""
+        if self._per_env:
+            gp = self.gate_pos_ned[self._env_arange, target_gate]            # (N,3)
+            Rwg = self.R_world_gate[self._env_arange, target_gate]           # (N,3,3)
+        else:
+            gp = self.gate_pos_ned[target_gate]                              # (N,3)
+            Rwg = self.R_world_gate[target_gate]                            # (N,3,3)
+        return gp, Rwg
+
+    def set_courses(self, idx: Tensor, gate_pos_ned: Tensor, R_world_gate: Tensor) -> None:
+        """PER-ENV layout ONLY: overwrite the gate geometry for env indices ``idx`` (m,) with fresh
+        per-env courses (m,G,3)/(m,G,3,3) -- called at reset when a new random course is sampled for
+        those envs. A no-op in the SHARED layout (all envs share one immutable course). This is what
+        keeps the emulator's per-env gates in lockstep with the env's per-env self.gate_pos after a
+        random-course reset (the env samples the course, then hands the NED gates here)."""
+        if not self._per_env or idx.numel() == 0:
+            return
+        self.gate_pos_ned[idx] = gate_pos_ned.to(device=self.device, dtype=self.dtype)
+        self.R_world_gate[idx] = R_world_gate.to(device=self.device, dtype=self.dtype)
+
+    # ---- vision-latency truth buffer (Option 1: lag the MEASUREMENT CONTENT) -------------------
+    def _ensure_buffer(self, dt: float) -> None:
+        """Lazily allocate the truth ring buffer sized to cover the latency clamp at this dt. D_max =
+        ceil(lat_clamp_s / dt) so the buffer spans the full 1.0 s clamp (Fengyou: D_max must cover the
+        1.0 s clamp at the training dt). Called on the first step once dt is known."""
+        if self._buf_pos is not None or dt <= 0.0:
+            return
+        import math as _m
+        self._D_max = max(1, int(_m.ceil(self.cfg.lat_clamp_s / dt)))
+        depth = self._D_max + 1
+        self._buf_pos = torch.zeros(depth, self.n, 3, device=self.device, dtype=self.dtype)
+        self._buf_R = torch.zeros(depth, self.n, 3, 3, device=self.device, dtype=self.dtype)
+        self._buf_head = 0
+        self._buf_filled = 0
+
+    def _push_truth(self, pos_ned: Tensor, R_wb: Tensor) -> None:
+        """Write the current truth (pos, R_wb) into the ring at the head, advance the head."""
+        self._buf_pos[self._buf_head] = pos_ned
+        self._buf_R[self._buf_head] = R_wb
+        self._buf_head = (self._buf_head + 1) % self._buf_pos.shape[0]
+        self._buf_filled = min(self._buf_filled + 1, self._buf_pos.shape[0])
+
+    def _lagged_truth(self, d_steps: Tensor):
+        """Per-env gather of the truth (pos (N,3), R_wb (N,3,3)) d_steps back in the ring. d_steps (N,)
+        long, clamped to [0, buf_filled-1] (a still-warming buffer can only look back as far as it has
+        history). The most-recent write is at (head-1); d steps back is (head-1-d) mod depth."""
+        depth = self._buf_pos.shape[0]
+        d = torch.clamp(d_steps, 0, max(self._buf_filled - 1, 0))
+        idx = (self._buf_head - 1 - d) % depth                              # (N,)
+        env = self._env_arange
+        return self._buf_pos[idx, env], self._buf_R[idx, env]
+
+    def _draw_latency_s(self, m_or_n: int, gen=None) -> Tensor:
+        """Per-fix latency Delta (s) from the BIMODAL mixture (Fengyou rider 1): with prob
+        lat_healthy_frac a HEALTHY-mode draw U[healthy_lo, healthy_hi] (~70-120 ms fed regime), else a
+        CONTENTION-mode draw U[cont_lo, cont_hi] (the GPU-starved p50~0.25/p90~0.55 spread). Clamped to
+        lat_clamp_s. Returns (m_or_n,)."""
+        c = self.cfg
+        u_mode = torch.rand(m_or_n, device=self.device, dtype=self.dtype, generator=gen)
+        healthy = c.lat_healthy_lo + (c.lat_healthy_hi - c.lat_healthy_lo) * torch.rand(
+            m_or_n, device=self.device, dtype=self.dtype, generator=gen)
+        cont = c.lat_cont_lo + (c.lat_cont_hi - c.lat_cont_lo) * torch.rand(
+            m_or_n, device=self.device, dtype=self.dtype, generator=gen)
+        delta = torch.where(u_mode < c.lat_healthy_frac, healthy, cont)
+        return torch.clamp(delta, 0.0, c.lat_clamp_s)
 
     # ---- episode lifecycle --------------------------------------------------
     def reset_idx(self, idx: Tensor, pos_ned: Tensor, vel_ned: Tensor,
@@ -478,6 +613,24 @@ class BatchedEstimatorEmulator:
         self.kf.initialize_idx(idx, pos_ned, vel_ned,
                                pos_std=self.cfg.pos_std_init, vel_std=self.cfg.vel_std_init)
         self._t_since_fix[idx] = 1e3       # no fix yet -> age_norm == 1 (cold/stale)
+        # POSE-AGE DR: draw the per-episode baseline latency floor + clear the stall latch. OFF -> both
+        # stay 0 (no age-reading change == byte-identical). This is the async-detect fed-regime lag floor.
+        if self._pose_dr_on:
+            m = int(idx.numel())
+            if self.cfg.pose_age_floor_hi > 0.0:
+                lo, hi = self.cfg.pose_age_floor_lo, self.cfg.pose_age_floor_hi
+                self._pose_age_floor[idx] = lo + (hi - lo) * torch.rand(
+                    m, device=self.device, dtype=self.dtype)
+            self._pose_stall[idx] = 0.0
+        # VISION LATENCY: cold-init the age-of-fix to the clamp (no fix yet == max staleness) and, if the
+        # ring is live, FILL these envs' whole history with the spawn pose so a lagged read in the first
+        # D_max steps returns the (stationary) spawn pose, NOT a pre-reset episode's pose (no teleport).
+        if self._lat_on:
+            self._last_fix_age[idx] = self.cfg.lat_clamp_s
+            if self._buf_pos is not None:
+                self._buf_pos[:, idx, :] = pos_ned.to(self.dtype)
+                eye = torch.eye(3, device=self.device, dtype=self.dtype)
+                self._buf_R[:, idx, :, :] = eye
 
     def seed_truth_idx(self, idx: Tensor, pos_ned: Tensor, vel_ned: Tensor) -> None:
         self.kf.seed_truth_idx(idx, pos_ned, vel_ned)
@@ -523,27 +676,77 @@ class BatchedEstimatorEmulator:
         if not noiseless:
             accel_body = accel_body + self.cfg.imu_accel_noise * accel_noise
         self.kf.predict(accel_body, R_prev_wb, dt)
+        self._last_accel_body = accel_body       # felt-accel obs source (noisy specific force FRD)
         self._t_since_fix = self._t_since_fix + max(dt, 0.0)
 
-        # -- vision fix to the current target gate (camera-pointing gates acceptance).
-        gp = self.gate_pos_ned[target_gate]                                  # (N,3)
-        Rwg = self.R_world_gate[target_gate]                                 # (N,3,3)
+        # -- current-time geometry to the target gate. This is the REWARD's pointing target (_last_geom):
+        # R5' teaches the policy to point the camera NOW; the FIX it earns reflects the lagged frame.
+        gp, Rwg = self._gates_for(target_gate)                               # (N,3), (N,3,3)
         geom = batched_geometry(cur_pos_ned, R_cur_wb, gp, Rwg, self.R_cb, self.K)
         self._last_geom = {**geom, "R_world_gate": Rwg}
+
+        # -- VISION LATENCY (content lag, Option 1). Push the current truth to the ring, draw a per-fix
+        # Delta from the bimodal mixture, and compute the fix's ACCEPTANCE + CONTENT from the LAGGED
+        # truth pose (the frame the detector captured at t-Delta). OFF (_lat_on False) -> geom_fix is the
+        # current geom, delta_s is 0, and the whole path is a no-op == byte-identical.
         noise = torch.zeros_like(fix_noise) if noiseless else fix_noise
+        if self._lat_on and dt > 0.0:
+            self._ensure_buffer(dt)
+            self._push_truth(cur_pos_ned, R_cur_wb)
+            delta_s = self._draw_latency_s(self.n)                          # (N,) per-fix Delta
+            d_steps = torch.round(delta_s / dt).long()
+            lag_pos, lag_R = self._lagged_truth(d_steps)                    # (N,3), (N,3,3)
+            geom_fix = batched_geometry(lag_pos, lag_R, gp, Rwg, self.R_cb, self.K)
+            fix_pos = lag_pos
+        else:
+            delta_s = None
+            geom_fix = geom
+            fix_pos = cur_pos_ned
         z, cov, accepted = self.surrogate.sample_fix(
-            geom, cur_pos_ned, Rwg, self._sigma_lat, self._bias, accept_u, noise, force=force_accept)
+            geom_fix, fix_pos, Rwg, self._sigma_lat, self._bias, accept_u, noise, force=force_accept)
+        # TERMINAL BLACKOUT (spec T2.3): inside blackout_range_m the gate fills/exits FoV -> NO fix
+        # updates (coast on IMU+belief). OFF (blackout_on False) -> no masking == byte-identical. Gated on
+        # the FIX geometry's range (the captured frame's range), consistent with the lagged content.
+        if self._blackout_on:
+            accepted = accepted & (geom_fix["range"] > self.cfg.blackout_range_m)
+        # GPU-CONTENTION STALL (spec T2.3, the dropped-fix tail): with prob pose_age_stall_p an env is
+        # starved this step -> its fix is DROPPED (vision unfed) and its age climbs to the clamp. Drawn
+        # from the emulator's own stream ONLY in the DR-on path (a distinct regime, never byte-compared
+        # vs OFF). Applied BEFORE the KF update so a stalled env genuinely gets no fix this step.
+        stalled = None
+        if self._pose_dr_on and self.cfg.pose_age_stall_p > 0.0:
+            stall_u = torch.rand(self.n, device=self.device, dtype=self.dtype)
+            stalled = stall_u < self.cfg.pose_age_stall_p
+            accepted = accepted & ~stalled
+            if not self._lat_on:               # legacy label-only latch (lag OFF): pin age to clamp
+                self._pose_stall = torch.where(stalled, torch.ones_like(self._pose_stall),
+                                               self._pose_stall)
         idx = accepted.nonzero(as_tuple=False).view(-1)
+        # VISION LATENCY age: a landed fix is already Delta OLD at the moment it is fused (it carried the
+        # t-Delta content). So the fix does NOT reset the age to 0 -- it resets it to Delta (the real
+        # residual staleness the deployed age-of-fix channel reports). Non-fix envs age by dt; a stalled
+        # env is pinned to the clamp. When the lag is OFF, _last_fix_age is unused (the classic path).
+        if self._lat_on:
+            self._last_fix_age = self._last_fix_age + max(dt, 0.0)
+            if delta_s is not None and idx.numel() > 0:
+                self._last_fix_age[idx] = delta_s[idx]
+            if stalled is not None:
+                self._last_fix_age = torch.where(stalled, torch.full_like(self._last_fix_age,
+                                                                          self.cfg.lat_clamp_s),
+                                                 self._last_fix_age)
+            self._last_fix_age = torch.clamp(self._last_fix_age, max=self.cfg.lat_clamp_s)
         if idx.numel() > 0:
             self.kf.update_position_idx(idx, z[idx], cov[idx])
             self._t_since_fix[idx] = 0.0
+            if not self._lat_on and self._pose_dr_on and self.cfg.pose_age_stall_p > 0.0:
+                self._pose_stall[idx] = 0.0    # a landed fix clears the legacy stall latch
         return accepted
 
     # ---- confidence channel + obs sources -----------------------------------
     def _gate_frame_sigmas(self, target_gate: Tensor):
         """(sigma_inplane_hat (N,), sigma_along_hat (N,)): KF position cov projected into the NED gate
         frame. in-plane = RMS of the two opening-plane axis stds; along-track = the through-axis std."""
-        Rwg = self.R_world_gate[target_gate]                                # (N,3,3)
+        _, Rwg = self._gates_for(target_gate)                               # (N,3,3)
         P_pos = self.kf.P[:, :3, :3]
         P_gate = Rwg.transpose(-1, -2) @ P_pos @ Rwg
         var_ip = 0.5 * (P_gate[:, 0, 0].clamp(min=0.0) + P_gate[:, 1, 1].clamp(min=0.0))
@@ -559,8 +762,30 @@ class BatchedEstimatorEmulator:
                            torch.ones_like(sig_ip))
         c_al = torch.where(sig_al > 0, torch.clamp(cfg.sigma_ref / sig_al.clamp(min=1e-12), 0.0, 1.0),
                            torch.ones_like(sig_al))
-        age = torch.clamp(self._t_since_fix / cfg.tau_stale, 0.0, 1.0)
+        # AGE-OF-FIX (spec T2.3; Fengyou rider 1: the age channel carries the SAME Delta that lagged the
+        # content). THREE regimes, in priority:
+        #   * VISION LATENCY ON (_lat_on): age = the REAL residual staleness _last_fix_age (Delta grown by
+        #     the coast since the last fix) -- NOT a fictional label; it is exactly the Delta the fix's
+        #     content was lagged by. clip(_last_fix_age / tau_stale).
+        #   * label-only floor/stall (legacy fallback, lag OFF): floor added + stall pin.
+        #   * OFF (default): age = clip(t_since_fix / tau) == byte-identical.
+        if self._lat_on:
+            t_eff = self._last_fix_age
+        elif self._pose_dr_on:
+            t_eff = self._t_since_fix + self._pose_age_floor
+        else:
+            t_eff = self._t_since_fix
+        age = torch.clamp(t_eff / cfg.tau_stale, 0.0, 1.0)
+        if self._pose_dr_on and not self._lat_on:
+            age = torch.maximum(age, self._pose_stall)   # stalled -> age pinned to 1.0 (clamp)
         return torch.stack([c_ip, c_al, age], dim=-1)
+
+    def felt_accel_flu(self) -> Tensor:
+        """Felt acceleration (specific force) in the FLU body frame (N,3) -- the a_body obs arm
+        (obs[20:23]) source. The synth-IMU produces it in FRD body; the obs convention (matching the
+        w_flu body-rate channel) is FLU, so apply the involutory FRD<->FLU flip diag(1,-1,-1). This is
+        deployment-available (the raw HIGHRES_IMU accel, same flip applied at the deploy boundary)."""
+        return self._last_accel_body * self.flip
 
     def kf_pos_zup(self) -> Tensor:
         """KF position estimate flipped to the DiffAero Z-up frame (obs[0:3] source)."""
@@ -573,7 +798,7 @@ class BatchedEstimatorEmulator:
     def gate_frame_error_inplane(self, target_gate: Tensor, cur_pos_ned: Tensor) -> Tensor:
         """|KF_pos - truth| in-plane (gate-frame E,D) per env (N,) -- the GT-estimator-error anchor
         the reward reads (reward sees TRUTH; actor sees the noisy obs). depth/along is excluded."""
-        Rwg = self.R_world_gate[target_gate]
+        _, Rwg = self._gates_for(target_gate)
         e_world = self.kf.position - cur_pos_ned
         e_g = torch.einsum("nij,nj->ni", Rwg.transpose(-1, -2), e_world)     # gate frame [right,down,along]
         return torch.hypot(e_g[..., 0], e_g[..., 1])

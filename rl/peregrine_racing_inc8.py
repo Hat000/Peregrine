@@ -73,10 +73,16 @@ class PeregrineRacingInc8(PeregrineRacing):
         if not self._inc8_on:
             return                            # pure inc7 (OFF fallback is byte-identical)
 
-        if self.course_mode != "vq1":
-            raise ValueError("inc8 requires course_mode=vq1: R1' progress is measured along the VQ1 "
-                             "reference line Gamma (reference_line_inc8.json); a procedural per-env "
-                             "course would not match Gamma.")
+        # COURSE MODE. inc7-VQ1 (course_mode=vq1) uses the fixed VQ1 course + the global reference line
+        # Gamma for R1' arc-progress. VQ2 (course_mode=random, e.g. track_difficulty=vq2_like) trains on
+        # PER-ENV random courses -- there is NO single Gamma the arc-progress term can measure against, so
+        # R1' is DROPPED for random mode (Option B, commander-endorsed 2026-07-04: the through-centering
+        # cross-track pull -- the only inc8 term with a flown-lap pedigree -- carries course-completion;
+        # arc-progress is a speed-optimization term the slow curriculum does not need). A per-env global
+        # line (Option A) can be added later behind this same seam without disturbing the VQ1 path.
+        self._random_course = (self.course_mode == "random")
+        if self.course_mode not in ("vq1", "random"):
+            raise ValueError(f"inc8 requires course_mode in (vq1, random); got {self.course_mode!r}")
         if torch is None:                     # pragma: no cover
             raise RuntimeError("inc8 requires torch")
 
@@ -88,17 +94,47 @@ class PeregrineRacingInc8(PeregrineRacing):
             raise ValueError(f"r5_arm must be A|B|C, got {self._r5_arm!r}")
         self._inc8w = _inc8_weights_from_cfg(cfg)
         self._global_step = 0
+        # FELT-ACCELERATION obs arm (spec §T2.1; Fengyou explicitly wants per-axis felt accel). OFF
+        # (default) -> the FROZEN 20-dim obs (byte-identical, deploy-obs20 contract). ON -> a 23-dim VQ2
+        # arm that appends a_body = specific force FRD (obs[20:23]) from the synth-IMU accel the emulator
+        # already computes -- deployment-available (raw HIGHRES_IMU accel), reliable, a lead indicator for
+        # the terminal blind-zone coast. An A/B arm alongside the frozen obs-20 control (breaks obs-20
+        # parity BY DESIGN, gated behind a fresh train + its own sidecar obs_dim).
+        self._obs_a_body = bool(getattr(cfg, "obs_a_body", False))
         # on-device lifetime non-finite-obs counter: accumulated sync-free in get_observations and
         # read once per step via the batched loss_components sync (replaces a per-obs-call host sync).
         self._nonfinite_obs_t = torch.zeros((), device=dev, dtype=torch.long)
 
         # estimator-emulation config (the values that supersede d5 per the prompt / MEMORY NOW).
+        # tau_stale / sigma_ref are cfg-EXPOSED (spec fork 1, commander-APPROVED): raising tau_stale
+        # 0.10->0.5 lets age_norm DISCRIMINATE over the measured VQ2 0.19-0.55 s pose-age regime (at 0.10
+        # it saturates ~1 across the whole fed range). DEFAULTS = the frozen d5 constants, so an unset key
+        # is byte-identical for the non-VQ2 arms (the deploy-obs20 parity contract is preserved).
         self._emul_cfg = IE.EmulConfig(
             sigma_lat_lo=float(getattr(cfg, "emul_sigma_lat_lo", IE.EmulConfig.sigma_lat_lo)),
             sigma_lat_hi=float(getattr(cfg, "emul_sigma_lat_hi", IE.EmulConfig.sigma_lat_hi)),
             bias_mag_lo=float(getattr(cfg, "emul_bias_mag_lo", IE.EmulConfig.bias_mag_lo)),
             bias_mag_hi=float(getattr(cfg, "emul_bias_mag_hi", IE.EmulConfig.bias_mag_hi)),
             inject_bias=bool(getattr(cfg, "emul_inject_bias", IE.EmulConfig.inject_bias)),
+            sigma_ref=float(getattr(cfg, "emul_sigma_ref", IE.EmulConfig.sigma_ref)),
+            tau_stale=float(getattr(cfg, "emul_tau_stale", IE.EmulConfig.tau_stale)),
+            # VISION LATENCY DR (the ONE stochastic channel, spec T2.3 + Fengyou 2026-07-04) -- the
+            # FAITHFUL content-lag path: emul_lat_max_s>0 turns on the truth-buffer + per-fix bimodal
+            # Delta that lags the MEASUREMENT CONTENT (fix at t carries t-Delta geometry), and the age
+            # channel carries the SAME Delta. All default OFF (byte-identical). The measured VQ2 mixture:
+            # healthy mode ~70-120 ms at lat_healthy_frac; contention mode p50~0.25/p90~0.55, clamp 1.0.
+            lat_healthy_frac=float(getattr(cfg, "emul_lat_healthy_frac", IE.EmulConfig.lat_healthy_frac)),
+            lat_healthy_lo=float(getattr(cfg, "emul_lat_healthy_lo", IE.EmulConfig.lat_healthy_lo)),
+            lat_healthy_hi=float(getattr(cfg, "emul_lat_healthy_hi", IE.EmulConfig.lat_healthy_hi)),
+            lat_cont_lo=float(getattr(cfg, "emul_lat_cont_lo", IE.EmulConfig.lat_cont_lo)),
+            lat_cont_hi=float(getattr(cfg, "emul_lat_cont_hi", IE.EmulConfig.lat_cont_hi)),
+            lat_clamp_s=float(getattr(cfg, "emul_lat_clamp_s", IE.EmulConfig.lat_clamp_s)),
+            lat_max_s=float(getattr(cfg, "emul_lat_max_s", IE.EmulConfig.lat_max_s)),
+            # legacy label-only floor/stall + terminal blackout (all default OFF, byte-identical).
+            pose_age_floor_lo=float(getattr(cfg, "emul_pose_age_floor_lo", IE.EmulConfig.pose_age_floor_lo)),
+            pose_age_floor_hi=float(getattr(cfg, "emul_pose_age_floor_hi", IE.EmulConfig.pose_age_floor_hi)),
+            pose_age_stall_p=float(getattr(cfg, "emul_pose_age_stall_p", IE.EmulConfig.pose_age_stall_p)),
+            blackout_range_m=float(getattr(cfg, "emul_blackout_range_m", IE.EmulConfig.blackout_range_m)),
         )
         # optional surrogate recalibration from on-disk checkpoints (no scipy: plain json).
         params = IE.TorchSurrogateParams()
@@ -106,13 +142,25 @@ class PeregrineRacingInc8(PeregrineRacing):
         if ckpt_dir:
             params = self._load_surrogate_params(ckpt_dir, params)
 
-        # NED course geometry for the emulator (VQ1 == shared across envs; take env 0).
-        gate_pos_ned = (self.gate_pos[0] * self._flip_t).to(self._inc8_dtype)        # (G,3)
-        R_world_gate = IE.ned_gate_frame_torch(self.gate_yaw[0].to(self._inc8_dtype))  # (G,3,3)
+        # NED course geometry for the emulator. VQ1 (shared): env-0's course, (G,3)/(G,3,3) -> the
+        # emulator broadcasts it (byte-identical). RANDOM (per-env): the FULL per-env gate tensors
+        # (N,G,3)/(N,G,3,3), so each env's fix geometry / err_ip comes from ITS OWN gates (the env-0
+        # -geometry bug the per-env gather + set_courses closes).
+        if self._random_course:
+            gate_pos_ned = (self.gate_pos * self._flip_t).to(self._inc8_dtype)                # (N,G,3)
+            R_world_gate = IE.ned_gate_frame_torch(self.gate_yaw.to(self._inc8_dtype))         # (N,G,3,3)
+        else:
+            gate_pos_ned = (self.gate_pos[0] * self._flip_t).to(self._inc8_dtype)             # (G,3)
+            R_world_gate = IE.ned_gate_frame_torch(self.gate_yaw[0].to(self._inc8_dtype))      # (G,3,3)
         self._emu = IE.BatchedEstimatorEmulator(
             self.n_envs, gate_pos_ned, R_world_gate, config=self._emul_cfg, params=params,
             device=dev, dtype=self._inc8_dtype)
-        self._refline = BatchedReferenceLine.load(_REFLINE_JSON, dev, self._inc8_dtype)
+        # global reference line for R1' arc-progress: VQ1 ONLY (there is no single Gamma for per-env
+        # random courses -> _refline stays None and the arc-progress term short-circuits to the exact
+        # zero tensor in step(), with through-centering carrying course-completion). Option-A per-env
+        # lines would attach here.
+        self._refline = (None if self._random_course
+                         else BatchedReferenceLine.load(_REFLINE_JSON, dev, self._inc8_dtype))
         self._spin_clock = torch.zeros(self.n_envs, device=dev, dtype=self._inc8_dtype)
 
         # ---- active-perception LOOK-AT primitive (architecture pivot S0; default OFF) ----
@@ -135,11 +183,23 @@ class PeregrineRacingInc8(PeregrineRacing):
         self._flip_rate = torch.tensor(R8._FLIP_FRD_FLU, device=dev, dtype=self._inc8_dtype)
         self._act_hi = self._act_lo + self._act_span
 
-        # obs/critic dims: 17->20, 33->36. Deploy/load gates on the checkpoint sidecar obs-dim.
-        self.obs_dim = 20
+        # obs/critic dims: 17->20 (frozen contract), or ->23 with the a_body felt-accel arm. Deploy/
+        # load gates on the checkpoint sidecar obs-dim (the a_body arm ships a distinct 23-dim sidecar).
+        self.obs_dim = 23 if self._obs_a_body else 20
         # init the emulator at the current (hover/placeholder) truth for all envs; the runner's
         # reset() re-inits at the real spawn before the first real obs.
         self._reset_emulator(self._arange)
+        # ASYMMETRIC-CRITIC state dim: the privileged TRUTH state get_state() returns is
+        # base PeregrineRacing.get_state (3 v + 4 q + 3x(3+3+3) = 34) + the 3-d confidence triple
+        # = 37 (the SSOT 36 was an off-by-one; measured here so it can never drift). The base
+        # diffaero Racing.__init__ set state_dim=34 (its own get_state layout); AsymmetricPPO.build
+        # reads env.state_dim to size the critic, so it MUST match get_state().size(-1). Set it
+        # from the actual tensor. Symmetric PPO (algo=ppo) never consumes state_dim, so this is a
+        # no-op for inc7/inc8-symmetric runs (byte-identical); it only matters under algo=appo.
+        # NB the critic state is INDEPENDENT of the actor obs arm: the obs-23 a_body arm changes
+        # obs_dim only; get_state() stays the privileged truth+triple (measured, not inferred from
+        # obs_dim), so the a_body A/B needs no critic change under algo=appo.
+        self.state_dim = int(self.get_state().size(-1))
 
     # ---- surrogate recalibration (plain json; no scipy) ---------------------------------------
     @staticmethod
@@ -166,6 +226,14 @@ class PeregrineRacingInc8(PeregrineRacing):
         m = int(env_idx.numel())
         if m == 0:
             return
+        # RANDOM courses: the env has just re-sampled fresh per-env gate layouts for env_idx (super().
+        # reset_idx -> _assign_courses). Push those NEW gates into the emulator BEFORE the KF cold-init so
+        # env i's fix geometry tracks env i's actual course (no-op in the VQ1 shared layout). This is the
+        # lockstep that prevents an env from being scored against a stale/other env's gates.
+        if self._random_course:
+            gp_ned = (self.gate_pos[env_idx] * self._flip_t).to(self._inc8_dtype)             # (m,G,3)
+            Rwg = IE.ned_gate_frame_torch(self.gate_yaw[env_idx].to(self._inc8_dtype))         # (m,G,3,3)
+            self._emu.set_courses(env_idx, gp_ned, Rwg)
         pos_ned = (self._p[env_idx] * self._flip_t).to(self._inc8_dtype)
         vel_ned = (self._v[env_idx] * self._flip_t).to(self._inc8_dtype)
         sig, bias = IE.BatchedEstimatorEmulator.sample_episode_dr(
@@ -194,6 +262,14 @@ class PeregrineRacingInc8(PeregrineRacing):
             self.gate_pos[ar, tg], self.gate_yaw[ar, tg],
             self.gate_rel_pos[ar, nxt], self.gate_yaw_rel[ar, nxt],
             self.last_action[..., 0], triple=triple, virtual_flip=False)
+        # FELT-ACCELERATION arm (obs[20:23], 23-dim VQ2 arm): append the synth-IMU specific force FLU
+        # (the "felt acceleration per axis" Fengyou wants; deployment-available raw HIGHRES_IMU accel).
+        # OFF -> obs stays exactly 20-dim (the frozen deploy-obs20 contract; the a_body accessor is not
+        # even called). Appended BEFORE the NaN lifeline so the new channel is finite-guarded too.
+        if self._obs_a_body:
+            with torch.no_grad():
+                a_body = self._emu.felt_accel_flu()                  # (N,3) FLU
+            obs = torch.cat([obs, a_body], dim=-1)
         # Sync-free NaN lifeline: zero non-finite entries UNCONDITIONALLY (an identity when all-finite,
         # so numerically and gradient-identical to the old guarded form) and accumulate the count on
         # device. The old `bool(finite.all())` + `int((~finite).sum())` forced a CUDA synchronise on
@@ -262,8 +338,16 @@ class PeregrineRacingInc8(PeregrineRacing):
             accepted = self._emu.step(
                 prev_pos_ned, prev_vel * f, R_prev_ned, cur_pos_ned, self._v * f, R_cur_ned,
                 tg, float(self.dt), accept_u, accel_noise, fix_noise)
-            s_prev = self._refline.progress(prev_pos_ned)
-            s_curr = self._refline.progress(cur_pos_ned)
+            # R1' arc-progress source. VQ1: arc-length along the global Gamma. RANDOM: NO global line
+            # (Option B) -> s_prev == s_curr == 0 so arc_progress_reward is the exact zero tensor AND
+            # the R5' progress-gate falls back to the per-env gate-approach delta below (a line-free,
+            # per-course anti-loiter signal: reward pointing only while closing on the target gate).
+            if self._refline is not None:
+                s_prev = self._refline.progress(prev_pos_ned)
+                s_curr = self._refline.progress(cur_pos_ned)
+            else:
+                s_prev = torch.zeros(self.n_envs, device=self.device, dtype=self._inc8_dtype)
+                s_curr = s_prev
             geom = self._emu._last_geom
             err_ip = self._emu.gate_frame_error_inplane(tg, cur_pos_ned)
             triple = self._emu.confidence_channel(tg)
@@ -338,9 +422,14 @@ class PeregrineRacingInc8(PeregrineRacing):
         r1p = R8.arc_progress_reward(s_curr, s_prev, self._inc8w.progress)
         gt = R8.gt_estimerr_anchor(err_ip, self._inc8w.estimerr)
         cs = R8.confidence_shaping_reward(triple, self._inc8w.conf_shape, anneal)
-        r5 = R8.perception_reward(geom["t_cam"], geom["range"], delta_s, geom["in_image"],
+        # R5' / fix-bonus PROGRESS-GATE source. VQ1: arc-progress delta_s (advance along Gamma). RANDOM:
+        # NO global line, so delta_s == 0 would kill R5' (pointing STILL matters for fixes). Use the
+        # per-env GATE-APPROACH delta (prev_d2g - curr_d2g > 0 while closing on the target gate) as the
+        # line-free anti-loiter signal -- reward pointing only while advancing on THIS env's course.
+        delta_gate = (prev_d2g - curr_d2g) if self._random_course else delta_s
+        r5 = R8.perception_reward(geom["t_cam"], geom["range"], delta_gate, geom["in_image"],
                                   self._r5_arm, self._inc8w)
-        fb = R8.fix_bonus_reward(accepted, delta_s, self._inc8w.fix_bonus)
+        fb = R8.fix_bonus_reward(accepted, delta_gate, self._inc8w.fix_bonus)
         cr = R8.centering_reward(err_ip, geom["range"], self._inc8w.centering,
                                  self._inc8w.centering_r_near, self._inc8w.centering_w)
         # THROUGH-APPROACH CENTERING (recenter re-train 2026-06-17): restore inc7 R1-to-centre's LATERAL
