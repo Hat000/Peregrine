@@ -1,34 +1,35 @@
-"""VQ2 yaw-actuation sign + nearest-gate targeting — the A22 gate-2 no-turn fix (2026-07-02).
+"""VQ2 yaw-actuation sign + nearest-gate targeting — A22 (2026-07-02), CORRECTED by A36 (2026-07-03).
 
-RUN 20260702_152528_rl_s1_f1 forensics (live 30 s VQ2 flight, vq2_case_c): the drone threaded
-gate 1 cleanly, then NEVER turned toward the well-detected gate 2 — it turned the OTHER way,
-saturated, spun the gate out of frame and flew into the wall. Three independent channels agree
-on the mechanism (pre-collision window, t < 9.5 s):
+A36 OVERTURNS A22's sign. A22 concluded the VQ2 wire honors PLAIN FRD yaw sign and set
+``vq2_case_c().controller_overrides["body_rate_sign"] = (1,1,1)`` off ONE run (20260702_152528).
+That run PREDATED A22's own fix commit by ~36 min and flew on the seeker default z=-1; A22 read the
+pre-sign/post-sign relationship backwards and flipped a WORKING sign. Every one of the 16 flights
+since (all on +1) shows the SENT yaw command correctly aimed at the gate yet the drone yawing AWAY:
+run 20260704_032626 whole-flight cmd_yaw vs raw_gyro = 114/0 OPPOSED, cmd-toward-gate 132/5 while
+realized-toward-gate only 23/141 — a positive-feedback yaw loop, the ROOT of the never-turns-to-
+gate-2 orbit (and the 203deg whip the A31 orbit-breaker chased). Cross-run: ALL 16 post-A22 flights
+inverted. Verdict: the VQ2 wire INVERTS the yaw-rate command; the correct actuation sign is the
+VQ1-proven seeker default z=-1.
 
-  T1 realized-vs-commanded: corr(pre-sign FRD yaw cmd, estimator yaw rate) = -0.79 with only 5%
-     sign agreement (mean cmd +1.30 rad/s -> mean realized -1.09 rad/s), while the realized rate
-     follows the POST-sign WIRE value at corr +0.79 and the known ~2.1x realization gain.
-     => the VQ2 wire honors the PLAIN FRD yaw-rate sign; the seeker default ``SEEKER_SIGNS``
-        body_rate_sign z=-1 (the VQ1-measured inversion) flips every VQ2 yaw command.
-  T2 estimator self-consistency: d(true_yaw)/dt == -raw_gyro (corr +0.96) — the estimate was
-     faithfully integrating the A9 sign-corrected gyro. The ESTIMATOR was right.
-  T3 optical cross-check: the camera-measured gate bearing swept +0.43 rad/s (gate sliding RIGHT
-     across the frame) while the estimated yaw went -0.96 rad/s (body turning LEFT) — vision and
-     gyro independently confirm the body turned OPPOSITE the command.
+  THE MEASURED PLANT: realized TRUE yaw rate = -2.1 x the emitted wire value (the wire NEGATES the
+  FRD yaw-rate command at the known ~2.1x realization gain). A22's harness baked in +2.1 (the plain
+  FRD premise) — that sign was the error; A36 corrects it to -2.1.
 
-The yaw loop was therefore POSITIVE feedback: any bearing error grew, the command saturated the
-wrong way, and the gate was spun OUT of frame — the "never turned toward gate 2" signature.
+  THE FIX: ``vq2_case_c().controller_overrides["body_rate_sign"] = (1,1,-1)`` — the per-wire
+  actuation convention lives in the deploy profile, exactly like ``gyro_sign``. This equals the
+  VQ1-measured seeker default, so with the correct sign the SENT (post-sign) wire command for a gate
+  on the RIGHT is NEGATIVE, and the inverting plant turns the drone RIGHT (toward the gate).
 
-THE FIX: ``vq2_case_c().controller_overrides["body_rate_sign"] = (1,1,1)`` — the per-wire
-actuation convention lives in the deploy profile, exactly like ``gyro_sign``. VQ1 keeps the
-measured seeker default ``[1,1,-1]`` (flight-proven on THAT wire): the off path is byte-identical.
+  T2 (estimator) and T3 (vision) from A22 STILL HOLD and are unaffected — they only ever exonerated
+  the estimator + vision (d(true_yaw)/dt == -raw_gyro corr +0.96; camera bearing agrees with gyro).
+  They never proved the actuation sign; A36 fixes only the actuation sign.
 
 These tests feed SYNTHETIC gate observations (projected corners -> the seeker's own real PnP)
 through the FULL vq2_case_c-configured seeker + controller stack and assert on the WIRE-frame
 command (``cmd.body_rate`` is post-body_rate_sign — the exact vector MavlinkClient scales and
-emits). Wire-positive yaw = turn RIGHT (T1). No sim required.
+emits). With the inverting plant, wire-NEGATIVE yaw = turn RIGHT. No sim required.
 
-[VQ2 A22 gate-2 turn dive, 2026-07-02]
+[VQ2 A22 gate-2 turn dive, 2026-07-02; A36 sign correction, 2026-07-03]
 """
 import sys
 from pathlib import Path
@@ -48,10 +49,12 @@ from racer.gate_seeker import (  # noqa: E402
     make_seeker_controller,
 )
 
-# The live-measured VQ2 command->realized body-rate gain (run 20260702_152528: realized yaw rate
-# = ~2.1x the wire value; the profile's cmd_rate_scale=0.4 assumes ~2.5). Used only to bound the
-# authority check conservatively (we take the SMALLER of the two so the check cannot flatter).
-_VQ2_REALIZED_GAIN = 2.1
+# The live-measured VQ2 command->realized body-rate gain MAGNITUDE (run 20260702_152528: |realized
+# yaw rate| = ~2.1x the wire value). The wire INVERTS the sign, so the SIGNED plant gain is -2.1
+# (A36 correction; A22 wrongly used +2.1). Used to bound the authority check conservatively.
+_VQ2_REALIZED_GAIN_MAG = 2.1
+# SIGNED plant: realized TRUE yaw rate = -2.1 x wire (the VQ2 wire negates the FRD yaw command).
+_VQ2_PLANT_SIGN = -1.0
 
 
 # ---------------------------------------------------------------------------
@@ -161,32 +164,34 @@ def _pursue(seeker, n_ticks=12, dt_s=0.033):
 
 
 # ===========================================================================
-# H2 — the yaw ACTUATION sign, end-to-end (the A22 bug): wire-positive = turn RIGHT
+# H2 — the yaw ACTUATION sign, end-to-end. The VQ2 wire INVERTS (A36): with the
+# corrected z=-1 sign, gate-RIGHT -> wire-NEGATIVE cmd -> inverting plant turns RIGHT.
 # ===========================================================================
-def test_gate_on_the_right_commands_wire_positive_yaw():
-    """A gate seen RIGHT of the nose (az ~ +0.46 rad) must yield a wire-POSITIVE yaw-rate command
-    (turn right — the plain FRD sign the VQ2 wire realizes at ~2.1x, run 20260702_152528 T1).
-    On the pre-fix code (body_rate_sign z=-1 inherited from the VQ1 set) this command comes out
-    NEGATED — the drone turns LEFT, az grows, and the loop positive-feedback saturates: the exact
-    'never turned toward gate 2' failure. This test FAILS on that code by construction."""
+def test_gate_on_the_right_commands_wire_negative_yaw():
+    """A gate seen RIGHT of the nose (az ~ +0.46 rad): with the A36-corrected sign z=-1 the SENT
+    wire yaw-rate command is NEGATIVE, and because the VQ2 wire INVERTS (realized = -2.1 x wire)
+    that turns the drone RIGHT — toward the gate. On the A22 z=+1 code the command came out POSITIVE
+    and the inverting plant turned the drone LEFT: az grows, the loop positive-feedbacks, the gate
+    spins out of frame ('never turned toward gate 2'). This test FAILS on the A22 sign."""
     cmd = _pursue(_vq2_seeker([_gate([10.0, 5.0, -2.5], normal=[1, 0, 0])]))
     wire_yaw = float(cmd.body_rate[2])
-    assert wire_yaw > 0.0, (
-        f"gate on the RIGHT must command wire-POSITIVE yaw (turn right); got {wire_yaw:+.3f} "
-        "— the yaw actuation sign is inverted (the A22 gate-2 no-turn bug)")
+    assert wire_yaw < 0.0, (
+        f"gate on the RIGHT must command wire-NEGATIVE yaw (the inverting VQ2 wire then turns "
+        f"right); got {wire_yaw:+.3f} — the yaw actuation sign is wrong (A22 regression)")
     # ADEQUATE MAGNITUDE: az=0.46 rad at kp_att=4 demands ~1.84 -> the visual yaw cap (1.5)
-    # saturates; after the slew limiter converges the wire command must sit AT the cap.
-    assert wire_yaw >= 1.4, f"steady saturated yaw expected at the 1.5 cap, got {wire_yaw:+.3f}"
+    # saturates; after the slew limiter converges the wire command must sit AT the -cap.
+    assert wire_yaw <= -1.4, f"steady saturated yaw expected at the -1.5 cap, got {wire_yaw:+.3f}"
 
 
-def test_gate_on_the_left_commands_wire_negative_yaw():
-    """Mirror case: a gate seen LEFT of the nose (az ~ -0.46 rad) must yield a wire-NEGATIVE
-    yaw-rate command (turn left)."""
+def test_gate_on_the_left_commands_wire_positive_yaw():
+    """Mirror case: a gate seen LEFT of the nose (az ~ -0.46 rad) commands wire-POSITIVE yaw, which
+    the inverting VQ2 wire turns into a LEFT body rotation — toward the gate."""
     cmd = _pursue(_vq2_seeker([_gate([10.0, -5.0, -2.5], normal=[1, 0, 0])]))
     wire_yaw = float(cmd.body_rate[2])
-    assert wire_yaw < 0.0, (
-        f"gate on the LEFT must command wire-NEGATIVE yaw (turn left); got {wire_yaw:+.3f}")
-    assert wire_yaw <= -1.4, f"steady saturated yaw expected at the -1.5 cap, got {wire_yaw:+.3f}"
+    assert wire_yaw > 0.0, (
+        f"gate on the LEFT must command wire-POSITIVE yaw (the inverting wire then turns left); "
+        f"got {wire_yaw:+.3f}")
+    assert wire_yaw >= 1.4, f"steady saturated yaw expected at the +1.5 cap, got {wire_yaw:+.3f}"
 
 
 def test_centered_gate_commands_near_zero_yaw():
@@ -199,11 +204,11 @@ def test_centered_gate_commands_near_zero_yaw():
 
 def test_saturated_turn_authority_completes_a_90deg_turn_in_time():
     """AUTHORITY: the saturated wire yaw (cap x cmd_rate_scale) at the live-measured ~2.1x
-    realization gain must complete a 90-deg gate-to-gate turn in well under 2 s — i.e. the
+    realization gain MAGNITUDE must complete a 90-deg gate-to-gate turn in well under 2 s — i.e. the
     cmd_rate_scale=0.4 + the 1.5 rad/s visual cap leave ENOUGH yaw rate once the sign is right.
-    (run 20260702_152528: realized/wire gain 2.13; the profile assumes 2.5 — use the smaller.)"""
+    (run 20260702_152528: |realized/wire| 2.13; the profile assumes 2.5 — use the smaller.)"""
     cmd = _pursue(_vq2_seeker([_gate([10.0, 5.0, -2.5], normal=[1, 0, 0])]))
-    realized_rps = abs(float(cmd.body_rate[2])) * VQ2_CMD_RATE_SCALE * _VQ2_REALIZED_GAIN
+    realized_rps = abs(float(cmd.body_rate[2])) * VQ2_CMD_RATE_SCALE * _VQ2_REALIZED_GAIN_MAG
     t_90deg = (np.pi / 2) / realized_rps
     assert t_90deg < 2.0, (
         f"saturated yaw realizes only {realized_rps:.2f} rad/s -> {t_90deg:.2f} s for 90 deg; "
@@ -212,13 +217,14 @@ def test_saturated_turn_authority_completes_a_90deg_turn_in_time():
 
 # ===========================================================================
 # H1 — nearest-gate targeting: two gates in frame -> lock + steer to the NEAR one
+# (steering sign follows H2: gate-RIGHT -> wire-NEGATIVE with the inverting wire).
 # ===========================================================================
 def test_two_gates_near_right_and_far_centered_targets_the_near_one():
     """NEAR gate off to the RIGHT (8 m, az ~ +0.30) + FAR gate dead-centered (18 m, within the
     22 m acquire range): first-acquisition must lock the NEAR one (its larger apparent corner span
     -> smaller PnP range wins the range+bearing score: 8 + 20*|b| ~ 17 beats 18 + 20*|b| ~ 25)
-    and the pursuit must steer TOWARD it (wire-positive yaw). A far-but-centered gate must never
-    outrank the next gate to fly."""
+    and the pursuit must steer TOWARD it (wire-NEGATIVE yaw, the inverting-wire 'turn right'). A
+    far-but-centered gate must never outrank the next gate to fly."""
     seeker = _vq2_seeker([_gate([18.0, 0.0, -2.5], normal=[1, 0, 0], gate_id=1),   # far, centered
                           _gate([8.0, 2.5, -2.5], normal=[1, 0, 0], gate_id=0)])   # NEAR, right
     cmd = _pursue(seeker)
@@ -226,35 +232,38 @@ def test_two_gates_near_right_and_far_centered_targets_the_near_one():
     assert abs(seeker._track_range_m - np.hypot(8.0, 2.5)) < 1.5, (
         f"locked range {seeker._track_range_m:.1f} m — expected the NEAR gate (~8.4 m), "
         "not the far centered one (~18 m)")
-    assert float(cmd.body_rate[2]) > 0.0, "must steer RIGHT toward the locked NEAR gate"
+    assert float(cmd.body_rate[2]) < 0.0, "must steer RIGHT toward the locked NEAR gate (wire-neg)"
 
 
 def test_two_gates_near_left_and_far_beyond_acquire_range_targets_the_near_one():
     """NEAR gate off to the LEFT + a FAR gate at 30 m (beyond max_acquire_range_m=22 -> REJECTED
     outright as 'never the next gate to fly'): the near gate is locked and steered toward (wire-
-    NEGATIVE yaw). Covers the reject branch of the A5 far-gate trap alongside the score branch."""
+    POSITIVE yaw = the inverting-wire 'turn left'). Covers the reject branch of the A5 far-gate trap
+    alongside the score branch."""
     seeker = _vq2_seeker([_gate([30.0, 0.0, -2.5], normal=[1, 0, 0], gate_id=1),   # far, rejected
                           _gate([8.0, -2.5, -2.5], normal=[1, 0, 0], gate_id=0)])  # NEAR, left
     cmd = _pursue(seeker)
     assert seeker._track_range_m is not None
     assert abs(seeker._track_range_m - np.hypot(8.0, 2.5)) < 1.5, (
         f"locked range {seeker._track_range_m:.1f} m — expected the NEAR gate (~8.4 m)")
-    assert float(cmd.body_rate[2]) < 0.0, "must steer LEFT toward the locked NEAR gate"
+    assert float(cmd.body_rate[2]) > 0.0, "must steer LEFT toward the locked NEAR gate (wire-pos)"
 
 
 # ===========================================================================
-# CLOSED LOOP — the run-20260702_152528 physics: realized yaw rate = +2.1 x wire
+# CLOSED LOOP — the run-20260702_152528 physics, A36-CORRECTED: realized = -2.1 x wire
 # ===========================================================================
-def _closed_loop_final_bearing(controller_sign_override: dict, n_ticks=90, dt_s=0.033):
-    """Fly the yaw channel closed-loop against the MEASURED wire plant (T1: realized TRUE yaw
-    rate = +2.1 x the wire value — the plain FRD sign at the known realization gain). Each tick:
-    detector projects the gate from the CURRENT true yaw -> seeker+controller command -> the wire
-    value integrates the true yaw. Returns the final gate bearing error |yaw_to_gate - true_yaw|.
+def _closed_loop_final_bearing(controller_sign_override: dict, plant_sign=_VQ2_PLANT_SIGN,
+                               n_ticks=90, dt_s=0.033):
+    """Fly the yaw channel closed-loop against the MEASURED wire plant (A36: realized TRUE yaw rate
+    = -2.1 x the emitted wire value — the wire NEGATES the FRD yaw command at the known realization
+    gain). Each tick: detector projects the gate from the CURRENT true yaw -> seeker+controller
+    command -> the (negated) wire value integrates the true yaw. Returns the final gate bearing
+    error |yaw_to_gate - true_yaw|.
 
-    This is the loop-STABILITY regression the per-tick sign asserts can't express: with the
-    correct sign the bearing error CONVERGES to ~0 (the drone turns onto the gate); with the old
-    VQ1 z=-1 sign the SAME harness positive-feedbacks and the bearing DIVERGES — the live gate-2
-    spin-away, reproduced offline."""
+    This is the loop-STABILITY regression the per-tick sign asserts can't express: with the correct
+    z=-1 sign against the inverting plant the bearing error CONVERGES to ~0 (the drone turns onto
+    the gate); with the A22 z=+1 sign the SAME harness positive-feedbacks and the bearing DIVERGES
+    — the live gate-2 spin-away, reproduced offline."""
     from racer.frames import R_world_from_body
     profile = vq2_case_c()
     gate = _gate([10.0, 5.0, -2.5], normal=[1, 0, 0])          # bearing atan2(5,10) ~ +0.46 rad
@@ -276,34 +285,37 @@ def _closed_loop_final_bearing(controller_sign_override: dict, n_ticks=90, dt_s=
                        time_since_vision_update_s=float("inf"))
         cmd = seeker.command_visual(nav, _frame(k, t_ns), 0)
         wire = float(cmd.body_rate[2]) * VQ2_CMD_RATE_SCALE     # what MavlinkClient emits
-        psi += _VQ2_REALIZED_GAIN * wire * dt_s                 # T1: realized = +2.1 x wire (FRD)
+        # A36 MEASURED PLANT: realized TRUE yaw rate = plant_sign(-1) * 2.1 * wire (the wire inverts)
+        psi += plant_sign * _VQ2_REALIZED_GAIN_MAG * wire * dt_s
     los = np.arctan2(5.0, 10.0)
     return abs(float(np.arctan2(np.sin(los - psi), np.cos(los - psi))))
 
 
-def test_closed_loop_converges_onto_the_gate_with_the_fixed_sign():
-    """With the A22 identity yaw sign the closed yaw loop is NEGATIVE feedback: 3 s of ticks turn
-    the nose onto the gate bearing (error -> ~0). The live-flight physics, made a unit test."""
+def test_closed_loop_converges_onto_the_gate_with_the_corrected_sign():
+    """With the A36-corrected yaw sign z=-1 against the INVERTING wire plant, the closed yaw loop is
+    NEGATIVE feedback: 3 s of ticks turn the nose onto the gate bearing (error -> ~0). The live
+    physics, made a unit test. (The vq2_case_c profile as shipped now carries z=-1.)"""
     err = _closed_loop_final_bearing({})                        # the vq2_case_c profile as shipped
     assert err < 0.08, f"loop must converge onto the gate; final bearing error {err:.3f} rad"
 
 
-def test_closed_loop_diverges_with_the_old_vq1_yaw_sign():
-    """COUNTERFACTUAL pin: the SAME harness with the old VQ1 z=-1 sign positive-feedbacks — the
-    bearing error GROWS (the drone turns away from gate 2, run 20260702_152528). If the plant
+def test_closed_loop_diverges_with_the_a22_plus_one_yaw_sign():
+    """COUNTERFACTUAL pin: the SAME inverting-wire harness with the A22 z=+1 sign positive-feedbacks
+    — the bearing error GROWS (the drone turns away from gate 2, the two-day orbit). If the plant
     convention here ever drifts, this and the test above fail together, flagging the harness."""
-    err = _closed_loop_final_bearing({"body_rate_sign": (1.0, 1.0, -1.0)})
-    assert err > 0.5, f"old sign must diverge away from the gate; final bearing error {err:.3f} rad"
+    err = _closed_loop_final_bearing({"body_rate_sign": (1.0, 1.0, 1.0)})
+    assert err > 0.5, f"the A22 +1 sign must diverge away from the gate; final bearing error {err:.3f} rad"
 
 
 # ===========================================================================
-# The profile seam: VQ2 opts in; VQ1 / the seeker default stay byte-identical
+# The profile seam: VQ2 opts in to z=-1; VQ1 / the seeker default stay byte-identical
 # ===========================================================================
-def test_vq2_profile_carries_identity_body_rate_sign():
-    """vq2_case_c carries the A22 fix: identity body_rate_sign (the VQ2 wire honors plain FRD;
-    only the PROFILE opts in — the per-wire actuation convention lives beside gyro_sign)."""
+def test_vq2_profile_carries_inverting_wire_body_rate_sign():
+    """A36: vq2_case_c carries the CORRECTED yaw actuation sign z=-1 (the VQ2 wire INVERTS the
+    FRD yaw command; this reverts A22's mistaken +1). The per-wire actuation convention lives in the
+    profile beside gyro_sign; it equals the VQ1-measured seeker default."""
     sign = np.asarray(vq2_case_c().controller_overrides["body_rate_sign"], float)
-    np.testing.assert_allclose(sign, [1.0, 1.0, 1.0])
+    np.testing.assert_allclose(sign, [1.0, 1.0, -1.0])
 
 
 def test_vq1_and_seeker_default_signs_unchanged():

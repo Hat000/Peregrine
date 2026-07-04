@@ -386,7 +386,40 @@ def vq2_case_c() -> DeployProfile:
                           # S-1 sharpen the off-axis forward cut cos^2 -> cos^4: cuts overfly speed
                           # (and the translational-lift up-bias it drives) without touching centered
                           # pace; keeps the immediate turn (H-1c) from also being an immediate lunge.
-                          "fwd_scale_pow": 4.0},
+                          "fwd_scale_pow": 4.0,
+                          # === A36 (2026-07-03; spec vq2_a36_turn_convergence_spec) ===
+                          # Headline fix is Item 0 (body_rate_sign -> (1,1,-1), in
+                          # controller_overrides). FLIGHT PLAN: the FIRST A36 re-fly is sign + Item 3
+                          # (physical-plane turn) ON, Items 1&4 OFF -- so the yaw sign is read cleanly
+                          # (does the drone now TURN toward gate 2 instead of orbiting) with the turn
+                          # commit/hold correct but WITHOUT the slow/switch-lanes refinements yet.
+                          # Items 1&4 are wired + tuned + INDIVIDUALLY enableable for follow-up flights.
+                          #
+                          # ITEM 3 -- PHYSICAL-PLANE TURN (ON): commit the turn at the physical plane
+                          #   (rng ~pass_arm_range_m) not the ~9 m-early wire (which self-cancels via
+                          #   H-1b's 0.0 coast + acquire-next), and HOLD the turn coast until POINTED
+                          #   (~10 deg of the ~95 deg target, bounded 1.5 s) instead of reverting at the
+                          #   fixed 0.3 s pass_coast_s so the ~95 deg slew actually completes.
+                          "pass_wire_requires_near": True,
+                          "pass_turn_hold_until_pointed": True,
+                          "pass_turn_coast_s": 1.5,
+                          "pass_turn_point_tol_rad": 0.17,
+                          #
+                          # ITEM 1 -- POINTING GATE on forward drive ("point before you push"), OFF for
+                          #   the first re-fly: cut a_fwd to ~0 until the gate is roughly centered so the
+                          #   turn is SHARP not a wide arc. Enable with the az radius (ramp spans
+                          #   full_az..this). None => off.
+                          # "fwd_point_gate_az_rad": 0.35,
+                          "fwd_point_gate_full_az_rad": 0.05,
+                          #
+                          # ITEM 4 -- LATERAL-FIRST "switch lanes", OFF for the first re-fly: bank
+                          #   sideways onto the approach line instead of yaw-to-face + being carried past.
+                          #   Enable use_lateral_first_budget AND raise the lateral cap so a big
+                          #   cross-track drives a real translation (3.0 ~= a 17 deg bank; A31 lat-slew
+                          #   still rate-limits it).
+                          # "use_lateral_first_budget": True,
+                          # "image_lat_cap_mps2": 3.0,
+                          },
         # A11 control-softening fix (2026-06-30): the seeker's stiff attitude loop (kp_att=10 vs the
         # +/-1.5 rad/s pursuit pitch-rate cap) saturates on ANY attitude error > ~8.6deg (1.5/10), so
         # the egress->pursuit HANDOFF (held ~-18deg nose-down vs ~-5deg cruise = ~13deg error) commands
@@ -477,7 +510,21 @@ def vq2_case_c() -> DeployProfile:
         #     alt_thrust_lo to 0.10 for vq2_case_c.
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True,
-                              "body_rate_sign": (1.0, 1.0, 1.0),
+                              # A36 ITEM 0 (2026-07-03; spec vq2_a36_turn_convergence_spec):
+                              # (1,1,1) -> (1,1,-1) -- REVERT the A22 yaw actuation sign. A22
+                              # (d1bca4b) set yaw +1 off ONE run (20260702_152528) that PREDATED
+                              # its own commit by 36 min and flew on the seeker default -1; A22
+                              # read the pre/post-sign relationship backwards and flipped a WORKING
+                              # sign. Every one of the 16 flights since (all on +1) shows the SENT
+                              # yaw command correctly aimed at the gate (run 20260704_032626:
+                              # cmd-toward-gate 132/5) yet the drone yawing AWAY (realized
+                              # toward-gate 23/141) -- a positive-feedback yaw loop that is the ROOT
+                              # of the never-turns-to-gate-2 orbit (and the 203deg whip the A31
+                              # orbit-breaker chased). The wire INVERTS the yaw-rate command, so we
+                              # emit -1 (the VQ1-proven seeker default). The command PATH is
+                              # unchanged since A22 (controller.py:513 omega*body_rate_sign); only
+                              # this override value moved. VQ1/case-A untouched (seeker default -1).
+                              "body_rate_sign": (1.0, 1.0, -1.0),
                               "kp_alt": 0.0, "gate_pd_vertical": True,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,

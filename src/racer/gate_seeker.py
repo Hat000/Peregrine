@@ -465,6 +465,38 @@ class GateSeekerConfig:
     # from the pose capture instant (s): a stale buffer must not rotate the lever with garbage.
     image_att_max_gap_s: float = 0.5
 
+    # --- A36 ITEM 1: POINTING GATE on the forward drive (2026-07-03; spec
+    # vq2_a36_turn_convergence_spec). "Point before you push." The cos^pow(az) fwd_scale still drives
+    # substantial forward while badly off-axis (cos^4 = 0.73 at 30 deg, 0.30 at 42 deg), so on the
+    # pass->turn the drone carries forward momentum and ARCS wide (run 20260704_032626: track_range to
+    # gate 2 stayed 15-19 m for ~70 ticks, never closed -- an orbit). This adds a SMOOTHSTEP gate that
+    # cuts forward accel to ~0 until the gate is roughly centered, letting the drone TURN before it
+    # translates: g_point = smoothstep(|az|; hi -> lo) is 1.0 for |az| <= az_full and ramps to 0.0 for
+    # |az| >= this radius. It MULTIPLIES a_fwd (after fwd_scale) -- purely a further reduction, never an
+    # increase. None (default) => no gate (byte-identical). vq2_case_c: ~0.35 rad (the ramp spans
+    # az_full..0.35). Slower + sharper turns; slow is smooth.
+    fwd_point_gate_az_rad: float | None = None
+    # Below this apparent azimuth (rad) the pointing gate is fully open (g_point=1): the centered
+    # deadband where forward pace is unaffected. The gate ramps smoothstep between here and
+    # fwd_point_gate_az_rad.
+    fwd_point_gate_full_az_rad: float = 0.05
+
+    # --- A36 ITEM 4: LATERAL-FIRST "SWITCH LANES" (2026-07-03; spec
+    # vq2_a36_turn_convergence_spec). Operator insight: a quad translates holonomically, so a cross-
+    # track error should be closed by BANKING sideways onto the gate's approach line ("switch lanes"),
+    # NOT only by yaw-to-face + forward drive (which gets carried past = the orbit). The A30 image
+    # servo already has the lateral term a_lat = clip(k_az*dead(az), +/-image_lat_cap) along e_right,
+    # but (a) the cap (1.5) limits it to an ~8.7 deg lean and (b) it is composed with a_fwd then
+    # norm-capped at total_accel_cap (2.0), so a large forward demand CLIPS the lateral. When ON, the
+    # accel budget is allocated LATERAL-FIRST when off-axis: |a_lat| takes priority within
+    # total_accel_cap and the forward term gets only the REMAINING radial budget. This makes cross-
+    # track correction a real sideways translation instead of a clipped afterthought. Pure proportional-
+    # on-bearing (NO derivative -- the A29 LOS-rate differentiation of a noisy bearing went unstable),
+    # bounded by the same total_accel_cap, and the A31 image_lat_slew rate-limit still caps the per-tick
+    # lateral change. Pairs with a raised image_lat_cap_mps2 (vq2_case_c: 3.0 ~= a 17 deg bank). OFF
+    # (default) => the A30 sum-then-norm-cap composition (byte-identical).
+    use_lateral_first_budget: bool = False
+
     # --- TRUE-ATTITUDE FROM AHRS (the 2026-06-30 A14 yaw-mirror fix) ---
     # ROOT CAUSE (A14): under ``use_ahrs`` (vq2_case_c) the case-C Navigator re-encodes the TRUE
     # AHRS attitude into the legacy ODOMETRY conjugation before writing ``NavState`` (an R_y(pi)
@@ -697,6 +729,29 @@ class GateSeekerConfig:
     # freezes the heading exactly as today (byte-identical).
     pass_turn_through: bool = False
     pass_blind_turn_cap_rad: float = 1.6   # max blind heading change during the coast (~92 deg)
+    # --- A36 ITEM 3: PHYSICAL-PLANE TURN COMMIT + HOLD-UNTIL-POINTED (2026-07-03; spec
+    # vq2_a36_turn_convergence_spec). Operator ruling: commit the turn at the PHYSICAL gate plane
+    # (rng ~= pass_arm_range_m), NOT the wire (which leads the plane ~9 m and, with H-1b's 0.0 coast +
+    # acquire-next, self-cancels the same tick by re-locking the still-ahead gate). Two coupled knobs:
+    #
+    # (1) ``pass_wire_requires_near``: while the tracked gate is still WELL AHEAD, a wire
+    #     ``index_advanced`` no longer COMMITS the pass -- it only records intent (``_pass_wire_pending``).
+    #     The real commit still fires from the physical trigger (degenerate-close within
+    #     pass_degenerate_range_m, or lost-after-arm), and it upgrades to the fast wire window because the
+    #     pending intent is honored. This enforces the A33-spec H-1 "defer the wire while the gate is in
+    #     front" that the shipped code did NOT (the commit fired on index_advanced unconditionally). A
+    #     wire advance while ALREADY within pass_arm_range_m still commits immediately (we are AT the
+    #     plane). OFF (default) => index_advanced commits unconditionally (byte-identical).
+    pass_wire_requires_near: bool = False
+    # (2) ``pass_turn_hold_until_pointed``: with a blind turn target latched (pass_turn_through), HOLD
+    #     the dead-reckon coast until the commanded heading is within ``pass_turn_point_tol_rad`` of the
+    #     turn target OR the bounded ``pass_turn_coast_s`` elapses -- instead of reverting on the fixed
+    #     pass_coast_s (0.3 s), which is far too short for a ~95 deg slew (~1.0-1.3 s at 1.5 rad/s). The
+    #     acquire-next re-lock is DEFERRED until pointed so the turn completes rather than orbiting.
+    #     OFF (default) => the fixed pass_coast_s window governs everywhere (byte-identical).
+    pass_turn_hold_until_pointed: bool = False
+    pass_turn_coast_s: float = 1.5         # hard upper bound on the hold-until-pointed turn coast (s)
+    pass_turn_point_tol_rad: float = 0.17  # "pointed" tolerance vs the turn target (~10 deg)
     # --- S-1: sharpen the off-axis forward cut. fwd_scale = max(cos(az),0)^fwd_scale_pow. cos^2
     # (default) still drives 55% forward at az=42 deg while badly mis-pointed; cos^4 gives 30% --
     # cuts the overfly speed (which also drives the translational-lift up-bias) without touching
@@ -804,6 +859,10 @@ class GateSeeker:
     _pass_prev_range_m: float | None = field(default=None, repr=False)
     # -- A33 H-1(c): blind turn target latched at pass commit (turn-through-occlusion) --
     _pass_turn_yaw: float | None = field(default=None, repr=False)
+    # -- A36 ITEM 3: a wire index_advanced seen while the gate is still well ahead records intent
+    #    (pass_wire_requires_near) so the PHYSICAL commit (degenerate/lost) upgrades to the fast wire
+    #    window; cleared on _end_pass / reset. --
+    _pass_wire_pending: bool = field(default=False, repr=False)
     # -- hold-last-demand bridge (A13): cache the last good pursuit demand so a pose-None tick can
     #    re-issue it (continuous per-tick command) instead of regime-2's zero-coast hold --
     _last_demand_los: np.ndarray | None = field(default=None, repr=False)   # last pursuit world heading unit vec
@@ -1438,8 +1497,23 @@ class GateSeeker:
         degenerate_close = (self._pass_armed and pose is not None
                             and float(pose.range_m) <= self.config.pass_degenerate_range_m)
         lost_after_arm = self._pass_armed and pose is None
-        if degenerate_close or lost_after_arm or index_advanced:
-            self._begin_pass(sim_time_ns, wire=index_advanced)
+        # A36 ITEM 3 (1): PHYSICAL-PLANE wire gating. With pass_wire_requires_near, a wire advance
+        # while the tracked gate is still WELL AHEAD (range > pass_arm_range_m, i.e. NOT yet at the
+        # plane -- the wire index leads by ~9 m) does NOT commit; it records intent so the PHYSICAL
+        # commit (degenerate/lost) upgrades to the fast wire window. A wire advance while already at
+        # the plane (armed / no usable far pose) still commits immediately. OFF => index_advanced
+        # commits unconditionally (byte-identical).
+        wire_commits = index_advanced
+        if index_advanced and self.config.pass_wire_requires_near:
+            gate_far_ahead = (pose is not None
+                              and float(pose.range_m) > self.config.pass_arm_range_m)
+            if gate_far_ahead:
+                self._pass_wire_pending = True   # defer: fire the turn at the physical plane
+                wire_commits = False
+        if degenerate_close or lost_after_arm or wire_commits:
+            # honor a pending wire intent so a physically-committed pass still uses the fast window
+            wire = wire_commits or self._pass_wire_pending
+            self._begin_pass(sim_time_ns, wire=wire)
 
     def _begin_pass(self, sim_time_ns: int, wire: bool = False) -> None:
         """Commit to the dead-reckon-through-pass coast: FREEZE the current pursuit heading (the
@@ -1491,6 +1565,7 @@ class GateSeeker:
         forward drive re-ramps from zero into the fresh acquisition (point before pushing)."""
         self._passing = False
         self._pass_wire = False
+        self._pass_wire_pending = False   # A36 ITEM 3: intent consumed at commit -> clear
         self._pass_armed = False
         self._pass_min_range_m = float("inf")
         self._pass_t_ns = None
@@ -1514,6 +1589,24 @@ class GateSeeker:
             return float(self.config.pass_wire_coast_s)
         return float(self.config.pass_coast_s)
 
+    def _turn_hold_active(self, sim_time_ns: int) -> bool:
+        """A36 ITEM 3 (2): True while the HOLD-UNTIL-POINTED turn coast is in force -- a blind turn
+        target is latched and the commanded heading has NOT yet slewed within
+        ``pass_turn_point_tol_rad`` of it, AND the bounded ``pass_turn_coast_s`` has not elapsed.
+        While active, acquire-next is deferred and the dead-reckon coast is held so the ~95 deg turn
+        completes instead of reverting on the short fixed pass_coast_s. OFF / no target / not turning
+        through => always False (byte-identical)."""
+        if not (self.config.pass_turn_hold_until_pointed and self.config.pass_turn_through):
+            return False
+        if self._pass_turn_yaw is None or self._pass_t_ns is None or self._last_yaw is None:
+            return False
+        elapsed = (int(sim_time_ns) - self._pass_t_ns) / 1e9
+        if elapsed >= self.config.pass_turn_coast_s:
+            return False                            # bounded: the turn coast timed out
+        err = abs(float(np.arctan2(np.sin(self._last_yaw - self._pass_turn_yaw),
+                                   np.cos(self._last_yaw - self._pass_turn_yaw))))
+        return err > self.config.pass_turn_point_tol_rad   # still turning -> hold
+
     def _pass_acquired_next(self, nav: NavState, pose: GatePose) -> bool:
         """True iff the seeker is in the ACQUIRE-NEXT window (past the dead-reckon coast) AND a fresh
         NEXT gate has been re-acquired -- i.e. a usable pose that is NOT the just-passed gate (a real
@@ -1521,6 +1614,11 @@ class GateSeeker:
         ``pass_coast_s``) we IGNORE any pose (it is the gate we are passing through) and keep gliding;
         only after that window do we accept a re-acquired gate as the next one to pursue."""
         if self._pass_t_ns is None or pose is None:
+            return False
+        # A36 ITEM 3 (2): while the hold-until-pointed turn is in force, DEFER acquire-next -- let the
+        # turn complete (heading within tol of the target) before locking the next gate, so a mid-turn
+        # gate-2 sighting cannot revert us to pursuit and re-open the orbit. (byte-identical when off)
+        if self._turn_hold_active(int(nav.sim_time_ns)):
             return False
         elapsed = (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9
         if elapsed < self._effective_pass_coast_s():   # A31: 0.25 s on a wire-committed pass
@@ -1536,6 +1634,9 @@ class GateSeeker:
         seeker reverts to the gentle no-detection coast (never a pitch-up)."""
         if not self._passing or self._pass_t_ns is None:
             return False
+        # A36 ITEM 3 (2): hold the coast through the turn until POINTED (bounded by pass_turn_coast_s).
+        if self._turn_hold_active(int(sim_time_ns)):
+            return True
         elapsed = (int(sim_time_ns) - self._pass_t_ns) / 1e9
         return elapsed < (self._effective_pass_coast_s() + self.config.acquire_next_s)
 
@@ -1957,12 +2058,41 @@ class GateSeeker:
             self._alat_slew_prev = a_lat
             self._alat_slew_t_ns = _now
         fwd_scale = float(max(np.cos(az), 0.0)) ** float(self.config.fwd_scale_pow)  # push hardest centered, yield off-axis (A33 S-1: cos^pow)
+        # A36 ITEM 1: POINTING GATE. A smoothstep that cuts forward accel toward 0 while off-axis,
+        # so the drone TURNS before it translates (no wide arc past the gate). g_point=1 for
+        # |az|<=full, ramps smoothstep to 0 by |az|>=fwd_point_gate_az_rad. Purely a further
+        # reduction of a_fwd (never an increase). None => no gate (byte-identical fwd_scale path).
+        if self.config.fwd_point_gate_az_rad is not None:
+            hi = abs(float(self.config.fwd_point_gate_az_rad))
+            lo = max(abs(float(self.config.fwd_point_gate_full_az_rad)), 0.0)
+            if hi <= lo:
+                g_point = 1.0 if abs(az) <= lo else 0.0
+            else:
+                u = (abs(az) - lo) / (hi - lo)
+                u = min(max(u, 0.0), 1.0)
+                g_point = 1.0 - (u * u * (3.0 - 2.0 * u))   # smoothstep, 1 at lo -> 0 at hi
+            fwd_scale = fwd_scale * float(g_point)
         self._last_fwd_scale = fwd_scale
         a_fwd = self.config.forward_accel_mps2 * float(eff_ramp) * float(fwd_ramp) * fwd_scale
         e_right = np.array([-np.sin(yaw_now), np.cos(yaw_now), 0.0])
-        a_vec = a_fwd * np.asarray(los, dtype=np.float64) + a_lat * e_right
         self._last_alat = a_lat                                 # reuse the A29 lateral stash (alat_mps2)
-        return _clip_norm(a_vec, self.config.total_accel_cap_mps2)
+        cap_tot = abs(float(self.config.total_accel_cap_mps2))
+        if self.config.use_lateral_first_budget:
+            # A36 ITEM 4: LATERAL-FIRST "switch lanes". Give the lateral (cross-track) demand PRIORITY
+            # within the total accel budget, and let forward take only the REMAINING radial budget --
+            # so an off-axis gate is closed by BANKING sideways onto the approach line, not clipped
+            # behind a saturating forward push. a_lat is already bounded by image_lat_cap (< cap_tot
+            # in practice) and rate-limited by the A31 slew; here we just cap it to the total budget,
+            # then allow forward up to sqrt(cap^2 - a_lat^2). Pure proportional-on-bearing, NO
+            # derivative (A29 LOS-rate instability), stays within the SAME norm cap. OFF => the A30
+            # sum-then-norm-cap below (byte-identical).
+            a_lat_b = float(np.clip(a_lat, -cap_tot, cap_tot))
+            fwd_budget = float(np.sqrt(max(cap_tot * cap_tot - a_lat_b * a_lat_b, 0.0)))
+            a_fwd = float(min(max(a_fwd, 0.0), fwd_budget))
+            a_vec = a_fwd * np.asarray(los, dtype=np.float64) + a_lat_b * e_right
+            return a_vec                                        # already within cap_tot by construction
+        a_vec = a_fwd * np.asarray(los, dtype=np.float64) + a_lat * e_right
+        return _clip_norm(a_vec, cap_tot)
 
     # =======================================================================
     # A31 ORBIT-BREAKER  (cumulative-LOS guard + hard yaw-excursion clamp)
@@ -2568,6 +2698,7 @@ class GateSeeker:
         self._pass_t_ns = None
         self._pass_heading = None
         self._pass_index = None
+        self._pass_wire_pending = False   # A36 ITEM 3: drop deferred wire intent
         # A33 H-1: drop the old-gate exclusion snapshot + the blind turn target.
         self._pass_prev_dir_world = None
         self._pass_prev_range_m = None
