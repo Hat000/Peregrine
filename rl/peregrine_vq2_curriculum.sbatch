@@ -71,7 +71,7 @@ BASE=(
 #     never the exploitation schedule (3 easy stages ground std 0.223 -> 0.050 before the hard stage).
 #   * critic_warmup_updates=100: actor gradients zeroed for the first 100 updates of EVERY stage so the
 #     critic adapts to the new return scale before the policy moves.
-BOUNDARY_OV=( +warmstart_reset_logstd=true +critic_warmup_updates=100 )
+BOUNDARY_OV=( +warmstart_reset_logstd=true +warmstart_reset_logstd_std=0.18 +critic_warmup_updates=100 )
 case "${REWARD}" in
   a) REWARD_OV=( ) ;;
   b) REWARD_OV=( +env.rw_centering=1.0 ) ;;

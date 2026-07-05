@@ -155,9 +155,17 @@ def test_inc8_weights_new_fields_default_off():
 
 # ============================================================ A3: exploration reset
 def test_warmstart_logstd_reset_helper():
-    """reset_actor_logstd zeroes every actor_logstd on the module tree (fresh-init exploration on
-    transferred means), leaves the critic untouched, and reports how many it touched."""
-    from inc8_warmstart import reset_actor_logstd
+    """reset_actor_logstd sets every actor_logstd on the module tree to the INTERMEDIATE exploration
+    target (author-directed ~0.15-0.2, default 0.18 -- between the collapsed ~0.05 carry-over and the
+    fresh 0.223), leaves the critic untouched, and reports how many it touched. raw_logstd_for_std
+    must round-trip through diffaero's tanh squash (LOG_STD_MIN=-5, MAX=2)."""
+    from inc8_warmstart import raw_logstd_for_std, reset_actor_logstd
+
+    # the inverse must round-trip the squash for the whole plausible target band
+    for std in (0.15, 0.18, 0.20, 0.223):
+        raw = raw_logstd_for_std(std)
+        squashed = -5.0 + 0.5 * (2.0 - (-5.0)) * (math.tanh(raw) + 1.0)
+        assert math.exp(squashed) == pytest.approx(std, rel=1e-9)
 
     class _Actor(torch.nn.Module):
         def __init__(self):
@@ -175,9 +183,10 @@ def test_warmstart_logstd_reset_helper():
             self.agent = _AC()
 
     shim = _AgentShim()
-    n = reset_actor_logstd(shim)
+    n = reset_actor_logstd(shim)                      # default target_std=0.18
     assert n == 1
-    assert torch.equal(shim.agent.actor.actor_logstd.data, torch.zeros(1, 4))
+    expected = torch.full((1, 4), raw_logstd_for_std(0.18))
+    assert torch.allclose(shim.agent.actor.actor_logstd.data, expected)
     assert any(p.abs().sum() > 0 for p in shim.agent.critic.parameters())
 
 
