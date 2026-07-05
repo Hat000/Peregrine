@@ -437,7 +437,10 @@ def vq2_case_c() -> DeployProfile:
                           "pass_wire_requires_near": True,
                           "pass_turn_hold_until_pointed": True,
                           "pass_turn_coast_s": 1.5,
-                          "pass_turn_point_tol_rad": 0.17,
+                          # E3 (2026-07-05): 0.17 -> 0.10 -- with E1 holding against the REAL gate,
+                          # release only when genuinely pointed (~6 deg); worst case the hold runs
+                          # the bounded 1.5 s coast, same as before.
+                          "pass_turn_point_tol_rad": 0.10,
                           # REFINE-TO-REAL-GATE: the blind sign*cap turn target was ~147 deg WRONG on
                           # run 20260704_042616 (LEFT off the passed gate's close az while gate 2 was
                           # RIGHT). Instead coast straight through the occlusion, RE-AIM at the first
@@ -446,6 +449,20 @@ def vq2_case_c() -> DeployProfile:
                           # Fallback if none seen = straight coast (never a committed wrong turn).
                           "pass_turn_refine": True,
                           "pass_refine_min_bw": 0.3,
+                          # E1 PREFER-FAR (2026-07-05 turn-readiness audit; ON for the confirm
+                          # flight, operator-approved). Run 20260705_012253 ticks 50-54: the refine latched
+                          # _pass_turn_yaw = +0.35 rad off a ~4.3 m CLOSE RESIDUAL (the just-passed
+                          # gate, inside the 3.0..4.5 arm band), the hold released "pointed" at
+                          # that stub in ~0.2 s, and _pass_acquired_next handed pursuit the SAME
+                          # residual (yaw_des -0.33) -- the REAL gate 1 appeared ~0.9 s later at
+                          # ~16 m and pursuit tail-chased it rate-limited (yaw_des ran ~3.0 rad
+                          # ahead of the heading, wz pinned at the 0.9 cap for 0.9 s stretches,
+                          # roll starved by the omega norm-clip the whole way). ON => both the
+                          # refine re-aim AND acquire-next require range > pass_arm_range_m (a
+                          # plausible NEXT gate), so the residual band can neither aim the turn
+                          # nor end the pass; the turn stays pending until the real gate is seen
+                          # (bounded by pass_turn_coast_s as before).
+                          "pass_refine_prefer_far": True,
                           #
                           # FIX B -- CLOSE-RANGE YAW-RATE TAPER (ON): scale the pursuit yaw setpoint-slew
                           #   authority by tracked range (floor 0.35 near, full by 10 m) so a fast
@@ -485,7 +502,9 @@ def vq2_case_c() -> DeployProfile:
                           #   so lowering it directly slows the entry AND caps the forward component
                           #   regardless of the raised total_accel_cap_mps2 (4.0) below -- forward
                           #   cannot balloon when the budget grows; the extra budget goes to roll.
-                          "forward_accel_mps2": 0.35,
+                          # S1 (2026-07-05): 0.35 -> 0.25, operator prescription "slower" round 2
+                          # (turn audit: entry speed still outruns the turn authority).
+                          "forward_accel_mps2": 0.25,
                           #
                           # ITEM 4 -- LATERAL-FIRST "switch lanes" (ON): bank sideways onto the approach
                           #   line instead of yaw-to-face + being carried past (operator saw "barely any
@@ -534,7 +553,11 @@ def vq2_case_c() -> DeployProfile:
                           #    SLEWS yaw toward the target instead of freezing it -> yaw error small ->
                           #    roll survives) OWNS the turn; and DEMOTE the orbit-breaker to a rare
                           #    failsafe (orbit_guard_rad 1.75 -> 3.0, ~172deg) so it stops pre-empting it.
-                          "pass_arm_range_m": 4.5,
+                          # E2 (2026-07-05): 4.5 -> 5.5, operator prescription "earlier". NOTE the
+                          # E1 coupling (by design): this same value is E1's plausible-next-gate
+                          # bound, so the residual-exclusion band widens with it (gate 1 shows at
+                          # ~16 m -- wide margin).
+                          "pass_arm_range_m": 5.5,
                           "orbit_guard_rad": 3.0,
                           #
                           # === TURN PACKAGE (2026-07-04; run 20260704_173948 gate-1 understeer,
@@ -659,6 +682,13 @@ def vq2_case_c() -> DeployProfile:
         #     with thrust pinned at 0.15 for > 2 s while vz_rel < 0.5 m/s of descent, lower
         #     alt_thrust_lo to 0.10 for vq2_case_c.
         controller_overrides={"kp_att": 4.0, "body_rate_slew_max_rps2": 8.0,
+                              # R1 (2026-07-05 turn audit, Bug #2): the whole-omega norm-clip at 4.0
+                              # is eaten by yaw alone (4.0*|yaw_err| > 4.0 on 55-69% of pursuit
+                              # ticks) and crushes roll to median 0.25-0.30 while the per-axis roll
+                              # cap binds on 0% of ticks -- "yaws hard, barely rolls". 6.0 gives the
+                              # clip headroom so roll survives a simultaneous large yaw error;
+                              # per-axis caps + the wire rate cap still bound realized rates.
+                              "max_body_rate_rps": 6.0,
                               "ff_owns_horizontal": True, "ff_owns_vertical": True,
                               # A36 FIX C (built but LEFT OFF): yaw-rate DAMPING bump kd_att 0.30 ->
                               # ~0.7 for better-damped attitude tracking. The yaw-overshoot diagnosis

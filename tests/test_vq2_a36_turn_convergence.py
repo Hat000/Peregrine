@@ -519,9 +519,10 @@ def test_yawsel_off_and_vq1_byte_identical():
 # Fix C (kd_att) OFF.
 # ===========================================================================
 def test_profile_flight3_full_turn_package():
-    """The shipped vq2_case_c carries the full A36 turn package: yaw sign (1,1,-1), refine-to-real-
-    gate + Item 3 (physical-plane + hold-until-pointed), Fix B (yaw taper), Item 1 (pointing gate +
-    slower 0.65), Item 4 (lateral-first + cap 3.0). Fix C (kd_att bump) stays OFF (default 0.30)."""
+    """The shipped vq2_case_c carries the full A36 turn package: A37 yaw fix (yaw_steer_mode "off" +
+    body_rate_sign (1,1,1)), refine-to-real-gate + Item 3 (physical-plane + hold-until-pointed),
+    Fix B (yaw taper), Item 1 (pointing gate + slower 0.35), Item 4 (lateral-first + caps 4.0).
+    Fix C (kd_att bump) stays OFF (default 0.30)."""
     prof = vq2_case_c()
     so = prof.seeker_overrides or {}
     co = prof.controller_overrides or {}
@@ -547,7 +548,7 @@ def test_profile_flight3_full_turn_package():
     # 0.65 -> 0.45. TURN ITERATION (run 20260704_231155): accel 0.45 -> 0.35 (slower entry).
     # Pinned in test_vq2_turn_package too.
     assert cfg.fwd_point_gate_az_rad == 0.25
-    assert cfg.forward_accel_mps2 == 0.35
+    assert cfg.forward_accel_mps2 == 0.25            # S1 (2026-07-05): 0.35 -> 0.25
     # Item 4 (switch lanes) -- TURN ITERATION: image_lat_cap 3.0 -> 4.0 (more roll; the cap was
     # railing through the turn) + total_accel_cap 3.0 -> 4.0 so the lateral cap actually applies.
     assert cfg.use_lateral_first_budget is True
@@ -556,7 +557,7 @@ def test_profile_flight3_full_turn_package():
     assert cfg.total_accel_cap_mps2 == 4.0            # turn iteration: cap 3.0 -> 4.0 (22 deg bank)
     assert cfg.pursuit_yaw_slew_rps == 0.9            # B: yaw slew 1.5 -> 0.9
     assert cfg.visual_yaw_rate_cap_rps == 0.9         # B: yaw cap 1.5 -> 0.9
-    assert cfg.pass_arm_range_m == 4.5               # C: arm at the ~4.3m vision floor (was 3.0)
+    assert cfg.pass_arm_range_m == 5.5               # E2 (2026-07-05): arm earlier, 4.5 -> 5.5
     assert cfg.orbit_guard_rad == 3.0                # C: orbit-brake demoted (was 1.75)
 
 

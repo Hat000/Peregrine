@@ -818,6 +818,25 @@ class GateSeekerConfig:
     # pose steers gently in pursuit but must not fling the turn target. 0.0 => any weight (only
     # meaningful under use_soft_bearing_weight; else _bearing_w_ctl() is 1.0 and this never gates).
     pass_refine_min_bw: float = 0.3
+    # --- E1 PREFER-FAR (2026-07-05; turn-readiness audit, run 20260705_012253 ticks 50-88). The
+    # refine's "downrange" bound (> pass_degenerate_range_m) still admits the 3.0..pass_arm_range_m
+    # CLOSE-RESIDUAL band -- where the just-passed gate lives while it exits the FOV. Run 012253:
+    # the refine latched _pass_turn_yaw = +0.35 rad off a ~4.3 m residual (arm range 4.5), the
+    # hold was "pointed" at that stub target within ~0.2 s and the pass ENDED on the same
+    # residual band pose (_pass_acquired_next's > degenerate bound also admits it); the REAL
+    # gate 1 only appeared ~0.9 s later at ~16 m / world bearing +0.6..+1.7 -- acquired in
+    # PURSUIT, where the 0.9 rad/s setpoint slew let yaw_des run ~3.0 rad ahead of the heading
+    # (the rate-limited tail-chase: wz pinned at the cap for 0.9 s stretches, yaw-error growing
+    # monotonically, roll starved by the omega norm-clip the whole way). When ON, a pose must be
+    # a PLAUSIBLE NEXT GATE -- range > pass_arm_range_m, not merely past the degenerate band --
+    # BOTH to re-aim the turn target (_maybe_refine_turn_target) AND to end the pass as "next
+    # gate acquired" (_pass_acquired_next). The residual band can then neither aim the turn nor
+    # hand off to pursuit; the turn stays PENDING (the hold defers acquire-next, bounded by
+    # pass_turn_coast_s) until a genuine downrange gate is seen -- so the hold completes against
+    # the REAL gate, not a stub. FALLBACK unchanged: no qualifying pose within pass_turn_coast_s
+    # => the hold expires on the straight coast (never a committed wrong turn). OFF (default) =>
+    # both bounds stay pass_degenerate_range_m (byte-identical).
+    pass_refine_prefer_far: bool = False
     # --- S-1: sharpen the off-axis forward cut. fwd_scale = max(cos(az),0)^fwd_scale_pow. cos^2
     # (default) still drives 55% forward at az=42 deg while badly mis-pointed; cos^4 gives 30% --
     # cuts the overfly speed (which also drives the translational-lift up-bias) without touching
@@ -1731,7 +1750,14 @@ class GateSeeker:
         # past the dead-reckon coast: a sighting at a real downrange range = the next gate re-acquired.
         # (range_m > pass_degenerate_range_m keeps the just-passed gate out even on the fast
         # window: behind the image plane it is rejected upstream, and point-blank it is degenerate.)
-        return float(pose.range_m) > self.config.pass_degenerate_range_m
+        # E1 PREFER-FAR: the > degenerate bound still admits the 3.0..arm_range close-residual band
+        # (run 012253 tick 54: a 4.3 m residual "acquired next" and pursuit locked it, yaw_des
+        # flipping to -0.33 while the real gate 1 sat 16 m downrange). When ON, ending the pass
+        # requires a PLAUSIBLE next-gate range (> pass_arm_range_m) -- the residual keeps the
+        # coast/hold alive (bounded by pass_turn_coast_s + acquire_next_s as before).
+        _lo = (float(self.config.pass_arm_range_m) if self.config.pass_refine_prefer_far
+               else float(self.config.pass_degenerate_range_m))
+        return float(pose.range_m) > _lo
 
     def _in_pass_dead_reckon(self, sim_time_ns: int) -> bool:
         """True while the committed pass coast (dead-reckon + acquire-next) window is active. Bounded
@@ -1761,7 +1787,12 @@ class GateSeeker:
             return
         rng = float(pose.range_m)
         # DOWNRANGE band: past the degenerate close gate, within the absolute course cap.
-        if rng <= float(self.config.pass_degenerate_range_m):
+        # E1 PREFER-FAR: a plausible NEXT gate must also clear the arm band (3.0..arm_range is the
+        # just-passed gate's close-residual territory -- run 012253 latched +0.35 off a 4.3 m
+        # residual and the hold released pointed at that stub). OFF => the legacy degenerate bound.
+        _lo = (float(self.config.pass_arm_range_m) if self.config.pass_refine_prefer_far
+               else float(self.config.pass_degenerate_range_m))
+        if rng <= _lo:
             return
         if (self.config.track_abs_range_cap_m is not None
                 and rng > float(self.config.track_abs_range_cap_m)):

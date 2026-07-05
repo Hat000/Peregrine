@@ -191,7 +191,7 @@ def test_vq2_profile_turn_iteration_values():
     ov = vq2_case_c().seeker_overrides
     assert ov["image_lat_cap_mps2"] == pytest.approx(4.0)
     assert ov["total_accel_cap_mps2"] == pytest.approx(4.0)
-    assert ov["forward_accel_mps2"] == pytest.approx(0.35)
+    assert ov["forward_accel_mps2"] == pytest.approx(0.25)   # S1 2026-07-05 (0.35 -> 0.25)
     # yaw frozen at the A36 values (operator: "yaw is good where it is")
     assert ov["pursuit_yaw_slew_rps"] == pytest.approx(0.9)
     assert ov["visual_yaw_rate_cap_rps"] == pytest.approx(0.9)

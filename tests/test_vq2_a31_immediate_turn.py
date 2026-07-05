@@ -656,7 +656,8 @@ def test_profile_wiring_a31():
     assert ov["reramp_forward_after_pass"] is True
     # TURN PACKAGE a1 (2026-07-04, run 20260704_173948): slowed again 0.65 -> 0.45. TURN ITERATION
     # (run 20260704_231155): slower again 0.45 -> 0.35 (operator: "fly into the first gate slower").
-    assert ov["forward_accel_mps2"] == 0.35
+    # S1 (2026-07-05 turn audit): 0.35 -> 0.25 (entry still outran the turn authority).
+    assert ov["forward_accel_mps2"] == 0.25
     # FIX 3: orbit-breaker + yaw clamp. (A36 coordinated-turn DEMOTED the guard 1.75 -> 3.0 so it no
     # longer pre-empts the pass-turn -- a rare failsafe.)
     assert ov["orbit_guard_rad"] == 3.0
