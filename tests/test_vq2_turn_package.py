@@ -166,8 +166,8 @@ def test_vq2_profile_ships_the_turn_package():
     # az_err 0.4-0.7 rad), so the caps 3.0 -> 4.0 (operator: "roll more") and forward 0.45 -> 0.35
     # (operator: "fly into the first gate slower"). Yaw FROZEN per operator ("yaw is good").
     assert so.get("forward_accel_mps2") == 0.25            # a1 + S1 2026-07-05 (0.35 -> 0.25)
-    assert so.get("fwd_point_gate_az_rad") == 0.25         # a2
-    assert so.get("image_kaz_mps2_per_rad") == 12.0        # c1
+    assert so.get("fwd_point_gate_az_rad") == 0.40         # a2 + climb fix 1 (0.25 -> 0.40)
+    assert so.get("image_kaz_mps2_per_rad") == 8.0         # c1 reverted by climb fix 2 (12 -> 8)
     assert so.get("image_lat_slew_mps3") == 9.0            # c2
     assert so.get("track_max_loww_ticks") == 4             # b1
     # turn iteration: caps 3.0 -> 4.0 (the cap now binds -> more roll; lateral-first keeps forward

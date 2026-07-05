@@ -547,7 +547,7 @@ def test_profile_flight3_full_turn_package():
     # understeer): az_rad 0.35 -> 0.25 (full forward cut beyond ~14 deg, was 20) and accel
     # 0.65 -> 0.45. TURN ITERATION (run 20260704_231155): accel 0.45 -> 0.35 (slower entry).
     # Pinned in test_vq2_turn_package too.
-    assert cfg.fwd_point_gate_az_rad == 0.25
+    assert cfg.fwd_point_gate_az_rad == 0.40         # climb-approach fix 1 (2026-07-05): 0.25 -> 0.40
     assert cfg.forward_accel_mps2 == 0.25            # S1 (2026-07-05): 0.35 -> 0.25
     # Item 4 (switch lanes) -- TURN ITERATION: image_lat_cap 3.0 -> 4.0 (more roll; the cap was
     # railing through the turn) + total_accel_cap 3.0 -> 4.0 so the lateral cap actually applies.

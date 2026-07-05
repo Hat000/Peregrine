@@ -205,6 +205,18 @@ def vq2_case_c() -> DeployProfile:
         # (~36 -> ~12 ms/tick avg under GPU contention). If the loop still chokes, next lever is
         # moving vp_yaw to a worker thread (async-detect pattern), not cutting it.
         vp_yaw_decimate=15,
+        # R1 worker-thread vp_yaw (residual loop-choke fix, 2026-07-05): vp_yaw's estimate_heading
+        # (VP RANSAC + Manhattan) is the single worst-tick spike (101 ms of the 161 ms worst tick),
+        # and it is the SOLE absolute-yaw anchor on the flown map-free path so it stays ON. Move ONLY
+        # the RANSAC off the control-loop thread onto a daemon worker (racer.vision.async_detect
+        # VpYawWorker, the proven async-detect pattern): the loop submits (frame + capture-time
+        # roll/pitch) latest-wins and consumes the freshest completed HeadingEstimate without blocking;
+        # the branch disambiguation / quality+branch gates / update_yaw noise stay on-thread ->
+        # byte-identical acceptance, only the compute moved. Kills the worst-tick class (the 37.8%
+        # over-budget driver). vp_yaw_decimate=15 stays as the SUBMISSION cadence (submit every 15th
+        # processed vision tick). A ~200 ms-stale heading is fine at ~0.5 deg/s yaw drift, and the
+        # branch snap uses the FRESH on-thread yaw so a stale frame never flips a 90-deg branch.
+        vp_yaw_async=True,
         # floor_height_decimate inert while use_floor_height=False (kept for A-B replay).
         floor_height_decimate=3,
         # --- A26 gate-offset-rate washout fusion -- SUPERSEDED by A28 (2026-07-03) ---
@@ -494,7 +506,14 @@ def vq2_case_c() -> DeployProfile:
                           #   until the gate is roughly centered (sharp turn, not a wide arc). A36 set
                           #   az_rad 0.35 / accel 0.65; the TURN PACKAGE below tightens both (a1/a2:
                           #   0.65 -> 0.45 and 0.35 -> 0.25; run 20260704_173948 understeer).
-                          "fwd_point_gate_az_rad": 0.25,
+                          # CLIMB-APPROACH FIX 1 (2026-07-05, run 211007 diag): 0.25 -> 0.40. The 0.25
+                          #   hard-cut was a LIMIT-CYCLE SUSTAINER: with the gate low-in-frame, the
+                          #   drone's own banking swings the perceived bearing (roll<->psi_osc corr
+                          #   0.76), |az| blows past 0.25, forward fully cuts (corr(|az|,fwd_scale)
+                          #   = -0.92), range stalls at ~4.8m and the gate STAYS low-in-frame ->
+                          #   loop never escapes. 0.40 keeps closure alive through the swing so
+                          #   range shrinks the LOS lever and reaches pass-arm.
+                          "fwd_point_gate_az_rad": 0.40,
                           "fwd_point_gate_full_az_rad": 0.05,
                           # TURN ITERATION (2026-07-04, run 20260704_231155): 0.45 -> 0.35 (operator
                           #   eyes: "fly into the first gate slower"). Under lateral-first this is the
@@ -582,7 +601,16 @@ def vq2_case_c() -> DeployProfile:
                           #     0.6-1.5 (bank <=8 deg); killing the ~2-3 m/s carried tangential drift
                           #     needs ~2-3 m/s^2. k_az=12 delivers 1.5-2.8 there, rails the unchanged
                           #     3.0 cap only past az~17 deg; k_az*b ~ 2.5 vs the unstable A29's ~20.
-                          "image_kaz_mps2_per_rad": 12.0,
+                          #  CLIMB-APPROACH FIX 2 (2026-07-05, run 211007 diag): 12 -> 8 (back to the
+                          #     field default, reverting c1). k_az=12 is the ROLL GAIN feeding the
+                          #     climb-approach limit cycle: with the gate low-in-frame the drone's own
+                          #     bank moves the perceived bearing (roll<->psi_osc corr 0.76, in phase),
+                          #     so the high gain amplifies the swing instead of centering the gate.
+                          #     Roll never saturated (visual cap binds 1% of ticks) -> gain, not
+                          #     authority, is the lever. c1's graze-band drift problem is now owned by
+                          #     the E1/R1 pass-turn (the orbit regime it patched is superseded); WATCH
+                          #     for tangential-drift regression on the gate-0 approach.
+                          "image_kaz_mps2_per_rad": 8.0,
                           #  c2 image_lat_slew 6 -> 9 (above): honest az-ramp bound scales with k_az
                           #     (0.7 rad/s * 12 ~ 8.4); full-scale reversal still >= 0.67 s >= 2x the
                           #     0.21 s yaw lag -- the A31 anti-snap property holds.
