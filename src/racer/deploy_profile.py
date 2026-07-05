@@ -138,9 +138,10 @@ def vq2_case_c() -> DeployProfile:
         genuinely vision-only (P0-a).
       * ``use_ahrs=True`` — own an ESKF AHRS; source R_wb + Euler + body-rates from raw
         HIGHRES_IMU (accel + gyro), since ODOMETRY/ATTITUDE are blocked (GAP #1/#2/#3).
-      * ``use_vp_yaw`` + ``use_gate_bearing_yaw`` + ``use_floor_height`` — pin yaw + z from
-        VISION (no mag / no baro): vanishing-point Manhattan heading, gate-bearing yaw lock to
-        the known active gate, and the floor-plane height channel.
+      * ``use_vp_yaw`` + ``use_gate_bearing_yaw`` — pin yaw from VISION (no mag / no baro):
+        vanishing-point Manhattan heading + gate-bearing yaw lock to the known active gate.
+        (``use_floor_height`` was cut from this profile 2026-07-05: its KF world-z pin is
+        unread by the flown control law — see the flag comment below.)
       * ``use_gate_relative=True`` + ``use_rewind_kf=True`` + ``use_range_channel=True`` — the
         +L gate-relative in-plane fix (per-track map bias cancels), capture-time OOSM rewind,
         and the attitude-independent along-track span range (valuable while the AHRS is cold).
@@ -178,7 +179,16 @@ def vq2_case_c() -> DeployProfile:
         # --- map-free vision yaw + z (no mag / no baro) ---
         use_vp_yaw=True,
         use_gate_bearing_yaw=True,
-        use_floor_height=True,
+        # use_floor_height OFF (loop-choke cut, 2026-07-05): on the flown map-free path
+        # (gates=[], VQ2 blocks TRACK_INFO) the floor-grid z pin is the ONLY KF position
+        # correction, but NOTHING in the flown control law reads KF world-z anymore — the
+        # vertical channel is gate-relative (A28 z_off complementary filter + IMU-vz) and the
+        # pursuit Setpoint carries position_ned=None, so the pin only prettied the LOGGED
+        # position_ned. Replay of runs 20260705_001321/002939: lit-frame acceptance 18-31%
+        # (mostly near-horizon high-std rejects) into an unread state, at ~41 ms/call on the
+        # loop thread every 3rd tick. Pure loop cost -> cut. floor_height_decimate kept
+        # (inert) for byte-compat A-B replay of the old behaviour.
+        use_floor_height=False,
         # --- gate-relative +L position chain ---
         use_gate_relative=True,
         use_rewind_kf=True,
@@ -186,11 +196,16 @@ def vq2_case_c() -> DeployProfile:
         use_inplane_pos_floor=True,
         # --- A17 CV-backstop decimation (frame-starvation fix, 2026-07-01) ---
         # The per-frame vp_yaw (~67 ms VP RANSAC + Manhattan) + floor_height (~37 ms) choked the live
-        # loop to ~10 Hz and starved the video receiver. Decimate them: vp_yaw every 5th tick (yaw
-        # drifts slowly + the gate-bearing-yaw lock pins yaw per accepted detection + the ESKF gyro-
-        # integrates between), floor_height every 3rd (the ONLY dedicated z pin -> keep N tighter).
-        # Default (1) is byte-identical; these are the estimator-safety-study tuned values.
-        vp_yaw_decimate=5,
+        # loop to ~10 Hz and starved the video receiver. Default (1) is byte-identical.
+        # vp_yaw 5 -> 15 (loop-choke cut, 2026-07-05): vp_yaw is the SOLE absolute-yaw anchor on
+        # the flown map-free path (gates=[] kills the gate-bearing-yaw lock), so it stays ON —
+        # but healthy-regime ESKF yaw drift is ~0.4-0.6 deg/s (between-pin innovations ~1.5°,
+        # replay of run 20260705_002939), so a pin every ~0.6-1 s holds yaw within ~5° vs the
+        # pass-turn's 9.7° tolerance and the 35° branch cap. Cuts vp_yaw's loop-thread cost 3x
+        # (~36 -> ~12 ms/tick avg under GPU contention). If the loop still chokes, next lever is
+        # moving vp_yaw to a worker thread (async-detect pattern), not cutting it.
+        vp_yaw_decimate=15,
+        # floor_height_decimate inert while use_floor_height=False (kept for A-B replay).
         floor_height_decimate=3,
         # --- A26 gate-offset-rate washout fusion -- SUPERSEDED by A28 (2026-07-03) ---
         # Was True (2026-07-02). Run 20260703_013748 proved the fusion is a noise/bias injector:

@@ -237,7 +237,11 @@ def test_vq2_case_c_profile_turns_on_the_self_localizing_chain():
     assert cfg.use_given_position is False and cfg.use_given_velocity is False
     # self-estimated attitude + map-free vision yaw/z
     assert cfg.use_ahrs is True
-    assert cfg.use_vp_yaw is True and cfg.use_gate_bearing_yaw is True and cfg.use_floor_height is True
+    assert cfg.use_vp_yaw is True and cfg.use_gate_bearing_yaw is True
+    # floor_height cut from the flown profile 2026-07-05 (loop-choke): its KF world-z pin is
+    # unread by the flown control law (gate-relative vertical since A28). Feature code + its
+    # own tests (test_vision_yaw_wiring / test_vertical_estimator) keep covering the flag ON.
+    assert cfg.use_floor_height is False
     # gate-relative +L chain
     assert cfg.use_gate_relative is True and cfg.use_rewind_kf is True and cfg.use_range_channel is True
     assert cfg.use_vision is True
