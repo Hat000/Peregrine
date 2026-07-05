@@ -35,30 +35,31 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
 - This is a **shared GPU with the recon-map track** — a busy GPU most likely means someone
   else's job is running. Abort and report; do not contend for it.
 
-## 1. Reset to a fresh race (vq2ctl `fly` — canonical, do NOT use computer-use/screenshots)
+## 1. Reset to the WAITING ROOM — do NOT GO yet (do NOT use computer-use/screenshots)
+
+**ORDERING IS LOAD-BEARING (learned the hard way, run 20260705_211007): the race must NOT be
+GO'd until fly_rl is attached and passively waiting.** On that run the old brief used
+`vq2ctl.py fly` (which GOes the race itself) BEFORE launching fly_rl — fly_rl late-joined
+`to_go=-22.7s`, the drone sat idle through ~23s of race clock, and the flight was cut short
+by the race timer (`STALLED` mid-pursuit). Attach FIRST, GO LAST.
 
 ```powershell
-C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe scripts\vq2ctl.py fly
+C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe scripts\vq2ctl.py to-menu
+C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe scripts\vq2ctl.py waiting
+C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe scripts\vq2ctl.py status --probe
 ```
 
-- `fly` (aliased `race`) is the one-stop orchestrator: from ANY sim state (cold, waiting,
-  mid-race, paused, post-race menu) it converges to a freshly-GOne VQ2 TRAINING race and
-  verifies with a passive MAVLink probe. Confirmed present in `scripts/vq2ctl.py` (`cmd_fly`,
-  registered as subcommand `fly`/`race`).
+- Loop the three commands (max 3 passes) until `status --probe` shows the WAITING room with
+  `started=False` — that is the ONE trustworthy fresh-race checkpoint (a post-race main menu
+  keeps streaming the dead race's `started=True`; the waiting room resets it).
+- Do NOT run `vq2ctl.py fly` in this protocol — `fly` GOes the race itself, which recreates
+  the late-join failure above. The GO happens in step 4, AFTER fly_rl is attached.
 - **No computer-use / no screenshots for flight ops** — `vq2ctl.py` drives the sim via
   verified-foreground key-sends + a passive MAVLink probe; that IS the flight tool.
-- **Fresh-race check**: `vq2ctl.py`'s own probe/verify machinery treats `RACE_STATUS.started`
-  as the discriminator (`WAITING` room resets it to `False`; a post-race main menu keeps
-  streaming the dead race's `started=True`). `fly`'s internal `_verify("RACING")` step already
-  requires `to_go_s > -30.0` (rejects a stale/old race clock) — trust its printed
-  `"result": "RACING", "verified": true` JSON. If `verified` is `false`, do NOT proceed to
-  attach fly_rl; re-run `vq2ctl.py status --probe` and inspect before continuing.
-- **Never probe while fly_rl is attached.** `vq2ctl.py probe`/`status --probe`/`fly` (without
-  `--no-verify`) all bind UDP 14550 and will split fly_rl's MAVLink stream once fly_rl has
-  connected. Use `vq2ctl.py fly` ONLY before fly_rl attaches. Once fly_rl is running, if you
-  need to nudge the sim, use pure key-send commands only (`go`, `restart`, `to-menu` — these
-  do not bind the socket) — but for this confirm flight you should not need to touch the sim
-  again after the initial `fly`.
+- **Never probe while fly_rl is attached.** `vq2ctl.py probe`/`status --probe` bind UDP 14550
+  and will split fly_rl's MAVLink stream once fly_rl has connected. Probing is allowed ONLY
+  here in step 1, before fly_rl launches. From step 2 on, sim nudges are pure key-send
+  commands only (`focus`, `go`, `restart`, `to-menu` — these do not bind the socket).
 
 ## 2. Launch fly_rl for the confirm flight
 
@@ -141,19 +142,25 @@ The command in step 2 already pipes through `Tee-Object` to
   don't strictly need `perf_summary.json`, but check for it regardless as your first line of
   evidence per the belt-and-braces intent.
 
-## 4. Wait-for-GO protocol
+## 4. GO protocol (attach-first, GO-last)
 
-- The pilot (this agent) **NEVER starts a race**. `vq2ctl.py fly` in step 1 is the ONLY sim-
-  control action you take, and only BEFORE attaching fly_rl.
-- Launch fly_rl (step 2) and let it reach its passive wait: fly_rl's default posture is
-  `">>> Waiting PASSIVELY for the race GO (no sim-control command will be sent...)"` — this
-  is the submission-safe default (`args.dev_auto_reset` is off by default, and this brief
-  does not pass `--dev-auto-reset`). Since `vq2ctl.py fly` already put the sim into a running,
-  GOne race in step 1, fly_rl should pick up the ALREADY-STARTED race via its GO-detection
-  logic (`wait_fresh_go`) essentially immediately — you do not need to sequence "fly_rl
-  attaches, then something sends GO." If step 1 and step 2 are separated by more than a few
-  seconds such that the race clock is running well ahead, that's fine — `wait_fresh_go` is
-  built for exactly this.
+- Launch fly_rl (step 2) against the `started=False` waiting room from step 1 and let it
+  reach its passive wait: fly_rl's default posture is
+  `">>> Waiting PASSIVELY for the race GO (no sim-control command will be sent...)"` — the
+  submission-safe default (`args.dev_auto_reset` off; this brief does not pass it).
+- Only when fly_rl is visibly in its passive wait, send the GO with pure key-sends (safe
+  while attached — no socket bind):
+
+```powershell
+C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe scripts\vq2ctl.py focus
+C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe scripts\vq2ctl.py go
+```
+
+  `focus` must report `foreground: OK` BEFORE `go` (a `go` without focus misses the sim —
+  known gotcha: a NO_GO timeout after 180s means the Enter never landed, not a stack bug).
+- Verify the GO took from fly_rl's OWN console (it recognizes the race start within a few
+  seconds, `to_go` near 0 — NOT a late-join at -20s). If fly_rl hasn't recognized GO within
+  ~15s, re-run `focus` + `go` (max 2 retries), never probe.
 - Report **ready** (fly_rl attached, connected, armed-and-waiting-for-race-recognition or
   already flying) to the operator (Fengyou). Do not narrate the whole startup log — one line.
 - The operator gives the actual go-ahead to let it fly and WATCHES LIVE.
