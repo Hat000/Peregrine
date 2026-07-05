@@ -1456,6 +1456,33 @@ def _write_nav_estimate_jsonl(records: list, session_dir: "Path | None") -> None
         print(f"  [nav-log] WARNING: failed to write nav_estimate.jsonl: {exc}")
 
 
+def _write_perf_summary_json(result: dict, session_dir: "Path | None") -> None:
+    """Write the already-computed perf/diagnostic numbers to ``<session_dir>/perf_summary.json``.
+
+    This is the durable twin of the ``[loop-rate]`` / ``[vision-timing]`` / ``[async-detect]`` /
+    ``[seeker-diag]`` prints above: if the pilot agent (or the human operator) loses stdout --
+    truncated terminal scrollback, a killed shell, an SSH drop -- the confirm flight's primary
+    evidence would otherwise be gone. Pulls values straight out of ``result`` (no recomputation:
+    every field here was already assembled onto ``result`` by the prints it mirrors). Errors are
+    printed but never re-raised -- a write failure here must NEVER break the flight exit path or
+    the recorder close that follows it (mirrors ``_write_nav_estimate_jsonl``'s contract).
+    """
+    if session_dir is None:
+        return
+    out = Path(session_dir) / "perf_summary.json"
+    try:
+        summary = {k: result[k] for k in (
+            "flight", "final_state", "gate_index", "collisions",
+            "achieved_hz", "worst_work_ms", "loop_over_budget_pct",
+            "async_detect", "vision_step_ms", "vision_worst_tick_ms",
+            "seeker_diag",
+        ) if k in result}
+        out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        print(f"  [perf-summary] wrote -> {out}")
+    except Exception as exc:
+        print(f"  [perf-summary] WARNING: failed to write perf_summary.json: {exc}")
+
+
 def _fly_gate_seeker(client, args, flight_idx: int,
                      session_dir: Path | None, result: dict) -> dict:
     """SLOW GATE-SEEKER deploy loop on the case-C self-localizing stack (--gate-seeker).
@@ -1560,217 +1587,239 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     _obs_age_last_ms = float("nan")
     _n_obs_ticks = 0
 
-    while time.monotonic() < deadline:
-        while time.monotonic() < next_t:
+    # DATA-LOSS GUARD (2026-07-05): the post-loop epilogue below -- the nav-estimate +
+    # perf-summary writers and the verdict prints -- runs in a `finally`, so EVERY exit from
+    # the tick loop (normal break/timeout, uncaught exception, Ctrl-C mid-tick) still writes
+    # the flight evidence. An in-flight exception is re-raised untouched after the epilogue
+    # (never swallowed: fly_once's finally still disarms, main() still closes the recorder);
+    # it is captured only so final_state can carry main()'s existing EXCEPTION/INTERRUPTED
+    # vocabulary into perf_summary.json instead of a misleading TIMEOUT/STALLED.
+    _loop_exc: BaseException | None = None
+    try:
+        while time.monotonic() < deadline:
+            while time.monotonic() < next_t:
+                client.pump()
+                time.sleep(0.001)
             client.pump()
-            time.sleep(0.001)
-        client.pump()
-        next_t = time.monotonic() + tick
-        now = time.monotonic()
-        s  = client.state
-        rs = client.race_status
+            next_t = time.monotonic() + tick
+            now = time.monotonic()
+            s  = client.state
+            rs = client.race_status
 
-        # --- stop conditions (mirror the RL loop) ---
-        st = int(s.sim_time_ns)
-        if st > last_sim_t:
-            last_sim_t, last_adv_w = st, now
-        elif now - last_adv_w > 1.5:
-            print("\n  [gate-seeker] sim_time stalled (race ended) -> stopping.")
-            break
-        if rs and rs.get("finished"):
-            print("\n  [gate-seeker] RACE_STATUS finished -> stopping.")
-            final_state = "FINISHED"
-            break
-        n_hard = sum(1 for c in client.collisions[n_coll0:] if c["threat_level"] >= 2)
-        if n_hard and not args.ignore_collisions:
-            print("\n  [gate-seeker] HARD COLLISION -> abort.")
-            final_state = "CRASH"
-            break
-        if n_hard > n_hard_seen:      # OBSERVE mode: log each new hard collision but keep flying + recording
-            print(f"  [gate-seeker] COLLISION threat>=2 (#{n_hard}) @ t={s.sim_time_ns/1e9:.2f}s "
-                  f"pos={np.asarray(s.position_ned)} gi={gate_index} -> --ignore-collisions, flying on")
-            n_hard_seen = n_hard
+            # --- stop conditions (mirror the RL loop) ---
+            st = int(s.sim_time_ns)
+            if st > last_sim_t:
+                last_sim_t, last_adv_w = st, now
+            elif now - last_adv_w > 1.5:
+                print("\n  [gate-seeker] sim_time stalled (race ended) -> stopping.")
+                break
+            if rs and rs.get("finished"):
+                print("\n  [gate-seeker] RACE_STATUS finished -> stopping.")
+                final_state = "FINISHED"
+                break
+            n_hard = sum(1 for c in client.collisions[n_coll0:] if c["threat_level"] >= 2)
+            if n_hard and not args.ignore_collisions:
+                print("\n  [gate-seeker] HARD COLLISION -> abort.")
+                final_state = "CRASH"
+                break
+            if n_hard > n_hard_seen:      # OBSERVE mode: log each new hard collision but keep flying + recording
+                print(f"  [gate-seeker] COLLISION threat>=2 (#{n_hard}) @ t={s.sim_time_ns/1e9:.2f}s "
+                      f"pos={np.asarray(s.position_ned)} gi={gate_index} -> --ignore-collisions, flying on")
+                n_hard_seen = n_hard
 
-        # --- sim-reset guard (epoch discontinuity -> cut commands) ---
-        jump = (float(np.linalg.norm(np.asarray(s.position_ned) - prev_pos))
-                if (s.position_ned is not None and prev_pos is not None) else 0.0)
-        if int(s.reset_counter) != reset_counter0 or jump > 10.0:
-            print("\n  [gate-seeker] SIM RESET DETECTED -> cutting commands.")
-            final_state = "SIM_RESET"
-            break
-        if s.position_ned is not None:
-            prev_pos = np.asarray(s.position_ned, dtype=np.float64).copy()
+            # --- sim-reset guard (epoch discontinuity -> cut commands) ---
+            jump = (float(np.linalg.norm(np.asarray(s.position_ned) - prev_pos))
+                    if (s.position_ned is not None and prev_pos is not None) else 0.0)
+            if int(s.reset_counter) != reset_counter0 or jump > 10.0:
+                print("\n  [gate-seeker] SIM RESET DETECTED -> cutting commands.")
+                final_state = "SIM_RESET"
+                break
+            if s.position_ned is not None:
+                prev_pos = np.asarray(s.position_ned, dtype=np.float64).copy()
 
-        # --- active gate from RACE_STATUS (authoritative ordering signal) ---
-        gi = (int(rs["active_gate_index"])
-              if rs and rs.get("active_gate_index") is not None else gate_index)
-        if gi > gate_index:
-            print(f"\n  [gate-seeker] gate {gate_index} PASSED -> targeting {gi}", flush=True)
-        # the wire index drives the navigator's active-gate yaw lock + the advance bookkeeping; the
-        # MAP-FREE seeker steers off the SEEN gate, so it does NOT need the gate to exist in any map.
-        gate_index = max(gi, 0)
-        is_final = n_gates > 0 and gate_index >= n_gates - 1
+            # --- active gate from RACE_STATUS (authoritative ordering signal) ---
+            gi = (int(rs["active_gate_index"])
+                  if rs and rs.get("active_gate_index") is not None else gate_index)
+            if gi > gate_index:
+                print(f"\n  [gate-seeker] gate {gate_index} PASSED -> targeting {gi}", flush=True)
+            # the wire index drives the navigator's active-gate yaw lock + the advance bookkeeping; the
+            # MAP-FREE seeker steers off the SEEN gate, so it does NOT need the gate to exist in any map.
+            gate_index = max(gi, 0)
+            is_final = n_gates > 0 and gate_index >= n_gates - 1
 
-        # --- perception: read the freshest frame the video thread published (non-blocking) ---
-        # The video thread owns the single UDP receiver and stashes the latest reassembled Frame
-        # in client._latest_frame; we consume it here, once per new frame_id (the navigator's
-        # _maybe_run_vision is itself frame_id-idempotent, so re-feeding the same frame is a no-op).
-        # ASYNC-DETECT (A20): consume the worker's latest COMPLETED (frame, detections) snapshot
-        # instead — nav/seeker hold the AsyncDetectorProxy, so their detect_cached on THIS frame_id
-        # serves the published observations without ever touching the model. Feeding only the
-        # worker's own frame guarantees the id matches; a not-yet-detected fresher camera frame is
-        # deliberately NOT consumed (its detect would block/miss). None until the first detect
-        # completes -> the existing no-frame hold/settle regimes cover startup.
-        if vision_worker is not None:
-            _vres = vision_worker.latest()
-            frame: Frame | None = _vres.frame if _vres is not None else None
-            if _vres is not None:
-                _obs_age_last_ms = _vres.age_ms()
-                _obs_age_sum_ms += _obs_age_last_ms
-                _n_obs_ticks += 1
-                if _obs_age_last_ms > _obs_age_max_ms:
-                    _obs_age_max_ms = _obs_age_last_ms
-        else:
-            frame = getattr(client, "_latest_frame", None)
-
-        # --- estimate (case-C self-localizing) then command the MAP-FREE visual servo ---
-        # The seeker chases the gate the CAMERA SEES (command_visual): it runs its own detect+PnP on
-        # the live frame, steers to center + fly through the SEEN opening, and HOLDS (no blind slew)
-        # until the estimator records its first vision fix (launch anchor) or when no gate is detected.
-        # NO absolute map / NO absolute self-position drives steering (the 2026-06-29 blind-launch fix).
-        nav_state = nav.update(s, frame)
-        cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
-        client.send_command(cmd)
-
-        # --- nav-estimate log: append one dict to the in-memory buffer (no I/O) ---
-        if session_dir is not None:
-            try:
-                _nav_log.append(_nav_estimate_record(
-                    nav_state, nav, s, cmd, gate_index, n_ticks, seeker=seeker))
-            except Exception:
-                _nav_log_errors += 1
-
-        # work time = everything from the post-wait `now` through command send (no sleep)
-        work_ms = (time.monotonic() - now) * 1e3
-        n_ticks += 1
-        if work_ms > worst_work_ms:
-            worst_work_ms = work_ms
-        if work_ms > tick * 1e3:
-            n_over_budget += 1
-
-        if now - last_p >= 1.0:
-            p = nav_state.position_ned
-            br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
-            # async-detect live triple (loop Hz / vision fps / obs age): the operator's one-glance
-            # "loop 30 Hz, vision 4 Hz, obs age ~250 ms" readout. Empty on the sync path so the
-            # OFF-path status line is byte-identical.
+            # --- perception: read the freshest frame the video thread published (non-blocking) ---
+            # The video thread owns the single UDP receiver and stashes the latest reassembled Frame
+            # in client._latest_frame; we consume it here, once per new frame_id (the navigator's
+            # _maybe_run_vision is itself frame_id-idempotent, so re-feeding the same frame is a no-op).
+            # ASYNC-DETECT (A20): consume the worker's latest COMPLETED (frame, detections) snapshot
+            # instead — nav/seeker hold the AsyncDetectorProxy, so their detect_cached on THIS frame_id
+            # serves the published observations without ever touching the model. Feeding only the
+            # worker's own frame guarantees the id matches; a not-yet-detected fresher camera frame is
+            # deliberately NOT consumed (its detect would block/miss). None until the first detect
+            # completes -> the existing no-frame hold/settle regimes cover startup.
             if vision_worker is not None:
-                _hz_live = (n_ticks - _last_p_ticks) / max(now - _last_p_t, 1e-6)
-                _age_s = f"{_obs_age_last_ms:4.0f}" if _obs_age_last_ms == _obs_age_last_ms else "  --"
-                async_s = f"hz={_hz_live:4.1f} vfps={vision_worker.fps():4.1f} age={_age_s}ms "
+                _vres = vision_worker.latest()
+                frame: Frame | None = _vres.frame if _vres is not None else None
+                if _vres is not None:
+                    _obs_age_last_ms = _vres.age_ms()
+                    _obs_age_sum_ms += _obs_age_last_ms
+                    _n_obs_ticks += 1
+                    if _obs_age_last_ms > _obs_age_max_ms:
+                        _obs_age_max_ms = _obs_age_last_ms
             else:
-                async_s = ""
-            print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} "
-                  f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) "
-                  f"thr={cmd.thrust:.3f} rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
-                  f"{async_s}"
-                  f"tsv={nav_state.time_since_vision_update_s:.2f}s   ",
-                  end="\r", flush=True)
-            last_p = now
-            _last_p_t, _last_p_ticks = now, n_ticks
+                frame = getattr(client, "_latest_frame", None)
 
-    if final_state == "IDLE":
-        final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
-        print(f"\n  ({final_state.lower()})")
+            # --- estimate (case-C self-localizing) then command the MAP-FREE visual servo ---
+            # The seeker chases the gate the CAMERA SEES (command_visual): it runs its own detect+PnP on
+            # the live frame, steers to center + fly through the SEEN opening, and HOLDS (no blind slew)
+            # until the estimator records its first vision fix (launch anchor) or when no gate is detected.
+            # NO absolute map / NO absolute self-position drives steering (the 2026-06-29 blind-launch fix).
+            nav_state = nav.update(s, frame)
+            cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
+            client.send_command(cmd)
 
-    # --- nav-estimate log: single write after ALL exit paths -------------------
-    # Written here (not inside each break) so every break/timeout/crash path is
-    # covered in one place.  _write_nav_estimate_jsonl swallows errors internally.
-    _write_nav_estimate_jsonl(_nav_log, session_dir)
-    if _nav_log_errors:
-        print(f"  [nav-log] WARNING: {_nav_log_errors} per-tick record errors (logging bug, not flight bug)")
+            # --- nav-estimate log: append one dict to the in-memory buffer (no I/O) ---
+            if session_dir is not None:
+                try:
+                    _nav_log.append(_nav_estimate_record(
+                        nav_state, nav, s, cmd, gate_index, n_ticks, seeker=seeker))
+                except Exception:
+                    _nav_log_errors += 1
 
-    # --- loop-rate verdict: did we actually realize the 30 Hz loop? ---------------
-    elapsed = max(time.monotonic() - loop_t0, 1e-6)
-    achieved_hz = n_ticks / elapsed
-    over_pct = 100.0 * n_over_budget / max(n_ticks, 1)
-    rate_ok = achieved_hz >= 0.9 * args.rate and over_pct < 5.0
-    print(f"  [loop-rate] {achieved_hz:5.1f} Hz over {n_ticks} ticks "
-          f"(target {args.rate:g}); worst work {worst_work_ms:.0f} ms; "
-          f"{over_pct:.1f}% ticks over budget -> {'OK' if rate_ok else 'CHOKED'}")
-    result["achieved_hz"]       = round(achieved_hz, 2)
-    result["worst_work_ms"]     = round(worst_work_ms, 1)
-    result["loop_over_budget_pct"] = round(over_pct, 1)
+            # work time = everything from the post-wait `now` through command send (no sleep)
+            work_ms = (time.monotonic() - now) * 1e3
+            n_ticks += 1
+            if work_ms > worst_work_ms:
+                worst_work_ms = work_ms
+            if work_ms > tick * 1e3:
+                n_over_budget += 1
 
-    # --- async-detect verdict: the decoupling triple (loop Hz above / vision fps / obs age) -------
-    # The REAL detect latency lives here (the worker timed every model call); [vision-timing]'s
-    # 'detect' bucket only times the control loop's cache hits in async mode. Stop the worker
-    # FIRST so its stats are final (daemon thread -> a GPU-stalled join miss cannot hang exit).
-    if vision_worker is not None:
-        vision_worker.stop()
-        _age_mean = _obs_age_sum_ms / max(_n_obs_ticks, 1)
-        print(f"  [async-detect] vision {vision_worker.fps():.1f} fps "
-              f"(n={vision_worker.n_detects}, detect mean={vision_worker.mean_detect_ms():.0f}ms "
-              f"max={vision_worker.max_detect_ms:.0f}ms); obs age mean={_age_mean:.0f}ms "
-              f"max={_obs_age_max_ms:.0f}ms over {_n_obs_ticks} consumed ticks; "
-              f"errors={vision_worker.n_errors}"
-              + (f" last={vision_worker.last_error}" if vision_worker.n_errors else ""))
-        result["async_detect"] = {
-            "vision_fps": round(vision_worker.fps(), 2),
-            "n_detects": vision_worker.n_detects,
-            "detect_mean_ms": round(vision_worker.mean_detect_ms(), 1),
-            "detect_max_ms": round(vision_worker.max_detect_ms, 1),
-            "obs_age_mean_ms": round(_age_mean, 1),
-            "obs_age_max_ms": round(_obs_age_max_ms, 1),
-            "worker_errors": vision_worker.n_errors,
-        }
+            if now - last_p >= 1.0:
+                p = nav_state.position_ned
+                br = cmd.body_rate if cmd.body_rate is not None else np.zeros(3)
+                # async-detect live triple (loop Hz / vision fps / obs age): the operator's one-glance
+                # "loop 30 Hz, vision 4 Hz, obs age ~250 ms" readout. Empty on the sync path so the
+                # OFF-path status line is byte-identical.
+                if vision_worker is not None:
+                    _hz_live = (n_ticks - _last_p_ticks) / max(now - _last_p_t, 1e-6)
+                    _age_s = f"{_obs_age_last_ms:4.0f}" if _obs_age_last_ms == _obs_age_last_ms else "  --"
+                    async_s = f"hz={_hz_live:4.1f} vfps={vision_worker.fps():4.1f} age={_age_s}ms "
+                else:
+                    async_s = ""
+                print(f"  t={s.sim_time_ns/1e9:7.2f}s gi={gate_index} "
+                      f"pos=({p[0]:+6.1f},{p[1]:+6.1f},{p[2]:+6.1f}) "
+                      f"thr={cmd.thrust:.3f} rate=[{br[0]:+.2f},{br[1]:+.2f},{br[2]:+.2f}] "
+                      f"{async_s}"
+                      f"tsv={nav_state.time_since_vision_update_s:.2f}s   ",
+                      end="\r", flush=True)
+                last_p = now
+                _last_p_t, _last_p_ticks = now, n_ticks
 
-    # --- vision-timing: per-STEP breakdown of the per-frame vision pipeline (logging only) --------
-    # Pins WHICH _maybe_run_vision sub-step (detect / vp_yaw [VP RANSAC + Manhattan lines] /
-    # floor_height / pnp) is driving worst_work_ms above, so the next tuning pass targets the right
-    # step instead of guessing. Reads the Navigator's in-memory vision_step_ms dict (same
-    # accumulate-in-memory / print-once-at-exit pattern as [seeker-diag]); swallowed if absent/empty
-    # so an older Navigator (or a run with no vision) doesn't break this print.
-    step_ms = getattr(nav, "vision_step_ms", None)
-    if isinstance(step_ms, dict) and any(v.get("count", 0) for v in step_ms.values()):
-        parts = []
-        for name, v in step_ms.items():
-            n = int(v.get("count", 0))
-            if n == 0:
-                continue
-            mean_ms = v.get("total_ms", 0.0) / n
-            parts.append(f"{name}: mean={mean_ms:.1f}ms max={v.get('max_ms', 0.0):.1f}ms n={n}")
-        worst = getattr(nav, "_vision_worst_tick_ms", None) or {}
-        worst_total = sum(worst.values())
-        worst_str = ", ".join(f"{k}={v:.1f}ms" for k, v in sorted(worst.items(),
-                                                                    key=lambda kv: -kv[1]))
-        print(f"  [vision-timing] " + "  ".join(parts))
-        print(f"  [vision-timing] worst tick sum={worst_total:.1f}ms breakdown: {worst_str}")
-        result["vision_step_ms"] = {k: dict(v) for k, v in step_ms.items()}
-        result["vision_worst_tick_ms"] = dict(worst)
+    except BaseException as exc:
+        _loop_exc = exc   # captured ONLY to label the evidence; re-raised untouched
+        raise
+    finally:
+        if _loop_exc is not None:
+            # main()'s existing vocabulary for these paths -- no new states invented.
+            final_state = ("INTERRUPTED" if isinstance(_loop_exc, KeyboardInterrupt)
+                           else "EXCEPTION")
+        elif final_state == "IDLE":
+            final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
+            print(f"\n  ({final_state.lower()})")
 
-    # --- A13 seeker diagnostics: pose-None breakdown + hold-last-demand bridge coverage -----------
-    # Logging only (no behaviour change): the seeker tallies per-tick command regimes in memory
-    # (no per-tick I/O, mirrors the buffered nav_estimate.jsonl pattern); we emit a single summary
-    # line here at loop exit + stash the counts in result. This tells the next fly WHETHER/WHICH gate
-    # is the dominant pose-gap source (track-continuity vs valid-poses-empty) so A14 can relax it with
-    # data, and whether the hold-last-demand bridge actually made the per-tick command continuous.
-    dc = getattr(seeker, "diag_counts", None)
-    if isinstance(dc, dict) and dc:
-        none_tot = max(int(dc.get("none_total", 0)), 0)
-        cmd_tot = int(dc.get("pursuit", 0)) + none_tot
-        bridged_pct = 100.0 * int(dc.get("bridged", 0)) / max(none_tot, 1)
-        print(f"  [seeker-diag] cmds={cmd_tot} pursuit={dc.get('pursuit', 0)} "
-              f"none={none_tot} (valid_empty={dc.get('none_valid_poses_empty', 0)} "
-              f"continuity={dc.get('none_continuity_reject', 0)} "
-              f"first_acq={dc.get('none_first_acq_reject', 0)} other={dc.get('none_other', 0)}) "
-              f"-> bridged={dc.get('bridged', 0)} ({bridged_pct:.0f}% of none) "
-              f"held_legacy={dc.get('held_legacy', 0)}")
-        result["seeker_diag"] = dict(dc)
+        # --- nav-estimate log: single write after ALL exit paths -------------------
+        # Written here (not inside each break) so every break/timeout/crash path is
+        # covered in one place.  _write_nav_estimate_jsonl swallows errors internally.
+        _write_nav_estimate_jsonl(_nav_log, session_dir)
+        if _nav_log_errors:
+            print(f"  [nav-log] WARNING: {_nav_log_errors} per-tick record errors (logging bug, not flight bug)")
 
-    result["final_state"] = final_state
-    result["gate_index"]  = gate_index
-    result["collisions"]  = len(client.collisions) - n_coll0
+        # --- loop-rate verdict: did we actually realize the 30 Hz loop? ---------------
+        elapsed = max(time.monotonic() - loop_t0, 1e-6)
+        achieved_hz = n_ticks / elapsed
+        over_pct = 100.0 * n_over_budget / max(n_ticks, 1)
+        rate_ok = achieved_hz >= 0.9 * args.rate and over_pct < 5.0
+        print(f"  [loop-rate] {achieved_hz:5.1f} Hz over {n_ticks} ticks "
+              f"(target {args.rate:g}); worst work {worst_work_ms:.0f} ms; "
+              f"{over_pct:.1f}% ticks over budget -> {'OK' if rate_ok else 'CHOKED'}")
+        result["achieved_hz"]       = round(achieved_hz, 2)
+        result["worst_work_ms"]     = round(worst_work_ms, 1)
+        result["loop_over_budget_pct"] = round(over_pct, 1)
+
+        # --- async-detect verdict: the decoupling triple (loop Hz above / vision fps / obs age) -------
+        # The REAL detect latency lives here (the worker timed every model call); [vision-timing]'s
+        # 'detect' bucket only times the control loop's cache hits in async mode. Stop the worker
+        # FIRST so its stats are final (daemon thread -> a GPU-stalled join miss cannot hang exit).
+        if vision_worker is not None:
+            vision_worker.stop()
+            _age_mean = _obs_age_sum_ms / max(_n_obs_ticks, 1)
+            print(f"  [async-detect] vision {vision_worker.fps():.1f} fps "
+                  f"(n={vision_worker.n_detects}, detect mean={vision_worker.mean_detect_ms():.0f}ms "
+                  f"max={vision_worker.max_detect_ms:.0f}ms); obs age mean={_age_mean:.0f}ms "
+                  f"max={_obs_age_max_ms:.0f}ms over {_n_obs_ticks} consumed ticks; "
+                  f"errors={vision_worker.n_errors}"
+                  + (f" last={vision_worker.last_error}" if vision_worker.n_errors else ""))
+            result["async_detect"] = {
+                "vision_fps": round(vision_worker.fps(), 2),
+                "n_detects": vision_worker.n_detects,
+                "detect_mean_ms": round(vision_worker.mean_detect_ms(), 1),
+                "detect_max_ms": round(vision_worker.max_detect_ms, 1),
+                "obs_age_mean_ms": round(_age_mean, 1),
+                "obs_age_max_ms": round(_obs_age_max_ms, 1),
+                "worker_errors": vision_worker.n_errors,
+            }
+
+        # --- vision-timing: per-STEP breakdown of the per-frame vision pipeline (logging only) --------
+        # Pins WHICH _maybe_run_vision sub-step (detect / vp_yaw [VP RANSAC + Manhattan lines] /
+        # floor_height / pnp) is driving worst_work_ms above, so the next tuning pass targets the right
+        # step instead of guessing. Reads the Navigator's in-memory vision_step_ms dict (same
+        # accumulate-in-memory / print-once-at-exit pattern as [seeker-diag]); swallowed if absent/empty
+        # so an older Navigator (or a run with no vision) doesn't break this print.
+        step_ms = getattr(nav, "vision_step_ms", None)
+        if isinstance(step_ms, dict) and any(v.get("count", 0) for v in step_ms.values()):
+            parts = []
+            for name, v in step_ms.items():
+                n = int(v.get("count", 0))
+                if n == 0:
+                    continue
+                mean_ms = v.get("total_ms", 0.0) / n
+                parts.append(f"{name}: mean={mean_ms:.1f}ms max={v.get('max_ms', 0.0):.1f}ms n={n}")
+            worst = getattr(nav, "_vision_worst_tick_ms", None) or {}
+            worst_total = sum(worst.values())
+            worst_str = ", ".join(f"{k}={v:.1f}ms" for k, v in sorted(worst.items(),
+                                                                        key=lambda kv: -kv[1]))
+            print(f"  [vision-timing] " + "  ".join(parts))
+            print(f"  [vision-timing] worst tick sum={worst_total:.1f}ms breakdown: {worst_str}")
+            result["vision_step_ms"] = {k: dict(v) for k, v in step_ms.items()}
+            result["vision_worst_tick_ms"] = dict(worst)
+
+        # --- A13 seeker diagnostics: pose-None breakdown + hold-last-demand bridge coverage -----------
+        # Logging only (no behaviour change): the seeker tallies per-tick command regimes in memory
+        # (no per-tick I/O, mirrors the buffered nav_estimate.jsonl pattern); we emit a single summary
+        # line here at loop exit + stash the counts in result. This tells the next fly WHETHER/WHICH gate
+        # is the dominant pose-gap source (track-continuity vs valid-poses-empty) so A14 can relax it with
+        # data, and whether the hold-last-demand bridge actually made the per-tick command continuous.
+        dc = getattr(seeker, "diag_counts", None)
+        if isinstance(dc, dict) and dc:
+            none_tot = max(int(dc.get("none_total", 0)), 0)
+            cmd_tot = int(dc.get("pursuit", 0)) + none_tot
+            bridged_pct = 100.0 * int(dc.get("bridged", 0)) / max(none_tot, 1)
+            print(f"  [seeker-diag] cmds={cmd_tot} pursuit={dc.get('pursuit', 0)} "
+                  f"none={none_tot} (valid_empty={dc.get('none_valid_poses_empty', 0)} "
+                  f"continuity={dc.get('none_continuity_reject', 0)} "
+                  f"first_acq={dc.get('none_first_acq_reject', 0)} other={dc.get('none_other', 0)}) "
+                  f"-> bridged={dc.get('bridged', 0)} ({bridged_pct:.0f}% of none) "
+                  f"held_legacy={dc.get('held_legacy', 0)}")
+            result["seeker_diag"] = dict(dc)
+
+        result["final_state"] = final_state
+        result["gate_index"]  = gate_index
+        result["collisions"]  = len(client.collisions) - n_coll0
+
+        # --- perf_summary.json: durable copy of the [loop-rate]/[vision-timing]/[async-detect]/
+        # [seeker-diag] prints above, in case stdout is lost (see _write_perf_summary_json docstring).
+        _write_perf_summary_json(result, session_dir)
+
     return result
 
 
