@@ -41,6 +41,11 @@ REWARD=${REWARD:-a}
 A_BODY=${A_BODY:-0}
 ALGO=${ALGO:-ppo}
 SEED=${SEED:-0}
+ENT_WEIGHT=${ENT_WEIGHT:-0.01}  # PPO/APPO entropy bonus coeff (diffaero default). 2026-07-05: the
+                                # curr_a_s0b pilot's multi_gate stage drove the tanh-squashed log_std
+                                # (network/agents.py LOG_STD_MIN=-5) into saturation by ~80% through its
+                                # 2000-update budget -- entropy (and success_rate/n_passed_gates) then
+                                # plateaued flat for the rest of the run. Override to slow the collapse.
 TRAIN=/scratch/network/fl3689/peregrine_repo/rl/peregrine_train_inc8.py
 TBTRACE=/scratch/network/fl3689/peregrine_repo/rl/inc8_tb_trace.py
 CURR=/scratch/network/fl3689/peregrine_repo/rl/vq2_curriculum.py
@@ -56,7 +61,7 @@ BASE=(
   +dynamics.dr=true +dynamics.dr_aero=true +dynamics.dr_mixer=true
   +dynamics.dr_force_bias=true +dynamics.dr_latency_min_steps=1 +dynamics.dr_latency_max_steps=3
   dynamics.controller.max_normed_thrust=3.765
-  algo=${ALGO} headless=True device=0
+  algo=${ALGO} algo.entropy_weight=${ENT_WEIGHT} headless=True device=0
 )
 case "${REWARD}" in
   a) REWARD_OV=( ) ;;
@@ -83,16 +88,23 @@ for STAGE in ${STAGES}; do
     hydra.run.dir=${RUNDIR} \
     n_envs=${NENVS} n_updates=${NUPD} save_freq=50 log_freq=10 \
     seed=${SEED} runname=${RUNNAME} ${EXTRA:-}
-  echo "STAGE_${STAGE}_RC=$?"
+  STAGE_RC=$?
+  echo "STAGE_${STAGE}_RC=${STAGE_RC}"
 
   RUNDECOR=$(ls -dt ${RUNDIR}/*${RUNNAME}__* 2>/dev/null | head -1)
   RUN=${RUNDECOR:-$RUNDIR}
   TRACE_LOG=/scratch/network/fl3689/peregrine_vq2_curric${RUN_SUFFIX}_${STAGE}_trace.txt
   python ${TBTRACE} "$RUN" --stride-updates 100 | tee ${TRACE_LOG}
-  PREV_CKPT="${RUN}/checkpoints"
+  PREV_CKPT="${RUNDIR}/checkpoints"          # checkpoints save as a SIBLING of the hydra-decorated
+                                              # ${RUN} dir, not inside it -- ${RUN}/checkpoints never
+                                              # exists (2026-07-04: crashed single_gate/blackout_pass/
+                                              # multi_gate on FileNotFoundError, hover unaffected since
+                                              # stage 1 never reads PREV_CKPT).
 
   # FLIGHTCHECK: stop the ladder if this stage did not fly (single-gate stages pass gate-0; the lap
-  # stage needs success). success_rate<0.005 AND n_passed_gates<0.1 => stalled.
+  # stage needs success). success_rate<0.005 AND n_passed_gates<0.1 => stalled. A nonzero STAGE_RC
+  # (crash) also stops the ladder -- a crashed stage has no valid checkpoint for the next stage to
+  # warm-start from, so continuing would just cascade the same failure into every remaining stage.
   VERDICT=$(awk '/FLIGHTCHECK/ {
       for (i=1;i<=NF;i++) {
         if ($i ~ /^success_rate_max=/)   { split($i,a,"="); sr=a[2]+0 }
@@ -101,9 +113,9 @@ for STAGE in ${STAGES}; do
       if (sr < 0.005 && npg < 0.1) print "FAILED"; else print "FLEW";
     }' ${TRACE_LOG})
   echo "FLIGHTCHECK_VERDICT[${STAGE}]=${VERDICT:-UNKNOWN}"
-  if [ "${VERDICT}" = "FAILED" ]; then
-    echo "🚩 CURRICULUM STALLED at stage=${STAGE} -- not advancing. REPORT the trace; consider RW_TC"
-    echo "   sweep / a longer stage budget / the DAgger bootstrap (spec T3.4) before continuing."
+  if [ "${STAGE_RC}" != "0" ] || [ "${VERDICT}" != "FLEW" ]; then
+    echo "🚩 CURRICULUM STALLED at stage=${STAGE} (RC=${STAGE_RC}, verdict=${VERDICT:-UNKNOWN}) -- not advancing."
+    echo "   REPORT the trace; consider RW_TC sweep / a longer stage budget / the DAgger bootstrap (spec T3.4)."
     break
   fi
 done

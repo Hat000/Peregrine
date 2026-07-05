@@ -63,6 +63,9 @@ REWARD=${REWARD:-a}
 A_BODY=${A_BODY:-0}
 ALGO=${ALGO:-ppo}         # appo = privileged asymmetric critic (wired on this branch, 0392b64)
 STAGE=${STAGE:-multi_gate}
+ENT_WEIGHT=${ENT_WEIGHT:-0.01}  # PPO/APPO entropy bonus coeff (diffaero default). See
+                                # peregrine_vq2_curriculum.sbatch header for the 2026-07-05 log_std-
+                                # saturation finding this knob is for.
 TRAIN=/scratch/network/fl3689/peregrine_repo/rl/peregrine_train_inc8.py
 TBTRACE=/scratch/network/fl3689/peregrine_repo/rl/inc8_tb_trace.py
 CURR=/scratch/network/fl3689/peregrine_repo/rl/vq2_curriculum.py
@@ -81,7 +84,7 @@ BASE=(
   +dynamics.dr=true +dynamics.dr_aero=true +dynamics.dr_mixer=true
   +dynamics.dr_force_bias=true +dynamics.dr_latency_min_steps=1 +dynamics.dr_latency_max_steps=3
   dynamics.controller.max_normed_thrust=3.765
-  algo=${ALGO} headless=True device=0
+  algo=${ALGO} algo.entropy_weight=${ENT_WEIGHT} headless=True device=0
 )
 
 # REWARD-FREEZE ARMS (Fengyou owns the freeze; presented as toggles -- spec T3.3):
