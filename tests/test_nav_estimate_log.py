@@ -33,6 +33,7 @@ EXPECTED_KEYS = {
     "sim_time_ns",
     "tick_index",
     "gate_index",
+    "t_mono_ns",        # Q3 (2026-07-05): per-tick wall-clock stamp -> true tick-interval distribution
     "ahrs_quat_wxyz",
     "roll_rad",
     "pitch_rad",

@@ -193,6 +193,158 @@ class AsyncDetectWorker:
         return None
 
 
+@dataclass(frozen=True)
+class VpYawResult:
+    """One completed vanishing-point heading pass: the frame_id it ran on + the HeadingEstimate
+    (or None when the CV found no usable VP) + the roll/pitch used + timing.
+
+    Immutable + atomically swapped into the worker's single slot (mirrors DetectResult). The
+    ``estimate`` is whatever ``compute_fn`` returned — a ``racer.vision.heading_vp.HeadingEstimate``
+    (itself frozen) or ``None`` — carried verbatim so the loop-thread consumer applies the SAME
+    acceptance gates / branch disambiguation / update_yaw noise the synchronous path used (only the
+    RANSAC compute moved off-thread, nothing else). ``roll``/``pitch`` are the gravity-known tilt at
+    CAPTURE (submit time) that back-projected the VP pixels — logged for provenance, not re-used."""
+
+    frame_id: object
+    estimate: object            # HeadingEstimate | None (the compute_fn output, carried verbatim)
+    roll: float
+    pitch: float
+    t_done_monotonic: float
+    compute_ms: float
+
+
+class VpYawWorker:
+    """ONE vanishing-point-heading estimator, ONE daemon thread, ONE latest-wins result slot.
+
+    THE PROBLEM (residual loop-choke, 2026-07-05): on the flown map-free path ``vp_yaw`` is the SOLE
+    absolute-yaw anchor, and its ``estimate_heading`` VP-RANSAC + Manhattan-line extraction costs
+    ~30-100 ms ON the control-loop thread — the single worst-tick spike (161 ms tick = 101 ms
+    vp_yaw). ``vp_yaw_decimate=15`` cut its FREQUENCY but not its per-call cost, so it still spikes
+    the tick it runs on.
+
+    THE FIX (this worker): run the VP compute CONTINUOUSLY on a daemon thread, exactly like
+    :class:`AsyncDetectWorker`. The control loop SUBMITS ``(frame, roll, pitch)`` (latest-wins:
+    a fresh submit overwrites an unconsumed one, so the worker always runs the FRESHEST frame and
+    never builds a backlog) and, on a later tick, CONSUMES the freshest COMPLETED
+    :class:`VpYawResult` WITHOUT blocking. The loop thread then does the branch disambiguation
+    (against the CURRENT gyro-propagated yaw estimate — fresh, on-thread) + ``ESKFAHRS.update_yaw``
+    + attitude-cache refresh, so the acceptance gates, quality threshold, branch cap, and
+    update_yaw noise are BYTE-IDENTICAL to the synchronous path. Only the RANSAC moved.
+
+    WHY A ONE-FRAME-STALE MEASUREMENT IS FINE: yaw drifts ~0.5 deg/s in healthy flight, so a heading
+    computed from a frame up to ~200 ms old carries ~0.1 deg of extra error — negligible next to the
+    ~5 deg VP noise. Critically the branch snap uses the FRESH on-thread yaw estimate, so a stale
+    frame can never cause a silent 90-deg branch flip (the disambiguation is done at APPLY time, not
+    compute time). This mirrors the async-detect OOSM rationale (a stale-but-timestamped observation
+    is the intended design).
+
+    ``compute_fn(frame_bgr, roll, pitch) -> HeadingEstimate | None`` is injected so the worker stays
+    generic AND so a test monkeypatch of ``racer.navigator.estimate_heading`` is honoured: the
+    Navigator builds ``compute_fn`` as a small closure that looks the module-global up at CALL time.
+
+    Stats (``n_computes`` / ``total_compute_ms`` / ``max_compute_ms`` / ``n_errors``) are plain
+    ints/floats written only by the worker thread and read by the control loop (GIL-safe for the
+    logging they feed; mirrors AsyncDetectWorker)."""
+
+    def __init__(self, compute_fn, *, poll_s: float = 0.002, name: str = "vp-yaw"):
+        self._compute_fn = compute_fn
+        self._poll_s = float(poll_s)
+        self._lock = threading.Lock()
+        # -- submission slot (loop writes, worker drains; latest-wins so no backlog) --
+        self._pending: tuple | None = None   # (frame_id, image_bgr, roll, pitch) or None
+        self._pending_event = threading.Event()
+        # -- result slot (worker writes, loop reads; latest-wins single slot) --
+        self._latest: VpYawResult | None = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._t_start: float | None = None
+        # -- stats (worker writes, control loop reads; logging only) --
+        self.n_computes: int = 0
+        self.total_compute_ms: float = 0.0
+        self.max_compute_ms: float = 0.0
+        self.n_errors: int = 0
+        self.last_error: str | None = None
+        # The frame_id most recently ACCEPTED for compute (pending OR already picked up). A re-submit
+        # of the same id is dropped so the worker re-computes only on a NEW frame_id (mirrors
+        # AsyncDetectWorker.last_fid). None ids (unusable/test frames) are never de-duped against each
+        # other -- matching detect_cached's no-frame-id semantics.
+        self._last_submitted_fid: object = None
+
+    # -- lifecycle ----------------------------------------------------------
+    def start(self) -> None:
+        self._t_start = time.monotonic()
+        self._thread.start()
+
+    def stop(self, join_timeout_s: float = 2.0) -> None:
+        """Signal the worker to exit and join briefly (daemon => a compute past the timeout cannot
+        block process exit)."""
+        self._stop.set()
+        self._pending_event.set()   # wake the worker if it is idling on the submission wait
+        if self._thread.is_alive():
+            self._thread.join(timeout=join_timeout_s)
+
+    # -- producer side (control loop) ---------------------------------------
+    def submit(self, frame, roll: float, pitch: float) -> None:
+        """Offer a frame + capture-time tilt for the NEXT VP compute. Latest-wins: overwrites any
+        unconsumed submission so the worker always runs the FRESHEST frame (never a backlog). A
+        submission for a frame_id equal to the one already pending is dropped (no duplicate compute).
+        Never blocks; frame image is referenced, not copied (the video thread owns immutable Frames)."""
+        if frame is None or getattr(frame, "image_bgr", None) is None:
+            return
+        fid = getattr(frame, "frame_id", None)
+        with self._lock:
+            # Drop a re-submit of the most-recently-accepted frame_id (still pending OR already
+            # picked up) -> re-compute only on a NEW frame_id. None ids skip the guard (never de-duped).
+            if fid is not None and fid == self._last_submitted_fid:
+                return
+            self._pending = (fid, frame.image_bgr, float(roll), float(pitch))
+            self._last_submitted_fid = fid
+        self._pending_event.set()
+
+    # -- consumer side (control loop) ---------------------------------------
+    def latest(self) -> VpYawResult | None:
+        """The freshest COMPLETED VP heading result (never blocks; None until the first one)."""
+        with self._lock:
+            return self._latest
+
+    def mean_compute_ms(self) -> float:
+        return self.total_compute_ms / self.n_computes if self.n_computes else 0.0
+
+    # -- worker thread ------------------------------------------------------
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            # Wait for a submission (event-driven, not a busy spin); short timeout so stop() is
+            # responsive even if it raced the event.
+            self._pending_event.wait(self._poll_s)
+            if self._stop.is_set():
+                break
+            with self._lock:
+                job = self._pending
+                self._pending = None
+                self._pending_event.clear()
+            if job is None:
+                continue
+            fid, image_bgr, roll, pitch = job
+            t0 = time.perf_counter()
+            try:
+                est = self._compute_fn(image_bgr, roll, pitch)
+            except Exception as exc:
+                # Count + remember, keep the previous published result (stale beats dead). A
+                # compute-fn bug must NEVER kill the worker or reach the control loop.
+                self.n_errors += 1
+                self.last_error = repr(exc)
+                continue
+            dt_ms = (time.perf_counter() - t0) * 1e3
+            self.n_computes += 1
+            self.total_compute_ms += dt_ms
+            if dt_ms > self.max_compute_ms:
+                self.max_compute_ms = dt_ms
+            result = VpYawResult(frame_id=fid, estimate=est, roll=roll, pitch=pitch,
+                                 t_done_monotonic=time.monotonic(), compute_ms=dt_ms)
+            with self._lock:
+                self._latest = result
+
+
 class AsyncDetectorProxy:
     """Duck-typed detector for the Navigator + GateSeeker in async mode: ``.detect(frame)``
     NEVER runs inference — it serves the worker's published observations for that frame_id.

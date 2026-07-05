@@ -140,8 +140,20 @@ class MavlinkClient:
 
     def __init__(self, endpoint: str = "udp:127.0.0.1:14550",
                  cmd_rate_scale: float = 1.0,
-                 gyro_sign: tuple[float, float, float] | np.ndarray = (1.0, 1.0, 1.0)):
+                 gyro_sign: tuple[float, float, float] | np.ndarray = (1.0, 1.0, 1.0),
+                 parse_actuator_output: bool = True):
         self.endpoint = endpoint
+        # R2 loop-choke cut (2026-07-05): ACTUATOR_OUTPUT_STATUS is ~48% of the inbound MAVLink
+        # volume (~3185/flight, ~4.8 msgs/tick) and NOTHING on the flown gate-seeker control/estimate
+        # path reads ``self.actuator_outputs`` -- it is diagnostics-only (the sysid tool rate_sysid.py
+        # reads it live, and offline flight analysis re-parses ACTUATOR from the raw tlog, NEVER this
+        # field). ``parse_actuator_output=False`` short-circuits the _handle branch (skips the per-msg
+        # dict build + ``[float(x) for x in list(msg.actuator)[:4]]`` list-comp) to reclaim that pump()
+        # cost on the hot loop. DEFAULT True == byte-identical to before: test_mavlink_client asserts
+        # the parse and rate_sysid.py depends on it, so only the flown fly_rl loop opts OUT. The tlog
+        # is UNAFFECTED either way (the recorder taps raw wire bytes via on_message BEFORE _handle, so
+        # every ACTUATOR msg still lands in mavlink.tlog for offline analysis).
+        self.parse_actuator_output = bool(parse_actuator_output)
         # LIVE-WIRE gyro-sign correction (VQ2 gyro convention mismatch, 2026-06-29). Applied
         # ELEMENTWISE to the gyro parsed from the live HIGHRES_IMU into DroneState.gyro_body,
         # BEFORE the AHRS sees it. On the live VQ2 sim (build 1.0.3379) the HIGHRES_IMU gyro
@@ -406,10 +418,14 @@ class MavlinkClient:
             if len(self.collisions) > self._max_collisions:
                 self.collisions.pop(0)
         elif t == "ACTUATOR_OUTPUT_STATUS":
-            self.actuator_outputs = {
-                "time_usec": int(getattr(msg, "time_usec", 0)),
-                "motors": [float(x) for x in list(msg.actuator)[:4]],
-            }
+            # R2: skip the per-msg dict + list-comp build when nothing reads actuator_outputs (the
+            # flown loop). The raw msg still hit the tlog via on_message above -> offline analysis
+            # unaffected. DEFAULT (parse ON) is byte-identical: actuator_outputs is populated as before.
+            if self.parse_actuator_output:
+                self.actuator_outputs = {
+                    "time_usec": int(getattr(msg, "time_usec", 0)),
+                    "motors": [float(x) for x in list(msg.actuator)[:4]],
+                }
         elif t in ("TIMESYNC", "BAD_DATA"):
             pass  # TODO(clock): use TIMESYNC to reconcile sim_time_ns across streams.
         else:

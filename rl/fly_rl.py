@@ -1171,6 +1171,14 @@ def _nav_estimate_record(nav_state, nav, s, cmd, gate_index: int, tick_index: in
         rec["sim_time_ns"] = None
     rec["tick_index"] = tick_index
     rec["gate_index"] = gate_index
+    # Q3 (2026-07-05): a WALL-CLOCK per-tick stamp so the next run yields a true tick-INTERVAL
+    # distribution (the diagnosis could not answer wall-rate uniformity -- nav_estimate.jsonl carried
+    # only sim_time_ns + tick_index, no wall time; only the 1 Hz hz= prints hinted at the rate). Cheap:
+    # one time.monotonic_ns() call. diff() of this field across ticks = the realized tick period.
+    try:
+        rec["t_mono_ns"] = time.monotonic_ns()
+    except Exception:
+        rec["t_mono_ns"] = None
 
     # --- estimator attitude ---
     # Try the AHRS true quaternion first (available when use_ahrs is ON), then
@@ -1474,8 +1482,8 @@ def _write_perf_summary_json(result: dict, session_dir: "Path | None") -> None:
         summary = {k: result[k] for k in (
             "flight", "final_state", "gate_index", "collisions",
             "achieved_hz", "worst_work_ms", "loop_over_budget_pct",
-            "async_detect", "vision_step_ms", "vision_worst_tick_ms",
-            "seeker_diag",
+            "async_detect", "async_vp_yaw", "vision_step_ms", "vision_worst_tick_ms",
+            "loop_phase_ms", "seeker_diag",
         ) if k in result}
         out.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         print(f"  [perf-summary] wrote -> {out}")
@@ -1587,6 +1595,38 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     _obs_age_last_ms = float("nan")
     _n_obs_ticks = 0
 
+    # --- Q3 per-tick PHASE timing (loop-choke residual diagnosis, 2026-07-05; logging only) -------
+    # Splits each tick's work into {pump, nav, seeker, ctrl_send, log} with a worst-tick snapshot,
+    # mirroring the navigator's vision_step_ms accumulate-in-memory / print-once pattern. The 'pump'
+    # bucket times the PRE-TICK client.pump() at line ~1603 -- previously UN-BILLED in work_ms (the
+    # ANALYSIS accounting hole: pump ran outside the work window, so its cost lowered achieved Hz
+    # without ever showing in worst_work_ms). We now (a) time it into its own bucket AND (b) start the
+    # work_ms clock BEFORE it, so worst_work_ms / over-budget tell the truth next flight. The in-SPIN
+    # pumps (rate-limiter sleep-drain) are timed separately in 'pump_spin' -- wall-clock the limiter
+    # burns draining backlog -- and are NOT billed to work_ms (they belong to the sleep, not the tick).
+    # Per-tick overhead is a few perf_counter() calls + float adds (no allocations, no per-tick print).
+    _phase_ms = {k: {"count": 0, "total_ms": 0.0, "max_ms": 0.0}
+                 for k in ("pump", "nav", "seeker", "ctrl_send", "log", "pump_spin")}
+    _phase_worst_total_ms = 0.0
+    _phase_worst_tick = {}
+
+    def _phase_add(_tick_acc, _name, _t0):
+        """Accumulate one phase delta (ms) into the _phase_ms aggregate + (when _tick_acc is not None)
+        this tick's running work dict. pump_spin passes _tick_acc=None -- it is sleep-drain wall-clock,
+        tracked in the aggregate but kept OUT of the worst-WORK-tick breakdown. Trivial + never raises
+        into the loop (mirrors navigator._time_step)."""
+        try:
+            _dt = (time.perf_counter() - _t0) * 1e3
+            _b = _phase_ms[_name]
+            _b["count"] += 1
+            _b["total_ms"] += _dt
+            if _dt > _b["max_ms"]:
+                _b["max_ms"] = _dt
+            if _tick_acc is not None:
+                _tick_acc[_name] = _tick_acc.get(_name, 0.0) + _dt
+        except Exception:
+            pass
+
     # DATA-LOSS GUARD (2026-07-05): the post-loop epilogue below -- the nav-estimate +
     # perf-summary writers and the verdict prints -- runs in a `finally`, so EVERY exit from
     # the tick loop (normal break/timeout, uncaught exception, Ctrl-C mid-tick) still writes
@@ -1597,12 +1637,22 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     _loop_exc: BaseException | None = None
     try:
         while time.monotonic() < deadline:
+            _spin_t0 = time.perf_counter()
             while time.monotonic() < next_t:
                 client.pump()
                 time.sleep(0.001)
-            client.pump()
-            next_t = time.monotonic() + tick
+            # 'pump_spin': the rate-limiter's sleep-drain wall-clock (aggregate only, NOT billed to
+            # work_ms -- it is the sleep, not the tick's work; _tick_acc=None keeps it off the breakdown).
+            _phase_add(None, "pump_spin", _spin_t0)
+            # Q3 ACCOUNTING FIX: start the work clock BEFORE the pre-tick pump so its cost IS billed to
+            # work_ms + over-budget (the ANALYSIS hole -- pump ran outside the old work window). 'now'
+            # is the work-window start; the pre-tick pump is its first phase.
             now = time.monotonic()
+            _tick_phase = {}
+            _pump_t0 = time.perf_counter()
+            client.pump()
+            _phase_add(_tick_phase, "pump", _pump_t0)
+            next_t = now + tick
             s  = client.state
             rs = client.race_status
 
@@ -1674,25 +1724,44 @@ def _fly_gate_seeker(client, args, flight_idx: int,
             # the live frame, steers to center + fly through the SEEN opening, and HOLDS (no blind slew)
             # until the estimator records its first vision fix (launch anchor) or when no gate is detected.
             # NO absolute map / NO absolute self-position drives steering (the 2026-06-29 blind-launch fix).
+            _nav_t0 = time.perf_counter()
             nav_state = nav.update(s, frame)
+            _phase_add(_tick_phase, "nav", _nav_t0)
+            _seek_t0 = time.perf_counter()
             cmd = seeker.command_visual(nav_state, frame, gate_index, is_final_gate=is_final)
+            _phase_add(_tick_phase, "seeker", _seek_t0)
+            _send_t0 = time.perf_counter()
             client.send_command(cmd)
+            _phase_add(_tick_phase, "ctrl_send", _send_t0)
 
             # --- nav-estimate log: append one dict to the in-memory buffer (no I/O) ---
+            _log_t0 = time.perf_counter()
             if session_dir is not None:
                 try:
                     _nav_log.append(_nav_estimate_record(
                         nav_state, nav, s, cmd, gate_index, n_ticks, seeker=seeker))
                 except Exception:
                     _nav_log_errors += 1
+            _phase_add(_tick_phase, "log", _log_t0)
 
-            # work time = everything from the post-wait `now` through command send (no sleep)
+            # work time = everything from the work-window start `now` (pre-tick pump INCLUDED, Q3
+            # accounting fix) through the nav-log append (no sleep). Now that pump is billed, a steady
+            # sub-30 Hz tick shows up in worst_work_ms instead of hiding in the un-billed spin.
             work_ms = (time.monotonic() - now) * 1e3
             n_ticks += 1
             if work_ms > worst_work_ms:
                 worst_work_ms = work_ms
             if work_ms > tick * 1e3:
                 n_over_budget += 1
+            # Q3 worst-tick phase snapshot: keep the breakdown of the single largest-SUM work tick
+            # (pump+nav+seeker+ctrl_send+log), exactly like navigator._flush_vision_tick_timing.
+            try:
+                _tick_total = sum(_tick_phase.values())
+                if _tick_total > _phase_worst_total_ms:
+                    _phase_worst_total_ms = _tick_total
+                    _phase_worst_tick = dict(_tick_phase)
+            except Exception:
+                pass
 
             if now - last_p >= 1.0:
                 p = nav_state.position_ned
@@ -1746,6 +1815,26 @@ def _fly_gate_seeker(client, args, flight_idx: int,
         result["worst_work_ms"]     = round(worst_work_ms, 1)
         result["loop_over_budget_pct"] = round(over_pct, 1)
 
+        # --- Q3 loop-phase breakdown: WHERE the per-tick work went (pump/nav/seeker/ctrl_send/log) ----
+        # The residual choke split work_ms could not resolve (pump ran outside the old window): now
+        # pump is billed + phase-attributed. pump_spin (the rate-limiter sleep-drain) is reported
+        # separately -- it is NOT work, but a large pump_spin means the limiter is burning wall-clock
+        # draining mavlink backlog. Same accumulate-in-memory / print-once pattern as [vision-timing].
+        if any(v["count"] for v in _phase_ms.values()):
+            _pp = []
+            for _name in ("pump", "nav", "seeker", "ctrl_send", "log", "pump_spin"):
+                _v = _phase_ms[_name]
+                _n = _v["count"]
+                if _n == 0:
+                    continue
+                _pp.append(f"{_name}: mean={_v['total_ms'] / _n:.1f}ms max={_v['max_ms']:.1f}ms n={_n}")
+            _worst_str = ", ".join(f"{k}={v:.1f}ms" for k, v in sorted(_phase_worst_tick.items(),
+                                                                        key=lambda kv: -kv[1]))
+            print("  [loop-phase] " + "  ".join(_pp))
+            print(f"  [loop-phase] worst work-tick sum={_phase_worst_total_ms:.1f}ms breakdown: {_worst_str}")
+            result["loop_phase_ms"] = {k: dict(v) for k, v in _phase_ms.items()}
+            result["loop_phase_worst_tick_ms"] = dict(_phase_worst_tick)
+
         # --- async-detect verdict: the decoupling triple (loop Hz above / vision fps / obs age) -------
         # The REAL detect latency lives here (the worker timed every model call); [vision-timing]'s
         # 'detect' bucket only times the control loop's cache hits in async mode. Stop the worker
@@ -1792,6 +1881,28 @@ def _fly_gate_seeker(client, args, flight_idx: int,
             print(f"  [vision-timing] worst tick sum={worst_total:.1f}ms breakdown: {worst_str}")
             result["vision_step_ms"] = {k: dict(v) for k, v in step_ms.items()}
             result["vision_worst_tick_ms"] = dict(worst)
+
+        # --- R1 async vp_yaw: the WORKER's real compute stats + stop the daemon thread -------------
+        # With vp_yaw_async ON the navigator's [vision-timing] 'vp_yaw' bucket times only the ~0 ms
+        # ON-THREAD apply (the RANSAC moved off-thread); the TRUE estimate_heading cost lives on the
+        # worker. Emit it here (mirrors [async-detect]) + stash in result, and stop the daemon so its
+        # stats are final. Guarded so the sync path (no worker) prints nothing and stays byte-identical.
+        _vpw = getattr(nav, "_vp_yaw_worker", None)
+        if _vpw is not None:
+            print(f"  [async-vp-yaw] n={_vpw.n_computes} compute mean={_vpw.mean_compute_ms():.0f}ms "
+                  f"max={_vpw.max_compute_ms:.0f}ms; errors={_vpw.n_errors}"
+                  + (f" last={_vpw.last_error}" if _vpw.n_errors else ""))
+            result["async_vp_yaw"] = {
+                "n_computes": _vpw.n_computes,
+                "compute_mean_ms": round(_vpw.mean_compute_ms(), 1),
+                "compute_max_ms": round(_vpw.max_compute_ms, 1),
+                "worker_errors": _vpw.n_errors,
+            }
+        # Stop the worker unconditionally at exit (idempotent, no-op when async is OFF / never built).
+        try:
+            nav.close_vp_yaw_worker()
+        except Exception:
+            pass
 
         # --- A13 seeker diagnostics: pose-None breakdown + hold-last-demand bridge coverage -----------
         # Logging only (no behaviour change): the seeker tallies per-tick command regimes in memory
@@ -2332,7 +2443,12 @@ def main() -> int:
         gyro_sign = _profile.gyro_sign
         print(f"  [gate-seeker] deploy profile {args.deploy_profile!r} -> "
               f"cmd_rate_scale={cmd_rate_scale:g} gyro_sign={tuple(gyro_sign)}")
-    client = MavlinkClient(args.endpoint, cmd_rate_scale=cmd_rate_scale, gyro_sign=gyro_sign)
+    # R2 loop-choke cut (2026-07-05): parse_actuator_output=False -- ACTUATOR_OUTPUT_STATUS is ~48%
+    # of inbound MAVLink volume and NOTHING on the flown RL / gate-seeker path reads
+    # client.actuator_outputs (it is sysid-only). Skipping the per-msg parse reclaims that pump() cost;
+    # the raw ACTUATOR msgs still land in mavlink.tlog via on_message (offline analysis unaffected).
+    client = MavlinkClient(args.endpoint, cmd_rate_scale=cmd_rate_scale, gyro_sign=gyro_sign,
+                           parse_actuator_output=False)
     if args.cmd_rate_scale != 1.0:
         print(f"  [vq2] cmd_rate_scale={args.cmd_rate_scale:g} -> BODY_RATE commands scaled at the "
               f"uplink (command->realized ~{1.0 / args.cmd_rate_scale:.2f}x compensation).")

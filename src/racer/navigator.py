@@ -421,6 +421,22 @@ class NavigatorConfig:
     vp_yaw_decimate: int = 1
     floor_height_decimate: int = 1
 
+    # --- R1 worker-thread vp_yaw (residual loop-choke fix, 2026-07-05) ---
+    # vp_yaw is the SOLE absolute-yaw anchor on the flown map-free path, and its estimate_heading
+    # (VP RANSAC + Manhattan lines) is the single worst-tick spike (~30-100 ms ON the control-loop
+    # thread; the 161 ms worst tick = 101 ms vp_yaw). vp_yaw_decimate cut its FREQUENCY but not its
+    # per-call cost. This flag moves ONLY the estimate_heading compute onto a daemon worker thread
+    # (racer.vision.async_detect.VpYawWorker, the proven async-detect pattern): on the decimated
+    # submission tick the loop SUBMITS (frame + capture-time roll/pitch) latest-wins, and consumes
+    # the freshest COMPLETED HeadingEstimate WITHOUT blocking. The branch disambiguation (against the
+    # CURRENT gyro-propagated yaw), the quality/branch acceptance gates, and update_yaw noise ALL stay
+    # on the loop thread -> byte-identical acceptance to the sync path; only the RANSAC moved.
+    # WHY STALE-OK: yaw drifts ~0.5 deg/s, so applying a heading from a frame up to ~200 ms old adds
+    # ~0.1 deg (<< the ~5 deg VP noise), and the branch snap uses the FRESH on-thread yaw so a stale
+    # frame can never cause a 90-deg branch flip. DEFAULT False == the byte-identical synchronous path
+    # (no worker thread constructed, estimate_heading runs inline exactly as before). vq2_case_c ON.
+    vp_yaw_async: bool = False
+
     # --- A24 vertical-velocity washout (supersedes the A21 floor-pin KF, 2026-07-02) ---
     # Own a 1-D vertical-velocity washout (racer.vertical_estimator) beside the 6-state KF: IMU
     # a_up integrated per tick with an exponential leak (bounded by construction -- no floor-pin
@@ -567,6 +583,11 @@ class Navigator:
     # A21 vertical-channel estimator (use_vertical_estimator): constructed + seeded at _initialize
     # ONLY when the flag is ON; None on the OFF path (never stepped, never exported -> byte-identical).
     _vert_est: VerticalEstimator | None = field(default=None, repr=False)
+    # R1 worker-thread vp_yaw (vp_yaw_async): the daemon VP-heading worker, constructed + started
+    # LAZILY on the first async _apply_vp_yaw call (so it survives a sim-reset re-seed -- it holds NO
+    # estimator state, only the CV compute). None on the OFF path (byte-identical, no thread). fly_rl
+    # calls close_vp_yaw_worker() at loop exit to stop it (also stopped defensively at process teardown).
+    _vp_yaw_worker: object | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._gates_by_id = {g.gate_id: g for g in self.gates}
@@ -864,11 +885,17 @@ class Navigator:
         (never a silent 90-deg flip), reject if even the nearest branch is implausibly far (ambiguous),
         else inject it via ``ESKFAHRS.update_yaw`` and REFRESH the attitude cache + R_wb so the
         correction reaches this tick's obs + downstream vision. Returns the (possibly refreshed) R_wb.
-        Gated OFF / no use_ahrs -> immediate return of the input R_wb (byte-identical)."""
+        Gated OFF / no use_ahrs -> immediate return of the input R_wb (byte-identical).
+
+        R1 (vp_yaw_async): when the flag is ON, the heavy ``estimate_heading`` (VP RANSAC + Manhattan
+        lines) is delegated to a daemon worker thread -- see ``_apply_vp_yaw_async``. The DEFAULT
+        (async OFF) path below is unchanged and byte-identical to the pre-R1 code."""
         if not (self.config.use_vp_yaw and self._ahrs is not None):
             return R_wb
         if frame is None or frame.image_bgr is None:
             return R_wb
+        if self.config.vp_yaw_async:
+            return self._apply_vp_yaw_async(frame, R_wb)
         roll, pitch, yaw_hat = self._current_true_rpy()
         # "vp_yaw" times estimate_heading END TO END, which internally runs BOTH the VP RANSAC and
         # the Manhattan line extraction (racer.vision.manhattan_lines) -- there is no separate call
@@ -876,6 +903,17 @@ class Navigator:
         _t0 = time.perf_counter()
         est = estimate_heading(frame.image_bgr, roll, pitch, ransac_iters=self.config.vp_yaw_ransac_iters)
         self._time_step("vp_yaw", _t0)
+        return self._apply_vp_heading_estimate(est, yaw_hat, R_wb)
+
+    def _apply_vp_heading_estimate(self, est, yaw_hat: float, R_wb: np.ndarray) -> np.ndarray:
+        """Consume a ``HeadingEstimate`` (or None) computed for THIS tick's frame -> the branch
+        disambiguation + acceptance gates + ``ESKFAHRS.update_yaw`` + attitude-cache refresh.
+
+        SHARED by the synchronous path and the R1 async path so both apply the EXACT SAME acceptance
+        (quality gate, branch-nearest disambiguation, branch-max reject, update_yaw noise) -- only WHERE
+        the ``estimate_heading`` RANSAC ran differs. ``yaw_hat`` is the CURRENT gyro-propagated yaw the
+        branch snaps to (fresh on-thread in BOTH paths, so a stale async frame never causes a branch
+        flip). Returns the (possibly refreshed) R_wb."""
         if est is None or est.quality < self.config.vp_yaw_min_quality:
             self.vision_diag.n_vp_yaw_rejected += 1
             return R_wb
@@ -892,6 +930,69 @@ class Navigator:
         self.n_vp_yaw_total += 1
         self.vision_diag.last_vp_yaw_rad = yaw_meas
         return self._refresh_ahrs_attitude_cache()
+
+    def _apply_vp_yaw_async(self, frame: Frame, R_wb: np.ndarray) -> np.ndarray:
+        """R1: the WORKER-THREAD vp_yaw path (vp_yaw_async ON). Two decoupled halves:
+
+          1. SUBMIT this tick's (frame, capture-time roll/pitch) to the daemon worker (latest-wins,
+             never blocks). The worker runs ``estimate_heading`` off the control-loop thread.
+          2. CONSUME the freshest COMPLETED ``HeadingEstimate`` (possibly from an EARLIER frame, up
+             to ~200 ms old -- fine at ~0.5 deg/s yaw drift) and apply it through the SAME
+             ``_apply_vp_heading_estimate`` acceptance the sync path uses, with the CURRENT (fresh)
+             yaw as the branch datum.
+
+        The ``vp_yaw`` timing bucket now records only the ~0 ms on-thread APPLY cost; the worker keeps
+        its own compute-time stats (surfaced in the [async-vp-yaw] exit line + perf_summary.json). The
+        pre-first-result ticks (no completed compute yet) simply skip the update -- the ESKF
+        gyro-propagates yaw between corrections exactly as on a decimated/no-VP sync tick."""
+        _t0 = time.perf_counter()   # times ONLY the on-thread submit + apply (worker owns compute ms)
+        worker = self._ensure_vp_yaw_worker()
+        roll, pitch, yaw_hat = self._current_true_rpy()
+        if worker is not None:
+            worker.submit(frame, roll, pitch)
+            res = worker.latest()
+        else:                                   # worker construction failed -> degrade to no-VP tick
+            res = None
+        est = res.estimate if res is not None else None
+        R_wb = self._apply_vp_heading_estimate(est, yaw_hat, R_wb)
+        self._time_step("vp_yaw", _t0)
+        return R_wb
+
+    def _ensure_vp_yaw_worker(self):
+        """Lazily construct + start the R1 VP-heading worker on first async use. Returns the worker
+        (or None if construction failed -- the caller then degrades to a no-VP tick, never crashes).
+
+        The ``compute_fn`` closure resolves the MODULE-GLOBAL ``estimate_heading`` at CALL time (not a
+        captured reference), so a test monkeypatch of ``racer.navigator.estimate_heading`` is honoured
+        -- exactly as the synchronous path calls the same module global. Constructed here (not at
+        _initialize) so it survives a sim-reset re-seed: the worker holds NO estimator state."""
+        if self._vp_yaw_worker is not None:
+            return self._vp_yaw_worker
+        try:
+            from racer.vision.async_detect import VpYawWorker
+            iters = self.config.vp_yaw_ransac_iters
+
+            def _compute(image_bgr, roll, pitch):
+                # estimate_heading is the navigator module global (patchable in tests); resolved here.
+                return estimate_heading(image_bgr, roll, pitch, ransac_iters=iters)
+
+            worker = VpYawWorker(_compute)
+            worker.start()
+            self._vp_yaw_worker = worker
+        except Exception:
+            self._vp_yaw_worker = None
+        return self._vp_yaw_worker
+
+    def close_vp_yaw_worker(self) -> None:
+        """Stop the R1 VP-heading worker if one was started (idempotent; safe when async is OFF).
+        Called by fly_rl at loop exit. The worker is a daemon so a missed stop cannot hang exit."""
+        w = self._vp_yaw_worker
+        if w is not None:
+            try:
+                w.stop()
+            except Exception:
+                pass
+            self._vp_yaw_worker = None
 
     def _apply_floor_height(self, frame: Frame, R_wb: np.ndarray, t_fix_ns: int) -> None:
         """Z: map-free floor-grid camera height -> a world-down (z) KF correction.
