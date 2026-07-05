@@ -1,9 +1,9 @@
-"""OFFLINE REPRO + FIX EVIDENCE — the A21 vertical-channel teleport/blind-climb (the gate-0 flight
-ender) vs the VerticalEstimator, on the REAL run 20260702_040036_rl_s1_f1.
+"""OFFLINE REPRO + FIX EVIDENCE — the vertical-channel teleport/blind-climb (the gate-0 flight
+ender) vs the A24 WASHOUT ``VerticalEstimator``, on the REAL run 20260702_040036_rl_s1_f1.
 
 The successor to handoff/vq2-ff-owns-vertical-2026-07-01/repro_vertical_bangbang.py: that harness
 proved ff_owns_vertical stops damping the drifting dead-reckoned vel[2]; THIS one shows what the
-A19c fix still left broken and that the estimator closes it. On the real run:
+A19c fix still left broken and that the washout closes it. On the real run:
 
   * the nav est_z the alt-hold reads TELEPORTS -1.435 m in ONE tick when the sparse floor_height
     pin lands (t=1569.41) — the fd-vz the damper reads spikes ~-4.4 m/s -> a thrust kick from the
@@ -13,9 +13,17 @@ A19c fix still left broken and that the estimator closes it. On the real run:
     ~6 cm — the damper had nothing real to damp, and the drone climbed into the ceiling
     (COLLISION id=1002 at t=1570.499).
 
-Replays the run's HIGHRES_IMU accel + per-tick attitude + the reconstructed floor pin through the
-new ``racer.vertical_estimator.VerticalEstimator`` and through the ff-owns-vertical alt-hold with
-``use_vertical_estimator`` OFF vs ON, and asserts the BEFORE instability + the AFTER damping.
+WHAT THE WASHOUT DOES NOW (A24, see handoff/vq2_vertical_washout_spec_2026-07-02.md): the floor-pin
+KF was ripped out — floor-height is a false premise (no warehouse grid), so there is NO altitude
+state and NO pin-correction path. The estimator is a first-order washout (leaky integrator) on
+``(vz, b_hat)`` that integrates the IMU-derived ``a_up`` with an exponential leak (tau=2 s), input
+clamped to +/-30 m/s^2 and export clipped to +/-3 m/s — structurally cannot diverge. This replay
+therefore no longer injects pins; it shows the PURE a_up-integration behaviour: a smooth, bounded vz
+that TRACKS the real climb the teleporting est_z never showed, in place of the fd-vz teleport-slam.
+
+Replays the run's HIGHRES_IMU accel + per-tick attitude through the washout ``VerticalEstimator``
+and through the ff-owns-vertical alt-hold with ``use_vertical_estimator`` OFF vs ON, and asserts the
+BEFORE fd-vz instability + the AFTER smooth-bounded-climb-tracking damping.
 
 Inputs: reads the live run directory when present (extracting + caching the IMU window into
 ``imu_trace_20260702_040036.jsonl`` + ``nav_estimate_20260702_040036.jsonl`` beside this script,
@@ -50,7 +58,6 @@ IMU_CACHE = HERE / "imu_trace_20260702_040036.jsonl"
 NAV_CACHE = HERE / "nav_estimate_20260702_040036.jsonl"
 
 PIN_STEP_M = 0.5        # |d est_z| in one tick above this = a floor-pin teleport (the live one: 1.435)
-PIN_VAR = 0.1 ** 2 + 0.2 ** 2   # floor-channel z variance: std_m~0.1 + floor_height_extra_std_m=0.2
 G = 9.80665
 
 
@@ -120,31 +127,27 @@ def replay():
         i = max(int(np.searchsorted(tick_t, imu_t[j], side="right")) - 1, 0)
         return -(float(_rot_b2n(*rpy[i])[2] @ acc[j]) + G)
 
-    # --- feed the VerticalEstimator: predict per IMU sample, pin at the teleport ticks ---------
+    # --- feed the WASHOUT VerticalEstimator: predict per IMU sample, NO pins -----------------
+    # The A24 washout carries no altitude state and no floor-pin correction path (both ripped out --
+    # floor-height was a false premise), so there is nothing to inject: it just integrates a_up with
+    # an exponential leak. seed() at rest (the first ~1 s is the grounded pre-arm bias-capture window
+    # during which vz stays 0), then predict(a_up, dt) per IMU sample; read vz (clipped +/-3 m/s).
     est = VerticalEstimator()
-    est.seed(float(est_z[0]))
-    pin_times = sorted(pins)
-    vz_ticks, z_ticks = np.zeros_like(tick_t), np.zeros_like(tick_t)
+    est.seed()
+    vz_ticks = np.zeros_like(tick_t)
     vz_imu, vz_imu_t = [], []      # per-IMU-sample vz (the TRUE smoothness record, ~140 Hz)
-    pin_dz, pin_dvz = [], []       # the state change ACROSS each pin update (the anti-teleport pin)
-    k, ti = 0, 0
+    ti = 0
     j0 = int(np.searchsorted(imu_t, tick_t[0]))
     for j in range(j0, len(imu_t)):
         dt = imu_t[j] - imu_t[j - 1] if j > j0 else 0.0
         est.predict(a_up_at(j), dt)
-        while k < len(pin_times) and pin_times[k] <= imu_t[j]:
-            z_pre, vz_pre = est.z, est.vz
-            est.update_z(pins[pin_times[k]], PIN_VAR)
-            pin_dz.append(est.z - z_pre)
-            pin_dvz.append(est.vz - vz_pre)
-            k += 1
         vz_imu.append(est.vz)
         vz_imu_t.append(imu_t[j])
         while ti < len(tick_t) and tick_t[ti] <= imu_t[j]:
-            z_ticks[ti], vz_ticks[ti] = est.z, est.vz
+            vz_ticks[ti] = est.vz
             ti += 1
     while ti < len(tick_t):                                    # ticks past the last IMU sample
-        z_ticks[ti], vz_ticks[ti] = est.z, est.vz
+        vz_ticks[ti] = est.vz
         ti += 1
     vz_imu, vz_imu_t = np.asarray(vz_imu), np.asarray(vz_imu_t)
 
@@ -157,11 +160,11 @@ def replay():
         fd_vz[i] = vz_lp
 
     print("\n-- damper INPUT, BEFORE vs AFTER (NED vz the kd term reads; pin tick marked) --")
-    print(f"{'t(s)':>7} {'est_z':>8} {'fd_vz(BEFORE)':>13} {'vert_z(AFTER)':>13} {'vert_vz(AFTER)':>14}")
+    print(f"{'t(s)':>7} {'est_z':>8} {'fd_vz(BEFORE)':>13} {'vert_vz(AFTER)':>14}")
     for i in range(len(tick_t)):
         mark = "  <-- PIN" if tick_t[i] in pins else ""
         print(f"{tick_t[i] - tick_t[0]:7.2f} {est_z[i]:8.3f} {fd_vz[i]:13.2f} "
-              f"{z_ticks[i]:13.3f} {vz_ticks[i]:14.2f}{mark}")
+              f"{vz_ticks[i]:14.2f}{mark}")
 
     dz_tp = est_z[pin_i[0]] - est_z[pin_i[0] - 1]
     dt_tp = tick_t[pin_i[0]] - tick_t[pin_i[0] - 1]
@@ -180,14 +183,17 @@ def replay():
           f"(raw fd {dz_tp / dt_tp:+.2f} m/s; the damper's LP read {spike_before:+.2f} m/s) — "
           f"AND showed only {est_z[pin_i[0] - 1] - est_z[0]:+.3f} m of motion over the prior "
           f"{tick_t[pin_i[0] - 1] - tick_t[0]:.2f} s of real climb (blind).")
-    print(f"AFTER : pin correction bounded: dz = {pin_dz[0]:+.3f} m, dvz = {pin_dvz[0]:+.3f} m/s "
-          f"(vs the {dz_tp:+.3f} m step the KF z took on the SAME pin)")
+    print(f"AFTER : the washout takes NO pin at all (no altitude state, no floor-pin path) — so "
+          f"there is no teleport to correct; it integrates a_up straight through the pin tick.")
     print(f"AFTER : max per-IMU-sample |d vz| pre-impact = {step_after:.3f} m/s "
           f"(a continuous rate, no steps; the ceiling strike at t={t_impact:.3f} — "
           f"|f| spikes to {f_mag.max():.0f} m/s^2, {tick_t[-1] - t_impact:.2f} s before the sim's "
           f"COLLISION message — is a real discontinuity and is excluded)")
-    print(f"AFTER : peak climb rate = {vz_ticks.min():+.2f} m/s NED (the REAL +4-5 m/s upward the "
-          f"est_z never showed; the ceiling collision at flight end confirms it)")
+    print(f"AFTER : peak washout climb rate = {vz_ticks.min():+.2f} m/s NED — a bounded, smooth "
+          f"read of the REAL upward climb the teleporting est_z (blind, "
+          f"{est_z[pin_i[0] - 1] - est_z[0]:+.3f} m) never showed; the tau=2 s leak attenuates the "
+          f"sustained part, so it stays well within the +/-3 m/s clip (the ceiling collision at "
+          f"flight end confirms the climb was real)")
 
     # --- controller-level A/B: the same alt-hold, flag OFF vs ON ------------------------------
     def run_ctrl(vertical_on):
@@ -195,8 +201,9 @@ def replay():
                                       use_vertical_estimator=vertical_on)
         thr = np.zeros_like(tick_t)
         for i in range(len(tick_t)):
-            kw = dict(vert_z_est=float(z_ticks[i]), vert_vz_est=float(vz_ticks[i])) \
-                if vertical_on else {}
+            # A24 controller gates on vert_vz_est ALONE (vert_z_est is permanently NaN -- no
+            # altitude state), so only the washout vz is fed.
+            kw = dict(vert_vz_est=float(vz_ticks[i])) if vertical_on else {}
             nav_s = NavState(sim_time_ns=int(tick_t[i] * 1e9),
                              position_ned=np.array([0.0, 0.0, est_z[i]]),
                              velocity_ned=np.zeros(3),
@@ -226,11 +233,15 @@ def replay():
 
     # --- the asserted evidence (the DoD line items) --------------------------------------------
     assert spike_before > 2.0, ("repro lost: no fd-vz spike at the pin", spike_before)
-    # the largest pre-impact vz step is the (bounded) pin correction itself (~0.7 m/s) — a Kalman
-    # nudge, vs the -4.39 m/s raw-fd / +2.13 m/s LP'd spike the fd path handed the damper
-    assert step_after < 1.0, ("estimator vz not smooth", step_after)
-    assert abs(pin_dz[0]) < 0.7 * abs(dz_tp), ("the pin z correction is a step", pin_dz[0], dz_tp)
-    assert float(vz_ticks.min()) < -3.0, ("estimator missed the real climb", float(vz_ticks.min()))
+    # the washout vz moves as a continuous rate (no pin step to inject) -- every per-IMU-sample
+    # increment is small, vs the -4.39 m/s raw-fd / +2.13 m/s LP'd spike the fd path handed the damper
+    assert step_after < 1.0, ("washout vz not smooth", step_after)
+    # the washout TRACKS a substantial upward climb (the point: it SAW the climb the teleporting
+    # est_z was blind to) while staying BOUNDED within its structural +/-3 m/s export clip (the
+    # tau=2 leak attenuates the sustained part, so it reads a bounded fraction of the true +4-5 m/s
+    # -- measured peak on this run is -1.50 m/s; the old -2.0 threshold predated the leak)
+    assert float(vz_ticks.min()) < -1.0, ("washout missed the real climb", float(vz_ticks.min()))
+    assert float(vz_ticks.min()) >= -3.0, ("export clip breached", float(vz_ticks.min()))
     assert step_off > 0.3, ("repro lost: OFF alt-hold no longer slams on the pin", step_off)
     assert step_on < 0.05, ("ON alt-hold still slams on the pin", step_on)
     assert np.mean(thr_on[tail]) < hover - 0.1, "ON alt-hold does not oppose the climb"
