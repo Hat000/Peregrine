@@ -1,8 +1,13 @@
-# VQ2 confirm-flight pilot brief — loop-choke cut, 2026-07-05
+# VQ2 confirm-flight pilot brief — climb-fix + choke package, 2026-07-05
 
-Self-contained checklist for a Sonnet pilot agent. Validates commit `f1c5db9`
-(`use_floor_height=False` + `vp_yaw_decimate=15` in the `vq2_case_c` deploy profile) against
-the success gate: **`[loop-rate]` reliably >=25 Hz + operator eyes**.
+Self-contained checklist for a Sonnet pilot agent. Validates, in ONE flight at HEAD `e92a482`:
+the climb-approach limit-cycle fix (`6eec0a7`: fwd point-gate 0.40 + image_kaz 8), the
+residual loop-choke package (`e92a482`: worker-thread vp_yaw + actuator parse skip + honest
+phase accounting), and the NEW negreal42 detector weight. Success gates:
+**`[loop-rate]` reliably >=25 Hz** (now honestly accounted — pump is billed; report the
+`[loop-phase]` buckets too) **+ operator eyes** (turn should still bank-and-level; then the
+drone should KEEP DRIVING FORWARD into the climb and hold the gate in frame instead of
+see-sawing it off the edge).
 
 Every command below was checked against the CURRENT code in this worktree
 (`rl/fly_rl.py`, `scripts/vq2ctl.py`) at HEAD `f1c5db9`. `docs/vq2ctl.md` does NOT exist in
@@ -70,10 +75,10 @@ C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe rl\fly_rl.py `
   --gate-seeker `
   --deploy-profile vq2_case_c `
   --seeker-detector yolo `
-  --seeker-weights models\vq2_darkred_negv1_2026-07-02_fp16_384x640.engine `
+  --seeker-weights C:\Users\Shadow\Peregrine\models\vq2_darkred_negreal42_2026-07-05.pt `
   --ignore-collisions `
   --max-seconds 120 `
-  --label loopchoke_confirm 2>&1 | Tee-Object -FilePath data\runs\loopchoke_confirm_console.log
+  --label climbfix_confirm 2>&1 | Tee-Object -FilePath data\runs\climbfix_confirm_console.log
 ```
 
 Flag-by-flag, verified against the CURRENT argparse (`rl/fly_rl.py` `build_parser()`):
@@ -86,12 +91,22 @@ Flag-by-flag, verified against the CURRENT argparse (`rl/fly_rl.py` `build_parse
 - `--seeker-detector yolo` (default IS `yolo` already; pass explicitly). The `yolo` path
   REQUIRES `--seeker-weights` to look like real detector weights or `fly_rl` exits loud at
   startup (`_validate_seeker_detector`) — do not omit `--seeker-weights`.
-- `--seeker-weights models\vq2_darkred_negv1_2026-07-02_fp16_384x640.engine` — the canonical
-  TRT engine (per `handoff/gen9_commander_briefing_2026-07-04.md`: "flight default", parity-
-  exact with the `.pt`, ~2x faster, 82% good-fix). Confirmed present on disk at
-  `models/vq2_darkred_negv1_2026-07-02_fp16_384x640.engine`. **Requires the `.venv` python**
-  (`C:\Users\Shadow\Peregrine\.venv\Scripts\python.exe` — it has `tensorrt`; the separate
-  `vq2yolo-venv` does NOT). Never fly the raw `.pt` for this — `.engine` is the flight path.
+- `--seeker-weights C:\Users\Shadow\Peregrine\models\vq2_darkred_negreal42_2026-07-05.pt` —
+  the NEW champion-candidate (vision-stack delivery 2026-07-05): negv1 recipe + all 42 real
+  frames trained in. Held-out task2 good-fix 37/40 vs negv1's 22/40, median range err 0.173m
+  vs 0.446m, the 20m catastrophic outliers that poison association ~gone, real-frame FPs 0/26
+  vs 8/26 (ceiling grids trained against — the exact clutter in view during the climb-
+  approach). ABSOLUTE PATH REQUIRED: the file is gitignored + box-local (lives in the MAIN
+  checkout's models/, NOT this worktree; backup at
+  C:\Users\Shadow\backups\peregrine-models-2026-07-05\). 8-kpt is plug-and-play (detector
+  auto-subsets to inner-4; negv1 flew the same way). NO TRT engine for this weight yet — the
+  `.pt` is acceptable because async-detect keeps detect OFF the loop thread; expect detect
+  ~120ms => vision fps ~8-12 and obs age up. WATCH perf_summary.json's async_detect block:
+  if vision fps < ~8 or obs age mean > ~250ms, note it loudly in the report (that's the
+  trigger for a TRT re-export request, fp16 384x640 rect only). FALLBACK (live FP lock or
+  weird range regression — vision-stack's own caveat: the 0/26 FP number is train-recall):
+  `models\vq2_darkred_negv1_2026-07-02_fp16_384x640.engine` (worktree-local, TRT, the prior
+  flight default).
 - `--async-detect` is NOT passed: default is `"auto"`, which resolves to `ON` for
   `vq2_case_c` (`DeployProfile.async_detect=True` for this profile, confirmed in
   `src/racer/deploy_profile.py`). This is exactly the mechanism the loop-choke cut depends on
@@ -102,7 +117,7 @@ Flag-by-flag, verified against the CURRENT argparse (`rl/fly_rl.py` `build_parse
   hard collision, keep flying + recording. Appropriate for a tuning/confirm flight (see full
   trajectory even if it clips something), NOT for a real submission run.
 - `--max-seconds 120` — matches the default already (`default=120.0`), pass explicitly.
-- `--label loopchoke_confirm` — cosmetic; makes `data/runs/<stamp>_loopchoke_confirm_f1`
+- `--label climbfix_confirm` — cosmetic; makes `data/runs/<stamp>_climbfix_confirm_f1`
   easy to find. Any label works; `session` dir naming is `session_stamp()_{label}_f{flight}`
   (`rl/fly_rl.py` `main()`).
 - `--flights` is NOT passed: default 1 (`"number of back-to-back attempts... DEFAULT 1 = the
@@ -119,7 +134,7 @@ real invocation regardless).
 ## 3. Capture stdout to a file (belt-and-braces with `perf_summary.json`)
 
 The command in step 2 already pipes through `Tee-Object` to
-`data\runs\loopchoke_confirm_console.log` — this is the PowerShell 5.1-safe form. Notes:
+`data\runs\climbfix_confirm_console.log` — this is the PowerShell 5.1-safe form. Notes:
 
 - PowerShell 5.1: do **not** redirect a native exe's stderr with `2>&1` inside a pipeline in
   ways that wrap it as a `NativeCommandError` (it can flip `$?` to `false` even on a clean
@@ -129,7 +144,7 @@ The command in step 2 already pipes through `Tee-Object` to
   semantics from it.
 - This is **belt-and-braces**, not a replacement for `perf_summary.json` (this dive's task 1
   addition): if the console log is somehow lost (truncated scrollback, dropped SSH/RDP
-  session), `data/runs/<stamp>_loopchoke_confirm_f1/perf_summary.json` is the durable copy of
+  session), `data/runs/<stamp>_climbfix_confirm_f1/perf_summary.json` is the durable copy of
   the `[loop-rate]` / `[vision-timing]` / `[async-detect]` / `[seeker-diag]` numbers. The
   whole exit epilogue (`perf_summary.json` AND `nav_estimate.jsonl`) runs in a `finally`
   around the tick loop, so it is written on EVERY exit — clean `TIMEOUT`/`FINISHED`/`CRASH`,
@@ -179,7 +194,7 @@ Check, in order:
    `OK`/`CHOKED` (`rate_ok = achieved_hz >= 0.9 * args.rate and over_pct < 5.0` against
    `--rate` default 30, so the code's own bar is ~27 Hz + <5% over-budget ticks — tighter than
    the 25 Hz gate this brief states; report BOTH numbers, they should usually agree).
-2. **`perf_summary.json` present** at `data/runs/<stamp>_loopchoke_confirm_f1/perf_summary.json`
+2. **`perf_summary.json` present** at `data/runs/<stamp>_climbfix_confirm_f1/perf_summary.json`
    with non-empty `achieved_hz`/`vision_step_ms`/`async_detect` keys — confirms task 1's
    write path actually fired on a real flight (not just the offline unit test).
 3. **No new garbage-lock/teleport regressions** — cross-check against the known failure
