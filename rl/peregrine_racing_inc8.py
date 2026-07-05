@@ -135,6 +135,10 @@ class PeregrineRacingInc8(PeregrineRacing):
             pose_age_floor_hi=float(getattr(cfg, "emul_pose_age_floor_hi", IE.EmulConfig.pose_age_floor_hi)),
             pose_age_stall_p=float(getattr(cfg, "emul_pose_age_stall_p", IE.EmulConfig.pose_age_stall_p)),
             blackout_range_m=float(getattr(cfg, "emul_blackout_range_m", IE.EmulConfig.blackout_range_m)),
+            # CAMERA TAIL-MOUNT FLIP (2026-07-05 audit A0): training flies tail-first; the legacy mount
+            # points the emulated camera at the NOSE = backward. True == camera faces the flight
+            # direction (matches the real nose-first camera). Default False == byte-identical legacy.
+            camera_flip=bool(getattr(cfg, "emul_camera_flip", IE.EmulConfig.camera_flip)),
         )
         # optional surrogate recalibration from on-disk checkpoints (no scipy: plain json).
         params = IE.TorchSurrogateParams()
@@ -179,7 +183,10 @@ class PeregrineRacingInc8(PeregrineRacing):
         self._lookat_warmup_updates = int(getattr(cfg, "lookat_warmup_updates", 0))
         self._ppo_update = 0
         self._lookat_on = (self._lookat_g_yaw != 0.0) or (self._lookat_g_pitch != 0.0)
-        self._r_bc = R8.r_body_from_camera(dev, self._inc8_dtype)
+        # look-at mount MUST match the emulator's camera_flip (same virtual camera frame; see
+        # r_body_from_camera tail_mount + EmulConfig.camera_flip).
+        self._r_bc = R8.r_body_from_camera(dev, self._inc8_dtype,
+                                           tail_mount=self._emul_cfg.camera_flip)
         self._flip_rate = torch.tensor(R8._FLIP_FRD_FLU, device=dev, dtype=self._inc8_dtype)
         self._act_hi = self._act_lo + self._act_span
 
@@ -420,7 +427,11 @@ class PeregrineRacingInc8(PeregrineRacing):
         delta_s = s_curr - s_prev
         anneal = R8.confidence_anneal(float(self._global_step), self._inc8w)
         r1p = R8.arc_progress_reward(s_curr, s_prev, self._inc8w.progress)
-        gt = R8.gt_estimerr_anchor(err_ip, self._inc8w.estimerr)
+        gt = R8.gt_estimerr_anchor(err_ip, self._inc8w.estimerr, self._inc8w.estimerr_clamp)
+        # DENSE ALONG-TRACK PROGRESS (rw_gate_progress, default 0 == byte-id): the random-course fill
+        # for the inert R1' -- signed range-closed toward the post-advance target gate (prev_d2g /
+        # curr_d2g are already measured against tg_new above, the no-spike-at-passage convention).
+        gp = R8.gate_progress_reward(prev_d2g, curr_d2g, self._inc8w.gate_progress)
         cs = R8.confidence_shaping_reward(triple, self._inc8w.conf_shape, anneal)
         # R5' / fix-bonus PROGRESS-GATE source. VQ1: arc-progress delta_s (advance along Gamma). RANDOM:
         # NO global line, so delta_s == 0 would kill R5' (pointing STILL matters for fixes). Use the
@@ -446,7 +457,7 @@ class PeregrineRacingInc8(PeregrineRacing):
         curr_ip = torch.sqrt(curr_rel_t[..., 1] ** 2 + curr_rel_t[..., 2] ** 2)
         tc = R8.through_centering_reward(prev_ip, curr_ip, self._inc8w.through_centering)
         spin_pen = self.rw_spin * spin_abort.float()
-        reward = reward_frozen + r1p + gt + cs + r5 + fb + cr + tc - spin_pen
+        reward = reward_frozen + r1p + gp + gt + cs + r5 + fb + cr + tc - spin_pen
 
         loss = (-reward).detach()
         reward = reward.detach()
@@ -507,11 +518,16 @@ class PeregrineRacingInc8(PeregrineRacing):
             band_az_abs.to(mdt),                  # inc8_band_az_abs_deg (look-at sign/efficacy)
             band_el_abs.to(mdt),                  # inc8_band_el_abs_deg (vertical residual / S2 sign-check)
             tc.mean().to(mdt),                    # inc8_through_centering (lateral restoring reward)
+            gp.mean().to(mdt),                    # inc8_gate_progress (dense along-track drive)
+            # camera-mount KPI (2026-07-05 audit A0): fraction of envs whose target gate is IN FRONT of
+            # the emulated camera (t_cam z > 0). ~0 == the backward legacy mount (gate behind the
+            # camera all approach); healthy pointed flight >> 0.5. THE retrain go/no-go signal.
+            (geom["t_cam"][..., 2] > 0).to(mdt).mean(),   # inc8_tcam_front_frac
         ])
         (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
          age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v,
          lockband_point_v, fix_bonus_v, centering_v, band_az_v, band_el_v,
-         through_centering_v) = metric_vec.tolist()  # ONE sync
+         through_centering_v, gate_progress_v, tcam_front_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
             "obs_nonfinite": obs_nonfinite_v,
             "inc8_fix_rate": fix_rate_v,
@@ -531,6 +547,8 @@ class PeregrineRacingInc8(PeregrineRacing):
             "inc8_band_az_abs_deg": band_az_v,
             "inc8_band_el_abs_deg": band_el_v,
             "inc8_through_centering": through_centering_v,
+            "inc8_gate_progress": gate_progress_v,
+            "inc8_tcam_front_frac": tcam_front_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())

@@ -253,6 +253,17 @@ class EmulConfig:
     # FoV -> the ~4.3 m measured blackout) so the policy must coast on IMU+belief. 0 => OFF (the accept
     # band-pass already zeros accept below ~12 m, so this is an EXPLICIT hard cutoff, off by default).
     blackout_range_m: float = 0.0
+    # CAMERA TAIL-MOUNT FLIP (2026-07-05 audit A0): training flies the course TAIL-FIRST (spawn yaw =
+    # gate_yaw + pi, peregrine_course.py -- the VQ1 legacy control alias fly_rl compensates with its
+    # virtual pi body-z flip), but the baked R_camera_from_body points the emulated camera along body
+    # +x = the NOSE = BACKWARD relative to flight. The gate therefore sits BEHIND the emulated camera
+    # for the entire approach: in_image ~ never, accept ~ p_out_of_image, look-at self-gated off
+    # (t_cam z > 0 fails), R5'/fix_bonus/confidence all structurally inert -- while the DEPLOYED camera
+    # (on the real nose, flying nose-first) faces the gate. camera_flip=True rotates the EMULATED mount
+    # pi about body z (R_cb @ diag(-1,-1,1)) so the virtual camera faces the flight direction, exactly
+    # as the real camera faces the real flight direction. Control conventions untouched. False (default)
+    # == the legacy backward mount == byte-identical.
+    camera_flip: bool = False
 
 
 # ============================================================================ S1 geometry helpers
@@ -500,6 +511,12 @@ class BatchedEstimatorEmulator:
                                   accel_noise_std=self.cfg.imu_accel_noise,
                                   attitude_noise_std=self.cfg.attitude_noise)
         self.R_cb, self.K, self.flip, self.g = _const(device, dtype)
+        # CAMERA TAIL-MOUNT FLIP (see EmulConfig.camera_flip): remount the emulated camera pi about
+        # body z so it faces the tail-first flight direction. Applied ONLY to the camera geometry
+        # constant -- KF predict / accel synthesis / all body-frame kinematics keep the truth R.
+        if self.cfg.camera_flip:
+            rz_pi = torch.diag(torch.tensor([-1.0, -1.0, 1.0], device=device, dtype=dtype))
+            self.R_cb = self.R_cb @ rz_pi
         # per-env episode DR state
         self._sigma_lat = torch.full((n,), float("nan"), device=device, dtype=dtype)
         self._bias = torch.full((n,), float("nan"), device=device, dtype=dtype)

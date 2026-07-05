@@ -230,6 +230,33 @@ def _run_with_lifelines(self):
     if warmstart_from is not None:
         print(f"[lifeline] CONTINUING training from warm-started weights: {warmstart_from}")
 
+    # CRITIC-ONLY WARMUP (2026-07-05 audit A1): every (warm)start is a distribution shift onto FRESH
+    # Adam moments -- at multi_gate entry the critic diverged (value_loss 617 -> 269,156 by update 100)
+    # and ~200 updates of bootstrap-garbage advantages destroyed the transferred policy. For the first
+    # ``+critic_warmup_updates=N`` PPO updates, zero every actor-named gradient inside optim.step (the
+    # nan-guard wrapping pattern), so ONLY the critic adapts to the new return scale while the policy
+    # holds still. Unset/0 == byte-identical. Applies to fresh starts too (a random critic's advantages
+    # are equally garbage). counter["i"] is the same 0-based PPO-update index the warmup ramp uses.
+    critic_warmup = int(getattr(cfg, "critic_warmup_updates", 0) or 0)
+    if critic_warmup > 0:
+        _cw_state = {"released": False}
+        _pre_cw_step = agent.optim.step
+
+        def _critic_warmup_step(*a, **k):
+            if counter["i"] < critic_warmup:
+                for _n, _p in agent.agent.named_parameters():
+                    if "actor" in _n and _p.grad is not None:
+                        _p.grad.zero_()
+            elif not _cw_state["released"]:
+                _cw_state["released"] = True
+                print(f"[critic-warmup] RELEASED at update {counter['i']}: actor learning resumes "
+                      f"(critic adapted alone for the first {critic_warmup} updates).")
+            return _pre_cw_step(*a, **k)
+
+        agent.optim.step = _critic_warmup_step
+        print(f"[critic-warmup] ON: actor gradients ZEROED for the first {critic_warmup} PPO updates "
+              f"(critic-only adaptation to the new return scale).")
+
     try:
         _orig_run(self)
         if getattr(agent, "nan_skipped", 0):

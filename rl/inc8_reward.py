@@ -79,6 +79,21 @@ class Inc8RewardWeights:
     # track vs along-track), the existing NEAR-gate centering (estimator-error, σ_p0) and the look-at
     # primitive (camera, not flight path), so it composes with all of them. 0 -> the zero term (byte-id).
     through_centering: float = 0.0  # rw for the through-approach lateral centering pull (0 == off)
+    # GT-ANCHOR CLAMP (2026-07-05 audit A2): the UNCLAMPED -estimerr*err_ip drains up to -10/step on a
+    # lost estimator; over a 40 s episode that integral dwarfs every terminal penalty, so at gamma=0.99
+    # an immediate miss (-15) beats even a well-tracking continuation -- PPO learns to QUIT. Clamping
+    # err_ip at estimerr_clamp caps the drain (0.5 m -> max -1/step at estimerr=2) so the anchor keeps
+    # its calibrated-caution gradient in the trackable regime without ever making termination optimal.
+    # 0 == NO clamp (byte-identical legacy).
+    estimerr_clamp: float = 0.0     # err_ip clamp (m) for the GT anchor; 0 == unclamped (byte-id)
+    # DENSE ALONG-TRACK PROGRESS for RANDOM courses (2026-07-05 audit A2): on per-env random courses
+    # R1' arc-progress is the exact zero (no global Gamma), through-centering is cross-track-only, and
+    # gate passage is sparse -- NOTHING dense pays forward motion, so the 24-38.5 m inter-gate stretch
+    # is a reward desert. This pays rw * (prev_d2g - curr_d2g) SIGNED (retreat costs) toward the CURRENT
+    # target gate -- the same delta the R5' progress-gate already uses, promoted to a paid term. The
+    # potential/telescoping form sums to the net range closed, so it cannot be farmed by oscillation.
+    # 0 == no term (byte-identical).
+    gate_progress: float = 0.0      # rw for signed target-gate approach progress (0 == off)
 
 
 def arc_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float) -> Tensor:
@@ -88,11 +103,29 @@ def arc_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float) -> T
     return rw_progress * (s_curr - s_prev)
 
 
-def gt_estimerr_anchor(err_inplane_m: Tensor, rw_estimerr: float) -> Tensor:
+def gt_estimerr_anchor(err_inplane_m: Tensor, rw_estimerr: float, clamp_m: float = 0.0) -> Tensor:
     """GT anchor: -rw_estimerr * |KF_pos - truth|_inplane (gate-frame). Reward sees TRUTH; the actor
     sees the noisy KF obs. FLAT weight, no proximity schedule -- the truth-seeing critic (get_state
-    36-dim) is what makes calibrated caution emerge WITHOUT a hand-coded damping term."""
+    36-dim) is what makes calibrated caution emerge WITHOUT a hand-coded damping term.
+
+    ``clamp_m > 0`` caps the per-step drain at -rw*clamp_m (see Inc8RewardWeights.estimerr_clamp: an
+    unclamped anchor makes early termination reward-optimal on a lost estimator). 0 == unclamped
+    (byte-identical legacy)."""
+    if clamp_m > 0.0:
+        err_inplane_m = torch.clamp(err_inplane_m, max=clamp_m)
     return -rw_estimerr * err_inplane_m
+
+
+def gate_progress_reward(prev_d2g: Tensor, curr_d2g: Tensor, rw_gate_progress: float) -> Tensor:
+    """Dense SIGNED along-track drive for random courses: rw * (prev_d2g - curr_d2g), the range closed
+    toward the CURRENT target gate this step (negative when retreating -- do NOT clamp; a one-sided
+    version would let the policy oscillate for free). Telescoping/potential form: sums to the net
+    range closed over any path, so it cannot be farmed. The caller measures both distances against the
+    SAME (post-advance) target gate, matching the through_centering no-spike-at-passage convention.
+    rw == 0 -> the exact zero term (byte-identical)."""
+    if rw_gate_progress == 0.0:
+        return torch.zeros_like(prev_d2g)
+    return rw_gate_progress * (prev_d2g - curr_d2g)
 
 
 def confidence_anneal(global_step: float, w: Inc8RewardWeights) -> float:
@@ -177,10 +210,20 @@ _FLIP_FRD_FLU = (1.0, -1.0, -1.0)       # body-rate FRD<->FLU (involutory; == di
 _SIN20, _COS20 = 0.34202014332566871, 0.93969262078590843   # sin/cos(CAMERA_PITCH_RAD == 20 deg)
 
 
-def r_body_from_camera(device=None, dtype=None) -> Tensor:
+def r_body_from_camera(device=None, dtype=None, tail_mount: bool = False) -> Tensor:
     """Constant R_body_from_camera (v_body = R @ v_cam) == frames.R_camera_from_body().T for the default
     (zero pitch/roll) boresight = the pure 20deg mount. BAKED (not a torch reimpl of the rotation -- the
-    documented sin-sign-flip trap) and PINNED to canonical numpy frames by tests/test_inc8_lookat.py."""
+    documented sin-sign-flip trap) and PINNED to canonical numpy frames by tests/test_inc8_lookat.py.
+
+    ``tail_mount=True`` (2026-07-05 audit A0, pairs with EmulConfig.camera_flip): the mount rotated pi
+    about body z so the camera faces the tail-first training flight direction. R_bc' = (R_cb @ Rz_pi)^T
+    = Rz_pi @ R_bc with Rz_pi = diag(-1,-1,1) (symmetric + involutory), i.e. the first two ROWS negated.
+    MUST match the emulator's camera_flip so the look-at correction and the fix geometry live in the
+    SAME virtual camera frame. False (default) == the legacy nose mount (byte-identical)."""
+    if tail_mount:
+        return torch.tensor([[0.0,   -_SIN20, -_COS20],
+                             [-1.0,   0.0,     0.0],
+                             [0.0,    _COS20, -_SIN20]], device=device, dtype=dtype)
     return torch.tensor([[0.0,    _SIN20,  _COS20],
                          [1.0,    0.0,     0.0],
                          [0.0,    _COS20, -_SIN20]], device=device, dtype=dtype)

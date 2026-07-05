@@ -85,7 +85,12 @@ BASE=(
   +dynamics.dr_force_bias=true +dynamics.dr_latency_min_steps=1 +dynamics.dr_latency_max_steps=3
   dynamics.controller.max_normed_thrust=3.765
   algo=${ALGO} algo.entropy_weight=${ENT_WEIGHT} headless=True device=0
+  algo.critic_grad_norm=1.0
+  +warmstart_reset_logstd=true +critic_warmup_updates=100
 )
+# ^ 2026-07-05 audit boundary protections (mirror peregrine_vq2_curriculum.sbatch): bounded critic
+# gradients everywhere; logstd reset applies only when EXTRA passes +init_from; critic-only warmup
+# applies to fresh starts too (a random critic's advantages are equally garbage).
 
 # REWARD-FREEZE ARMS (Fengyou owns the freeze; presented as toggles -- spec T3.3):
 #   a = recenter-faithful (progress + through-centering + R5'-A; rw_centering OFF) -- the proven-flying

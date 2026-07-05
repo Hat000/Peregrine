@@ -110,8 +110,36 @@ def maybe_warmstart(agent, env, cfg) -> Optional[str]:
           f"env obs_dim={env_obs_dim or '?'}; optimizer + rollout buffer FRESH -- weights-only "
           f"transfer for the reward re-pilot).")
 
+    # LOGSTD RESET (2026-07-05 audit A3): actor_logstd rides along in every weights-only warm-start, so
+    # each curriculum stage inherits the PREVIOUS stage's exploitation schedule -- three near-converged
+    # easy stages ground per-dim std 0.223 -> 0.050 before the only hard stage, which then collapsed
+    # and pinned at the tanh floor (entropy -13.68). ``+warmstart_reset_logstd=true`` zeroes the RAW
+    # logstd parameter after the load (tanh squash 0 -> logstd -1.5/dim -> std ~0.223 == fresh-init
+    # exploration) while KEEPING the transferred means: transfer the competence, never the exploitation
+    # schedule. Unset/false == byte-identical legacy carry-over.
+    if bool(getattr(cfg, "warmstart_reset_logstd", False)):
+        reset_actor_logstd(agent)
+
     _force_lookat_warmup_off(env)
     return init_from
+
+
+def reset_actor_logstd(agent) -> int:
+    """Zero every ``actor_logstd`` RAW parameter on the agent's module tree (squashed logstd -1.5/dim,
+    std ~0.223 == fresh-init exploration). Returns the number of parameters reset (0 -> loud warning:
+    the network layout changed and the reset silently missed -- fail visible, not silent)."""
+    module = getattr(agent, "agent", agent)
+    n_reset = 0
+    for name, p in module.named_parameters():
+        if "actor_logstd" in name:
+            p.data.zero_()
+            n_reset += 1
+            print(f"[warmstart] RESET exploration: {name} zeroed (squashed logstd -1.5/dim, "
+                  f"std ~0.223 -- fresh-init exploration on transferred means).")
+    if n_reset == 0:
+        print("[warmstart] WARNING: warmstart_reset_logstd requested but NO actor_logstd parameter "
+              "found -- network layout changed? Exploration was NOT reset.")
+    return n_reset
 
 
 def _sidecar_obs_dim(sidecar_path: str) -> int:

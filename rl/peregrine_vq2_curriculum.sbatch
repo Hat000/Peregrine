@@ -62,7 +62,16 @@ BASE=(
   +dynamics.dr_force_bias=true +dynamics.dr_latency_min_steps=1 +dynamics.dr_latency_max_steps=3
   dynamics.controller.max_normed_thrust=3.765
   algo=${ALGO} algo.entropy_weight=${ENT_WEIGHT} headless=True device=0
+  algo.critic_grad_norm=1.0
 )
+# 2026-07-05 audit-A1/A3 boundary protections (see rl/inc8_warmstart.py + rl/peregrine_train_inc8.py):
+#   * critic_grad_norm=1.0 (BASE above): the unbounded critic + fresh Adam diverged at the multi_gate
+#     boundary (value_loss 617 -> 269,156) and its garbage advantages destroyed the transferred policy.
+#   * warmstart_reset_logstd: zero the RAW logstd after every warm-start load -- transfer the means,
+#     never the exploitation schedule (3 easy stages ground std 0.223 -> 0.050 before the hard stage).
+#   * critic_warmup_updates=100: actor gradients zeroed for the first 100 updates of EVERY stage so the
+#     critic adapts to the new return scale before the policy moves.
+BOUNDARY_OV=( +warmstart_reset_logstd=true +critic_warmup_updates=100 )
 case "${REWARD}" in
   a) REWARD_OV=( ) ;;
   b) REWARD_OV=( +env.rw_centering=1.0 ) ;;
@@ -74,7 +83,9 @@ if [ "${A_BODY}" = "1" ]; then ABODY_OV=( +env.obs_a_body=true ); else ABODY_OV=
 nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 20 > ${GPUUTIL} 2>&1 &
 SMI_PID=$!
 
-STAGES="hover single_gate blackout_pass multi_gate"
+# 2026-07-05 ladder rebuild (audit A0-A4): hover DROPPED (redundant with single_gate once the logstd
+# reset exists); dual_gate INSERTED (first handoff/turn + obs[13:17] goes live BEFORE the full course).
+STAGES="single_gate blackout_pass dual_gate multi_gate"
 PREV_CKPT=""
 for STAGE in ${STAGES}; do
   STAGE_OV=( $(python ${CURR} ${STAGE}) )
@@ -85,6 +96,7 @@ for STAGE in ${STAGES}; do
   echo "=== VQ2 CURRICULUM stage=${STAGE} seed=${SEED}: ${NUPD} updates, init_from=${PREV_CKPT:-FRESH} ==="
   echo "    overrides: ${STAGE_OV[@]}"
   python ${TRAIN} "${BASE[@]}" "${STAGE_OV[@]}" "${REWARD_OV[@]}" "${ABODY_OV[@]}" "${INIT_OV[@]}" \
+    "${BOUNDARY_OV[@]}" \
     hydra.run.dir=${RUNDIR} \
     n_envs=${NENVS} n_updates=${NUPD} save_freq=50 log_freq=10 \
     seed=${SEED} runname=${RUNNAME} ${EXTRA:-}
