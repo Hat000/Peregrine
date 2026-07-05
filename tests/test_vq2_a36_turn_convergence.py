@@ -544,14 +544,16 @@ def test_profile_flight3_full_turn_package():
     assert cfg.yaw_slew_taper_floor == 0.35
     # Item 1 (slower) -- values tightened by the TURN PACKAGE (2026-07-04, run 20260704_173948
     # understeer): az_rad 0.35 -> 0.25 (full forward cut beyond ~14 deg, was 20) and accel
-    # 0.65 -> 0.45 (entry ~3.9 m/s vs ~2.2-2.8 comfortable). Pinned in test_vq2_turn_package too.
+    # 0.65 -> 0.45. TURN ITERATION (run 20260704_231155): accel 0.45 -> 0.35 (slower entry).
+    # Pinned in test_vq2_turn_package too.
     assert cfg.fwd_point_gate_az_rad == 0.25
-    assert cfg.forward_accel_mps2 == 0.45
-    # Item 4 (switch lanes):
+    assert cfg.forward_accel_mps2 == 0.35
+    # Item 4 (switch lanes) -- TURN ITERATION: image_lat_cap 3.0 -> 4.0 (more roll; the cap was
+    # railing through the turn) + total_accel_cap 3.0 -> 4.0 so the lateral cap actually applies.
     assert cfg.use_lateral_first_budget is True
-    assert cfg.image_lat_cap_mps2 == 3.0
+    assert cfg.image_lat_cap_mps2 == 4.0
     # A36 COORDINATED TURN (A+B+C): unthrottle roll, cut yaw, arm the pass + demote orbit-brake.
-    assert cfg.total_accel_cap_mps2 == 3.0            # A: cap 2.0 -> 3.0 (image_lat_cap now applies)
+    assert cfg.total_accel_cap_mps2 == 4.0            # turn iteration: cap 3.0 -> 4.0 (22 deg bank)
     assert cfg.pursuit_yaw_slew_rps == 0.9            # B: yaw slew 1.5 -> 0.9
     assert cfg.visual_yaw_rate_cap_rps == 0.9         # B: yaw cap 1.5 -> 0.9
     assert cfg.pass_arm_range_m == 4.5               # C: arm at the ~4.3m vision floor (was 3.0)

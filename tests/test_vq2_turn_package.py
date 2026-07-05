@@ -161,14 +161,20 @@ def test_healthy_frame_resets_the_streak():
 
 def test_vq2_profile_ships_the_turn_package():
     so = vq2_case_c().seeker_overrides
-    assert so.get("forward_accel_mps2") == 0.45            # a1
+    # TURN ITERATION (2026-07-04, run 20260704_231155): forward slower + more roll authority.
+    # Now the alat cap DID rail through the turn (ticks 54/64/152 at the 3.0 cap, sustained
+    # az_err 0.4-0.7 rad), so the caps 3.0 -> 4.0 (operator: "roll more") and forward 0.45 -> 0.35
+    # (operator: "fly into the first gate slower"). Yaw FROZEN per operator ("yaw is good").
+    assert so.get("forward_accel_mps2") == 0.35            # a1 (turn iteration: 0.45 -> 0.35)
     assert so.get("fwd_point_gate_az_rad") == 0.25         # a2
     assert so.get("image_kaz_mps2_per_rad") == 12.0        # c1
     assert so.get("image_lat_slew_mps3") == 9.0            # c2
     assert so.get("track_max_loww_ticks") == 4             # b1
-    # deliberately UNCHANGED (0% cap-bound / yaw completed the turn / pass onset was 0.24 s):
-    assert so.get("image_lat_cap_mps2") == 3.0
-    assert so.get("total_accel_cap_mps2") == 3.0
+    # turn iteration: caps 3.0 -> 4.0 (the cap now binds -> more roll; lateral-first keeps forward
+    # governed by forward_accel_mps2 so it cannot balloon):
+    assert so.get("image_lat_cap_mps2") == 4.0
+    assert so.get("total_accel_cap_mps2") == 4.0
+    # yaw FROZEN (operator: "yaw is good where it is; if we roll more we don't need to yaw as much"):
     assert so.get("pursuit_yaw_slew_rps") == 0.9
     assert so.get("visual_yaw_rate_cap_rps") == 0.9
     assert so.get("pass_arm_range_m") == 4.5

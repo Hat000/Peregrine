@@ -343,6 +343,25 @@ class Controller:
     # 1.45 m/s climb in ~0.5 s / 0.36 m -- ~2x margin on the 135554 top-bar miss (+0.75 m). None
     # (default) => no bound, byte-identical. vq2_case_c: 0.08.
     gate_pd_brake_neg_max: float | None = None
+    # V-1: HONEST (IMU-only) rate source at ALL RANGES (2026-07-04; gate-2 turn dive on run
+    # 20260704_231155). R2-2 A-1 (gate_pd_brake_imu_vz) only swaps the brake onto the IMU-only
+    # washout vz INSIDE the terminal zone (s < 1); in the FAR field (s = 1) the brake still consumes
+    # vz_lp (= the vision-corrected vz_est). Diagnosis (ticks 76-95, drone climbing hard toward the
+    # HIGH gate 1 at range 20-23 m, s = 1.0, thrust railed 0.536): vz_est RAILS to +2.50 with the
+    # WRONG (inverted) sign (reads "falling") while vz_imu = -0.02..-1.35 (reads "climbing" --
+    # physically correct under max thrust), so the far-field brake term_damp = kd*vz_lp = +0.15
+    # AMPLIFIES the climb (rocket to ceiling) instead of damping it; then vz_est flips to -2.5 and
+    # term_damp craters the thrust to 0.07 (the mid-turn dip). The far-field bias sweep that inverts
+    # vz_est is the SAME mechanism A-1 fixed in the terminal zone; V-1 extends the honest-source
+    # choice to ALL ranges. WHEN ON: the base kd damping consumes ``NavState.vert_vz_imu`` everywhere
+    # (drop the s < 1 gate on the RATE SOURCE only); the R2-1 boost ``(1 + kb*(1 - s))`` is UNCHANGED
+    # (still only lifts in the terminal zone), and the A-1 terminal swap becomes a no-op (both paths
+    # now read vz_imu). vz_imu NaN (estimator not seeded) => the vz_lp path EXACTLY (the same
+    # NaN-fallback A-1 uses), so a missing IMU vz can never break far-field flight. OFF (default
+    # False) => today's path EXACTLY (terminal->vz_imu under A-1, far->vz_lp): byte-identical (VQ1 /
+    # case-A AND today's vq2 gate-PD law). vq2_case_c flips it ON. Independent of gate_pd_brake_imu_vz
+    # (which then only still matters when V-1 is OFF). [VQ2 V-1, 2026-07-04]
+    gate_pd_rate_imu_always: bool = False
     # R2-2b: TRUST-TAPER (q-RELEASE) on the gate-PD position term. Diagnosis (ticks 88-105): z_off
     # dead-reckoned to -6.4 (2x past the +/-3 clip) while the corrective vision was LOW-weight
     # (zoff_w 0.04-0.15 -- the +20deg camera losing the high gate), pinning term_gate at +0.120 for
@@ -514,12 +533,21 @@ class Controller:
             #   term_gate *= s ; term_damp *= (1 + kb*(1 - s))     [s=1 -> *1, *1 : byte-identical].
             s = (float(np.clip(gate_pd_scale, 0.0, 1.0))
                  if (self.gate_pd_terminal and gate_pd_scale is not None) else 1.0)
-            # R2-2 A-1 (gate_pd_brake_imu_vz, see the field comment): inside the terminal zone the
-            # brake rate source is the IMU-only washout vz -- the channel the close-range bias
-            # sweep cannot sign-invert. s=1 / flag off / NaN => vz_lp EXACTLY (byte-identical).
+            # RATE-BRAKE SOURCE. Default: vz_lp (the vision-corrected damping rate). Two flags may
+            # swap it onto ``vz_imu`` -- the estimator's PARALLEL IMU-only washout, the channel the
+            # close-range / far-field bias sweep cannot sign-invert -- when it is finite:
+            #  * V-1 (gate_pd_rate_imu_always, see the field comment): ALL RANGES. The far-field
+            #    (s=1) fix -- vz_est rails WRONG-signed there (run 20260704_231155 ticks 76-95) and
+            #    the base kd brake amplifies the climb; V-1 consumes vz_imu everywhere.
+            #  * R2-2 A-1 (gate_pd_brake_imu_vz, see the field comment): TERMINAL zone only (s < 1).
+            #    Subsumed by V-1 when both are on (both then read vz_imu).
+            # vz_imu NaN (estimator not seeded) => vz_lp EXACTLY (byte-identical NaN fallback). The
+            # R2-1 boost ``(1 + kb*(1 - s))`` below is UNCHANGED either way -- it lifts only in the
+            # terminal zone regardless of which rate source feeds the brake.
             vz_brake = vz
-            if (self.gate_pd_brake_imu_vz and s < 1.0
-                    and vz_imu is not None and np.isfinite(vz_imu)):
+            _imu_ok = vz_imu is not None and np.isfinite(vz_imu)
+            if _imu_ok and (self.gate_pd_rate_imu_always
+                            or (self.gate_pd_brake_imu_vz and s < 1.0)):
                 vz_brake = float(vz_imu)
             # R2-2b (gate_pd_zoff_trust_taper, see the field comment): fade the position term when
             # the z_off state is railed past the actable range AND only collapsed-weight vision is

@@ -654,9 +654,9 @@ def test_profile_wiring_a31():
     assert ov["pass_coast_s"] == 0.3
     assert ov["pass_coast_accel_mps2"] == 0.0
     assert ov["reramp_forward_after_pass"] is True
-    # TURN PACKAGE a1 (2026-07-04, run 20260704_173948): slowed again 0.65 -> 0.45 (entry
-    # ~3.9 m/s at the gate-0 plane vs ~2.2-2.8 comfortable at the realized lateral authority).
-    assert ov["forward_accel_mps2"] == 0.45
+    # TURN PACKAGE a1 (2026-07-04, run 20260704_173948): slowed again 0.65 -> 0.45. TURN ITERATION
+    # (run 20260704_231155): slower again 0.45 -> 0.35 (operator: "fly into the first gate slower").
+    assert ov["forward_accel_mps2"] == 0.35
     # FIX 3: orbit-breaker + yaw clamp. (A36 coordinated-turn DEMOTED the guard 1.75 -> 3.0 so it no
     # longer pre-empts the pass-turn -- a rare failsafe.)
     assert ov["orbit_guard_rad"] == 3.0
@@ -674,10 +674,11 @@ def test_profile_wiring_a31():
     # dip that tapped ground on run 20260704_024434). The 1.12 anti-swell cap stays.
     assert ov["hold_thrust_lo_frac"] == 1.00
     assert ov["hold_thrust_hi_frac"] == 1.12
-    # A30/A29/A28 kept. (A36 coordinated-turn: yaw slew 1.5->0.9, total_accel_cap 2.0->3.0.)
+    # A30/A29/A28 kept. (A36 coordinated-turn: yaw slew 1.5->0.9, total_accel_cap 2.0->3.0;
+    # turn iteration (231155): total_accel_cap 3.0 -> 4.0, yaw FROZEN.)
     assert ov["use_image_servo_lateral"] is True
     assert ov["pursuit_yaw_slew_rps"] == 0.9
-    assert ov["total_accel_cap_mps2"] == 3.0
+    assert ov["total_accel_cap_mps2"] == 4.0
     prof = vq2_case_c()
     assert prof.nav_config.reconcile_vision_clock_continuous is True
     assert prof.vertical_estimator is True

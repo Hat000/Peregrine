@@ -464,14 +464,26 @@ def vq2_case_c() -> DeployProfile:
                           #   0.65 -> 0.45 and 0.35 -> 0.25; run 20260704_173948 understeer).
                           "fwd_point_gate_az_rad": 0.25,
                           "fwd_point_gate_full_az_rad": 0.05,
-                          "forward_accel_mps2": 0.45,
+                          # TURN ITERATION (2026-07-04, run 20260704_231155): 0.45 -> 0.35 (operator
+                          #   eyes: "fly into the first gate slower"). Under lateral-first this is the
+                          #   forward-budget ceiling (a_fwd <= forward_accel_mps2 * ramps * fwd_scale),
+                          #   so lowering it directly slows the entry AND caps the forward component
+                          #   regardless of the raised total_accel_cap_mps2 (4.0) below -- forward
+                          #   cannot balloon when the budget grows; the extra budget goes to roll.
+                          "forward_accel_mps2": 0.35,
                           #
                           # ITEM 4 -- LATERAL-FIRST "switch lanes" (ON): bank sideways onto the approach
                           #   line instead of yaw-to-face + being carried past (operator saw "barely any
                           #   roll"). Raise the lateral cap so a big cross-track drives a real
-                          #   translation (3.0 ~= a 17 deg bank; the A31 lat-slew still rate-limits it).
+                          #   translation (4.0 ~= a 22 deg bank; the A31 lat-slew still rate-limits it).
+                          # TURN ITERATION (2026-07-04, run 20260704_231155): 3.0 -> 4.0 (operator eyes:
+                          #   "roll more"; alat RAILED the 3.0 cap through the turn -- ticks 54/64/152 at
+                          #   3.00 with sustained az_err 0.4-0.7 rad, roll input-crushed by the binding
+                          #   cap). Paired with total_accel_cap_mps2 4.0 below so the added budget lands
+                          #   on ROLL (lateral-first: a_lat_b = clip(a_lat, cap_tot) takes it all; forward
+                          #   stays governed by forward_accel_mps2 = 0.35, never balloons).
                           "use_lateral_first_budget": True,
-                          "image_lat_cap_mps2": 3.0,
+                          "image_lat_cap_mps2": 4.0,
                           #
                           # === A36 COORDINATED TURN (2026-07-04) — rebalance yaw->roll + make the
                           # PASS-TURN own the turn, not the orbit-brake. Grounded in run 20260704_120357
@@ -485,11 +497,18 @@ def vq2_case_c() -> DeployProfile:
                           #  * the pass never ARMED: tracked range floored at ~4.3m (gate fills/exits FOV
                           #    on the pass) and never reached pass_arm_range_m=3.0.
                           # FIX (A+B+C, one coordinated package):
-                          # A) UNTHROTTLE ROLL: total_accel_cap 2.0 -> 3.0 so image_lat_cap=3.0 actually
+                          # A) UNTHROTTLE ROLL: total_accel_cap 2.0 -> 3.0 so image_lat_cap actually
                           #    applies (~17deg bank). Lateral-first already caps a_fwd by
-                          #    forward_accel_mps2 (0.65) FIRST, so forward does NOT balloon -- the added
+                          #    forward_accel_mps2 FIRST, so forward does NOT balloon -- the added
                           #    budget goes entirely to ROLL ("more roll, still slow").
-                          "total_accel_cap_mps2": 3.0,
+                          # TURN ITERATION (2026-07-04, run 20260704_231155): 3.0 -> 4.0, paired with
+                          #    image_lat_cap_mps2 4.0 above (operator eyes: "roll more"; alat RAILED the
+                          #    3.0 cap through the turn). Under lateral-first the whole +1.0 lands on
+                          #    a_lat_b (bank 17deg -> ~22deg); forward is bounded by forward_accel_mps2
+                          #    (0.35) not by cap_tot, so a_fwd stays governed and never balloons -- the
+                          #    fwd_budget = sqrt(cap^2 - a_lat^2) ceiling only rises, it never pulls
+                          #    a_fwd up (a_fwd = min(forward_accel_mps2*ramps*fwd_scale, fwd_budget)).
+                          "total_accel_cap_mps2": 4.0,
                           # B) CUT YAW so the turn is roll-led not yaw-dominated (also un-starves the roll
                           #    budget): yaw setpoint slew + the visual yaw-rate cap 1.5 -> 0.9.
                           "pursuit_yaw_slew_rps": 0.9,
@@ -718,6 +737,20 @@ def vq2_case_c() -> DeployProfile:
                               "gate_pd_brake_imu_vz": True,
                               "gate_pd_brake_neg_max": 0.08,
                               "gate_pd_zoff_trust_taper": True,
+                              # V-1 (2026-07-04, gate-2 turn dive on run 20260704_231155): honest
+                              # (IMU-only) rate source at ALL RANGES, not just the terminal zone.
+                              # Diagnosis (ticks 76-95, drone climbing hard toward the HIGH gate 1
+                              # at range 20-23 m, s=1.0): vz_est RAILS to +2.50 WRONG-signed (reads
+                              # "falling") while vz_imu = -0.02..-1.35 (reads "climbing", correct
+                              # under railed thrust 0.536) -- so the far-field base brake
+                              # kd*vz_lp = +0.15 AMPLIFIED the climb (rocket to ceiling), then
+                              # vz_est flipped to -2.5 and the brake cratered thrust to 0.07 (the
+                              # mid-turn dip). Both operator residuals are ONE root cause: the R2-2
+                              # A-1 IMU-vz swap was gated to s<1 (terminal), but the turn/climb is
+                              # all at s=1 (far), so the brake ran on fiction. V-1 consumes vz_imu
+                              # everywhere; the R2-1 boost stays terminal-only. See the
+                              # Controller.gate_pd_rate_imu_always field comment.
+                              "gate_pd_rate_imu_always": True,
                               "ff_vertical_kd_alt": 0.06,
                               "ff_vertical_vz_lp_alpha": 0.8, "kp_gate": 0.04,
                               # A33 V-2a (2026-07-03): OPEN the floor 0.15 -> 0.05. Run 20260703_210632
