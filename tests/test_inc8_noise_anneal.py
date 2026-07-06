@@ -183,3 +183,21 @@ def test_apply_clamp_only_lowers_never_raises():
     na.apply_noise_schedule(a, 0, _sched())            # ceiling std 0.6
     after = a.agent.actor.actor_logstd.detach().flatten().tolist()
     assert after == pytest.approx(before)              # unchanged
+
+
+# ---- B2 M3 (2026-07-06): the curriculum schedule targets ----
+
+def test_b2_m3_schedule_targets():
+    """B2 M3 pin (2026-07-06): the curriculum _ANNEAL overrides (std_hold 0.35, std_floor 0.10) with
+    module-default hold_frac 0.5 must give: ceiling 0.35 through the FULL front half (>= the 0.18
+    boundary logstd reset of rl/inc8_warmstart.py, so the clamp is a no-op at critic-warmup unfreeze),
+    ceiling >= 0.15 until ~84% of the stage, and ceiling 0.10 + entropy 0.0 at stage end."""
+    s = dict(hold_frac=0.5, std_hold=0.35, std_floor=0.10,
+             entropy_hold=0.01, entropy_floor=0.0, n_updates=2000)
+    assert na.schedule_values(0, 2000, s)["std_ceil"] == pytest.approx(0.35)
+    assert na.schedule_values(100, 2000, s)["std_ceil"] >= 0.18   # boundary reset under ceiling at unfreeze
+    assert na.schedule_values(1000, 2000, s)["std_ceil"] == pytest.approx(0.35)  # flat through front half
+    assert na.schedule_values(1676, 2000, s)["std_ceil"] >= 0.15  # >=0.15 well past the front half
+    v = na.schedule_values(2000, 2000, s)
+    assert v["std_ceil"] == pytest.approx(0.10)
+    assert v["entropy_weight"] == pytest.approx(0.0)

@@ -183,7 +183,9 @@ distribution changes. Course tensors are per-env throughout: gate_pos (N,G,3), g
 SPAWNS (per env, at reset): with prob ``standing_start_frac`` a STANDING START (the course's pad:
 23.3 m-class up-course of gate 0, at rest, tilted -17.8 deg pitch, TAIL-FIRST body yaw =
 gate0_yaw + pi -- the VQ1 deployment convention behind fly_rl.py's virtual flip; on VQ1 this
-reproduces the measured spawn pose); otherwise 1 m up-course of a random target gate, at rest,
+reproduces the measured spawn pose); otherwise 1 m up-course of a random NON-LAST target gate
+(B2-M1: the last gate is excluded whenever the course has >= 2 gates -- a near-spawn must never
+finish on a 1 m dash; G=1 courses unchanged), at rest,
 tail-first w.r.t. that gate (on VQ1 with gate yaws = pi this equals the parent's identity-attitude
 spawn EXACTLY, so the S1.3 obs distribution is preserved). Both get small pose jitter.
 
@@ -209,6 +211,8 @@ try:
 except Exception:                       # pragma: no cover - torch absent in some tooling contexts
     torch = None
     Tensor = "Tensor"                   # type: ignore
+
+import inc8_spawn_metrics as SM        # B2/M2a helpers (torch-guarded; import-clean without torch)
 
 try:                                    # diffaero + pytorch3d only exist on the training cluster;
     import pytorch3d.transforms as T    # the pure helpers below stay importable/testable anywhere.
@@ -445,6 +449,25 @@ def quat_xyzw_from_axis_angle(rotvec: Tensor) -> Tensor:
     return torch.cat([scale * rotvec, w], dim=-1)
 
 
+def sample_reset_target_gates(m: int, n_gates: int, standing: Tensor,
+                              device=None) -> Tensor:
+    """B2-M1 spawn fix (2026-07-06): draw the per-env reset target gate (int32, shape (m,)).
+
+    Near-spawn resets place the drone 1 m up-course of the drawn target gate, so drawing the
+    LAST gate let the policy bank a trivial finish on a 1 m dash -- the RC1 'spawn lottery'
+    (docs/vq2-handoff-diagnosis-2026-07-06): with G gates and standing_start_frac s, a fraction
+    (1-s)/G of ALL resets scored success from spawn artifacts alone. When n_gates >= 2 the
+    near-spawn draw is now uniform over the NON-last gates (randint high = n_gates-1, exclusive
+    -> max index n_gates-2). n_gates == 1 keeps the identical all-zeros draw (only gate 0
+    exists). Entries flagged ``standing`` are forced to gate 0 (standing start, unchanged);
+    the standing/near split itself is drawn by the CALLER before this and is untouched.
+    """
+    hi = n_gates - 1 if n_gates >= 2 else n_gates
+    tg = torch.randint(0, hi, (m,), device=device, dtype=torch.int32)
+    tg[standing] = 0
+    return tg
+
+
 # ================================================================================================
 # The environment (requires diffaero -- training/eval cluster only).
 # ================================================================================================
@@ -495,6 +518,17 @@ class PeregrineRacing(Racing):
             base_lo, base_hi = overrides.get("seg_len_m", DEFAULT_COURSE_RANGES["seg_len_m"])
             overrides["seg_len_m"] = (float(_sl_lo) if _sl_lo is not None else base_lo,
                                       float(_sl_hi) if _sl_hi is not None else base_hi)
+        # B2 (2026-07-06 handoff diagnosis, M6a): per-stage DROP-band narrowing (course_drop_lo/hi ->
+        # sampler drop_m), wired EXACTLY like course_seg_len_{lo,hi} above. drop_m is +DOWN
+        # (peregrine_course: z_up delta = -drop), so lo=-2/hi=4 admits climbs <=2 m and descents
+        # <=4 m -- below the vertical-FOV exclusion cliff. UNSET -> the preset band (byte-identical:
+        # the overrides dict is untouched).
+        _dr_lo = getattr(cfg, "course_drop_lo", None)
+        _dr_hi = getattr(cfg, "course_drop_hi", None)
+        if _dr_lo is not None or _dr_hi is not None:
+            base_lo, base_hi = overrides.get("drop_m", DEFAULT_COURSE_RANGES["drop_m"])
+            overrides["drop_m"] = (float(_dr_lo) if _dr_lo is not None else base_lo,
+                                   float(_dr_hi) if _dr_hi is not None else base_hi)
         self._course_overrides = overrides
         self._spawn_pitch = float(VQ1_SPAWN_PITCH_RAD)
         self._vq1 = {
@@ -546,6 +580,11 @@ class PeregrineRacing(Racing):
         self._peak_tilt = torch.zeros(n, device=device)          # rad
         self._peak_roll = torch.zeros(n, device=device)          # rad (ZYX Euler |roll|)
         self._speed_sum = torch.zeros(n, device=device)          # sum of |v| per step
+        # B2/M2a spawn-class tag (metrics-only; no RNG, no math-path effect): 0=standing start,
+        # 1=near-spawn at a NON-last gate, 2=near-spawn at the LAST gate (the RC1 trivial-success
+        # class -- post-M1 its MASS must read ~0 for G>=2; kept to PROVE it, and for G=1 where
+        # every near-spawn is class 2). Written in reset_idx; read at terminal by the inc8 env.
+        self._spawn_class = torch.zeros(n, dtype=torch.long, device=device)
         self._nonfinite_obs = 0                                  # lifetime count (see get_observations)
         # action span for the R5 normalization (set lazily: dynamics bounds exist after init)
         span = (self.dynamics.max_action - self.dynamics.min_action).clamp(min=1e-6)
@@ -811,10 +850,16 @@ class PeregrineRacing(Racing):
         if self._body_radius_on:                      # INC7: fresh halo per episode
             self._sample_body_radius(env_idx)
 
-        # spawn selection: standing start (the pad) vs 1 m up-course of a random target gate
+        # spawn selection: standing start (the pad) vs 1 m up-course of a random target gate.
+        # B2-M1 (2026-07-06): near-spawns EXCLUDE the last gate when n_gates >= 2 -- a 1 m dash
+        # through the final gate is not a lap (see sample_reset_target_gates + the B2 pin test).
         standing = torch.rand(m, device=dev) < self.standing_start_frac
-        tg_new = torch.randint(0, self.n_gates, (m,), device=dev, dtype=torch.int32)
-        tg_new[standing] = 0
+        tg_new = sample_reset_target_gates(m, self.n_gates, standing, device=dev)
+        # B2/M2a: record the spawn class of the NEW episode (derived from the FINAL standing/tg_new
+        # -- no RNG draws, so the training RNG sequence is untouched). Read at episode terminal in
+        # the inc8 metric block, which step() runs BEFORE reset_idx, so the just-ended episode's
+        # class is still intact there.
+        self._spawn_class[env_idx] = SM.spawn_class_of(standing, tg_new, self.n_gates)
 
         gp = self.gate_pos[env_idx, tg_new.long()]
         gy = self.gate_yaw[env_idx, tg_new.long()]

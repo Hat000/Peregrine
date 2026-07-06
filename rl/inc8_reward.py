@@ -261,6 +261,19 @@ def lookat_warmup_factor(update_idx: int, warmup_updates: int) -> float:
     return min(max(update_idx / float(warmup_updates), 0.0), 1.0)
 
 
+def lookat_rate_clamp(dlook: Tensor, max_rate: float) -> Tensor:
+    """B2 arm A1 (diagnosis 2026-07-06 RC6): per-axis magnitude cap (rad/s, FLU action convention)
+    on the look-at injected body-rate correction -- the pitch primitive injects 1.5-2.3 rad/s
+    (48-73% of authority) in the descent class, post-PPO-ratio. Symmetric clamp to
+    [-max_rate, +max_rate]: sign/shape/dtype preserved, in-bound components bit-exact.
+    ``max_rate <= 0`` (the knob default 0.0) returns the INPUT TENSOR ITSELF -- no copy, no float
+    op == the unclamped legacy path exactly (byte-identical, mirroring lookat_warmup_factor's
+    <=0 convention)."""
+    if max_rate <= 0.0:
+        return dlook
+    return torch.clamp(dlook, min=-max_rate, max=max_rate)
+
+
 def centering_reward(err_inplane_m: Tensor, range_m: Tensor, rw_centering: float,
                      r_near: float, w_near: float) -> Tensor:
     """Dense terminal-sigma_p0 reward: -rw * sigmoid((r_near - range)/w) * err_inplane. Ramps the GT

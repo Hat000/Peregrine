@@ -31,7 +31,12 @@
 # ShadowPC first (Fengyou: Duo + SSH passphrase + VPN). PRE-SYNC these edited files to
 # /scratch/network/fl3689/peregrine_repo/rl/ (the Adroit repo is a FILE COPY, no git pull):
 #   peregrine_course.py  peregrine_racing.py  peregrine_racing_inc8.py  inc8_estimator_emul.py
-#   inc8_reward.py  vq2_curriculum.py  peregrine_vq2_smoke.sbatch  peregrine_vq2_curriculum.sbatch
+#   inc8_reward.py  vq2_curriculum.py  inc8_spawn_metrics.py  inc8_tb_trace.py
+#   peregrine_vq2_smoke.sbatch  peregrine_vq2_curriculum.sbatch
+# 🚩 B2 (2026-07-06): inc8_spawn_metrics.py is NEW and imported unconditionally at module level by
+# peregrine_racing.py -- omitting it = ModuleNotFoundError on every stage at import. inc8_tb_trace.py
+# carries the M2b FLIGHTCHECK fix (verdict = standing-class metric over updates >= 100); a stale
+# Adroit copy silently reverts the stage-advance gate to the contaminated step-0 success_rate max.
 #
 # ADROIT AUP (binding): compute on SLURM only; compute nodes have NO internet (pre-download deps on the
 # LOGIN/vis node BEFORE submit -- the diffaero conda env is pre-built); output -> /scratch; accurate

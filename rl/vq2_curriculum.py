@@ -44,6 +44,10 @@ boundary):
      handoff, the first turn/climb class. Blackout + latency ON, no stall yet.
   4. MULTI-GATE LAP -- the full random vq2_like course (6 gates), blackout + latency + contention
      stall, 100 s clock, gamma 0.995. Lap completion on estimator-emulated obs.
+
+  B2 2026-07-06 (handoff diagnosis): handoff_drill (drop [-2,+4] m) inserted before dual_gate_full
+  (= the flown dual_gate, full drop band); noise_anneal ceiling on EVERY stage; fix economy
+  rw_estimerr 1.0 + rw_fix_bonus 0.75. The flown dual_gate dict is FROZEN for reproducibility.
 """
 from __future__ import annotations
 
@@ -60,6 +64,28 @@ _COMMON = {
     "lookat_g_yaw": 3.0,             # ANALYTIC signs (frame fixed; -3 was the mirror compensation)
     "lookat_g_pitch": 3.0,
     "lookat_warmup_updates": 200,
+    # B2 (2026-07-06 handoff diagnosis, M4) FIX ECONOMY: post-handoff the clamped GT anchor saturated
+    # at -1.0/step while the first recovered fix paid +0.0 -- zero reacquisition gradient. Halve the
+    # anchor drain (dataclass default 2.0 -> 1.0; the 0.5 clamp above is UNCHANGED) and pay accepted
+    # fixes directly (progress-gated, un-gameable: inc8_reward.fix_bonus_reward, already summed into
+    # reward at peregrine_racing_inc8.step()).
+    "rw_estimerr": 1.0,
+    "rw_fix_bonus": 0.75,
+}
+
+# B2 NOISE ANNEAL (handoff diagnosis: entropy_loss logs -H; the -12 reading was noise RUNAWAY toward
+# the e^2 clamp, not collapse): enable the dormant ceiling schedule (rl/inc8_noise_anneal.py, wired
+# at peregrine_train_inc8.py:179/198) on EVERY ladder stage. Keys take '+algo.' because noise_anneal
+# and noise_std_* are NOT in ppo.yaml (module docstring: "+ because not in ppo.yaml"); the _raw
+# renderer emits them verbatim. Schedule: hold ceiling 0.35 through the front half (module default
+# hold_frac=0.5; satisfies >=0.15 front-half and admits the 0.18 boundary logstd reset), geometric
+# decay to 0.10 over the back half; entropy_weight anneals cfg.algo.entropy_weight (ENT_WEIGHT 0.01)
+# -> 0 over the same window (module defaults noise_entropy_hold/floor). EXPLICITLY NO noise floors:
+# the module clamps a CEILING (clamp_max) -- PPO may always go lower.
+_NOISE_ANNEAL_RAW = {
+    "+algo.noise_anneal": True,
+    "+algo.noise_std_hold": 0.35,
+    "+algo.noise_std_floor": 0.10,
 }
 
 # The ordered stage ladder. Values are hydra-override key->value rendered as `+env.<k>=<v>`, EXCEPT the
@@ -80,6 +106,7 @@ STAGES: dict[str, dict] = {
         **_COMMON,
         "course_n_gates": 1,
         "emul_blackout_range_m": 0.0,
+        "_raw": {**_NOISE_ANNEAL_RAW},
     },
     # 2. SINGLE GATE + TERMINAL BLACKOUT: through the <4.5 m blind zone (~4.3 m measured) + the full
     #    bimodal content-lag latency (fix carries t-Delta geometry; age carries the same Delta).
@@ -90,12 +117,22 @@ STAGES: dict[str, dict] = {
         "emul_lat_max_s": 1.0, "emul_lat_healthy_frac": 0.5,
         "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
         "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
+        "_raw": {**_NOISE_ANNEAL_RAW},
     },
-    # 3. DUAL GATE (NEW, audit A1): first HANDOFF + first turn/climb + obs[13:17] goes live, at a
-    #    NARROWED segment (23.7-28 m keeps the new gate inside the fix guard + look-at band). Blackout +
-    #    latency ON, no stall. gamma up + value-clip off from here (return scale starts growing).
+    # 3-as-flown. FROZEN reproducibility pin (job 3295856 curr_a, B1 HEAD f63b4d9): the dict that
+    # actually flew. LITERAL (not **_COMMON) so _COMMON drift (e.g. the B2 M4 economy change) can
+    # never alter this render; NOT in STAGE_ORDER. Byte-identity pinned by tests/test_vq2_b2_ladder.py.
     "dual_gate": {
-        **_COMMON,
+        "course_mode": "random",
+        "track_difficulty": "vq2_like",
+        "emul_camera_flip": True,
+        "emul_tau_stale": 0.5,
+        "rw_gate_progress": 10.0,
+        "rw_estimerr_clamp": 0.5,
+        "rw_through_centering": 10.0,
+        "lookat_g_yaw": 3.0,
+        "lookat_g_pitch": 3.0,
+        "lookat_warmup_updates": 200,
         "course_n_gates": 2,
         "course_seg_len_lo": 23.7, "course_seg_len_hi": 28.0,
         "emul_blackout_range_m": 4.3,
@@ -103,6 +140,36 @@ STAGES: dict[str, dict] = {
         "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
         "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
         "_raw": {"env.max_time": 60, "algo.gamma": 0.995, "algo.clip_value_loss": False},
+    },
+    # 3. HANDOFF_DRILL (B2, 2026-07-06 diagnosis M6): the first gate handoff with the DROP CLAMPED to
+    #    [-2, +4] m (+down), i.e. inside the vertical-FOV visibility band -- the full vq2_like drop
+    #    (-6..+12) makes ~42% of segments put gate 2 permanently outside a level drone's FOV (camera
+    #    +20 deg up, half-FOV 29.36 deg), so the flown dual_gate mixed "learn the handoff" with
+    #    "gate 2 is unseeable". Drill the handoff FIRST where the gate is always acquirable.
+    "handoff_drill": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_seg_len_lo": 23.7, "course_seg_len_hi": 28.0,
+        "course_drop_lo": -2.0, "course_drop_hi": 4.0,
+        "emul_blackout_range_m": 4.3,
+        "emul_lat_max_s": 1.0, "emul_lat_healthy_frac": 0.5,
+        "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
+        "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
+        "_raw": {"env.max_time": 60, "algo.gamma": 0.995, "algo.clip_value_loss": False,
+                 **_NOISE_ANNEAL_RAW},
+    },
+    # 4. DUAL_GATE_FULL (B2): the flown dual_gate with the drop UNSET (full vq2_like -6..+12 band
+    #    returns) + noise anneal. Same narrowed segment band; blackout + latency ON.
+    "dual_gate_full": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_seg_len_lo": 23.7, "course_seg_len_hi": 28.0,
+        "emul_blackout_range_m": 4.3,
+        "emul_lat_max_s": 1.0, "emul_lat_healthy_frac": 0.5,
+        "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
+        "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
+        "_raw": {"env.max_time": 60, "algo.gamma": 0.995, "algo.clip_value_loss": False,
+                 **_NOISE_ANNEAL_RAW},
     },
     # 4. MULTI-GATE LAP: full 6-gate vq2_like course incl. the HIGH-climb gate + turns. Blackout +
     #    latency + contention stall. 100 s clock (a 40 s standing-start lap was unfinishable), gamma
@@ -115,17 +182,21 @@ STAGES: dict[str, dict] = {
         "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
         "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
         "emul_pose_age_stall_p": 0.01,
-        "_raw": {"env.max_time": 100, "algo.gamma": 0.995, "algo.clip_value_loss": False},
+        "_raw": {"env.max_time": 100, "algo.gamma": 0.995, "algo.clip_value_loss": False,
+                 **_NOISE_ANNEAL_RAW},
     },
 }
 
-STAGE_ORDER = ("single_gate", "blackout_pass", "dual_gate", "multi_gate")
+# B2 ladder (2026-07-06): handoff_drill (drop-clamped first handoff) BEFORE dual_gate_full (full
+# vq2_like drop). The as-flown "dual_gate" stays in STAGES (frozen) but is NOT flown.
+STAGE_ORDER = ("single_gate", "blackout_pass", "handoff_drill", "dual_gate_full", "multi_gate")
 
 # Keys that are COURSE-SAMPLER overrides (forwarded to sample_courses via the env, NOT +env.<k>). The
 # env maps course_n_gates -> the sampler's n_gates and course_seg_len_{lo,hi} -> seg_len_m; these live
 # under the same +env. namespace but are documented here so the sbatch/renderer and any future wiring
 # agree on the contract. (They are additive env cfg keys; unset => the vq2_like preset defaults.)
-COURSE_SAMPLER_KEYS = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi")
+COURSE_SAMPLER_KEYS = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi",
+                       "course_drop_lo", "course_drop_hi")
 
 
 def render_overrides(stage: str, prefix: str = "+env.") -> list[str]:

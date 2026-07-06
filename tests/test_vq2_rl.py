@@ -458,3 +458,73 @@ def test_vision_lag_direction_of_mismatch_is_safe():
     err_reference = 0.0                     # idealized capture-time fusion (lower bound on RewindKF error)
     assert err_option1 >= err_reference
     assert err_option1 > 0.5 * lag_s * speed, (err_option1, lag_s * speed)
+
+
+# ============================================================ FIX-B: latency covariance inflation (B2)
+def _fixb_leg_inplane_err(kind, speed, n=512, seed=0, n_steps=90):
+    """Mean in-plane KF error (m) over the back 2/3 of a scripted leg flown under the DUAL-STAGE
+    bimodal content lag (healthy 0.07-0.12 @ 0.5 / contention 0.15-0.55), forced fixes, fp64.
+    The bimodal mixture is essential: FIX-B's covariance inflation works by selectively
+    down-weighting the high-Delta contention fixes -- a fixed Delta (a constant measurement bias)
+    is asymptotically absorbed at ANY R, so a deterministic-lag probe cannot see the fix."""
+    dt = 0.0333
+    torch.manual_seed(seed)
+    gp, Rwg = _course(2, math.pi, [40.0, 0.0, -2.0])
+    cfg = IE.EmulConfig(lat_max_s=1.0, lat_healthy_frac=0.5, lat_healthy_lo=0.07,
+                        lat_healthy_hi=0.12, lat_cont_lo=0.15, lat_cont_hi=0.55,
+                        lat_clamp_s=1.0, inject_bias=False)
+    emu = _make_shared_emu(n, gp, Rwg, cfg=cfg)
+    assert emu._lat_on is True
+    R = torch.eye(3, dtype=DT).expand(n, 3, 3).contiguous()
+    tg = torch.zeros(n, dtype=torch.long)
+    # scripted velocity profile (NED): straight / climb (~8 m over 30 m) / crab (1.5 m/s lateral)
+    # / turn (35 deg heading swing over 1.5 s mid-leg -- the vq2_like handoff turn class).
+    pos_k = torch.tensor([2.0, 0.0, -2.0], dtype=DT)
+    pos, vels = [pos_k.clone()], []
+    heading = 0.0
+    for k in range(n_steps + 1):
+        if kind == "straight":
+            v = torch.tensor([speed, 0.0, 0.0], dtype=DT)
+        elif kind == "climb":
+            s = 0.258
+            v = torch.tensor([speed * math.sqrt(1 - s * s), 0.0, -speed * s], dtype=DT)
+        elif kind == "crab":
+            vy = 1.5
+            v = torch.tensor([math.sqrt(speed * speed - vy * vy), vy, 0.0], dtype=DT)
+        else:                                            # turn
+            t = k * dt
+            if 1.0 <= t < 2.5:
+                heading = math.radians(35.0) * (t - 1.0) / 1.5
+            v = torch.tensor([speed * math.cos(heading), speed * math.sin(heading), 0.0], dtype=DT)
+        vels.append(v)
+        if k < n_steps:
+            pos.append(pos[-1] + v * dt)
+    emu.reset_idx(torch.arange(n), pos[0].expand(n, 3).contiguous(),
+                  vels[0].expand(n, 3).contiguous(),
+                  torch.full((n,), 0.10, dtype=DT), torch.zeros(n, dtype=DT))
+    errs = []
+    for k in range(1, n_steps + 1):
+        emu.step(pos[k - 1].expand(n, 3).contiguous(), vels[k - 1].expand(n, 3).contiguous(), R,
+                 pos[k].expand(n, 3).contiguous(), vels[k].expand(n, 3).contiguous(), R, tg, dt,
+                 torch.rand(n, dtype=DT), torch.randn(n, 3, dtype=DT),
+                 torch.randn(n, 3, dtype=DT), force_accept=True)
+        if k > n_steps // 3:
+            errs.append(emu.gate_frame_error_inplane(tg, pos[k].expand(n, 3)).mean().item())
+    return sum(errs) / len(errs)
+
+
+def test_fixb_latency_cov_inflation_never_worse():
+    """FIX-B (B2 2026-07-06, diagnosis RC5): with latency ON, the fix R is inflated by
+    outer(v_hat*Delta)+eps*I so the KF stops absorbing the forward-fuse lag error on the trusted
+    in-plane axes. Pre-fix these legs read turn 0.382 / climb 0.388 / crab 0.372 (every pin FAILS
+    without the inflation); post-fix 0.166 / 0.214 / 0.199. Straight stays bounded (pre 0.070,
+    post 0.079) -- the never-materially-worse guarantee. Latency-OFF byte-identity is pinned
+    separately by test_vision_lag_off_is_byte_identical."""
+    err_turn = _fixb_leg_inplane_err("turn", 6.0)
+    err_climb = _fixb_leg_inplane_err("climb", 6.0)
+    err_crab = _fixb_leg_inplane_err("crab", 6.0)
+    err_straight = _fixb_leg_inplane_err("straight", 6.0)
+    assert err_turn < 0.26, err_turn
+    assert err_climb < 0.28, err_climb
+    assert err_crab < 0.28, err_crab
+    assert err_straight < 0.12, err_straight

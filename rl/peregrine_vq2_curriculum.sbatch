@@ -11,17 +11,21 @@
 # (PORTFOLIO) once the smoke (peregrine_vq2_smoke.sbatch) is GREEN.
 #
 # STAGES (each continues from the prior stage's best checkpoint via +init_from -- the Xing state-teacher
-# ladder, cheap): hover -> single_gate -> blackout_pass -> multi_gate. Each stage AUTO-gates the next on
+# ladder, cheap): single_gate -> blackout_pass -> handoff_drill -> dual_gate_full -> multi_gate. Each stage AUTO-gates the next on
 # a FLIGHTCHECK (success_rate + n_passed_gates off 0); a stalled stage STOPS the ladder + reports.
 #
 # 🚩 SAME PRECONDITIONS as the smoke: (1) algo=appo IS wired on this branch (0392b64 applied:
 # GuardedAPPO / AGENT_ALIAS["appo"]; critic reads get_state()=37-dim, independent of the obs-20/23
 # arm) -- pass --export=ALL,ALGO=appo for the privileged critic; (2) the Adroit bridge + PRE-SYNC of
-# the edited rl/ files. See peregrine_vq2_smoke.sbatch header for the file list + AUP.
+# the edited rl/ files. See peregrine_vq2_smoke.sbatch header for the file list + AUP. 🚩 B2
+# (2026-07-06): the list NOW INCLUDES inc8_spawn_metrics.py (NEW module, imported unconditionally by
+# peregrine_racing.py -- missing = ModuleNotFoundError at every stage import) and inc8_tb_trace.py
+# (the M2b FLIGHTCHECK fix; a stale Adroit copy silently keeps the old contaminated success_rate
+# gate). Ship BOTH in the pre-sync for job curr_b.
 #
 # RUNTAG / REWARD (a|b|c) / A_BODY / ALGO / SEEDS passthrough via --export (see the smoke header).
 set -x
-RUNTAG=${RUNTAG:-}
+RUNTAG=${RUNTAG:-curr_b}   # B2 default runtag (2026-07-06)
 RUN_SUFFIX="${RUNTAG:+_$RUNTAG}"
 GPUUTIL=/scratch/network/fl3689/peregrine_vq2_curric${RUN_SUFFIX}_gpu_util.log
 exec > /scratch/network/fl3689/peregrine_vq2_curric${RUN_SUFFIX}.out 2>&1
@@ -83,9 +87,13 @@ if [ "${A_BODY}" = "1" ]; then ABODY_OV=( +env.obs_a_body=true ); else ABODY_OV=
 nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 20 > ${GPUUTIL} 2>&1 &
 SMI_PID=$!
 
-# 2026-07-05 ladder rebuild (audit A0-A4): hover DROPPED (redundant with single_gate once the logstd
-# reset exists); dual_gate INSERTED (first handoff/turn + obs[13:17] goes live BEFORE the full course).
-STAGES="single_gate blackout_pass dual_gate multi_gate"
+# 2026-07-05 ladder rebuild (audit A0-A4): hover DROPPED; dual_gate INSERTED.
+# 2026-07-06 B2 (handoff diagnosis): handoff_drill INSERTED (drop clamped [-2,+4] m via
+# course_drop_lo/hi -- inside the vertical-FOV visibility band) BEFORE dual_gate_full (the as-flown
+# dual_gate with the full vq2_like drop); +algo.noise_anneal ceiling on EVERY stage (entropy-runaway
+# fix). The FLIGHTCHECK gate below is unchanged mechanically; after the B2 M2b tb-trace fix,
+# success_rate_max on that line IS the standing-class metric over updates >= 100.
+STAGES="single_gate blackout_pass handoff_drill dual_gate_full multi_gate"
 PREV_CKPT=""
 for STAGE in ${STAGES}; do
   STAGE_OV=( $(python ${CURR} ${STAGE}) )

@@ -82,6 +82,10 @@ R_CAMERA_FROM_BODY_NP = _r_camera_from_body_np()
 SIGMA_REF_M = 0.05          # confidence normalizer: c=1 <=> at-or-better-than the 1-sigma bar
 TAU_STALE_S = 0.10          # staleness horizon (~3 ticks @ 30 Hz)
 
+# FIX-B (B2 2026-07-06, handoff diagnosis RC5): SPD jitter on the latency-inflated fix covariance.
+# outer(v_hat*Delta) is PSD rank-1; the eps keeps the batched solve strictly SPD.
+LAT_COV_INFLATE_EPS = 1e-6
+
 
 # NED<->Z-up virtual body flip (pi about body z; fly_rl._RZ_PI_BODY) -- deploy nose-first convention.
 _RZ_PI_BODY_NP = np.diag([-1.0, -1.0, 1.0]).astype(np.float64)
@@ -230,6 +234,8 @@ class EmulConfig:
     # forward at t (the deployed async-detect + RewindKF/OOSM property; here forward-fuse == Option 1, a
     # STRICTLY-HARDER approximation of the retro-correcting RewindKF: training sees a worse estimator than
     # deploy = the safe direction). The age channel carries the SAME Delta (no fictional label).
+    # FIX-B (B2): the fused fix R is inflated by outer(v_hat*Delta)+eps*I so the forward-fuse motion is
+    # covariance-honest (see step()); latency OFF never touches the inflation path.
     #
     # Delta is drawn per-fix from a BIMODAL mixture (do NOT collapse to one mean): a HEALTHY mode
     # (async-detect fed, ~70-120 ms) and a CONTENTION mode (GPU-starved, p50 0.25 / p90 0.55 s, clamp
@@ -721,6 +727,20 @@ class BatchedEstimatorEmulator:
             fix_pos = cur_pos_ned
         z, cov, accepted = self.surrogate.sample_fix(
             geom_fix, fix_pos, Rwg, self._sigma_lat, self._bias, accept_u, noise, force=force_accept)
+        # FIX-B (B2 2026-07-06, diagnosis RC5): the Option-1 forward-fuse hands the KF t-Delta content
+        # as a CURRENT-position measurement -- without an R term for the unmodeled v*Delta motion the
+        # KF absorbs the lag error on the trusted in-plane axes (sigma 0.10-0.28) exactly on turn/climb
+        # legs. Inflate the fix covariance with the ESTIMATED lag displacement: R += outer(v_hat*Delta)
+        # + eps*I, v_hat = the KF velocity ESTIMATE (deployment-realizable; truth is forbidden here).
+        # The lever is SELECTIVE down-weighting of the high-Delta contention-mode fixes (a fixed Delta
+        # bias is asymptotically absorbed at any R -- the bimodal mixture is what this fixes). Offline
+        # (n=512, dual mixture, forced fixes, fp64): turn 0.38->0.17, climb 0.39->0.21, crab 0.37->0.20
+        # @6 m/s; straight +9 mm (0.070->0.079, << sigma_lat floor); latency OFF (delta_s is None) ->
+        # untouched == byte-identical. Still strictly-harder-than-deploy (no retro-correction).
+        if delta_s is not None:
+            dz = self.kf.velocity * delta_s.unsqueeze(-1)                # (N,3) v_hat*Delta, post-predict
+            eye3 = torch.eye(3, device=self.device, dtype=self.dtype)
+            cov = cov + dz.unsqueeze(-1) * dz.unsqueeze(-2) + LAT_COV_INFLATE_EPS * eye3
         # TERMINAL BLACKOUT (spec T2.3): inside blackout_range_m the gate fills/exits FoV -> NO fix
         # updates (coast on IMU+belief). OFF (blackout_on False) -> no masking == byte-identical. Gated on
         # the FIX geometry's range (the captured frame's range), consistent with the lagged content.

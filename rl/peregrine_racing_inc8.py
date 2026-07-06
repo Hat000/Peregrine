@@ -44,6 +44,7 @@ from peregrine_racing import (PeregrineRacing, RewardWeights, compute_reward_ter
                               tilt_cos_from_quat_xyzw, world_to_gateframe)
 import inc8_estimator_emul as IE                                      # noqa: E402
 import inc8_reward as R8                                             # noqa: E402
+import inc8_spawn_metrics as SM                                       # noqa: E402
 from reference_line_torch import BatchedReferenceLine                # noqa: E402
 
 _REFLINE_JSON = os.path.join(os.path.dirname(__file__), "reference_line_inc8.json")
@@ -104,6 +105,13 @@ class PeregrineRacingInc8(PeregrineRacing):
         # on-device lifetime non-finite-obs counter: accumulated sync-free in get_observations and
         # read once per step via the batched loss_components sync (replaces a per-obs-call host sync).
         self._nonfinite_obs_t = torch.zeros((), device=dev, dtype=torch.long)
+        # B2/M2a: decayed per-spawn-class episode accumulators (metrics-only, all-GPU; read back via
+        # the single batched metric_vec sync). EMA (inc8_spawn_metrics.DECAY) so the logged scalar is
+        # a valid class success-rate estimate at EVERY step regardless of the trainer's per-update
+        # aggregation. [0]=ep count, decayed; parallel success / n_passed sums.
+        self._cls_ep_w = torch.zeros(SM.N_CLASSES, device=dev, dtype=self._inc8_dtype)
+        self._cls_succ_w = torch.zeros_like(self._cls_ep_w)
+        self._cls_npass_w = torch.zeros_like(self._cls_ep_w)
 
         # estimator-emulation config (the values that supersede d5 per the prompt / MEMORY NOW).
         # tau_stale / sigma_ref are cfg-EXPOSED (spec fork 1, commander-APPROVED): raising tau_stale
@@ -176,6 +184,10 @@ class PeregrineRacingInc8(PeregrineRacing):
         self._lookat_g_pitch = float(getattr(cfg, "lookat_g_pitch", 0.0))
         self._lookat_r_lo = float(getattr(cfg, "lookat_r_lo", 8.0))
         self._lookat_r_hi = float(getattr(cfg, "lookat_r_hi", 30.0))
+        # A1 (B2 2026-07-06): per-axis magnitude cap (rad/s) on the injected look-at correction.
+        # 0.0 (default) == unclamped == byte-identical legacy; the diagnosis arm value is 1.0
+        # (+env.lookat_max_rate=1.0). Applied to dlook BEFORE the band gate in step().
+        self._lookat_max_rate = float(getattr(cfg, "lookat_max_rate", 0.0))
         # gain-warmup (default 0 == OFF == no ramp == byte-identical): ramp the look-at gain MAGNITUDE
         # 0->target over the first lookat_warmup_updates PPO updates, then hold. The launcher advances
         # self._ppo_update once per PPO update (rl/peregrine_train_inc8.py). Damps the fresh-policy
@@ -322,6 +334,9 @@ class PeregrineRacingInc8(PeregrineRacing):
                 wf = R8.lookat_warmup_factor(self._ppo_update, self._lookat_warmup_updates)
                 dlook = R8.lookat_correction(g0["t_cam"], self._lookat_g_yaw * wf, self._lookat_g_pitch * wf,
                                              self._r_bc, self._flip_rate)
+                # A1 magnitude cap (default 0.0 => lookat_rate_clamp returns dlook ITSELF, byte-id).
+                # band is {0,1} so clamping before the band multiply == clamping after.
+                dlook = R8.lookat_rate_clamp(dlook, self._lookat_max_rate)
                 band = ((g0["range"] >= self._lookat_r_lo) & (g0["range"] <= self._lookat_r_hi)
                         & (g0["t_cam"][..., 2] > 0)).to(dlook.dtype).unsqueeze(-1)
                 action = action.clone()
@@ -500,6 +515,14 @@ class PeregrineRacingInc8(PeregrineRacing):
         # caught it -> do NOT trust the analytical pitch sign either; band_el is how it gets verified).
         _el_deg = torch.atan2(_tcam[..., 1], _tcam[..., 2].clamp(min=1e-6)) * (180.0 / torch.pi)
         band_el_abs = (_el_deg.abs() * _look_band.to(mdt)).sum() / _look_band.sum().clamp(min=1)
+        # B2/M2a spawn-class success telemetry (metrics-only; no reward/obs/gradient; no RNG). Uses
+        # the JUST-ENDED episodes' classes: self._spawn_class is rewritten only by reset_idx, which
+        # this step() calls AFTER this block. success/terminated/truncated are final here.
+        SM.update_class_accumulators(self._cls_ep_w, self._cls_succ_w, self._cls_npass_w,
+                                     self._spawn_class, terminated | truncated, success,
+                                     self.n_passed_gates)
+        cls_succ, cls_npass, cls_frac = SM.class_rates(self._cls_ep_w, self._cls_succ_w,
+                                                       self._cls_npass_w)
         metric_vec = torch.stack([
             self._nonfinite_obs_t.to(mdt),        # obs_nonfinite (lifetime count)
             accepted.float().mean().to(mdt),      # inc8_fix_rate
@@ -514,7 +537,7 @@ class PeregrineRacingInc8(PeregrineRacing):
             spin_abort.float().mean().to(mdt),    # inc8_spin_abort_rate
             lockband_pointing.to(mdt),            # inc8_lockband_pointing
             fb.mean().to(mdt),                    # inc8_fix_bonus
-            cr.mean().to(mdt),                    # inc8_centering
+            cr.mean().to(mdt),                    # inc8_near_centering (deliberately-OFF rw_centering FUTURE arm)
             band_az_abs.to(mdt),                  # inc8_band_az_abs_deg (look-at sign/efficacy)
             band_el_abs.to(mdt),                  # inc8_band_el_abs_deg (vertical residual / S2 sign-check)
             tc.mean().to(mdt),                    # inc8_through_centering (lateral restoring reward)
@@ -523,11 +546,24 @@ class PeregrineRacingInc8(PeregrineRacing):
             # the emulated camera (t_cam z > 0). ~0 == the backward legacy mount (gate behind the
             # camera all approach); healthy pointed flight >> 0.5. THE retrain go/no-go signal.
             (geom["t_cam"][..., 2] > 0).to(mdt).mean(),   # inc8_tcam_front_frac
+            # B2/M2a spawn-class KPIs (EMA over terminals; empty class reads exactly 0.0):
+            cls_succ[0].to(mdt),                  # inc8_success_standing (THE verdict signal)
+            cls_succ[1].to(mdt),                  # inc8_success_near     (near-spawn, non-last gate)
+            cls_succ[2].to(mdt),                  # inc8_success_nearlast (the RC1 trivial class)
+            cls_frac[0].to(mdt),                  # inc8_frac_standing    (class mass over terminals)
+            cls_frac[1].to(mdt),                  # inc8_frac_near
+            cls_frac[2].to(mdt),                  # inc8_frac_nearlast    (~0 post-M1 for G>=2 = the M1 proof)
+            cls_npass[0].to(mdt),                 # inc8_npass_standing   (mean gates passed / episode)
+            cls_npass[1].to(mdt),                 # inc8_npass_near
+            cls_npass[2].to(mdt),                 # inc8_npass_nearlast
         ])
         (obs_nonfinite_v, fix_rate_v, pointing_v, term_point_v, estim_err_v, c_inplane_v,
          age_norm_v, r1p_v, r5_perc_v, gt_anchor_v, spin_rate_v,
-         lockband_point_v, fix_bonus_v, centering_v, band_az_v, band_el_v,
-         through_centering_v, gate_progress_v, tcam_front_v) = metric_vec.tolist()  # ONE sync
+         lockband_point_v, fix_bonus_v, near_centering_v, band_az_v, band_el_v,
+         through_centering_v, gate_progress_v, tcam_front_v,
+         succ_standing_v, succ_near_v, succ_nearlast_v,
+         frac_standing_v, frac_near_v, frac_nearlast_v,
+         npass_standing_v, npass_near_v, npass_nearlast_v) = metric_vec.tolist()  # ONE sync
         loss_components.update({
             "obs_nonfinite": obs_nonfinite_v,
             "inc8_fix_rate": fix_rate_v,
@@ -543,12 +579,25 @@ class PeregrineRacingInc8(PeregrineRacing):
             "inc8_spin_abort_rate": spin_rate_v,
             "inc8_lockband_pointing": lockband_point_v,
             "inc8_fix_bonus": fix_bonus_v,
-            "inc8_centering": centering_v,
+            # B2 A2 (2026-07-06): renamed from the colliding 'inc8_centering' -- this logs the
+            # deliberately-OFF NEAR-GATE rw_centering term (a FUTURE arm), NOT the ACTIVE
+            # rw_through_centering term (which logs as inc8_through_centering below).
+            "inc8_near_centering": near_centering_v,
             "inc8_band_az_abs_deg": band_az_v,
             "inc8_band_el_abs_deg": band_el_v,
             "inc8_through_centering": through_centering_v,
             "inc8_gate_progress": gate_progress_v,
             "inc8_tcam_front_frac": tcam_front_v,
+            # B2/M2a spawn-class KPIs -> TB env_loss/inc8_* via the pristine diffaero logger:
+            "inc8_success_standing": succ_standing_v,
+            "inc8_success_near": succ_near_v,
+            "inc8_success_nearlast": succ_nearlast_v,
+            "inc8_frac_standing": frac_standing_v,
+            "inc8_frac_near": frac_near_v,
+            "inc8_frac_nearlast": frac_nearlast_v,
+            "inc8_npass_standing": npass_standing_v,
+            "inc8_npass_near": npass_near_v,
+            "inc8_npass_nearlast": npass_nearlast_v,
         })
         self._global_step += 1
         self.last_action.copy_(action.detach())

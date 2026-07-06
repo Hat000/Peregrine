@@ -196,7 +196,10 @@ def test_curriculum_stages_carry_audit_fixes():
     exactly the regression class this pins); dual_gate sits between blackout_pass and multi_gate with
     obs[13:17] live (2 gates); the _raw renderer emits existing keys verbatim."""
     from vq2_curriculum import STAGES, STAGE_ORDER, render_overrides
-    assert STAGE_ORDER == ("single_gate", "blackout_pass", "dual_gate", "multi_gate")
+    # B2 2026-07-06 (handoff diagnosis M6d): handoff_drill + dual_gate_full replace dual_gate in the
+    # FLOWN ladder; the as-flown dual_gate dict is retained FROZEN (reproducibility) outside STAGE_ORDER.
+    assert STAGE_ORDER == ("single_gate", "blackout_pass", "handoff_drill", "dual_gate_full",
+                           "multi_gate")
     for s in STAGE_ORDER:
         d = STAGES[s]
         assert d["emul_camera_flip"] is True, (s, "camera_flip")
@@ -204,6 +207,12 @@ def test_curriculum_stages_carry_audit_fixes():
         assert d["rw_gate_progress"] == 10.0, (s, "gate_progress")
         assert d["rw_estimerr_clamp"] == 0.5, (s, "estimerr_clamp")
         assert d["lookat_g_yaw"] == 3.0 and d["lookat_g_pitch"] == 3.0, (s, "analytic lookat signs")
+        # B2 M3 (2026-07-06): every FLOWN stage carries the noise-anneal ceiling schedule ('+algo.'
+        # because noise_* keys are NOT in ppo.yaml and the _raw renderer emits keys verbatim).
+        raw = d.get("_raw", {})
+        assert raw.get("+algo.noise_anneal") is True, (s, "noise_anneal (B2 M3)")
+        assert raw.get("+algo.noise_std_hold") == 0.35, (s, "noise_std_hold (B2 M3)")
+        assert raw.get("+algo.noise_std_floor") == 0.10, (s, "noise_std_floor (B2 M3)")
     assert STAGES["dual_gate"]["course_n_gates"] == 2
     assert STAGES["multi_gate"]["_raw"]["env.max_time"] == 100
     assert STAGES["multi_gate"]["_raw"]["algo.gamma"] == 0.995
@@ -211,3 +220,10 @@ def test_curriculum_stages_carry_audit_fixes():
     assert "env.max_time=100" in toks and "algo.gamma=0.995" in toks
     assert "+env.emul_camera_flip=True" in toks
     assert not any(t.startswith("+env._raw") for t in toks)
+    # B2 M3 token-level render pin (the '+' prefix is LOAD-BEARING: a plain algo.noise_anneal=True
+    # token crashes hydra on every stage since noise_* are not in ppo.yaml).
+    for s in STAGE_ORDER:
+        toks_s = render_overrides(s)
+        assert "+algo.noise_anneal=True" in toks_s, s
+        assert "+algo.noise_std_hold=0.35" in toks_s, s
+        assert "+algo.noise_std_floor=0.1" in toks_s, s   # f-string renders 0.10 as '0.1'; hydra parses both identically
