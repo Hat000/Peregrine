@@ -48,7 +48,7 @@ MODES:
              NEVER sends GO/arm-the-race itself), then execute the mission, log a per-tick
              JSONL, keep streaming hover 5 s after SETTLE, and exit cleanly.
 
-A fresh session dir ``data/runs/<ts>_mapping_m3`` gets video.bin + video_index.jsonl +
+A fresh session dir ``data/runs/<ts>_mapping_m3a`` (or ``_m3b``) gets video.bin + video_index.jsonl +
 mavlink.tlog + commands.jsonl + the mission's mapping_ticks.jsonl.
 
 Usage:
@@ -210,8 +210,18 @@ class Segment:
 
 @dataclass(frozen=True)
 class MissionConfig:
-    """Tunable open-loop timings/params for the M3 mapping mission (~114 s): takeoff, pano,
-    leg, settle, pano, an explicit +120 deg TURN, settle, leg, settle, pano, settle.
+    """Tunable open-loop timings/params for the SPLIT M3 mapping missions (m3a / m3b).
+
+    IMU-FREEZE SPLIT (coordinator amendment, 2026-07-06): the sim's HIGHRES_IMU stream
+    freezes mid-race at t~=60-90 s (2 of 3 airborne flights; a full bounce does not prevent
+    it; RL's independent tlog analysis corroborates ~62 s clean segments). Each mission must
+    fit INSIDE the freeze window, so the single 114 s M3 becomes TWO flights:
+      m3a (54.8 s): takeoff, pano_1(360), leg_1, settle_1(4s), pano_2(360), settle(5s)
+      m3b (50.9 s): takeoff, turn_120(+120deg), leg_1, settle_1(4s), pano_1(360), settle(5s)
+    m3b's opening turn points its leg ~120 deg off m3a's, giving the cross-flight heading
+    spread the single-mission design got from the mid-mission turn. Both flights start at
+    the SAME spawn (race restart resets position): the shared takeoff + turn-origin region
+    is the merge anchor across the two reconstructions.
 
     M3 (operator eyewitness, flight 20260706 M2): (a) the fixed M2 brake OVER-braked -- the
     drone exited the leg moving BACKWARDS and drifted backward through the following pano;
@@ -227,11 +237,20 @@ class MissionConfig:
     takeoff_gate_vz_mps: float = 0.8      # end the climb when vz_leak (UP+) reaches this
     takeoff_trim_s: float = 3.0           # level hover-trim after the climb (vz damper owns thrust)
     # -- PANO --
-    pano_yaw_rate_dps: float = 20.0       # yaw slew rate during panoramas AND the turn (deg/s)
+    # FREEZE-SPLIT TRADE (flagged to the coordinator): 20 -> 25 deg/s, RESTORING the
+    # operator's ORIGINAL ~25 deg/s pano rate (trimmed to 20 back when LONGER totals were the
+    # goal -- the freeze window inverts that). At 20 dps, m3a's fixed parts (5+18+4.5+4+18+5
+    # = 54.5 s) would leave a degenerate 0.5 s coast inside the <=55 s budget; at 25 dps each
+    # 360 is 14.4 s and the coast keeps 7.5 s. The 360s themselves are untouched.
+    pano_yaw_rate_dps: float = 25.0
     pano_revs: float = 1.0                # M3: every named pano is EXACTLY one clean 360
     # -- LEG --
     leg_accel_s: float = 2.0              # forward-pitch accel pulse (-> ~1.2 m/s)
-    leg_coast_s: float = 10.0             # M3: 6 -> 10 (operator: more forward flight per leg)
+    # Freeze-split coasts (were 10.0 in the single-mission M3): m3a trims to fit <=55 s beside
+    # its two panos; m3b (one pano, no second leg) reinvests the freed budget in a LONGER
+    # coast = a longer baseline out of the shared spawn anchor.
+    leg_coast_s: float = 7.5              # m3a coast
+    m3b_leg_coast_s: float = 12.0         # m3b coast (single, extended leg)
     # M3 DELIBERATE UNDER-BRAKE (operator eyewitness: the M2 1.5 s @ +5 deg brake over-braked
     # whatever velocity remained after drag bled the coast -- the drone exited BACKWARDS and
     # drifted backward through the following pano). Velocity is UNOBSERVABLE on this wire (no
@@ -243,31 +262,41 @@ class MissionConfig:
     leg_pitch_deg: float = 5.0            # accel |pitch| (nose-down)
     leg_brake_pitch_deg: float = 4.0      # M3: brake |pitch| (nose-up), 5 -> 4 (under-brake)
     leg_retrim_s: float = 1.5             # level hover re-trim after the brake
-    # -- re-heading between the legs --
-    # M3: an EXPLICIT TURN segment (named turn_120) slews yaw +turn_deg at the pano rate AFTER
-    # pano_2 completes its clean 360 -- the M2 trick of folding the offset into a 1.33-rev
-    # middle pano read as a defect to the operator. leg_2 still departs ~120 deg off leg_1.
+    # -- the m3b opening re-heading --
+    # M3: an EXPLICIT TURN segment (named turn_120) -- the M2 trick of folding the offset into
+    # a 1.33-rev pano read as a defect to the operator. In the freeze-split it OPENS m3b, so
+    # m3b's leg departs ~120 deg off m3a's legs (cross-flight heading spread).
     turn_deg: float = 120.0
+    turn_rate_dps: float = 20.0           # spec-pinned turn rate (panos run at pano_yaw_rate_dps)
     # -- SETTLEs --
-    post_leg_settle_s: float = 4.0        # M3: level hover after EACH leg before the pano --
+    post_leg_settle_s: float = 4.0        # level hover after each leg before the pano --
                                           #   the operator's "stop, level, then do a 360"
-    post_turn_settle_s: float = 2.0       # M3: brief settle between the turn and leg_2
-    settle_s: float = 10.0                # final settle
+    settle_s: float = 5.0                 # final settle (10 -> 5: freeze-window budget)
 
 
-def build_schedule(cfg: MissionConfig | None = None) -> list[Segment]:
-    """Build the M3 mapping-mission segment list (pure -- no I/O). Sequence:
+MISSIONS = ("m3a", "m3b")
 
-      TAKEOFF, PANO_1(360), LEG_1, SETTLE_1(4s), PANO_2(360), TURN_120(+120deg),
-      SETTLE_2(2s), LEG_2, SETTLE_3(4s), PANO_3(360), SETTLE(10s)
 
-    M3 (operator eyewitness): every pano is EXACTLY one clean 360 ('hover level, then do a
-    360'); the re-heading between the legs is an EXPLICIT, separately-named TURN segment
-    (reuses the pano mechanics with a fractional rev) instead of the M2 1.33-rev middle pano
-    that read as a defect; and a level SETTLE follows each leg so residual translation damps
-    before the footage-critical spin."""
+def build_schedule(cfg: MissionConfig | None = None, mission: str = "m3a") -> list[Segment]:
+    """Build one of the SPLIT M3 mapping-mission schedules (pure -- no I/O).
+
+    IMU-FREEZE SPLIT: each flight must fit inside the sim's ~60 s clean-IMU window (see
+    MissionConfig docstring), so the mission ships as TWO flights over one shared spawn:
+
+      m3a (54.8 s): TAKEOFF, PANO_1(360), LEG_1, SETTLE_1(4s), PANO_2(360), SETTLE(5s)
+      m3b (50.9 s): TAKEOFF, TURN_120(+120deg @ 20dps), LEG_1(extended coast),
+                    SETTLE_1(4s), PANO_1(360), SETTLE(5s)
+
+    m3b FALLBACK CHOICE (flagged): the amended m3b (turn, leg_1, settle, pano_1, leg_2,
+    settle, pano_2, settle) sums to >=61.8 s even at ZERO coast, so per the amendment's
+    fallback leg_2 is DROPPED and the coast extended -- and the now-co-located pano_2 (+its
+    settle) goes with it: a second 360 at the SAME spot is redundant footage, and keeping it
+    (57.3 s fixed) would forbid the very coast extension the fallback asks for."""
+    if mission not in MISSIONS:
+        raise ValueError(f"unknown mission {mission!r}; expected one of {MISSIONS}")
     cfg = cfg or MissionConfig()
-    yaw_rate = _dps(cfg.pano_yaw_rate_dps)
+    pano_rate = _dps(cfg.pano_yaw_rate_dps)
+    turn_rate = _dps(cfg.turn_rate_dps)
 
     def takeoff() -> Segment:
         return Segment(
@@ -278,21 +307,25 @@ def build_schedule(cfg: MissionConfig | None = None) -> list[Segment]:
             climb_gate_vz_mps=cfg.takeoff_gate_vz_mps,
         )
 
-    def pano(revs: float, name: str) -> Segment:
-        # A yaw-rate-signed yaw slew: duration = |revs| turns / rate. Also builds the TURN
-        # segment (fractional revs, distinct NAME so the operator sees intent in the dry-run).
-        dur = abs(revs) * 2.0 * 3.141592653589793 / max(yaw_rate, 1e-6)
-        signed_rate = yaw_rate * (1.0 if revs >= 0 else -1.0)
-        return Segment(name=name, kind=SEG_PANO, duration_s=dur, yaw_rate_rps=signed_rate)
+    def pano(name: str) -> Segment:
+        # one clean 360 (pano_revs) at the pano rate -- M3: never more, never less.
+        dur = cfg.pano_revs * 2.0 * 3.141592653589793 / max(pano_rate, 1e-6)
+        return Segment(name=name, kind=SEG_PANO, duration_s=dur, yaw_rate_rps=pano_rate)
 
-    def leg(name: str) -> Segment:
+    def turn() -> Segment:
+        # explicit re-heading: +turn_deg at the (spec-pinned 20 dps) turn rate, distinct NAME
+        # so the operator sees intent in the dry-run.
+        dur = _deg(cfg.turn_deg) / max(turn_rate, 1e-6)
+        return Segment(name="turn_120", kind=SEG_PANO, duration_s=dur, yaw_rate_rps=turn_rate)
+
+    def leg(name: str, coast_s: float) -> Segment:
         # M3 under-brake: brake tilt/duration are DELIBERATELY smaller than the accel's --
         # see the MissionConfig.leg_brake_s block for the eyewitness rationale (backward
         # exit poisons the pano; forward residual is harmless parallax).
         return Segment(
             name=name, kind=SEG_LEG,
-            duration_s=cfg.leg_accel_s + cfg.leg_coast_s + cfg.leg_brake_s + cfg.leg_retrim_s,
-            accel_s=cfg.leg_accel_s, coast_s=cfg.leg_coast_s, brake_s=cfg.leg_brake_s,
+            duration_s=cfg.leg_accel_s + coast_s + cfg.leg_brake_s + cfg.leg_retrim_s,
+            accel_s=cfg.leg_accel_s, coast_s=coast_s, brake_s=cfg.leg_brake_s,
             pitch_mag_rad=_deg(cfg.leg_pitch_deg),
             brake_pitch_rad=_deg(cfg.leg_brake_pitch_deg),
         )
@@ -300,17 +333,23 @@ def build_schedule(cfg: MissionConfig | None = None) -> list[Segment]:
     def settle(name: str, dur_s: float) -> Segment:
         return Segment(name=name, kind=SEG_SETTLE, duration_s=dur_s)
 
+    if mission == "m3a":
+        return [
+            takeoff(),
+            pano("pano_1"),
+            leg("leg_1", cfg.leg_coast_s),
+            settle("settle_1", cfg.post_leg_settle_s),   # stop + level before the spin
+            pano("pano_2"),
+            settle("settle", cfg.settle_s),
+        ]
+    # m3b: opening turn -> its leg departs ~120 deg off m3a's; single extended leg (see the
+    # fallback note in the docstring), one far-out 360.
     return [
         takeoff(),
-        pano(cfg.pano_revs, "pano_1"),
-        leg("leg_1"),
-        settle("settle_1", cfg.post_leg_settle_s),   # stop + level before the spin
-        pano(cfg.pano_revs, "pano_2"),               # clean 360, nothing more
-        pano(cfg.turn_deg / 360.0, "turn_120"),      # explicit re-heading: +120 deg at pano rate
-        settle("settle_2", cfg.post_turn_settle_s),
-        leg("leg_2"),                                # departs ~120 deg off leg_1
-        settle("settle_3", cfg.post_leg_settle_s),
-        pano(cfg.pano_revs, "pano_3"),
+        turn(),
+        leg("leg_1", cfg.m3b_leg_coast_s),
+        settle("settle_1", cfg.post_leg_settle_s),
+        pano("pano_1"),
         settle("settle", cfg.settle_s),
     ]
 
@@ -380,13 +419,16 @@ def schedule_total_s(schedule: list[Segment]) -> float:
     return float(sum(s.duration_s for s in schedule))
 
 
-def describe_schedule(schedule: list[Segment], cfg: MissionConfig | None = None) -> str:
+def describe_schedule(schedule: list[Segment], cfg: MissionConfig | None = None,
+                      mission: str = "") -> str:
     """Human-readable dump of the schedule (name, duration, commanded rates/thrust deltas) --
     the ``--dry-run`` output. Pure (no network)."""
     cfg = cfg or MissionConfig()
+    title = mission.upper() if mission else "M3"
     lines: list[str] = []
-    lines.append(f"MAPPING MISSION M3 schedule -- {len(schedule)} segments, "
-                 f"total {schedule_total_s(schedule):.1f} s")
+    lines.append(f"MAPPING MISSION {title} schedule -- {len(schedule)} segments, "
+                 f"total {schedule_total_s(schedule):.1f} s  "
+                 f"(must fit the ~60 s clean-IMU window)")
     lines.append(f"  hover_thrust={HOVER_THRUST:.4f}  pano_rate={cfg.pano_yaw_rate_dps:.0f} deg/s  "
                  f"leg accel {cfg.leg_pitch_deg:.0f}deg x {cfg.leg_accel_s:g}s / "
                  f"brake {cfg.leg_brake_pitch_deg:.0f}deg x {cfg.leg_brake_s:g}s (under-brake)")
@@ -456,8 +498,8 @@ def _run_go(args: argparse.Namespace) -> int:
     from racer.vision.jpeg_receiver import VIDEO_PORT, JpegUdpReceiver
 
     cfg = MissionConfig()
-    schedule = build_schedule(cfg)
-    print(describe_schedule(schedule, cfg))
+    schedule = build_schedule(cfg, mission=args.mission)
+    print(describe_schedule(schedule, cfg, mission=args.mission))
 
     # -- client: EXACT vq2_case_c uplink construction (cmd_rate_scale + gyro_sign) --
     profile = get_profile("vq2_case_c")
@@ -474,7 +516,7 @@ def _run_go(args: argparse.Namespace) -> int:
     session = Path(args.out_dir) / f"{session_stamp()}_{args.label}"
     recorder = Recorder(session)
     recorder.start()
-    recorder.add_meta(endpoint=args.endpoint, label=args.label, mission="M3",
+    recorder.add_meta(endpoint=args.endpoint, label=args.label, mission=args.mission,
                       cmd_rate_scale=cmd_rate_scale, gyro_sign=tuple(float(x) for x in gyro_sign),
                       hover_thrust=HOVER_THRUST, total_schedule_s=schedule_total_s(schedule))
     print(f"recording -> {session}")
@@ -825,7 +867,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--endpoint", default="udp:127.0.0.1:14550")
     ap.add_argument("--video-port", type=int, default=None,
                     help="UDP video port (default: racer.vision.jpeg_receiver.VIDEO_PORT)")
-    ap.add_argument("--label", default="mapping_m3", help="session dir suffix")
+    ap.add_argument("--mission", default="m3a", choices=list(MISSIONS),
+                    help="which freeze-window flight to fly: m3a (panos + leg) or m3b "
+                         "(+120deg turn first -> leg departs ~120deg off m3a's)")
+    ap.add_argument("--label", default=None,
+                    help="session dir suffix (default: mapping_<mission>)")
     ap.add_argument("--out-dir", default="data/runs")
     ap.add_argument("--control-hz", type=float, default=100.0,
                     help="CTBR command rate (~100 Hz per the VQ2 control handshake)")
@@ -857,8 +903,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.label is None:
+        args.label = f"mapping_{args.mission}"   # session dir carries the mission name
     if args.dry_run:
-        print(describe_schedule(build_schedule()))
+        print(describe_schedule(build_schedule(mission=args.mission), mission=args.mission))
         return 0
     # --go: resolve the default video port only now (avoids importing the sim stack for --dry-run).
     if args.video_port is None:
