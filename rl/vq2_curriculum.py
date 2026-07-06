@@ -46,8 +46,11 @@ boundary):
      stall, 100 s clock, gamma 0.995. Lap completion on estimator-emulated obs.
 
   B2 2026-07-06 (handoff diagnosis): handoff_drill (drop [-2,+4] m) inserted before dual_gate_full
-  (= the flown dual_gate, full drop band); noise_anneal ceiling on EVERY stage; fix economy
-  rw_estimerr 1.0 + rw_fix_bonus 0.75. The flown dual_gate dict is FROZEN for reproducibility.
+  (= the flown dual_gate, full drop band). The flown dual_gate dict is FROZEN for reproducibility.
+  B2b (2026-07-06): M3 noise_anneal + M4 fix economy REVERTED after the curr_b probe verdict (the
+  0.35 ceiling starved discovery-phase exploration; economy misapplied outside the post-handoff
+  regime) -- see the _COMMON note. STRUCTURAL wins kept: spawn fix, honest metrics, FIX-B, this
+  ladder. noise-anneal redesign (looser ceiling) + economy are deferred to measured increments.
 """
 from __future__ import annotations
 
@@ -64,25 +67,19 @@ _COMMON = {
     "lookat_g_yaw": 3.0,             # ANALYTIC signs (frame fixed; -3 was the mirror compensation)
     "lookat_g_pitch": 3.0,
     "lookat_warmup_updates": 200,
-    # B2 (2026-07-06 handoff diagnosis, M4) FIX ECONOMY: post-handoff the clamped GT anchor saturated
-    # at -1.0/step while the first recovered fix paid +0.0 -- zero reacquisition gradient. Halve the
-    # anchor drain (dataclass default 2.0 -> 1.0; the 0.5 clamp above is UNCHANGED) and pay accepted
-    # fixes directly (progress-gated, un-gameable: inc8_reward.fix_bonus_reward, already summed into
-    # reward at peregrine_racing_inc8.step()).
-    "rw_estimerr": 1.0,
-    "rw_fix_bonus": 0.75,
 }
 
-# B2 NOISE ANNEAL (handoff diagnosis: entropy_loss logs -H; the -12 reading was noise RUNAWAY toward
-# the e^2 clamp, not collapse): enable the dormant ceiling schedule (rl/inc8_noise_anneal.py, wired
-# at peregrine_train_inc8.py:179/198) on EVERY ladder stage. Keys take '+algo.' because noise_anneal
-# and noise_std_* are NOT in ppo.yaml (module docstring: "+ because not in ppo.yaml"); the _raw
-# renderer emits them verbatim. Schedule: hold ceiling 0.35 through the front half (module default
-# hold_frac=0.5; satisfies >=0.15 front-half and admits the 0.18 boundary logstd reset), geometric
-# decay to 0.10 over the back half; entropy_weight anneals cfg.algo.entropy_weight (ENT_WEIGHT 0.01)
-# -> 0 over the same window (module defaults noise_entropy_hold/floor). EXPLICITLY NO noise floors:
-# the module clamps a CEILING (clamp_max) -- PPO may always go lower.
-_NOISE_ANNEAL_RAW = {
+# B2b (2026-07-06): M3 noise_anneal + M4 fix economy REVERTED after the curr_b probe verdict.
+# curr_b stopped at single_gate (0.82->0.035; even the 1 m near-spawn dash 4.3%). Isolation probes:
+#   sgpA (anneal OFF, econ ON)  -> raw 0.79 / standing 0.39  (FLEW, ~= curr_a restored)
+#   sgpB (anneal ON,  econ OFF) -> raw 0.20 @ upd 1120 climbing (vs curr_b ~0.001) -- econ also hurt
+# => the 0.35 std ceiling starved the discovery-phase exploration single_gate needs (curr_a hit 0.64
+# by upd 400 on wider noise), and M4's fix_bonus/anchor rebalance is misapplied outside the >0.5 m
+# post-handoff regime it was designed for. Both are DEFERRED to their own measured increments on top
+# of a completing baseline. STRUCTURAL B2 wins (M1 spawn fix, M2 honest metrics, M5 FIX-B, M6
+# handoff_drill ladder) are KEPT. _NOISE_ANNEAL_RAW retained (unused) for the redesign: a LOOSER
+# ceiling (~1.0-1.5, above healthy discovery noise, below the sigma~4.9 runaway) is the next attempt.
+_NOISE_ANNEAL_RAW = {          # DEFERRED (unused): 0.35 too tight; redesign with a looser ceiling
     "+algo.noise_anneal": True,
     "+algo.noise_std_hold": 0.35,
     "+algo.noise_std_floor": 0.10,
@@ -106,7 +103,6 @@ STAGES: dict[str, dict] = {
         **_COMMON,
         "course_n_gates": 1,
         "emul_blackout_range_m": 0.0,
-        "_raw": {**_NOISE_ANNEAL_RAW},
     },
     # 2. SINGLE GATE + TERMINAL BLACKOUT: through the <4.5 m blind zone (~4.3 m measured) + the full
     #    bimodal content-lag latency (fix carries t-Delta geometry; age carries the same Delta).
@@ -117,7 +113,6 @@ STAGES: dict[str, dict] = {
         "emul_lat_max_s": 1.0, "emul_lat_healthy_frac": 0.5,
         "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
         "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
-        "_raw": {**_NOISE_ANNEAL_RAW},
     },
     # 3-as-flown. FROZEN reproducibility pin (job 3295856 curr_a, B1 HEAD f63b4d9): the dict that
     # actually flew. LITERAL (not **_COMMON) so _COMMON drift (e.g. the B2 M4 economy change) can
@@ -155,11 +150,10 @@ STAGES: dict[str, dict] = {
         "emul_lat_max_s": 1.0, "emul_lat_healthy_frac": 0.5,
         "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
         "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
-        "_raw": {"env.max_time": 60, "algo.gamma": 0.995, "algo.clip_value_loss": False,
-                 **_NOISE_ANNEAL_RAW},
+        "_raw": {"env.max_time": 60, "algo.gamma": 0.995, "algo.clip_value_loss": False},
     },
     # 4. DUAL_GATE_FULL (B2): the flown dual_gate with the drop UNSET (full vq2_like -6..+12 band
-    #    returns) + noise anneal. Same narrowed segment band; blackout + latency ON.
+    #    returns). Same narrowed segment band; blackout + latency ON.
     "dual_gate_full": {
         **_COMMON,
         "course_n_gates": 2,
@@ -168,8 +162,7 @@ STAGES: dict[str, dict] = {
         "emul_lat_max_s": 1.0, "emul_lat_healthy_frac": 0.5,
         "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
         "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
-        "_raw": {"env.max_time": 60, "algo.gamma": 0.995, "algo.clip_value_loss": False,
-                 **_NOISE_ANNEAL_RAW},
+        "_raw": {"env.max_time": 60, "algo.gamma": 0.995, "algo.clip_value_loss": False},
     },
     # 4. MULTI-GATE LAP: full 6-gate vq2_like course incl. the HIGH-climb gate + turns. Blackout +
     #    latency + contention stall. 100 s clock (a 40 s standing-start lap was unfinishable), gamma
@@ -182,8 +175,7 @@ STAGES: dict[str, dict] = {
         "emul_lat_healthy_lo": 0.07, "emul_lat_healthy_hi": 0.12,
         "emul_lat_cont_lo": 0.15, "emul_lat_cont_hi": 0.55,
         "emul_pose_age_stall_p": 0.01,
-        "_raw": {"env.max_time": 100, "algo.gamma": 0.995, "algo.clip_value_loss": False,
-                 **_NOISE_ANNEAL_RAW},
+        "_raw": {"env.max_time": 100, "algo.gamma": 0.995, "algo.clip_value_loss": False},
     },
 }
 

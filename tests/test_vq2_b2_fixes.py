@@ -116,27 +116,27 @@ def test_stage_order_is_the_b2_ladder():
     assert "dual_gate" in STAGES and "dual_gate" not in STAGE_ORDER   # frozen, not flown
 
 
-def test_every_ladder_stage_carries_b2_knobs():
+def test_b2b_reverted_m3_noise_anneal_and_m4_economy():
+    # B2b (2026-07-06): M3 noise_anneal + M4 fix economy REVERTED after the curr_b probe verdict --
+    # sgpA (anneal OFF) flew (raw 0.79 / standing 0.39, ~= curr_a), sgpB (econ OFF) also recovered
+    # (0.20 @ upd 1120 vs curr_b ~0.001). The 0.35 ceiling starved discovery-phase exploration and
+    # the economy was misapplied outside the post-handoff regime; both are deferred to measured
+    # increments. STRUCTURAL wins (spawn fix, honest metrics, FIX-B, handoff_drill) are KEPT.
     for s in STAGE_ORDER:
         toks = render_overrides(s)
-        # M3 noise anneal (NEW algo keys -> '+algo.'; ceiling schedule, NO floors)
-        assert "+algo.noise_anneal=True" in toks, s
-        assert "+algo.noise_std_hold=0.35" in toks, s
-        assert "+algo.noise_std_floor=0.1" in toks, s
-        assert not any("noise_floor" in t for t in toks), s
-        # M4 fix economy (clamp UNCHANGED at 0.5)
-        assert "+env.rw_estimerr=1.0" in toks, s
-        assert "+env.rw_fix_bonus=0.75" in toks, s
+        assert not any("noise_anneal" in t or "noise_std" in t for t in toks), s
+        assert not any(t.startswith("+env.rw_estimerr=") for t in toks), s
+        assert not any("rw_fix_bonus" in t for t in toks), s
+        # the audit-A2 anchor CLAMP stays (structural; never part of the reverted economy)
         assert "+env.rw_estimerr_clamp=0.5" in toks, s
 
 
-def test_noise_ceiling_admits_boundary_logstd_reset():
-    # the warm-start boundary reset (inc8_warmstart, sbatch +warmstart_reset_logstd_std=0.18) must
-    # sit UNDER the unfreeze ceiling; front-half ceiling must be >= 0.15 (synthesis requirement).
-    for s in STAGE_ORDER:
-        raw = STAGES[s]["_raw"]
-        assert float(raw["+algo.noise_std_hold"]) >= 0.18
-        assert float(raw["+algo.noise_std_floor"]) == pytest.approx(0.10)
+def test_handoff_drill_stage_kept_after_b2b_revert():
+    # M6 (the handoff_drill drop clamp) is a STRUCTURAL win, unaffected by the M3/M4 revert.
+    toks = render_overrides("handoff_drill")
+    assert "+env.course_drop_lo=-2.0" in toks and "+env.course_drop_hi=4.0" in toks
+    assert "+env.course_n_gates=2" in toks
+    assert not any("noise_anneal" in t for t in toks)   # no anneal even on the hard stages now
 
 
 def test_handoff_drill_stage():
