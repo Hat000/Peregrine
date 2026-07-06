@@ -161,6 +161,39 @@ _GATE_YAW_ZUP = np.full(N_GATES, np.pi, dtype=np.float64)
 # yaw=π gate frame would silently corrupt by up to ~4.2 m (CONFIRMED bug P4-C05).
 _GATE_YAW_TOL = 1e-4
 
+# S1.4 gate-opening geometry, L-inf half-widths (mirrors rl/offline_rollout.py; pinned to it by
+# tests/test_gate_pass_parity.py).
+_HALF_OPEN = 0.75     # 1.5 m inner opening
+_HALF_OUTER = 1.36    # 2.72 m outer frame
+
+
+def gate_pass_event(prev_ned: np.ndarray, cur_ned: np.ndarray, gate: int) -> str | None:
+    """'pass' | 'collision' | 'miss' | None for the TARGET gate across one motion segment
+    (consecutive NED position samples) — the TRAINING gate-advance test: the plane crossing
+    is INTERPOLATED to the crossing point, L-inf < 0.75 m there is a pass (mirrors
+    peregrine_racing.crossing_events; byte-matched to rl/offline_rollout.gate_event's legacy
+    body_radius=0/frame_depth=0 path by tests/test_gate_pass_parity.py).
+
+    DEPLOY-PARITY (2026-07-05): the RL loop re-anchors gate_index HERE, at the physical
+    plane, exactly like training — NOT at RACE_STATUS.active_gate_index, which fires ~9 m
+    up-course of the plane (race-wire finding) and jumped the policy's obs early mid-thread.
+    Hardcoded VQ1 all-π course only (deploy is guarded by _assert_live_course_is_vq1)."""
+    prev_rel = _R_W2G @ (prev_ned * _FLIP - _GATE_POS_ZUP[gate])
+    cur_rel = _R_W2G @ (cur_ned * _FLIP - _GATE_POS_ZUP[gate])
+    fwd = prev_rel[0] < 0.0 and cur_rel[0] >= 0.0
+    bwd = prev_rel[0] > 0.0 and cur_rel[0] <= 0.0
+    if not (fwd or bwd):
+        return None
+    f = -prev_rel[0] / ((cur_rel[0] - prev_rel[0]) or 1e-9)
+    y = prev_rel[1] + f * (cur_rel[1] - prev_rel[1])
+    z = prev_rel[2] + f * (cur_rel[2] - prev_rel[2])
+    linf = max(abs(y), abs(z))
+    if fwd and linf < _HALF_OPEN:
+        return "pass"
+    if _HALF_OPEN <= linf <= _HALF_OUTER:      # frame band -- fwd or bwd both strike
+        return "collision"
+    return "miss" if fwd else None
+
 
 # ---------------------------------------------------------------------------
 # Per-gate gate-frame plumbing (P4-C05 fix) — the gate frame must follow the
@@ -949,7 +982,9 @@ def _fly_armed(client, actor, args, flight_idx: int,
     last_p       = 0.0
     last_normed  = 0.0        # training: last_action zeroed at reset -> obs[12]=0
     n_coll0      = result["collisions_at_start"]
-    gate_index   = 0
+    gate_index   = 0          # PHYSICAL course progress (plane crossings; gate_pass_event)
+    wire_gi_hi   = 0          # RACE_STATUS.active_gate_index high-water mark (reset guard ONLY)
+    wire_warned  = -1         # last wire index we flagged as >=2 ahead of physical
 
     # --- S17 live-reset guard baselines: the sim AUTORESETS the race on sustained
     # gate contact; commanding through one latches throttle into the fresh race
@@ -1013,30 +1048,54 @@ def _fly_armed(client, actor, args, flight_idx: int,
             # --- S17 live-reset guard: epoch discontinuity -> CUT commands NOW ---
             gi_now = (int(rs["active_gate_index"])
                       if rs and rs.get("active_gate_index") is not None else None)
-            jump = (float(np.linalg.norm(np.asarray(s.position_ned) - prev_pos))
-                    if (s.position_ned is not None and prev_pos is not None) else 0.0)
+            cur_pos = (np.asarray(s.position_ned, dtype=np.float64).copy()
+                       if s.position_ned is not None else None)
+            jump = (float(np.linalg.norm(cur_pos - prev_pos))
+                    if (cur_pos is not None and prev_pos is not None) else 0.0)
             reset_why = None
             if int(s.reset_counter) != reset_counter0:
                 reset_why = f"ODOMETRY reset_counter {reset_counter0}->{s.reset_counter}"
             elif (rs and race_start0 is not None
                     and int(rs["race_start_boot_time_ms"]) != race_start0):
                 reset_why = "RACE_STATUS race_start changed (new race)"
-            elif gi_now is not None and gi_now < gate_index:
-                reset_why = f"active_gate_index dropped {gate_index}->{gi_now}"
+            elif gi_now is not None and gi_now < wire_gi_hi:
+                # Wire index below its own high-water mark = new race. Compared wire-vs-WIRE:
+                # physical gate_index may legitimately lag (wire fires ~9 m early) or lead
+                # (wire forfeits a missed gate) -- comparing against it false-fires.
+                reset_why = f"active_gate_index dropped {wire_gi_hi}->{gi_now}"
             elif jump > 10.0:   # respawns teleport 20+ m; max real movement ~1 m/tick
                 reset_why = f"position teleport ({jump:.1f} m in one tick)"
             if reset_why is not None:
                 print(f"\n  SIM RESET DETECTED ({reset_why}) -> cutting RL commands.")
                 final_state = "SIM_RESET"
                 break
-            if s.position_ned is not None:
-                prev_pos = np.asarray(s.position_ned, dtype=np.float64).copy()
-
-            # --- gate tracking via RACE_STATUS.active_gate_index ---
             if gi_now is not None:
-                if gi_now > gate_index:
-                    print(f"\n  gate {gate_index} PASSED -> targeting {gi_now}", flush=True)
-                gate_index = min(gi_now, N_GATES - 1)
+                wire_gi_hi = max(wire_gi_hi, gi_now)
+
+            # --- gate tracking: PHYSICAL plane crossing (deploy-parity fix 2026-07-05) ---
+            # RACE_STATUS.active_gate_index fires ~9 m BEFORE the gate plane (race-wire
+            # finding), so advancing on it jumped the policy's obs a gate early mid-thread
+            # -- a regime it never trained in. Training re-anchors at the physical crossing
+            # (peregrine_racing.crossing_events); gate_pass_event is its byte-matched deploy
+            # twin on the SAME position source build_obs consumes. On a physical MISS the
+            # policy keeps targeting the gate (training terminates there; re-attempting is
+            # the only obs-consistent behavior). The wire index is reset-guard-only above.
+            if cur_pos is not None and prev_pos is not None:
+                ev = gate_pass_event(prev_pos, cur_pos, gate_index)
+                if ev == "pass":
+                    print(f"\n  gate {gate_index} PASSED (physical plane) -> targeting "
+                          f"{min(gate_index + 1, N_GATES - 1)}", flush=True)
+                    gate_index = min(gate_index + 1, N_GATES - 1)
+                elif ev is not None:
+                    print(f"\n  gate {gate_index} physical {ev.upper()} -- holding target "
+                          f"(re-attempt regime)", flush=True)
+            if (gi_now is not None and gi_now - gate_index >= 2 and gi_now != wire_warned):
+                wire_warned = gi_now
+                print(f"\n  [wire-divergence] active_gate_index={gi_now} >= 2 ahead of "
+                      f"physical gate_index={gate_index} -- physical advance missed?",
+                      flush=True)
+            if cur_pos is not None:
+                prev_pos = cur_pos
 
             # --- F-C: ODOMETRY freshness + finite gate (audit D1/D2/R4/R5) ---------------
             # MUST sit ABOVE the spin guard + build_obs. ODOMETRY is the SOLE source of the
