@@ -25,19 +25,30 @@ _SPEC.loader.exec_module(mm)
 
 
 # ---------------------------------------------------------------------------
-# schedule shape / durations
+# schedule shape / durations (M3, operator-eyewitness revision)
 # ---------------------------------------------------------------------------
-def test_schedule_is_the_m1_sequence():
-    kinds = [s.kind for s in mm.build_schedule()]
+def test_schedule_is_the_m3_sequence():
+    """M3: settle after each leg ('stop, level, then spin'), clean 360 panos only, and the
+    re-heading as an explicit named TURN segment."""
+    sched = mm.build_schedule()
+    names = [s.name for s in sched]
+    kinds = [s.kind for s in sched]
+    assert names == [
+        "takeoff", "pano_1", "leg_1", "settle_1", "pano_2", "turn_120",
+        "settle_2", "leg_2", "settle_3", "pano_3", "settle",
+    ]
     assert kinds == [
-        mm.SEG_TAKEOFF, mm.SEG_PANO, mm.SEG_LEG,
-        mm.SEG_PANO, mm.SEG_LEG, mm.SEG_PANO, mm.SEG_SETTLE,
+        mm.SEG_TAKEOFF, mm.SEG_PANO, mm.SEG_LEG, mm.SEG_SETTLE, mm.SEG_PANO,
+        mm.SEG_PANO, mm.SEG_SETTLE, mm.SEG_LEG, mm.SEG_SETTLE, mm.SEG_PANO, mm.SEG_SETTLE,
     ]
 
 
-def test_total_duration_in_target_window():
+def test_total_duration_matches_design():
+    """Pins the M3 total: 5 + 18 + 14.5 + 4 + 18 + 6 + 2 + 14.5 + 4 + 18 + 10 = 114.0 s.
+    (The M3 brief predicted ~125-130 s; the specified knobs sum to 114.0 -- flagged to the
+    coordinator, pinned here so any knob change shows up as an explicit diff.)"""
     total = mm.schedule_total_s(mm.build_schedule())
-    assert 90.0 <= total <= 120.0   # spec: ~100-120 s mission
+    assert total == pytest_approx(114.0)
 
 
 def test_segment_durations_are_sum_of_subphase_params():
@@ -54,8 +65,13 @@ def test_segment_durations_are_sum_of_subphase_params():
         assert leg.duration_s == (
             cfg.leg_accel_s + cfg.leg_coast_s + cfg.leg_brake_s + cfg.leg_retrim_s
         )
+        assert leg.coast_s == pytest_approx(10.0)     # M3: more forward flight per leg
 
-    assert by_name["settle"].duration_s == cfg.settle_s
+    # M3 settles: 4 s after each leg ("stop, level, then spin"), 2 s post-turn, 10 s final
+    assert by_name["settle_1"].duration_s == cfg.post_leg_settle_s == 4.0
+    assert by_name["settle_3"].duration_s == cfg.post_leg_settle_s == 4.0
+    assert by_name["settle_2"].duration_s == cfg.post_turn_settle_s == 2.0
+    assert by_name["settle"].duration_s == cfg.settle_s == 10.0
 
 
 def test_pano_duration_matches_revs_over_rate():
@@ -64,14 +80,14 @@ def test_pano_duration_matches_revs_over_rate():
     by_name = {s.name: s for s in sched}
     rate = math.radians(cfg.pano_yaw_rate_dps)
 
-    # a plain panorama = exactly pano_revs turns
-    pano1 = by_name["pano_1"]
-    assert pano1.duration_s == pytest_approx(cfg.pano_revs * 2 * math.pi / rate)
+    # every named panorama = exactly pano_revs (1.0) turns
+    for name in ("pano_1", "pano_2", "pano_3"):
+        assert by_name[name].duration_s == pytest_approx(cfg.pano_revs * 2 * math.pi / rate)
 
-    # the middle panorama carries the extra +120 deg fractional turn
-    pano_mid = by_name["pano_2_turn"]
-    expected_revs = cfg.pano_revs + cfg.mid_pano_extra_turn
-    assert pano_mid.duration_s == pytest_approx(expected_revs * 2 * math.pi / rate)
+    # the explicit turn = turn_deg at the same rate (120 deg / 20 dps = 6.0 s)
+    turn = by_name["turn_120"]
+    assert turn.duration_s == pytest_approx(math.radians(cfg.turn_deg) / rate)
+    assert turn.duration_s == pytest_approx(6.0)
 
 
 def test_describe_schedule_lists_every_segment():
@@ -82,26 +98,24 @@ def test_describe_schedule_lists_every_segment():
     # the dry-run header carries the flown control constants (auditable)
     assert "body_rate_sign=(1,1,1)" in text
     assert "cmd_rate_scale=0.4" in text
+    # the turn prints as an explicit re-heading, not a >1-rev pano (the M2 defect-read)
+    assert "re-heading turn +120 deg" in text
 
 
 # ---------------------------------------------------------------------------
-# the +120 deg heading offset between the two legs
+# M3 yaw plan: clean 360s + an explicit +120 deg re-heading turn
 # ---------------------------------------------------------------------------
-def test_middle_pano_yaw_sweep_offsets_second_leg_by_120deg():
-    """The PANO before leg_2 sweeps an INTEGER number of turns PLUS 120 deg, so the net heading
-    change across it (mod 360) is +120 deg -> leg_2 departs 120 deg off leg_1."""
-    cfg = mm.MissionConfig()
-    sched = mm.build_schedule(cfg)
+def test_panos_sweep_exactly_360_and_turn_sweeps_120():
+    """M3 operator fix: every pano sweeps EXACTLY one revolution (the M2 1.33-rev middle pano
+    read as a defect and muddied the footage); the +120 deg between-leg offset lives in the
+    separate turn_120 segment, so leg_2 still departs 120 deg off leg_1."""
+    sched = mm.build_schedule()
     by_name = {s.name: s for s in sched}
-    mid = by_name["pano_2_turn"]
-    net_sweep_rad = mid.yaw_rate_rps * mid.duration_s          # total yaw slewed across the pano
-    net_mod = net_sweep_rad % (2 * math.pi)
-    assert net_mod == pytest_approx(math.radians(120.0), abs=1e-6)
-
-    # the plain panoramas net to ~0 heading change (a whole number of turns)
-    for name in ("pano_1", "pano_3"):
+    for name in ("pano_1", "pano_2", "pano_3"):
         p = by_name[name]
-        assert (p.yaw_rate_rps * p.duration_s) % (2 * math.pi) == pytest_approx(0.0, abs=1e-6)
+        assert p.yaw_rate_rps * p.duration_s == pytest_approx(2 * math.pi)
+    turn = by_name["turn_120"]
+    assert turn.yaw_rate_rps * turn.duration_s == pytest_approx(math.radians(120.0))
 
 
 # ---------------------------------------------------------------------------
@@ -135,20 +149,23 @@ def test_pano_commands_constant_yaw_rate_and_stays_level():
 def test_leg_pitch_schedule_accel_coast_brake_retrim():
     seg = _seg("leg_1")
     mag = seg.pitch_mag_rad
-    assert mag > 0.0
+    brake = seg.brake_pitch_rad
+    assert mag > 0.0 and brake > 0.0
 
-    # accel window: nose-DOWN (negative NED pitch) -> forward
+    # accel window: nose-DOWN (negative NED pitch) -> forward, at the ACCEL tilt (5 deg)
     sp_a = mm.segment_setpoint(seg, t_in_seg=seg.accel_s * 0.5, dt=0.01)
     assert sp_a.pitch_des_rad == pytest_approx(-mag)
+    assert mag == pytest_approx(math.radians(5.0))
 
     # coast window: level
     sp_c = mm.segment_setpoint(seg, t_in_seg=seg.accel_s + seg.coast_s * 0.5, dt=0.01)
     assert sp_c.pitch_des_rad == 0.0
 
-    # brake window: nose-UP (positive) -> decelerate
+    # brake window: nose-UP (positive) at the SMALLER brake tilt (4 deg, M3 under-brake)
     t_brake = seg.accel_s + seg.coast_s + seg.brake_s * 0.5
     sp_b = mm.segment_setpoint(seg, t_in_seg=t_brake, dt=0.01)
-    assert sp_b.pitch_des_rad == pytest_approx(+mag)
+    assert sp_b.pitch_des_rad == pytest_approx(+brake)
+    assert brake == pytest_approx(math.radians(4.0))
 
     # re-trim window: level again
     t_trim = seg.accel_s + seg.coast_s + seg.brake_s + 0.1
@@ -161,6 +178,22 @@ def test_leg_pitch_schedule_accel_coast_brake_retrim():
         assert sp.roll_des_rad == 0.0 and sp.dyaw_rad == 0.0
 
 
+def test_leg_brake_impulse_is_a_deliberate_under_brake():
+    """M3 operator eyewitness: the M2 full-impulse brake reversed the drag-bled residual and
+    the drone drifted BACKWARD through the following pano. Velocity is unobservable, so the
+    brake must UNDER-shoot: brake impulse (tilt x time) strictly LESS than the accel impulse
+    -- drag covers the rest; a forward residual is harmless parallax, a backward one poisons
+    the pano."""
+    for leg_name in ("leg_1", "leg_2"):
+        seg = _seg(leg_name)
+        accel_impulse = seg.pitch_mag_rad * seg.accel_s        # 5 deg x 2.0 s = 10 deg-s
+        brake_impulse = seg.brake_pitch_rad * seg.brake_s      # 4 deg x 1.0 s =  4 deg-s
+        assert brake_impulse > 0.0
+        assert brake_impulse < accel_impulse                   # NEVER fully cancel open-loop
+        # pin the designed margin (~40% of the accel impulse) so a knob change is explicit
+        assert brake_impulse / accel_impulse == pytest_approx(0.4)
+
+
 def test_settle_is_level_vz_damped_hover():
     seg = _seg("settle")
     sp = mm.segment_setpoint(seg, t_in_seg=1.0, dt=0.01)
@@ -168,14 +201,16 @@ def test_settle_is_level_vz_damped_hover():
     assert sp.roll_des_rad == 0.0 and sp.pitch_des_rad == 0.0 and sp.dyaw_rad == 0.0
 
 
-def test_integrated_pano_yaw_advance_equals_full_sweep():
-    """Summing the per-tick dyaw across a whole PANO reproduces the segment's total sweep --
-    the timeline the flight loop integrates onto the yaw target is consistent with the schedule."""
-    seg = _seg("pano_2_turn")
-    dt = 1.0 / 100.0
-    n = int(round(seg.duration_s / dt))
-    total = sum(mm.segment_setpoint(seg, t_in_seg=k * dt, dt=dt).dyaw_rad for k in range(n))
-    assert total == pytest_approx(seg.yaw_rate_rps * seg.duration_s, rel=1e-3)
+def test_integrated_yaw_advance_equals_full_sweep():
+    """Summing the per-tick dyaw across a whole yaw segment reproduces its total sweep -- the
+    timeline the flight loop integrates onto the yaw target is consistent with the schedule.
+    Checked on both a clean 360 pano and the explicit +120 deg turn."""
+    for name in ("pano_2", "turn_120"):
+        seg = _seg(name)
+        dt = 1.0 / 100.0
+        n = int(round(seg.duration_s / dt))
+        total = sum(mm.segment_setpoint(seg, t_in_seg=k * dt, dt=dt).dyaw_rad for k in range(n))
+        assert total == pytest_approx(seg.yaw_rate_rps * seg.duration_s, rel=1e-3)
 
 
 def test_dry_run_matches_segment_durations():

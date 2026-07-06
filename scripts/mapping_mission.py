@@ -48,7 +48,7 @@ MODES:
              NEVER sends GO/arm-the-race itself), then execute the mission, log a per-tick
              JSONL, keep streaming hover 5 s after SETTLE, and exit cleanly.
 
-A fresh session dir ``data/runs/<ts>_mapping_m1`` gets video.bin + video_index.jsonl +
+A fresh session dir ``data/runs/<ts>_mapping_m3`` gets video.bin + video_index.jsonl +
 mavlink.tlog + commands.jsonl + the mission's mapping_ticks.jsonl.
 
 Usage:
@@ -189,13 +189,15 @@ class Segment:
     # PANO: constant yaw-rate slew of the heading target (rad/s, + = nose-right / CW-from-above).
     yaw_rate_rps: float = 0.0
     # LEG: sub-phase pitch schedule. Pitch is NED aerospace: NEGATIVE pitch = nose-DOWN =
-    # accelerate FORWARD (body +x). We accelerate for ``accel_s``, coast level for ``coast_s``,
-    # then brake with the opposite pitch for ``brake_s`` (accel_s + coast_s + brake_s ==
-    # duration_s). ``pitch_mag_rad`` is the |tilt| used in the accel and brake pulses.
+    # accelerate FORWARD (body +x). Accelerate for ``accel_s`` at ``pitch_mag_rad``, coast
+    # level for ``coast_s``, brake nose-UP at ``brake_pitch_rad`` for ``brake_s`` (M3: the
+    # brake tilt is SMALLER than the accel tilt -- a deliberate under-brake, see
+    # ``build_schedule``), then re-trim level for the remainder of ``duration_s``.
     accel_s: float = 0.0
     coast_s: float = 0.0
     brake_s: float = 0.0
-    pitch_mag_rad: float = 0.0
+    pitch_mag_rad: float = 0.0        # accel |tilt| (rad)
+    brake_pitch_rad: float = 0.0      # brake |tilt| (rad; M3 under-brake, < pitch_mag_rad)
     # TAKEOFF: climb thrust delta (added to hover) for AT MOST ``climb_s`` (the time cap), then
     # a level hover-trim for the remainder of the segment. M2: the climb ALSO ends early the
     # moment the mission-local leaky vz (UP-positive) reaches ``climb_gate_vz_mps`` (see
@@ -208,8 +210,13 @@ class Segment:
 
 @dataclass(frozen=True)
 class MissionConfig:
-    """Tunable open-loop timings/params for the M1 mapping mission. Defaults give a ~100-120 s
-    flight: takeoff, PANO, LEG, PANO, LEG(~120 deg off the first heading), PANO, SETTLE."""
+    """Tunable open-loop timings/params for the M3 mapping mission (~114 s): takeoff, pano,
+    leg, settle, pano, an explicit +120 deg TURN, settle, leg, settle, pano, settle.
+
+    M3 (operator eyewitness, flight 20260706 M2): (a) the fixed M2 brake OVER-braked -- the
+    drone exited the leg moving BACKWARDS and drifted backward through the following pano;
+    (b) more forward flight per leg; (c) 'hover level, then do a 360' -- and the M2 1.33-rev
+    middle pano read as a defect (turned past 360) and muddied the footage."""
 
     # -- TAKEOFF --
     # M2 (post-ceiling-crash): delta 0.035 -> 0.025 and the climb is VELOCITY-GATED -- it ends
@@ -220,31 +227,45 @@ class MissionConfig:
     takeoff_gate_vz_mps: float = 0.8      # end the climb when vz_leak (UP+) reaches this
     takeoff_trim_s: float = 3.0           # level hover-trim after the climb (vz damper owns thrust)
     # -- PANO --
-    pano_yaw_rate_dps: float = 20.0       # yaw slew rate during a panorama (deg/s; ~25 target,
-                                          #   trimmed a touch for smoother footage + ~100 s total)
-    pano_revs: float = 1.0                # full turns per panorama
+    pano_yaw_rate_dps: float = 20.0       # yaw slew rate during panoramas AND the turn (deg/s)
+    pano_revs: float = 1.0                # M3: every named pano is EXACTLY one clean 360
     # -- LEG --
     leg_accel_s: float = 2.0              # forward-pitch accel pulse (-> ~1.2 m/s)
-    leg_coast_s: float = 6.0              # level coast (wider translation baseline for recon)
-    leg_brake_s: float = 1.5             # reverse-pitch brake pulse
-    leg_pitch_deg: float = 5.0            # |pitch| magnitude for accel + brake
+    leg_coast_s: float = 10.0             # M3: 6 -> 10 (operator: more forward flight per leg)
+    # M3 DELIBERATE UNDER-BRAKE (operator eyewitness: the M2 1.5 s @ +5 deg brake over-braked
+    # whatever velocity remained after drag bled the coast -- the drone exited BACKWARDS and
+    # drifted backward through the following pano). Velocity is UNOBSERVABLE on this wire (no
+    # position/velocity feedback), so the brake cannot be closed-loop: a small FORWARD residual
+    # is harmless -- even useful parallax into the pano -- while a BACKWARD residual poisons it.
+    # Sized 1.0 s @ +4 deg = 4 deg-s of brake impulse vs the accel's 5 deg x 2.0 s = 10 deg-s
+    # (~40% -- comfortably under-braked), and drag covers the rest.
+    leg_brake_s: float = 1.0              # M3: 1.5 -> 1.0
+    leg_pitch_deg: float = 5.0            # accel |pitch| (nose-down)
+    leg_brake_pitch_deg: float = 4.0      # M3: brake |pitch| (nose-up), 5 -> 4 (under-brake)
     leg_retrim_s: float = 1.5             # level hover re-trim after the brake
-    # -- heading offset between the two legs --
-    # The PANO that PRECEDES the 2nd leg ends at a chosen yaw offset so the 2nd leg departs
-    # ~120 deg off the 1st leg's heading. A panorama is an integer-ish number of revs, so we
-    # add a fractional extra turn to the MIDDLE panorama to land on the offset. Expressed as
-    # the extra fraction of a turn (0.333 -> +120 deg).
-    mid_pano_extra_turn: float = 120.0 / 360.0
-    # -- SETTLE --
-    settle_s: float = 10.0
+    # -- re-heading between the legs --
+    # M3: an EXPLICIT TURN segment (named turn_120) slews yaw +turn_deg at the pano rate AFTER
+    # pano_2 completes its clean 360 -- the M2 trick of folding the offset into a 1.33-rev
+    # middle pano read as a defect to the operator. leg_2 still departs ~120 deg off leg_1.
+    turn_deg: float = 120.0
+    # -- SETTLEs --
+    post_leg_settle_s: float = 4.0        # M3: level hover after EACH leg before the pano --
+                                          #   the operator's "stop, level, then do a 360"
+    post_turn_settle_s: float = 2.0       # M3: brief settle between the turn and leg_2
+    settle_s: float = 10.0                # final settle
 
 
 def build_schedule(cfg: MissionConfig | None = None) -> list[Segment]:
-    """Build the M1 mapping-mission segment list (pure -- no I/O). Sequence:
-    TAKEOFF, PANO, LEG, PANO(+120 deg offset), LEG, PANO, SETTLE.
+    """Build the M3 mapping-mission segment list (pure -- no I/O). Sequence:
 
-    The middle PANO carries an extra fractional turn so the SECOND leg departs ~120 deg off
-    the FIRST leg's heading (broad coverage; the reconstruction likes wide baselines)."""
+      TAKEOFF, PANO_1(360), LEG_1, SETTLE_1(4s), PANO_2(360), TURN_120(+120deg),
+      SETTLE_2(2s), LEG_2, SETTLE_3(4s), PANO_3(360), SETTLE(10s)
+
+    M3 (operator eyewitness): every pano is EXACTLY one clean 360 ('hover level, then do a
+    360'); the re-heading between the legs is an EXPLICIT, separately-named TURN segment
+    (reuses the pano mechanics with a fractional rev) instead of the M2 1.33-rev middle pano
+    that read as a defect; and a level SETTLE follows each leg so residual translation damps
+    before the footage-critical spin."""
     cfg = cfg or MissionConfig()
     yaw_rate = _dps(cfg.pano_yaw_rate_dps)
 
@@ -258,29 +279,39 @@ def build_schedule(cfg: MissionConfig | None = None) -> list[Segment]:
         )
 
     def pano(revs: float, name: str) -> Segment:
-        # A yaw-rate-signed panorama: duration = |revs| turns / rate. yaw_rate_rps carries the
-        # sign of ``revs`` so a negative revs turns the other way (unused by M1 but general).
+        # A yaw-rate-signed yaw slew: duration = |revs| turns / rate. Also builds the TURN
+        # segment (fractional revs, distinct NAME so the operator sees intent in the dry-run).
         dur = abs(revs) * 2.0 * 3.141592653589793 / max(yaw_rate, 1e-6)
         signed_rate = yaw_rate * (1.0 if revs >= 0 else -1.0)
         return Segment(name=name, kind=SEG_PANO, duration_s=dur, yaw_rate_rps=signed_rate)
 
     def leg(name: str) -> Segment:
+        # M3 under-brake: brake tilt/duration are DELIBERATELY smaller than the accel's --
+        # see the MissionConfig.leg_brake_s block for the eyewitness rationale (backward
+        # exit poisons the pano; forward residual is harmless parallax).
         return Segment(
             name=name, kind=SEG_LEG,
             duration_s=cfg.leg_accel_s + cfg.leg_coast_s + cfg.leg_brake_s + cfg.leg_retrim_s,
             accel_s=cfg.leg_accel_s, coast_s=cfg.leg_coast_s, brake_s=cfg.leg_brake_s,
             pitch_mag_rad=_deg(cfg.leg_pitch_deg),
+            brake_pitch_rad=_deg(cfg.leg_brake_pitch_deg),
         )
+
+    def settle(name: str, dur_s: float) -> Segment:
+        return Segment(name=name, kind=SEG_SETTLE, duration_s=dur_s)
 
     return [
         takeoff(),
         pano(cfg.pano_revs, "pano_1"),
         leg("leg_1"),
-        # middle panorama: full turns + the +120 deg fractional turn -> next leg 120 deg off.
-        pano(cfg.pano_revs + cfg.mid_pano_extra_turn, "pano_2_turn"),
-        leg("leg_2"),
+        settle("settle_1", cfg.post_leg_settle_s),   # stop + level before the spin
+        pano(cfg.pano_revs, "pano_2"),               # clean 360, nothing more
+        pano(cfg.turn_deg / 360.0, "turn_120"),      # explicit re-heading: +120 deg at pano rate
+        settle("settle_2", cfg.post_turn_settle_s),
+        leg("leg_2"),                                # departs ~120 deg off leg_1
+        settle("settle_3", cfg.post_leg_settle_s),
         pano(cfg.pano_revs, "pano_3"),
-        Segment(name="settle", kind=SEG_SETTLE, duration_s=cfg.settle_s),
+        settle("settle", cfg.settle_s),
     ]
 
 
@@ -330,12 +361,13 @@ def segment_setpoint(seg: Segment, t_in_seg: float, dt: float,
 
     if seg.kind == SEG_LEG:
         # NED pitch: NEGATIVE = nose-DOWN = accelerate forward; POSITIVE = nose-up = brake.
+        # M3: the brake uses its OWN (smaller) tilt -- the deliberate under-brake.
         if t_in_seg < seg.accel_s:
             pitch = -seg.pitch_mag_rad
         elif t_in_seg < seg.accel_s + seg.coast_s:
             pitch = 0.0
         elif t_in_seg < seg.accel_s + seg.coast_s + seg.brake_s:
-            pitch = +seg.pitch_mag_rad
+            pitch = +seg.brake_pitch_rad
         else:
             pitch = 0.0   # re-trim: level
         return TickSetpoint(seg.name, seg.kind, 0.0, pitch, 0.0, thrust_mode="damp")
@@ -353,10 +385,11 @@ def describe_schedule(schedule: list[Segment], cfg: MissionConfig | None = None)
     the ``--dry-run`` output. Pure (no network)."""
     cfg = cfg or MissionConfig()
     lines: list[str] = []
-    lines.append(f"MAPPING MISSION M1 schedule -- {len(schedule)} segments, "
+    lines.append(f"MAPPING MISSION M3 schedule -- {len(schedule)} segments, "
                  f"total {schedule_total_s(schedule):.1f} s")
-    lines.append(f"  hover_thrust={HOVER_THRUST:.4f}  "
-                 f"pano_rate={cfg.pano_yaw_rate_dps:.0f} deg/s  leg_pitch={cfg.leg_pitch_deg:.0f} deg")
+    lines.append(f"  hover_thrust={HOVER_THRUST:.4f}  pano_rate={cfg.pano_yaw_rate_dps:.0f} deg/s  "
+                 f"leg accel {cfg.leg_pitch_deg:.0f}deg x {cfg.leg_accel_s:g}s / "
+                 f"brake {cfg.leg_brake_pitch_deg:.0f}deg x {cfg.leg_brake_s:g}s (under-brake)")
     lines.append("  " + "-" * 84)
     lines.append(f"  {'#':>2}  {'segment':<12} {'kind':<8} {'dur[s]':>7}  detail")
     lines.append("  " + "-" * 84)
@@ -385,11 +418,16 @@ def _segment_detail(s: Segment) -> str:
     if s.kind == SEG_PANO:
         dps = s.yaw_rate_rps * 180.0 / 3.141592653589793
         revs = abs(s.yaw_rate_rps) * s.duration_s / (2.0 * 3.141592653589793)
+        if abs(revs - round(revs)) > 0.01 or round(revs) == 0:
+            # fractional rev = an explicit RE-HEADING turn, not a panorama (M3: named intent)
+            sweep = s.yaw_rate_rps * s.duration_s * 180.0 / 3.141592653589793
+            return f"re-heading turn {sweep:+.0f} deg @ {dps:+.1f} deg/s  (level, vz-damped)"
         return f"yaw-rate {dps:+.1f} deg/s for {revs:.2f} rev  (level, vz-damped)"
     if s.kind == SEG_LEG:
         pdeg = s.pitch_mag_rad * 180.0 / 3.141592653589793
+        bdeg = s.brake_pitch_rad * 180.0 / 3.141592653589793
         return (f"accel(nose-down -{pdeg:.0f}deg) {s.accel_s:.1f}s, coast {s.coast_s:.1f}s, "
-                f"brake(+{pdeg:.0f}deg) {s.brake_s:.1f}s, re-trim "
+                f"brake(+{bdeg:.0f}deg) {s.brake_s:.1f}s UNDER-brake, re-trim "
                 f"{s.duration_s - s.accel_s - s.coast_s - s.brake_s:.1f}s")
     if s.kind == SEG_SETTLE:
         return f"level hover {s.duration_s:.1f}s (vz-damped)"
@@ -436,7 +474,7 @@ def _run_go(args: argparse.Namespace) -> int:
     session = Path(args.out_dir) / f"{session_stamp()}_{args.label}"
     recorder = Recorder(session)
     recorder.start()
-    recorder.add_meta(endpoint=args.endpoint, label=args.label, mission="M1",
+    recorder.add_meta(endpoint=args.endpoint, label=args.label, mission="M3",
                       cmd_rate_scale=cmd_rate_scale, gyro_sign=tuple(float(x) for x in gyro_sign),
                       hover_thrust=HOVER_THRUST, total_schedule_s=schedule_total_s(schedule))
     print(f"recording -> {session}")
@@ -787,7 +825,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--endpoint", default="udp:127.0.0.1:14550")
     ap.add_argument("--video-port", type=int, default=None,
                     help="UDP video port (default: racer.vision.jpeg_receiver.VIDEO_PORT)")
-    ap.add_argument("--label", default="mapping_m1", help="session dir suffix")
+    ap.add_argument("--label", default="mapping_m3", help="session dir suffix")
     ap.add_argument("--out-dir", default="data/runs")
     ap.add_argument("--control-hz", type=float, default=100.0,
                     help="CTBR command rate (~100 Hz per the VQ2 control handshake)")
