@@ -27,10 +27,13 @@ eyes-confirmed vq2_case_c path, 2026-07-05):
     +true_roll,+true_pitch,+true_yaw) before the SAME rotvec * body_rate_sign(1,1,1). Feeding
     ``level_hold_body_rate`` the TRUE euler reproduces that R_cur exactly, so the wire sign is
     the eyes-confirmed one -- no new sign assumption is introduced.
-  * Vertical (M2, post-M1-ceiling-crash) = the MISSION-LOCAL leaky channel ``PseudoVertical``
-    (vz_leak tau=45 s + integrated z_pseudo, both UP-positive -- see the M2 sign block below):
-    ``thrust = hover + kd*(0 - vz_leak) + clip(-kp_zp*(z_pseudo - 2), +/-0.01)``, and the
-    takeoff climb pulse is VELOCITY-GATED (ends at vz_leak >= 0.8 m/s or the 2 s cap). The
+  * Vertical (M2 + M4) = the MISSION-LOCAL leaky channel ``PseudoVertical`` (vz_leak tau=45 s
+    + integrated z_pseudo, both UP-positive -- see the M2 sign block below), with the M4
+    two-layer bias defense: an on-pad GROUND_CAL measures the constant a_up bias right after
+    GO and subtracts it from every sample, and the TOTAL vertical correction (damper + trim)
+    is clamped to +/-0.020 collective around base:
+    ``thrust = hover + clip(kd*(0 - vz_leak) + clip(-kp_zp*(z_pseudo - 2), +/-0.01), +/-0.02)``.
+    The takeoff climb pulse is VELOCITY-GATED (ends at vz_leak >= 1.0 m/s or the 2 s cap). The
     racing washout (VerticalEstimator.vz_imu, tau=2 s) is a TRANSIENT damper that bled the M1
     steady climb out within seconds (its stack has vision as the vertical reference; mapping
     has none) -- it stays stepped for LOG COMPARISON only. Both channels integrate ONLY while
@@ -109,6 +112,44 @@ class DeadStreamAbort(RuntimeError):
 Z_TARGET_M = 2.0            # pseudo-altitude target (m ABOVE race start) after takeoff
 ZP_TRIM_CLIP = 0.010        # pseudo-altitude thrust-trim authority clip (+/- collective)
 THRUST_LO, THRUST_HI = 0.18, 0.42   # outer collective clamp (never rail the coupled mixer)
+# M4 (flights m3a/b 2026-07-06, "sinking + not hovering + ground spinning" ROOT CAUSE): a
+# CONSTANT a_up bias of ~+0.006 m/s^2 x tau 45 s locked vz_leak at a +0.28 m/s PHANTOM CLIMB
+# (measured: +0.28 in settle/hold ticks while the drone sat ON THE FLOOR; z_pseudo inflated
+# to +15 m). The damper subtracted kd*0.28 = 0.017 and the railed z-trim another 0.010 ->
+# commanded ~0.239 vs hover 0.2656 = 10% below hover CONTINUOUSLY -> sink to floor. Two
+# independent layers fix it:
+#   (1) GROUND_CAL: measure the bias ON THE PAD under live race physics (level zero-rates at
+#       idle thrust for ~1.5 s right after GO) and subtract it from every subsequent a_up
+#       sample (``PseudoVertical.a_up_bias``);
+#   (2) VERT_CORR_CLIP: the TOTAL vertical correction (damper + z-trim) is clamped to
+#       +/-0.020 collective around the hover/climb base -- an estimator lie can never again
+#       command more than ~+/-0.75 m/s^2 (0.020 x plant gain ~37 m/s^2 per unit collective).
+IDLE_THRUST = 0.10          # ground-cal collective: motors live, drone firmly ON the pad
+VERT_CORR_CLIP = 0.020      # total vertical-correction authority (+/- collective around base)
+GROUND_CAL_WARN_BIAS = 0.05  # |measured bias| beyond this (m/s^2) is suspicious -> WARN only
+
+
+@dataclass
+class GroundCal:
+    """M4 pad-rest a_up averaging window. Accumulates UP-positive a_up samples while the
+    drone sits on the floor under live race physics; ``bias`` is their mean -- the constant
+    kinematic-acceleration fiction (AHRS attitude-projection residual + sim accel bias) that
+    poisoned the M3 leaky integrator. Glitch guards mirror ``PseudoVertical.step``:
+    non-finite samples are IGNORED, extreme ones clamped to +/-30 m/s^2."""
+
+    a_sum: float = 0.0
+    n: int = 0
+
+    def add(self, a_up: float) -> None:
+        if not math.isfinite(a_up):
+            return
+        self.a_sum += max(-30.0, min(30.0, float(a_up)))
+        self.n += 1
+
+    @property
+    def bias(self) -> float:
+        """Mean a_up over the window (0.0 if no samples landed -- cal disabled/starved)."""
+        return self.a_sum / self.n if self.n > 0 else 0.0
 
 
 @dataclass
@@ -121,38 +162,49 @@ class PseudoVertical:
     tau_s: float = 45.0          # leak time constant (--vz-tau)
     max_dt_s: float = 0.2        # reject sim-reset / stutter steps (mirrors the racing filter)
     a_up_clamp_mps2: float = 30.0  # reject contact-impact spikes at the source
+    # M4: constant a_up bias measured by GROUND_CAL on the pad, SUBTRACTED from every sample
+    # before integration. 0.0 (cal disabled / not yet run) == the M3 behaviour exactly.
+    a_up_bias: float = 0.0
     vz_leak: float = 0.0         # m/s, UP-positive (+ = climbing)
     z_pseudo: float = 0.0        # m, UP-positive (+ = above race-start height)
 
     def reset(self) -> None:
-        """Zero both states (race start / backward sim-clock jump = race restart)."""
+        """Zero both states (race start / backward sim-clock jump = race restart). The
+        calibrated ``a_up_bias`` is KEPT -- the sensor/projection bias survives a restart;
+        a fresh flight re-runs GROUND_CAL and overwrites it anyway."""
         self.vz_leak = 0.0
         self.z_pseudo = 0.0
 
     def step(self, a_up: float, dt: float) -> None:
-        """Integrate one UP-POSITIVE kinematic-acceleration sample over dt seconds.
-        Non-finite a_up, dt <= 0 and dt > max_dt_s are no-ops (glitch/reset guards)."""
+        """Integrate one UP-POSITIVE kinematic-acceleration sample over dt seconds, after
+        subtracting the pad-calibrated ``a_up_bias`` (M4). Non-finite a_up, dt <= 0 and
+        dt > max_dt_s are no-ops (glitch/reset guards)."""
         if not (0.0 < dt <= self.max_dt_s) or not math.isfinite(a_up):
             return
-        a = max(-self.a_up_clamp_mps2, min(self.a_up_clamp_mps2, float(a_up)))
+        a = float(a_up) - self.a_up_bias
+        a = max(-self.a_up_clamp_mps2, min(self.a_up_clamp_mps2, a))
         self.vz_leak = self.vz_leak * math.exp(-dt / self.tau_s) + a * dt
         self.z_pseudo += self.vz_leak * dt
 
 
 def thrust_command(vz_leak_up: float, z_pseudo_up: float, kd_vz: float, kp_zp: float,
                    z_target_up: float = Z_TARGET_M) -> float:
-    """M2 hover-thrust law (all inputs UP-POSITIVE, see the sign block above):
+    """M2/M4 hover-thrust law (all inputs UP-POSITIVE, see the sign block above):
 
-        thrust = hover + kd_vz*(0 - vz_leak)                        # velocity damper
-                       + clip(-kp_zp*(z_pseudo - z_target), +/-0.010)  # pseudo-alt soft trim
-        clamped to [0.18, 0.42]
+        corr   = kd_vz*(0 - vz_leak)                                   # velocity damper
+               + clip(-kp_zp*(z_pseudo - z_target), +/-0.010)          # pseudo-alt soft trim
+        thrust = clip(hover + clip(corr, +/-0.020), 0.18, 0.42)        # M4 correction clamp
 
     SIGNS (pinned by tests): CLIMBING (vz_leak > 0) REDUCES thrust; ABOVE target
-    (z_pseudo > z_target) REDUCES thrust. kp_zp = 0 disables the trim term."""
+    (z_pseudo > z_target) REDUCES thrust. kp_zp = 0 disables the trim term. The M4
+    VERT_CORR_CLIP bounds the TOTAL correction so an estimator lie is worth at most
+    ~+/-0.75 m/s^2 -- the M3 phantom-climb sink (10% below hover, continuous) becomes
+    physically impossible regardless of what the estimator believes."""
     damp = kd_vz * (0.0 - float(vz_leak_up))
     trim = -kp_zp * (float(z_pseudo_up) - float(z_target_up))
     trim = max(-ZP_TRIM_CLIP, min(ZP_TRIM_CLIP, trim))
-    return max(THRUST_LO, min(THRUST_HI, HOVER_THRUST + damp + trim))
+    corr = max(-VERT_CORR_CLIP, min(VERT_CORR_CLIP, damp + trim))
+    return max(THRUST_LO, min(THRUST_HI, HOVER_THRUST + corr))
 
 
 def climb_phase_over(seg: "Segment", t_in_seg: float, vz_up_mps: float) -> bool:
@@ -171,9 +223,10 @@ def climb_phase_over(seg: "Segment", t_in_seg: float, vz_up_mps: float) -> bool:
 # A segment is one open-loop phase. All four kinds hold roll/pitch toward a scripted
 # attitude (level unless a leg is pitching) and hold OR slew yaw; the difference is what
 # the per-tick command synthesiser (segment_setpoint) does with the phase parameters.
+SEG_GROUND_CAL = "GNDCAL"  # M4: on-pad a_up bias calibration (zero rates @ idle thrust)
 SEG_TAKEOFF = "TAKEOFF"   # gentle climb ramp -> mid height, then a brief level hover trim
 SEG_PANO = "PANO"         # in-place 360: level hold + constant yaw-rate slew of the target
-SEG_LEG = "LEG"           # short translation: pitch fwd, coast level, brake, re-trim
+SEG_LEG = "LEG"           # short translation: pitch fwd, coast level, (optional brake,) re-trim
 SEG_SETTLE = "SETTLE"     # level hover, N seconds
 
 
@@ -228,13 +281,21 @@ class MissionConfig:
     (b) more forward flight per leg; (c) 'hover level, then do a 360' -- and the M2 1.33-rev
     middle pano read as a defect (turned past 360) and muddied the footage."""
 
+    # -- GROUND_CAL (M4) --
+    # On-pad a_up bias calibration, FIRST segment (immediately after started==True, so live
+    # race physics is guaranteed -- outside a live race the IMU stream can be a frozen canned
+    # tuple): level zero-rates at IDLE_THRUST, average a_up over the window, subtract the mean
+    # from every subsequent sample feeding PseudoVertical. 0 disables (--ground-cal-s).
+    ground_cal_s: float = 1.5
     # -- TAKEOFF --
-    # M2 (post-ceiling-crash): delta 0.035 -> 0.025 and the climb is VELOCITY-GATED -- it ends
-    # at vz_leak >= takeoff_gate_vz_mps OR at the takeoff_climb_s cap, whichever comes FIRST
-    # (M1's open-loop 0.035 x 2.5 s pulse imparted ~3 m/s and coasted into the ceiling).
+    # M2 (post-ceiling-crash): the climb is VELOCITY-GATED -- it ends at vz_leak >=
+    # takeoff_gate_vz_mps OR at the takeoff_climb_s cap, whichever comes FIRST (M1's open-loop
+    # 0.035 x 2.5 s pulse imparted ~3 m/s and coasted into the ceiling).
+    # M4 TALLER TAKEOFF: delta 0.025 -> 0.028 + gate 0.8 -> 1.0 m/s (cap unchanged) -- more
+    # floor margin for pano wobble now that the phantom-climb sink is fixed.
     takeoff_climb_s: float = 2.0          # climb TIME CAP (the gate usually fires earlier)
-    takeoff_climb_thrust_delta: float = 0.025   # + over hover during the climb ramp
-    takeoff_gate_vz_mps: float = 0.8      # end the climb when vz_leak (UP+) reaches this
+    takeoff_climb_thrust_delta: float = 0.028   # + over hover during the climb ramp
+    takeoff_gate_vz_mps: float = 1.0      # end the climb when vz_leak (UP+) reaches this
     takeoff_trim_s: float = 3.0           # level hover-trim after the climb (vz damper owns thrust)
     # -- PANO --
     # FREEZE-SPLIT TRADE (flagged to the coordinator): 20 -> 25 deg/s, RESTORING the
@@ -246,22 +307,22 @@ class MissionConfig:
     pano_revs: float = 1.0                # M3: every named pano is EXACTLY one clean 360
     # -- LEG --
     leg_accel_s: float = 2.0              # forward-pitch accel pulse (-> ~1.2 m/s)
-    # Freeze-split coasts (were 10.0 in the single-mission M3): m3a trims to fit <=55 s beside
-    # its two panos; m3b (one pano, no second leg) reinvests the freed budget in a LONGER
-    # coast = a longer baseline out of the shared spawn anchor.
-    leg_coast_s: float = 7.5              # m3a coast
-    m3b_leg_coast_s: float = 12.0         # m3b coast (single, extended leg)
-    # M3 DELIBERATE UNDER-BRAKE (operator eyewitness: the M2 1.5 s @ +5 deg brake over-braked
-    # whatever velocity remained after drag bled the coast -- the drone exited BACKWARDS and
-    # drifted backward through the following pano). Velocity is UNOBSERVABLE on this wire (no
-    # position/velocity feedback), so the brake cannot be closed-loop: a small FORWARD residual
-    # is harmless -- even useful parallax into the pano -- while a BACKWARD residual poisons it.
-    # Sized 1.0 s @ +4 deg = 4 deg-s of brake impulse vs the accel's 5 deg x 2.0 s = 10 deg-s
-    # (~40% -- comfortably under-braked), and drag covers the rest.
-    leg_brake_s: float = 1.0              # M3: 1.5 -> 1.0
+    # Freeze-split coasts: m3a fits <=55 s beside its two panos; m3b (one pano, no second leg)
+    # reinvests the freed budget in a LONGER coast = a longer baseline out of the shared spawn
+    # anchor. M4: +1.5 s each (the removed brake 1.0 s + the retrim trim 0.5 s folded in).
+    leg_coast_s: float = 9.0              # m3a coast (M4: 7.5 + 1.5 freed by the brake removal)
+    m3b_leg_coast_s: float = 13.5         # m3b coast (M4: 12.0 + 1.5, single extended leg)
+    # M4 BRAKE REMOVED (default 0): the M3 flights showed backward drift PERSISTED even with
+    # the 1.0 s @ +4 deg under-brake -- sim drag alone more than stops us, so ANY brake
+    # impulse over-brakes. Velocity is unobservable (no position/velocity feedback): a forward
+    # residual is harmless parallax, a backward one poisons the pano -- so the default brake
+    # is NONE and drag does 100% of the stopping. --brake-s / --brake-deg knobs remain for a
+    # sim-drag change; if re-enabled keep brake impulse WELL under the accel impulse
+    # (5 deg x 2.0 s = 10 deg-s) -- the M3 under-brake principle still applies.
+    leg_brake_s: float = 0.0              # M4: 1.0 -> 0 (drag stops us)
     leg_pitch_deg: float = 5.0            # accel |pitch| (nose-down)
-    leg_brake_pitch_deg: float = 4.0      # M3: brake |pitch| (nose-up), 5 -> 4 (under-brake)
-    leg_retrim_s: float = 1.5             # level hover re-trim after the brake
+    leg_brake_pitch_deg: float = 4.0      # brake |pitch| (nose-up) IF re-enabled via --brake-s
+    leg_retrim_s: float = 1.0             # M4: 1.5 -> 1.0 (level re-trim; no brake to recover from)
     # -- the m3b opening re-heading --
     # M3: an EXPLICIT TURN segment (named turn_120) -- the M2 trick of folding the offset into
     # a 1.33-rev pano read as a defect to the operator. In the freeze-split it OPENS m3b, so
@@ -281,11 +342,13 @@ def build_schedule(cfg: MissionConfig | None = None, mission: str = "m3a") -> li
     """Build one of the SPLIT M3 mapping-mission schedules (pure -- no I/O).
 
     IMU-FREEZE SPLIT: each flight must fit inside the sim's ~60 s clean-IMU window (see
-    MissionConfig docstring), so the mission ships as TWO flights over one shared spawn:
+    MissionConfig docstring), so the mission ships as TWO flights over one shared spawn
+    (M4 totals INCLUDE the 1.5 s on-pad GROUND_CAL that now opens both):
 
-      m3a (54.8 s): TAKEOFF, PANO_1(360), LEG_1, SETTLE_1(4s), PANO_2(360), SETTLE(5s)
-      m3b (50.9 s): TAKEOFF, TURN_120(+120deg @ 20dps), LEG_1(extended coast),
-                    SETTLE_1(4s), PANO_1(360), SETTLE(5s)
+      m3a (56.3 s): GROUND_CAL(1.5s), TAKEOFF, PANO_1(360), LEG_1, SETTLE_1(4s),
+                    PANO_2(360), SETTLE(5s)
+      m3b (52.4 s): GROUND_CAL(1.5s), TAKEOFF, TURN_120(+120deg @ 20dps),
+                    LEG_1(extended coast), SETTLE_1(4s), PANO_1(360), SETTLE(5s)
 
     m3b FALLBACK CHOICE (flagged): the amended m3b (turn, leg_1, settle, pano_1, leg_2,
     settle, pano_2, settle) sums to >=61.8 s even at ZERO coast, so per the amendment's
@@ -333,8 +396,13 @@ def build_schedule(cfg: MissionConfig | None = None, mission: str = "m3a") -> li
     def settle(name: str, dur_s: float) -> Segment:
         return Segment(name=name, kind=SEG_SETTLE, duration_s=dur_s)
 
+    # M4: on-pad bias calibration OPENS both flights (live race physics guaranteed post-GO).
+    # 0 s (--ground-cal-s 0) disables -> no segment, bias stays 0.0 == the M3 behaviour.
+    prefix = ([Segment(name="ground_cal", kind=SEG_GROUND_CAL, duration_s=cfg.ground_cal_s)]
+              if cfg.ground_cal_s > 0.0 else [])
+
     if mission == "m3a":
-        return [
+        return prefix + [
             takeoff(),
             pano("pano_1"),
             leg("leg_1", cfg.leg_coast_s),
@@ -344,7 +412,7 @@ def build_schedule(cfg: MissionConfig | None = None, mission: str = "m3a") -> li
         ]
     # m3b: opening turn -> its leg departs ~120 deg off m3a's; single extended leg (see the
     # fallback note in the docstring), one far-out 360.
-    return [
+    return prefix + [
         takeoff(),
         turn(),
         leg("leg_1", cfg.m3b_leg_coast_s),
@@ -375,8 +443,9 @@ class TickSetpoint:
     pitch_des_rad: float  # desired pitch offset from level (fwd/back on a LEG, else 0)
     dyaw_rad: float       # yaw-target advance THIS tick (rate * dt), 0 unless PANO
     # thrust policy this tick:
-    #   "climb"  -> hover + climb_thrust_delta (open-loop takeoff ramp)
-    #   "damp"   -> hover + kd*(0 - vz_imu)    (vz-damped level hover; the default)
+    #   "idle"   -> IDLE_THRUST, zero body rates  (M4 GROUND_CAL: on the pad, motors live)
+    #   "climb"  -> hover + climb_thrust_delta    (open-loop velocity-gated takeoff ramp)
+    #   "damp"   -> hover + clip(damper + z-trim, +/-VERT_CORR_CLIP)   (the default)
     thrust_mode: str
     climb_thrust_delta: float = 0.0
 
@@ -387,6 +456,11 @@ def segment_setpoint(seg: Segment, t_in_seg: float, dt: float,
     since the segment started; ``dt`` is the tick period (for the yaw-rate advance).
     ``climb_done`` (M2): the caller's LATCHED velocity-gate verdict for a TAKEOFF segment
     (see ``climb_phase_over``) -- True forces the trim sub-phase even before the time cap."""
+    if seg.kind == SEG_GROUND_CAL:
+        # M4: on the pad, motors live at idle, ZERO body rates commanded (the flight loop
+        # bypasses the attitude hold entirely for this mode) while a_up samples accumulate.
+        return TickSetpoint(seg.name, seg.kind, 0.0, 0.0, 0.0, thrust_mode="idle")
+
     if seg.kind == SEG_TAKEOFF:
         if not climb_done and t_in_seg < seg.climb_s:
             return TickSetpoint(seg.name, seg.kind, 0.0, 0.0, 0.0,
@@ -429,9 +503,10 @@ def describe_schedule(schedule: list[Segment], cfg: MissionConfig | None = None,
     lines.append(f"MAPPING MISSION {title} schedule -- {len(schedule)} segments, "
                  f"total {schedule_total_s(schedule):.1f} s  "
                  f"(must fit the ~60 s clean-IMU window)")
+    brake_hdr = (f"brake {cfg.leg_brake_pitch_deg:.0f}deg x {cfg.leg_brake_s:g}s (under-brake)"
+                 if cfg.leg_brake_s > 0 else "NO brake (drag stops us; M4)")
     lines.append(f"  hover_thrust={HOVER_THRUST:.4f}  pano_rate={cfg.pano_yaw_rate_dps:.0f} deg/s  "
-                 f"leg accel {cfg.leg_pitch_deg:.0f}deg x {cfg.leg_accel_s:g}s / "
-                 f"brake {cfg.leg_brake_pitch_deg:.0f}deg x {cfg.leg_brake_s:g}s (under-brake)")
+                 f"leg accel {cfg.leg_pitch_deg:.0f}deg x {cfg.leg_accel_s:g}s / {brake_hdr}")
     lines.append("  " + "-" * 84)
     lines.append(f"  {'#':>2}  {'segment':<12} {'kind':<8} {'dur[s]':>7}  detail")
     lines.append("  " + "-" * 84)
@@ -443,15 +518,18 @@ def describe_schedule(schedule: list[Segment], cfg: MissionConfig | None = None,
         t0 += s.duration_s
     lines.append("  " + "-" * 84)
     lines.append("  thrust: climb = hover+delta (velocity-gated ramp);  damp = hover + "
-                 "kd*(0 - vz_leak) + clip(-kp_zp*(z_pseudo - "
-                 f"{Z_TARGET_M:g}), +/-{ZP_TRIM_CLIP:g})   [vz_leak/z_pseudo UP-positive, "
-                 "mission-local leaky integrator tau=45s]")
+                 "clip(kd*(0 - vz_leak) + clip(-kp_zp*(z_pseudo - "
+                 f"{Z_TARGET_M:g}), +/-{ZP_TRIM_CLIP:g}), +/-{VERT_CORR_CLIP:g})   "
+                 "[vz_leak/z_pseudo UP-positive, tau=45s, pad-cal bias-subtracted (M4)]")
     lines.append("  attitude: level hold via AHRS (kp on rotvec err), body_rate_sign=(1,1,1), "
                  "cmd_rate_scale=0.4")
     return "\n".join(lines)
 
 
 def _segment_detail(s: Segment) -> str:
+    if s.kind == SEG_GROUND_CAL:
+        return (f"ON-PAD a_up bias cal: zero rates @ idle thrust {IDLE_THRUST:g}, "
+                f"mean a_up over {s.duration_s:.1f}s -> subtracted from vz_leak's input")
     if s.kind == SEG_TAKEOFF:
         gate = (f", gated: end early at vz>={s.climb_gate_vz_mps:g} m/s"
                 if s.climb_gate_vz_mps > 0.0 else "")
@@ -467,10 +545,14 @@ def _segment_detail(s: Segment) -> str:
         return f"yaw-rate {dps:+.1f} deg/s for {revs:.2f} rev  (level, vz-damped)"
     if s.kind == SEG_LEG:
         pdeg = s.pitch_mag_rad * 180.0 / 3.141592653589793
-        bdeg = s.brake_pitch_rad * 180.0 / 3.141592653589793
+        retrim = s.duration_s - s.accel_s - s.coast_s - s.brake_s
+        if s.brake_s <= 0.0:
+            brake_txt = "NO brake (drag alone over-stops; M4)"
+        else:
+            bdeg = s.brake_pitch_rad * 180.0 / 3.141592653589793
+            brake_txt = f"brake(+{bdeg:.0f}deg) {s.brake_s:.1f}s UNDER-brake"
         return (f"accel(nose-down -{pdeg:.0f}deg) {s.accel_s:.1f}s, coast {s.coast_s:.1f}s, "
-                f"brake(+{bdeg:.0f}deg) {s.brake_s:.1f}s UNDER-brake, re-trim "
-                f"{s.duration_s - s.accel_s - s.coast_s - s.brake_s:.1f}s")
+                f"{brake_txt}, re-trim {retrim:.1f}s")
     if s.kind == SEG_SETTLE:
         return f"level hover {s.duration_s:.1f}s (vz-damped)"
     return ""
@@ -497,7 +579,7 @@ def _run_go(args: argparse.Namespace) -> int:
     from racer.vertical_estimator import VerticalEstimator, a_up_from_specific_force
     from racer.vision.jpeg_receiver import VIDEO_PORT, JpegUdpReceiver
 
-    cfg = MissionConfig()
+    cfg = _cfg_from_args(args)
     schedule = build_schedule(cfg, mission=args.mission)
     print(describe_schedule(schedule, cfg, mission=args.mission))
 
@@ -569,7 +651,19 @@ def _run_go(args: argparse.Namespace) -> int:
     max_rate = float(args.max_rate)
     body_rate_sign = np.array([1.0, 1.0, 1.0])   # vq2_case_c flown value (A36 Item-0)
     recorder.add_meta(vz_tau_s=pv.tau_s, kd_vz=kd_vz, kp_zpseudo=kp_zp,
-                      z_target_m=Z_TARGET_M)
+                      z_target_m=Z_TARGET_M, ground_cal_s=cfg.ground_cal_s,
+                      vert_corr_clip=VERT_CORR_CLIP)
+
+    def _on_cal_done(bias: float, n: int) -> None:
+        # M4: the measured pad-rest a_up bias -> meta + console. WARN (never abort) on a
+        # suspicious magnitude -- a big "bias" usually means the drone was NOT at rest.
+        recorder.add_meta(a_up_bias_mps2=float(bias), ground_cal_samples=int(n))
+        print(f"\n[mapping] ground-cal: a_up_bias={bias:+.4f} m/s^2 over {n} samples "
+              f"-> subtracted from vz_leak input")
+        if abs(bias) > GROUND_CAL_WARN_BIAS:
+            print(f"[mapping] WARNING: |a_up_bias| {abs(bias):.3f} > {GROUND_CAL_WARN_BIAS:g} "
+                  f"m/s^2 -- pad rest suspect (moving? tilted spawn? IMU trap). Flying on "
+                  f"with the measured value.", file=sys.stderr)
 
     rc = 0
     try:
@@ -619,7 +713,7 @@ def _run_go(args: argparse.Namespace) -> int:
             ControlCommand=ControlCommand, ControlMode=ControlMode,
             level_hold_body_rate=level_hold_body_rate,
             a_up_from_specific_force=a_up_from_specific_force, time=time, json=json,
-            watchdog=watchdog,
+            watchdog=watchdog, cal_done_cb=_on_cal_done,
         )
 
         # ---- 5) post-mission: keep streaming LEVEL hover for --hold-after-s, then stop ----
@@ -687,12 +781,15 @@ def _race_live(client) -> bool:
     return bool(rs and rs.get("started")) and client.state.sim_time_ns > 0
 
 
-def _step_estimators(client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force):
+def _step_estimators(client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force,
+                     feed_pv: bool = True):
     """Step the AHRS + BOTH vertical channels on the freshest IMU sample, on the MASTER sim
-    clock. Returns (roll, pitch, yaw, body_rate, vz_imu, new_prev_imu_ns); the M2 flight
-    channel is read off ``pv.vz_leak`` / ``pv.z_pseudo`` (UP-positive). Only integrates while
-    the loop runs (post-GO = race live); resets BOTH channels on a clock jump BACKWARD (the
-    sim IMU restart trap). ``vest`` (the racing washout) is stepped for LOG COMPARISON only."""
+    clock. Returns (roll, pitch, yaw, body_rate, vz_imu, a_up_or_None, new_prev_imu_ns); the
+    flight channel is read off ``pv.vz_leak`` / ``pv.z_pseudo`` (UP-positive). Only integrates
+    while the loop runs (post-GO = race live); resets BOTH channels on a clock jump BACKWARD
+    (the sim IMU restart trap). ``vest`` (the racing washout) is stepped for LOG COMPARISON
+    only. M4: ``feed_pv=False`` computes/returns a_up WITHOUT stepping pv -- the GROUND_CAL
+    phase feeds the returned raw a_up to the bias averager instead of the integrator."""
     s = client.state
     imu_ns = int(s.sim_time_ns)
     accel = s.accel_body
@@ -714,23 +811,28 @@ def _step_estimators(client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific
         vest.seed()
         pv.reset()
         dt = 0.0
+    a_up = None
     if 0.0 < dt <= vest.max_dt_s and accel is not None:
-        # a_up: kinematic UPWARD acceleration, UP-POSITIVE m/s^2 (the verified decode) --
-        # shared by both channels, so their sign conventions differ ONLY by their own state
-        # definitions (vest integrates a_dn=-a_up into a DOWN-positive vz; pv integrates a_up
-        # directly into the UP-positive vz_leak).
+        # a_up: RAW kinematic UPWARD acceleration, UP-POSITIVE m/s^2 (the verified decode) --
+        # shared by both channels; pv subtracts its pad-calibrated a_up_bias internally (M4),
+        # vest integrates a_dn=-a_up into its own DOWN-positive vz with its own bias capture.
         a_up = float(a_up_from_specific_force(np.asarray(accel, dtype=float), ahrs.R_wb))
         vest.predict(a_up, float(dt))      # racing washout: logged comparison only
-        pv.step(a_up, float(dt))           # M2 flight channel: vz_leak + z_pseudo
-    return roll, pitch, yaw, body_rate, vest.vz_imu, imu_ns
+        if feed_pv:
+            pv.step(a_up, float(dt))       # flight channel: vz_leak + z_pseudo (bias-corrected)
+    return roll, pitch, yaw, body_rate, vest.vz_imu, a_up, imu_ns
 
 
 def _fly_schedule(client, schedule, ahrs, vest, pv, tick_log, *, control_hz, kp_att, kd_att,
                   max_rate, kd_vz, kp_zp, body_rate_sign, stop, np, ControlCommand, ControlMode,
-                  level_hold_body_rate, a_up_from_specific_force, time, json, watchdog=None):
+                  level_hold_body_rate, a_up_from_specific_force, time, json, watchdog=None,
+                  cal_done_cb=None):
     """Run the segment state machine at ~control_hz. Yaw target is PERSISTENT and slewed by the
-    PANO yaw-rate; roll/pitch held at the segment's scripted offset; thrust = the M2 law
-    (vz_leak damper + pseudo-alt soft trim), or the VELOCITY-GATED climb ramp on takeoff."""
+    PANO yaw-rate; roll/pitch held at the segment's scripted offset; thrust = the M2/M4 law
+    (vz_leak damper + pseudo-alt trim, total correction clamped), or the VELOCITY-GATED climb
+    ramp on takeoff. M4: a leading GROUND_CAL segment commands zero rates at idle thrust,
+    averages raw a_up on the pad, and installs the mean as ``pv.a_up_bias`` on exit
+    (``cal_done_cb(bias, n)`` is invoked once, for meta/print)."""
     tick = 1.0 / control_hz
     prev_imu_ns = None
     yaw_target = None                 # set from the AHRS yaw once we have a real attitude
@@ -739,6 +841,7 @@ def _fly_schedule(client, schedule, ahrs, vest, pv, tick_log, *, control_hz, kp_
     next_t = time.monotonic()
     n_tick = 0
     climb_done = False                # M2 takeoff velocity-gate LATCH (once over, stays over)
+    cal = GroundCal()                 # M4 pad-rest a_up averager
     while seg_i < len(schedule) and not stop.is_set():
         while time.monotonic() < next_t:
             client.pump()
@@ -750,42 +853,66 @@ def _fly_schedule(client, schedule, ahrs, vest, pv, tick_log, *, control_hz, kp_
         seg = schedule[seg_i]
         t_in_seg = now - seg_t0
         if t_in_seg >= seg.duration_s:
+            if seg.kind == SEG_GROUND_CAL:
+                # M4 cal FINALIZE (once, at the cal->takeoff transition): install the measured
+                # bias into the integrator's input path + zero any pre-cal residue.
+                pv.a_up_bias = cal.bias
+                pv.reset()
+                if cal_done_cb is not None:
+                    try:
+                        cal_done_cb(cal.bias, cal.n)
+                    except Exception:
+                        pass
             seg_i += 1
             seg_t0 = now
             continue
 
-        roll, pitch, yaw, body_rate, vz_imu, prev_imu_ns = _step_estimators(
-            client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force)
+        in_cal = seg.kind == SEG_GROUND_CAL
+        roll, pitch, yaw, body_rate, vz_imu, a_up, prev_imu_ns = _step_estimators(
+            client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force,
+            feed_pv=not in_cal)       # cal window: average the raw a_up, don't integrate it
         if watchdog is not None:
             watchdog(now, prev_imu_ns, body_rate)
-        if yaw_target is None:
-            yaw_target = float(yaw)
 
-        # M2 velocity-gated takeoff: latch the climb-over verdict (vz_leak UP-positive).
-        if seg.kind == SEG_TAKEOFF and not climb_done:
-            climb_done = climb_phase_over(seg, t_in_seg, pv.vz_leak)
         sp = segment_setpoint(seg, t_in_seg, tick, climb_done=climb_done)
-        yaw_target = float(yaw_target + sp.dyaw_rad)
 
-        # attitude -> body rate: feed the AHRS TRUE euler MINUS the desired tilt offset (same
-        # (roll-roll_des, pitch-pitch_des) form rate_sysid uses), hold yaw at yaw_target.
-        omega = level_hold_body_rate(
-            float(roll) - sp.roll_des_rad, float(pitch) - sp.pitch_des_rad, float(yaw), yaw_target,
-            np.asarray(body_rate, dtype=float),
-            kp=kp_att, kd=kd_att, body_rate_sign=body_rate_sign, max_rate=max_rate, ff_gain=1.0,
-        )
-
-        if sp.thrust_mode == "climb":
-            thr = float(np.clip(HOVER_THRUST + sp.climb_thrust_delta, THRUST_LO, THRUST_HI))
+        if in_cal:
+            # M4 GROUND_CAL tick: zero body rates + idle thrust (firmly on the pad, live race
+            # physics), accumulate the raw a_up sample. No attitude hold, no yaw latch.
+            if a_up is not None:
+                cal.add(a_up)
+            omega = np.zeros(3)
+            thr = IDLE_THRUST
         else:
-            thr = thrust_command(pv.vz_leak, pv.z_pseudo, kd_vz, kp_zp)
+            if yaw_target is None:
+                yaw_target = float(yaw)
+            # M2 velocity-gated takeoff: latch the climb-over verdict (vz_leak UP-positive).
+            if seg.kind == SEG_TAKEOFF and not climb_done:
+                climb_done = climb_phase_over(seg, t_in_seg, pv.vz_leak)
+                if climb_done:  # re-evaluate the setpoint under the fresh latch
+                    sp = segment_setpoint(seg, t_in_seg, tick, climb_done=True)
+            yaw_target = float(yaw_target + sp.dyaw_rad)
+
+            # attitude -> body rate: feed the AHRS TRUE euler MINUS the desired tilt offset
+            # (the (roll-roll_des, pitch-pitch_des) form rate_sysid uses), hold yaw_target.
+            omega = level_hold_body_rate(
+                float(roll) - sp.roll_des_rad, float(pitch) - sp.pitch_des_rad,
+                float(yaw), yaw_target,
+                np.asarray(body_rate, dtype=float),
+                kp=kp_att, kd=kd_att, body_rate_sign=body_rate_sign, max_rate=max_rate,
+                ff_gain=1.0,
+            )
+            if sp.thrust_mode == "climb":
+                thr = float(np.clip(HOVER_THRUST + sp.climb_thrust_delta, THRUST_LO, THRUST_HI))
+            else:
+                thr = thrust_command(pv.vz_leak, pv.z_pseudo, kd_vz, kp_zp)
 
         client.send_command(ControlCommand(mode=ControlMode.BODY_RATE,
                                            sim_time_ns=int(client.state.sim_time_ns),
                                            body_rate=omega, thrust=float(thr)))
         n_tick += 1
-        _log_tick(tick_log, json, time, seg.name, sp, roll, pitch, yaw, yaw_target,
-                  omega, thr, vz_imu, pv, np)
+        _log_tick(tick_log, json, time, seg.name, sp, roll, pitch, yaw,
+                  (0.0 if yaw_target is None else yaw_target), omega, thr, vz_imu, pv, np)
         if n_tick % max(int(control_hz), 1) == 0:
             print(f"  [{seg.name:<12}] t_seg={t_in_seg:5.1f}/{seg.duration_s:4.1f}s  "
                   f"rpy=({np.degrees(roll):+5.1f},{np.degrees(pitch):+5.1f},"
@@ -811,7 +938,7 @@ def _fly_hold(client, ahrs, vest, pv, tick_log, *, hold_s, control_hz, kp_att, k
             time.sleep(0.0005)
         next_t = time.monotonic() + tick
         client.pump()
-        roll, pitch, yaw, body_rate, vz_imu, prev_imu_ns = _step_estimators(
+        roll, pitch, yaw, body_rate, vz_imu, _a_up, prev_imu_ns = _step_estimators(
             client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force)
         if yaw_target is None:
             yaw_target = float(yaw)
@@ -839,9 +966,11 @@ def _log_tick(tick_log, json, time, seg_name, sp, roll, pitch, yaw, yaw_target,
             "ahrs_rpy": [round(float(roll), 5), round(float(pitch), 5), round(float(yaw), 5)],
             "yaw_target": round(float(yaw_target), 5),
             # M2 flight channel (UP-positive) + the racing washout (NED DOWN-positive) side by
-            # side -- the comparison that would have shown the M1 bleed offline.
+            # side -- the comparison that would have shown the M1 bleed offline. M4: the
+            # pad-calibrated a_up bias rides every record (constant post-cal; 0.0 before).
             "vz_leak": round(float(pv.vz_leak), 5),
             "z_pseudo": round(float(pv.z_pseudo), 4),
+            "a_up_bias": round(float(pv.a_up_bias), 6),
             "vz_imu": (None if (vz_imu is None or not np.isfinite(vz_imu)) else round(float(vz_imu), 5)),
         }
         if sp is not None:
@@ -856,6 +985,16 @@ def _log_tick(tick_log, json, time, seg_name, sp, roll, pitch, yaw, yaw_target,
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+def _cfg_from_args(args: argparse.Namespace) -> MissionConfig:
+    """MissionConfig with the CLI-overridable M4 knobs applied (used by --go AND --dry-run,
+    so the printed schedule always matches the flown one)."""
+    return MissionConfig(
+        ground_cal_s=float(args.ground_cal_s),
+        leg_brake_s=float(args.brake_s),
+        leg_brake_pitch_deg=float(args.brake_deg),
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -886,6 +1025,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="leak time-constant (s) of the mission-local vz integrator -- LOW leak "
                          "so a steady climb stays visible to the damper (the racing 2 s washout "
                          "bled the M1 climb out and the drone coasted into the ceiling)")
+    ap.add_argument("--ground-cal-s", type=float, default=1.5,
+                    help="M4 on-pad a_up bias calibration window (s), first segment after GO "
+                         "(zero rates @ idle thrust; mean a_up subtracted from vz_leak's "
+                         "input); 0 disables")
+    ap.add_argument("--brake-s", type=float, default=0.0,
+                    help="leg brake pulse duration (s); default 0 = NO brake (M4: sim drag "
+                         "alone over-stops -- any impulse drifted the M3 flights backward)")
+    ap.add_argument("--brake-deg", type=float, default=4.0,
+                    help="leg brake |pitch| (deg, nose-up) IF re-enabled via --brake-s")
     ap.add_argument("--kp-zpseudo", type=float, default=0.004,
                     help="pseudo-altitude soft-trim gain (thrust per metre of z_pseudo error, "
                          f"clipped to +/-{ZP_TRIM_CLIP:g} collective; 0 disables)")
@@ -906,7 +1054,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.label is None:
         args.label = f"mapping_{args.mission}"   # session dir carries the mission name
     if args.dry_run:
-        print(describe_schedule(build_schedule(mission=args.mission), mission=args.mission))
+        cfg = _cfg_from_args(args)
+        print(describe_schedule(build_schedule(cfg, mission=args.mission), cfg,
+                                mission=args.mission))
         return 0
     # --go: resolve the default video port only now (avoids importing the sim stack for --dry-run).
     if args.video_port is None:

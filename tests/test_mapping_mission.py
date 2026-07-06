@@ -28,27 +28,39 @@ _SPEC.loader.exec_module(mm)
 # schedule shape / durations (M3 freeze-window SPLIT: m3a / m3b)
 # ---------------------------------------------------------------------------
 def test_m3a_schedule_sequence():
-    """m3a: panos + one leg, all inside the ~60 s clean-IMU window."""
+    """m3a: on-pad bias cal (M4) opens, then panos + one leg, inside the clean-IMU window."""
     sched = mm.build_schedule(mission="m3a")
     assert [s.name for s in sched] == [
-        "takeoff", "pano_1", "leg_1", "settle_1", "pano_2", "settle",
+        "ground_cal", "takeoff", "pano_1", "leg_1", "settle_1", "pano_2", "settle",
     ]
     assert [s.kind for s in sched] == [
-        mm.SEG_TAKEOFF, mm.SEG_PANO, mm.SEG_LEG, mm.SEG_SETTLE, mm.SEG_PANO, mm.SEG_SETTLE,
+        mm.SEG_GROUND_CAL, mm.SEG_TAKEOFF, mm.SEG_PANO, mm.SEG_LEG, mm.SEG_SETTLE,
+        mm.SEG_PANO, mm.SEG_SETTLE,
     ]
 
 
 def test_m3b_schedule_sequence():
-    """m3b: opening +120 deg turn -> its leg departs ~120 deg off m3a's; then ONE extended
-    leg + ONE far-out pano (leg_2 AND the co-located pano_2 dropped per the amendment's
-    over-budget fallback -- flagged)."""
+    """m3b: cal, opening +120 deg turn -> its leg departs ~120 deg off m3a's; then ONE
+    extended leg + ONE far-out pano (leg_2 AND the co-located pano_2 dropped per the
+    freeze-split fallback -- flagged)."""
     sched = mm.build_schedule(mission="m3b")
     assert [s.name for s in sched] == [
-        "takeoff", "turn_120", "leg_1", "settle_1", "pano_1", "settle",
+        "ground_cal", "takeoff", "turn_120", "leg_1", "settle_1", "pano_1", "settle",
     ]
     assert [s.kind for s in sched] == [
-        mm.SEG_TAKEOFF, mm.SEG_PANO, mm.SEG_LEG, mm.SEG_SETTLE, mm.SEG_PANO, mm.SEG_SETTLE,
+        mm.SEG_GROUND_CAL, mm.SEG_TAKEOFF, mm.SEG_PANO, mm.SEG_LEG, mm.SEG_SETTLE,
+        mm.SEG_PANO, mm.SEG_SETTLE,
     ]
+
+
+def test_ground_cal_disabled_removes_the_segment():
+    """--ground-cal-s 0 disables the M4 cal phase entirely (bias stays 0 == pre-M4 behaviour);
+    the schedule simply starts at takeoff."""
+    cfg = mm.MissionConfig(ground_cal_s=0.0)
+    for mission in mm.MISSIONS:
+        sched = mm.build_schedule(cfg, mission=mission)
+        assert sched[0].kind == mm.SEG_TAKEOFF
+        assert all(s.kind != mm.SEG_GROUND_CAL for s in sched)
 
 
 def test_unknown_mission_rejected():
@@ -59,14 +71,13 @@ def test_unknown_mission_rejected():
 
 def test_totals_fit_the_imu_freeze_window():
     """HARD freeze-window bounds: the sim IMU freezes at t~=60-90 s of race time (~62 s clean
-    segments corroborated), so each mission MUST complete inside it. m3a pins 54.8 s
-    (<= 55 target), m3b pins 50.9 s; both hard-capped at 58 s."""
+    segments corroborated), so each mission MUST complete inside it. M4 totals INCLUDE the
+    1.5 s ground-cal: m3a pins 56.3 s, m3b 52.4 s; both hard-capped at 58 s."""
     t_a = mm.schedule_total_s(mm.build_schedule(mission="m3a"))
     t_b = mm.schedule_total_s(mm.build_schedule(mission="m3b"))
-    assert t_a == pytest_approx(54.8)
-    assert t_b == pytest_approx(50.9)
-    assert t_a <= 55.0 + 1e-9        # m3a's own target
-    assert t_a <= 58.0 and t_b <= 58.0   # the amendment's hard cap, both flights
+    assert t_a == pytest_approx(56.3)
+    assert t_b == pytest_approx(52.4)
+    assert t_a <= 58.0 and t_b <= 58.0   # the freeze-window hard cap, both flights
 
 
 def test_segment_durations_are_sum_of_subphase_params():
@@ -163,52 +174,50 @@ def test_pano_commands_constant_yaw_rate_and_stays_level():
     assert sp_late.dyaw_rad == pytest_approx(sp.dyaw_rad)
 
 
-def test_leg_pitch_schedule_accel_coast_brake_retrim():
+def test_leg_pitch_schedule_is_brakeless_accel_coast_retrim():
+    """M4: the default leg has NO brake window (sim drag alone over-stops -- the M3 flights
+    still drifted backward with the 1.0 s @ 4 deg under-brake): accel, coast, then straight
+    to level re-trim."""
     seg = _seg("leg_1")
     mag = seg.pitch_mag_rad
-    brake = seg.brake_pitch_rad
-    assert mag > 0.0 and brake > 0.0
+    assert mag == pytest_approx(math.radians(5.0))
+    assert seg.brake_s == 0.0                       # M4: brake removed by default
 
     # accel window: nose-DOWN (negative NED pitch) -> forward, at the ACCEL tilt (5 deg)
     sp_a = mm.segment_setpoint(seg, t_in_seg=seg.accel_s * 0.5, dt=0.01)
     assert sp_a.pitch_des_rad == pytest_approx(-mag)
-    assert mag == pytest_approx(math.radians(5.0))
 
     # coast window: level
     sp_c = mm.segment_setpoint(seg, t_in_seg=seg.accel_s + seg.coast_s * 0.5, dt=0.01)
     assert sp_c.pitch_des_rad == 0.0
 
-    # brake window: nose-UP (positive) at the SMALLER brake tilt (4 deg, M3 under-brake)
-    t_brake = seg.accel_s + seg.coast_s + seg.brake_s * 0.5
-    sp_b = mm.segment_setpoint(seg, t_in_seg=t_brake, dt=0.01)
-    assert sp_b.pitch_des_rad == pytest_approx(+brake)
-    assert brake == pytest_approx(math.radians(4.0))
-
-    # re-trim window: level again
-    t_trim = seg.accel_s + seg.coast_s + seg.brake_s + 0.1
-    sp_t = mm.segment_setpoint(seg, t_in_seg=t_trim, dt=0.01)
-    assert sp_t.pitch_des_rad == 0.0
+    # immediately after the coast: LEVEL re-trim -- never a nose-up pulse anywhere post-coast
+    for frac in (0.01, 0.5, 0.99):
+        t = seg.accel_s + seg.coast_s + frac * (seg.duration_s - seg.accel_s - seg.coast_s)
+        sp = mm.segment_setpoint(seg, t_in_seg=t, dt=0.01)
+        assert sp.pitch_des_rad == 0.0
 
     # a LEG never commands yaw or roll
-    for t in (0.1, seg.accel_s + 1.0, t_brake, t_trim):
+    for t in (0.1, seg.accel_s + 1.0, seg.duration_s - 0.1):
         sp = mm.segment_setpoint(seg, t_in_seg=t, dt=0.01)
         assert sp.roll_des_rad == 0.0 and sp.dyaw_rad == 0.0
 
 
-def test_leg_brake_impulse_is_a_deliberate_under_brake():
-    """M3 operator eyewitness: the M2 full-impulse brake reversed the drag-bled residual and
-    the drone drifted BACKWARD through the following pano. Velocity is unobservable, so the
-    brake must UNDER-shoot: brake impulse (tilt x time) strictly LESS than the accel impulse
-    -- drag covers the rest; a forward residual is harmless parallax, a backward one poisons
-    the pano. Holds for the leg of BOTH freeze-split flights."""
+def test_leg_brake_impulse_under_brake_when_reenabled():
+    """M4 default = NO brake at all (impulse 0). If a pilot re-enables it via --brake-s, the
+    M3 under-brake principle still holds: brake impulse strictly LESS than the accel impulse
+    (velocity is unobservable; a backward residual poisons the pano)."""
+    # default: brake fully removed on both flights' legs
     for mission in mm.MISSIONS:
         seg = _seg("leg_1", mission)
-        accel_impulse = seg.pitch_mag_rad * seg.accel_s        # 5 deg x 2.0 s = 10 deg-s
-        brake_impulse = seg.brake_pitch_rad * seg.brake_s      # 4 deg x 1.0 s =  4 deg-s
-        assert brake_impulse > 0.0
-        assert brake_impulse < accel_impulse                   # NEVER fully cancel open-loop
-        # pin the designed margin (~40% of the accel impulse) so a knob change is explicit
-        assert brake_impulse / accel_impulse == pytest_approx(0.4)
+        assert seg.brake_pitch_rad * seg.brake_s == 0.0
+    # re-enabled via the knobs (the old M3 values): still a deliberate under-brake
+    cfg = mm.MissionConfig(leg_brake_s=1.0, leg_brake_pitch_deg=4.0)
+    seg = {s.name: s for s in mm.build_schedule(cfg, mission="m3a")}["leg_1"]
+    accel_impulse = seg.pitch_mag_rad * seg.accel_s        # 5 deg x 2.0 s = 10 deg-s
+    brake_impulse = seg.brake_pitch_rad * seg.brake_s      # 4 deg x 1.0 s =  4 deg-s
+    assert 0.0 < brake_impulse < accel_impulse
+    assert brake_impulse / accel_impulse == pytest_approx(0.4)
 
 
 def test_settle_is_level_vz_damped_hover():
@@ -273,11 +282,11 @@ def test_accel_bias_error_is_bounded():
 
 def test_takeoff_gate_fires_on_vz_threshold():
     seg = _seg("takeoff")
-    assert seg.climb_gate_vz_mps == pytest_approx(0.8)
+    assert seg.climb_gate_vz_mps == pytest_approx(1.0)   # M4 taller takeoff: 0.8 -> 1.0
     # well inside the time cap, climb rate reaches the gate -> climb OVER
-    assert mm.climb_phase_over(seg, t_in_seg=0.6, vz_up_mps=0.85) is True
+    assert mm.climb_phase_over(seg, t_in_seg=0.6, vz_up_mps=1.05) is True
     # same time, climb rate below the gate -> still climbing
-    assert mm.climb_phase_over(seg, t_in_seg=0.6, vz_up_mps=0.5) is False
+    assert mm.climb_phase_over(seg, t_in_seg=0.6, vz_up_mps=0.9) is False
 
 
 def test_takeoff_gate_fires_on_time_cap():
@@ -329,11 +338,92 @@ def test_thrust_sign_above_target_reduces_thrust_and_trim_is_clipped():
     assert mm.thrust_command(0.0, 50.0, kd, 0.0) == pytest_approx(mm.HOVER_THRUST)
 
 
-def test_thrust_outer_clamp_never_rails():
-    """The [0.18, 0.42] outer clamp bounds the composed command (the sim mixer couples
-    thrust<->rates near the rails)."""
-    assert mm.thrust_command(+10.0, 0.0, kd_vz=0.06, kp_zp=0.004) == pytest_approx(mm.THRUST_LO)
-    assert mm.thrust_command(-10.0, 0.0, kd_vz=0.06, kp_zp=0.004) == pytest_approx(mm.THRUST_HI)
+def test_vertical_correction_clamp_pinned_both_directions():
+    """M4: the TOTAL vertical correction (damper + z-trim) is clamped to +/-VERT_CORR_CLIP
+    (0.020) around hover -- an estimator lie is worth at most ~+/-0.75 m/s^2, so the M3
+    phantom-climb continuous 10%-below-hover sink is physically impossible. Pinned in BOTH
+    directions with wildly lying inputs."""
+    kd, kp = 0.06, 0.004
+    # huge phantom CLIMB + huge phantom over-altitude -> at most -0.020 below hover
+    lo = mm.thrust_command(+10.0, mm.Z_TARGET_M + 100.0, kd, kp)
+    assert lo == pytest_approx(mm.HOVER_THRUST - mm.VERT_CORR_CLIP)
+    # huge phantom DESCENT + huge phantom under-altitude -> at most +0.020 above hover
+    hi = mm.thrust_command(-10.0, mm.Z_TARGET_M - 100.0, kd, kp)
+    assert hi == pytest_approx(mm.HOVER_THRUST + mm.VERT_CORR_CLIP)
+    # the M3 failure case itself: 0.28 m/s phantom climb + railed trim used to command
+    # 0.239 (10% below hover, continuous); now bounded to hover - 0.020 = 0.2456
+    m3_case = mm.thrust_command(+0.28, +15.0, kd, kp)
+    assert m3_case >= mm.HOVER_THRUST - mm.VERT_CORR_CLIP - 1e-12
+    # small, honest corrections pass through UNclamped
+    small = mm.thrust_command(+0.1, mm.Z_TARGET_M, kd, kp)
+    assert small == pytest_approx(mm.HOVER_THRUST - 0.06 * 0.1)
+
+
+# ---------------------------------------------------------------------------
+# M4 ground-cal: pad-rest bias measurement + subtraction
+# ---------------------------------------------------------------------------
+def test_ground_cal_subtraction_kills_the_m3_phantom_climb():
+    """THE M4 root-cause regression: a constant a_up bias of ~+0.006 m/s^2 locked vz_leak at
+    bias*tau ~= +0.28 m/s (the measured M3 phantom climb). With the pad-measured bias
+    subtracted, the steady-state vz_leak under the SAME bias stays < 0.05 m/s."""
+    bias = 0.0062
+    # pad cal: average the biased rest samples (as the GROUND_CAL segment does)
+    cal = mm.GroundCal()
+    for _ in range(150):                    # ~1.5 s of ~100 Hz ticks on the pad
+        cal.add(bias)
+    pv = mm.PseudoVertical(tau_s=45.0, a_up_bias=cal.bias)
+    dt = 0.01
+    for _ in range(10_000):                 # 100 s of flight under the SAME constant bias
+        pv.step(bias, dt)
+    assert abs(pv.vz_leak) < 0.05           # phantom climb killed (was ~0.28 uncal)
+    assert abs(pv.z_pseudo) < 2.0           # z_pseudo no longer inflates to +15 m
+    # contrast: WITHOUT the cal the same bias heads for bias*tau ~= 0.28 (the M3 bug);
+    # at t=100 s the analytic value is bias*tau*(1 - e^(-100/45)) ~= 0.249
+    pv_uncal = mm.PseudoVertical(tau_s=45.0)
+    for _ in range(10_000):
+        pv_uncal.step(bias, dt)
+    expected = bias * 45.0 * (1.0 - math.exp(-100.0 / 45.0))
+    assert pv_uncal.vz_leak == pytest_approx(expected, rel=0.02)
+    assert pv_uncal.vz_leak > 0.2       # the phantom climb is unmistakably present uncal
+
+
+def test_ground_cal_averaging_ignores_glitch_samples():
+    """The cal window applies the SAME glitch guards as the integrator: non-finite samples
+    are ignored entirely, extreme samples are clamped to +/-30 m/s^2."""
+    cal = mm.GroundCal()
+    for _ in range(100):
+        cal.add(0.0062)
+    n_before = cal.n
+    cal.add(float("nan"))                   # ignored: not counted at all
+    cal.add(float("inf"))
+    assert cal.n == n_before
+    assert cal.bias == pytest_approx(0.0062)
+    # a wild spike is clamped, not averaged at face value
+    cal2 = mm.GroundCal()
+    cal2.add(1000.0)
+    assert cal2.bias == pytest_approx(30.0)
+    # empty window (cal disabled/starved) -> bias 0.0, never a ZeroDivisionError
+    assert mm.GroundCal().bias == 0.0
+
+
+def test_ground_cal_setpoint_is_idle_zero_command():
+    """The GROUND_CAL segment commands idle thrust with zero attitude/yaw intent -- the
+    flight loop sends zero body rates and IDLE_THRUST for the whole window."""
+    seg = _seg("ground_cal")
+    for t in (0.0, 0.7, 1.4):
+        sp = mm.segment_setpoint(seg, t_in_seg=t, dt=0.01)
+        assert sp.thrust_mode == "idle"
+        assert sp.roll_des_rad == 0.0 and sp.pitch_des_rad == 0.0 and sp.dyaw_rad == 0.0
+
+
+def test_pseudo_vertical_reset_keeps_the_calibrated_bias():
+    """A race-restart reset zeroes the states but KEEPS the pad-calibrated bias (the sensor
+    bias survives a restart; a fresh flight re-runs the cal and overwrites it anyway)."""
+    pv = mm.PseudoVertical(tau_s=45.0, a_up_bias=0.0062)
+    pv.step(1.0, 0.01)
+    pv.reset()
+    assert pv.vz_leak == 0.0 and pv.z_pseudo == 0.0
+    assert pv.a_up_bias == pytest_approx(0.0062)
 
 
 def test_pseudo_vertical_reset_and_glitch_guards():
