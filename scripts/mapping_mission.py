@@ -27,11 +27,16 @@ eyes-confirmed vq2_case_c path, 2026-07-05):
     +true_roll,+true_pitch,+true_yaw) before the SAME rotvec * body_rate_sign(1,1,1). Feeding
     ``level_hold_body_rate`` the TRUE euler reproduces that R_cur exactly, so the wire sign is
     the eyes-confirmed one -- no new sign assumption is introduced.
-  * Vertical = thrust damper ``thrust = hover + kd*(0 - vz_imu)`` on the parallel IMU-only
-    washout (racer.vertical_estimator.VerticalEstimator.vz_imu). vz_imu is the pure A24
-    recurrence, never touched by vision, structurally bounded. We integrate it ONLY while the
-    race is live (RACE_STATUS started==True) and reset it cleanly on a sim clock jump BACKWARD
-    (the sim IMU-trap: a frozen canned tuple + a time_usec that resets at race restart).
+  * Vertical (M2, post-M1-ceiling-crash) = the MISSION-LOCAL leaky channel ``PseudoVertical``
+    (vz_leak tau=45 s + integrated z_pseudo, both UP-positive -- see the M2 sign block below):
+    ``thrust = hover + kd*(0 - vz_leak) + clip(-kp_zp*(z_pseudo - 2), +/-0.01)``, and the
+    takeoff climb pulse is VELOCITY-GATED (ends at vz_leak >= 0.8 m/s or the 2 s cap). The
+    racing washout (VerticalEstimator.vz_imu, tau=2 s) is a TRANSIENT damper that bled the M1
+    steady climb out within seconds (its stack has vision as the vertical reference; mapping
+    has none) -- it stays stepped for LOG COMPARISON only. Both channels integrate ONLY while
+    the race is live (RACE_STATUS started==True -- the loop runs post-GO) and reset cleanly on
+    a sim clock jump BACKWARD (the sim IMU-trap: a frozen canned tuple + a time_usec that
+    resets at race restart).
   * Hover thrust ~= 0.2656; we never rail thrust (the sim mixer couples thrust<->rates near
     the rails), keep rate commands moderate, and clamp the composed body rate.
 
@@ -53,6 +58,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +77,92 @@ class DeadStreamAbort(RuntimeError):
     Flying on requires working feedback and produces zero mapping value -- abort fast.
     (M1 2026-07-05 flew 100 s blind with frames=0 and a bitwise-frozen AHRS: a second
     attached client had the streams. This abort caps that failure at ~3 s.)"""
+
+
+# ---------------------------------------------------------------------------
+# M2 VERTICAL CHANNEL (post-M1-ceiling-crash fix, 2026-07-06) -- pure, unit-tested.
+# ---------------------------------------------------------------------------
+# M1 ROOT CAUSE (session 20260706_010909, operator-watched): the takeoff pulse imparted a
+# ~3 m/s climb and the thrust damper rode the RACING washout (tau=2.0 s -- a high-pass by
+# design: the racing stack's vision supplies the vertical REFERENCE, the washout only damps
+# transients). The steady climb bled out of vz within seconds, nothing opposed it, and the
+# drone coasted into the ceiling, pinned, tumbled. Mapping has NO vision reference, so the
+# mission needs its own LOW-leak vertical channel. (Compounding M1 bug, fixed here: the M1
+# damper fed the NED down-positive ``vest.vz_imu`` into ``hover + kd*(0 - vz)``, a formula
+# whose sign is only correct for an UP-positive vz -- so it was ANTI-damping. M2 defines the
+# conventions explicitly and pins them in tests.)
+#
+# SIGN CONVENTIONS (explicit -- a sign error here flies into the floor instead of the ceiling):
+#   * a_up  : kinematic UPWARD acceleration, UP-POSITIVE m/s^2 -- the exact return value of
+#             racer.vertical_estimator.a_up_from_specific_force (positive while accelerating
+#             upward; ~0 at rest / hover). This is what _step_estimators already computes.
+#   * vz_leak : UP-POSITIVE m/s (+ = CLIMBING). vz_leak <- vz_leak*exp(-dt/tau) + a_up*dt.
+#   * z_pseudo: UP-POSITIVE m (+ = ABOVE the race-start height). z_pseudo <- z_pseudo + vz_leak*dt.
+#   NOTE: this is the OPPOSITE sign of the racing VerticalEstimator's NED down-positive vz --
+#   chosen so a_up integrates with NO negation and the thrust laws read naturally (climbing ->
+#   positive -> SUBTRACT thrust). The racing vz_imu is still logged per tick for comparison.
+#
+# WHY tau=45 s (vs the racing 2.0 s): a steady climb stays >50% visible for 30+ s
+# (exp(-30/45)=0.51), so the damper keeps opposing it -- while a sustained accel bias b still
+# cannot run away: vz_leak converges to b*tau (0.004 m/s^2 * 45 s = 0.18 m/s, inside the
+# damper's noise floor) instead of ramping like a pure integrator.
+Z_TARGET_M = 2.0            # pseudo-altitude target (m ABOVE race start) after takeoff
+ZP_TRIM_CLIP = 0.010        # pseudo-altitude thrust-trim authority clip (+/- collective)
+THRUST_LO, THRUST_HI = 0.18, 0.42   # outer collective clamp (never rail the coupled mixer)
+
+
+@dataclass
+class PseudoVertical:
+    """Mission-local leaky vertical channel: (vz_leak, z_pseudo), both UP-POSITIVE (see the
+    sign block above). Deliberately NOT racer.vertical_estimator -- that filter's 2 s washout
+    is a transient damper for a vision-referenced stack; this one must HOLD a steady-climb
+    signal long enough for a reference-free thrust loop to null it. Pure python, no numpy."""
+
+    tau_s: float = 45.0          # leak time constant (--vz-tau)
+    max_dt_s: float = 0.2        # reject sim-reset / stutter steps (mirrors the racing filter)
+    a_up_clamp_mps2: float = 30.0  # reject contact-impact spikes at the source
+    vz_leak: float = 0.0         # m/s, UP-positive (+ = climbing)
+    z_pseudo: float = 0.0        # m, UP-positive (+ = above race-start height)
+
+    def reset(self) -> None:
+        """Zero both states (race start / backward sim-clock jump = race restart)."""
+        self.vz_leak = 0.0
+        self.z_pseudo = 0.0
+
+    def step(self, a_up: float, dt: float) -> None:
+        """Integrate one UP-POSITIVE kinematic-acceleration sample over dt seconds.
+        Non-finite a_up, dt <= 0 and dt > max_dt_s are no-ops (glitch/reset guards)."""
+        if not (0.0 < dt <= self.max_dt_s) or not math.isfinite(a_up):
+            return
+        a = max(-self.a_up_clamp_mps2, min(self.a_up_clamp_mps2, float(a_up)))
+        self.vz_leak = self.vz_leak * math.exp(-dt / self.tau_s) + a * dt
+        self.z_pseudo += self.vz_leak * dt
+
+
+def thrust_command(vz_leak_up: float, z_pseudo_up: float, kd_vz: float, kp_zp: float,
+                   z_target_up: float = Z_TARGET_M) -> float:
+    """M2 hover-thrust law (all inputs UP-POSITIVE, see the sign block above):
+
+        thrust = hover + kd_vz*(0 - vz_leak)                        # velocity damper
+                       + clip(-kp_zp*(z_pseudo - z_target), +/-0.010)  # pseudo-alt soft trim
+        clamped to [0.18, 0.42]
+
+    SIGNS (pinned by tests): CLIMBING (vz_leak > 0) REDUCES thrust; ABOVE target
+    (z_pseudo > z_target) REDUCES thrust. kp_zp = 0 disables the trim term."""
+    damp = kd_vz * (0.0 - float(vz_leak_up))
+    trim = -kp_zp * (float(z_pseudo_up) - float(z_target_up))
+    trim = max(-ZP_TRIM_CLIP, min(ZP_TRIM_CLIP, trim))
+    return max(THRUST_LO, min(THRUST_HI, HOVER_THRUST + damp + trim))
+
+
+def climb_phase_over(seg: "Segment", t_in_seg: float, vz_up_mps: float) -> bool:
+    """VELOCITY-GATED TAKEOFF (M2): True once the open-loop climb pulse should END -- the
+    mission-local leaky vz (UP-positive) reached the gate climb rate, OR the time cap
+    (``seg.climb_s``) elapsed, whichever comes FIRST. A gate of 0 disables the velocity
+    path (pure time cap). The CALLER latches the result (once over, stays over)."""
+    if t_in_seg >= seg.climb_s:
+        return True
+    return seg.climb_gate_vz_mps > 0.0 and vz_up_mps >= seg.climb_gate_vz_mps
 
 
 # ---------------------------------------------------------------------------
@@ -104,10 +196,14 @@ class Segment:
     coast_s: float = 0.0
     brake_s: float = 0.0
     pitch_mag_rad: float = 0.0
-    # TAKEOFF: climb thrust delta (added to hover) for ``climb_s``, then a level hover-trim for
-    # the remainder (duration_s - climb_s). During the trim the vz damper owns the collective.
+    # TAKEOFF: climb thrust delta (added to hover) for AT MOST ``climb_s`` (the time cap), then
+    # a level hover-trim for the remainder of the segment. M2: the climb ALSO ends early the
+    # moment the mission-local leaky vz (UP-positive) reaches ``climb_gate_vz_mps`` (see
+    # ``climb_phase_over``); the early remainder is spent in trim, so the SEGMENT duration is
+    # schedule-stable either way. During trim the vz damper + pseudo-alt trim own the collective.
     climb_s: float = 0.0
     climb_thrust_delta: float = 0.0
+    climb_gate_vz_mps: float = 0.0    # 0 = no velocity gate (pure time cap)
 
 
 @dataclass(frozen=True)
@@ -116,8 +212,12 @@ class MissionConfig:
     flight: takeoff, PANO, LEG, PANO, LEG(~120 deg off the first heading), PANO, SETTLE."""
 
     # -- TAKEOFF --
-    takeoff_climb_s: float = 2.5          # gentle climb duration (~mid height, time-based)
-    takeoff_climb_thrust_delta: float = 0.035   # + over hover during the climb ramp
+    # M2 (post-ceiling-crash): delta 0.035 -> 0.025 and the climb is VELOCITY-GATED -- it ends
+    # at vz_leak >= takeoff_gate_vz_mps OR at the takeoff_climb_s cap, whichever comes FIRST
+    # (M1's open-loop 0.035 x 2.5 s pulse imparted ~3 m/s and coasted into the ceiling).
+    takeoff_climb_s: float = 2.0          # climb TIME CAP (the gate usually fires earlier)
+    takeoff_climb_thrust_delta: float = 0.025   # + over hover during the climb ramp
+    takeoff_gate_vz_mps: float = 0.8      # end the climb when vz_leak (UP+) reaches this
     takeoff_trim_s: float = 3.0           # level hover-trim after the climb (vz damper owns thrust)
     # -- PANO --
     pano_yaw_rate_dps: float = 20.0       # yaw slew rate during a panorama (deg/s; ~25 target,
@@ -154,6 +254,7 @@ def build_schedule(cfg: MissionConfig | None = None) -> list[Segment]:
             duration_s=cfg.takeoff_climb_s + cfg.takeoff_trim_s,
             climb_s=cfg.takeoff_climb_s,
             climb_thrust_delta=cfg.takeoff_climb_thrust_delta,
+            climb_gate_vz_mps=cfg.takeoff_gate_vz_mps,
         )
 
     def pano(revs: float, name: str) -> Segment:
@@ -210,14 +311,17 @@ class TickSetpoint:
     climb_thrust_delta: float = 0.0
 
 
-def segment_setpoint(seg: Segment, t_in_seg: float, dt: float) -> TickSetpoint:
+def segment_setpoint(seg: Segment, t_in_seg: float, dt: float,
+                     climb_done: bool = False) -> TickSetpoint:
     """Deterministic per-tick open-loop intent for a segment (pure). ``t_in_seg`` is seconds
-    since the segment started; ``dt`` is the tick period (for the yaw-rate advance)."""
+    since the segment started; ``dt`` is the tick period (for the yaw-rate advance).
+    ``climb_done`` (M2): the caller's LATCHED velocity-gate verdict for a TAKEOFF segment
+    (see ``climb_phase_over``) -- True forces the trim sub-phase even before the time cap."""
     if seg.kind == SEG_TAKEOFF:
-        if t_in_seg < seg.climb_s:
+        if not climb_done and t_in_seg < seg.climb_s:
             return TickSetpoint(seg.name, seg.kind, 0.0, 0.0, 0.0,
                                 thrust_mode="climb", climb_thrust_delta=seg.climb_thrust_delta)
-        # hover-trim: level, vz-damped
+        # hover-trim: level, vz-damped (+ pseudo-alt trim)
         return TickSetpoint(seg.name, seg.kind, 0.0, 0.0, 0.0, thrust_mode="damp")
 
     if seg.kind == SEG_PANO:
@@ -263,7 +367,10 @@ def describe_schedule(schedule: list[Segment], cfg: MissionConfig | None = None)
                      f"[t={t0:6.1f}->{t0 + s.duration_s:6.1f}]  {detail}")
         t0 += s.duration_s
     lines.append("  " + "-" * 84)
-    lines.append("  thrust: climb = hover+delta (open-loop ramp);  damp = hover + kd*(0 - vz_imu)")
+    lines.append("  thrust: climb = hover+delta (velocity-gated ramp);  damp = hover + "
+                 "kd*(0 - vz_leak) + clip(-kp_zp*(z_pseudo - "
+                 f"{Z_TARGET_M:g}), +/-{ZP_TRIM_CLIP:g})   [vz_leak/z_pseudo UP-positive, "
+                 "mission-local leaky integrator tau=45s]")
     lines.append("  attitude: level hold via AHRS (kp on rotvec err), body_rate_sign=(1,1,1), "
                  "cmd_rate_scale=0.4")
     return "\n".join(lines)
@@ -271,8 +378,10 @@ def describe_schedule(schedule: list[Segment], cfg: MissionConfig | None = None)
 
 def _segment_detail(s: Segment) -> str:
     if s.kind == SEG_TAKEOFF:
-        return (f"climb {s.climb_s:.1f}s @ hover+{s.climb_thrust_delta:+.3f} thrust, "
-                f"then hover-trim {s.duration_s - s.climb_s:.1f}s (vz-damped)")
+        gate = (f", gated: end early at vz>={s.climb_gate_vz_mps:g} m/s"
+                if s.climb_gate_vz_mps > 0.0 else "")
+        return (f"climb <={s.climb_s:.1f}s @ hover{s.climb_thrust_delta:+.3f} thrust{gate}; "
+                f"remainder of {s.duration_s:.1f}s in hover-trim (vz-damped)")
     if s.kind == SEG_PANO:
         dps = s.yaw_rate_rps * 180.0 / 3.141592653589793
         revs = abs(s.yaw_rate_rps) * s.duration_s / (2.0 * 3.141592653589793)
@@ -368,13 +477,19 @@ def _run_go(args: argparse.Namespace) -> int:
 
     # -- estimators owned HERE (self-contained; not the navigator) --
     ahrs = AHRSAttitudeSource()
-    # vz washout: same defaults as the vq2 estimator; we read ``vz_imu`` (the vision-free channel).
+    # racing washout: LOGGING-COMPARISON ONLY since M2 (its 2 s leak bled the M1 steady climb
+    # out of vz_imu and the damper went blind into the ceiling). The FLIGHT vertical channel
+    # is the mission-local PseudoVertical below.
     vest = VerticalEstimator()
-    kd_vz = float(args.kd_vz)          # thrust damper gain on vz_imu (down-positive)
+    pv = PseudoVertical(tau_s=float(args.vz_tau))   # M2: vz_leak + z_pseudo (UP-positive)
+    kd_vz = float(args.kd_vz)          # thrust damper gain on vz_leak (UP-positive)
+    kp_zp = float(args.kp_zpseudo)     # pseudo-altitude soft-trim gain (0 disables)
     kp_att = float(args.kp_att)
     kd_att = float(args.kd_att)
     max_rate = float(args.max_rate)
     body_rate_sign = np.array([1.0, 1.0, 1.0])   # vq2_case_c flown value (A36 Item-0)
+    recorder.add_meta(vz_tau_s=pv.tau_s, kd_vz=kd_vz, kp_zpseudo=kp_zp,
+                      z_target_m=Z_TARGET_M)
 
     rc = 0
     try:
@@ -418,9 +533,9 @@ def _run_go(args: argparse.Namespace) -> int:
 
         # ---- 4) run the segment state machine at ~control_hz ----
         _fly_schedule(
-            client, schedule, ahrs, vest, tick_log,
+            client, schedule, ahrs, vest, pv, tick_log,
             control_hz=args.control_hz, kp_att=kp_att, kd_att=kd_att, max_rate=max_rate,
-            kd_vz=kd_vz, body_rate_sign=body_rate_sign, stop=stop, np=np,
+            kd_vz=kd_vz, kp_zp=kp_zp, body_rate_sign=body_rate_sign, stop=stop, np=np,
             ControlCommand=ControlCommand, ControlMode=ControlMode,
             level_hold_body_rate=level_hold_body_rate,
             a_up_from_specific_force=a_up_from_specific_force, time=time, json=json,
@@ -430,9 +545,9 @@ def _run_go(args: argparse.Namespace) -> int:
         # ---- 5) post-mission: keep streaming LEVEL hover for --hold-after-s, then stop ----
         print(f"\n[mapping] mission complete -> holding hover {args.hold_after_s:g}s, then disarm.")
         _fly_hold(
-            client, ahrs, vest, tick_log, hold_s=args.hold_after_s,
+            client, ahrs, vest, pv, tick_log, hold_s=args.hold_after_s,
             control_hz=args.control_hz, kp_att=kp_att, kd_att=kd_att, max_rate=max_rate,
-            kd_vz=kd_vz, body_rate_sign=body_rate_sign, stop=stop, np=np,
+            kd_vz=kd_vz, kp_zp=kp_zp, body_rate_sign=body_rate_sign, stop=stop, np=np,
             ControlCommand=ControlCommand, ControlMode=ControlMode,
             level_hold_body_rate=level_hold_body_rate,
             a_up_from_specific_force=a_up_from_specific_force, time=time, json=json,
@@ -492,10 +607,12 @@ def _race_live(client) -> bool:
     return bool(rs and rs.get("started")) and client.state.sim_time_ns > 0
 
 
-def _step_estimators(client, ahrs, vest, prev_imu_ns, np, a_up_from_specific_force):
-    """Step the AHRS + vz washout on the freshest IMU sample, on the MASTER sim clock. Returns
-    (roll, pitch, yaw, body_rate, vz_imu, new_prev_imu_ns). Only integrates the vz washout while
-    the race is live; resets it on a clock jump BACKWARD (the sim IMU restart trap)."""
+def _step_estimators(client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force):
+    """Step the AHRS + BOTH vertical channels on the freshest IMU sample, on the MASTER sim
+    clock. Returns (roll, pitch, yaw, body_rate, vz_imu, new_prev_imu_ns); the M2 flight
+    channel is read off ``pv.vz_leak`` / ``pv.z_pseudo`` (UP-positive). Only integrates while
+    the loop runs (post-GO = race live); resets BOTH channels on a clock jump BACKWARD (the
+    sim IMU restart trap). ``vest`` (the racing washout) is stepped for LOG COMPARISON only."""
     s = client.state
     imu_ns = int(s.sim_time_ns)
     accel = s.accel_body
@@ -509,33 +626,31 @@ def _step_estimators(client, ahrs, vest, prev_imu_ns, np, a_up_from_specific_for
     roll, pitch, yaw = ahrs.euler_rpy
     body_rate = ahrs.body_rate
 
-    # vz washout: seed once on first live IMU; reset on a BACKWARD clock jump (race restart).
+    # vertical channels: seed once on first live IMU; reset on a BACKWARD clock jump.
     if not vest.seeded:
         vest.seed()
     if prev_imu_ns is not None and imu_ns < prev_imu_ns:
         # sim_time reset backward (race restart / frozen-canned-tuple wrap): forget stale state.
         vest.seed()
+        pv.reset()
         dt = 0.0
     if 0.0 < dt <= vest.max_dt_s and accel is not None:
-        a_up = a_up_from_specific_force(np.asarray(accel, dtype=float), ahrs.R_wb)
-        vest.predict(float(a_up), float(dt))
+        # a_up: kinematic UPWARD acceleration, UP-POSITIVE m/s^2 (the verified decode) --
+        # shared by both channels, so their sign conventions differ ONLY by their own state
+        # definitions (vest integrates a_dn=-a_up into a DOWN-positive vz; pv integrates a_up
+        # directly into the UP-positive vz_leak).
+        a_up = float(a_up_from_specific_force(np.asarray(accel, dtype=float), ahrs.R_wb))
+        vest.predict(a_up, float(dt))      # racing washout: logged comparison only
+        pv.step(a_up, float(dt))           # M2 flight channel: vz_leak + z_pseudo
     return roll, pitch, yaw, body_rate, vest.vz_imu, imu_ns
 
 
-def _thrust_from_vz(vz_imu, kd_vz, np) -> float:
-    """thrust = hover + kd*(0 - vz_imu), clamped to a SAFE band (never rail; the mixer couples
-    thrust<->rates near the rails). vz_imu NED down-positive: descending (vz>0) -> more thrust."""
-    vz = 0.0 if (vz_imu is None or not np.isfinite(vz_imu)) else float(vz_imu)
-    thr = HOVER_THRUST + kd_vz * (0.0 - vz)
-    return float(np.clip(thr, 0.18, 0.42))
-
-
-def _fly_schedule(client, schedule, ahrs, vest, tick_log, *, control_hz, kp_att, kd_att,
-                  max_rate, kd_vz, body_rate_sign, stop, np, ControlCommand, ControlMode,
+def _fly_schedule(client, schedule, ahrs, vest, pv, tick_log, *, control_hz, kp_att, kd_att,
+                  max_rate, kd_vz, kp_zp, body_rate_sign, stop, np, ControlCommand, ControlMode,
                   level_hold_body_rate, a_up_from_specific_force, time, json, watchdog=None):
     """Run the segment state machine at ~control_hz. Yaw target is PERSISTENT and slewed by the
-    PANO yaw-rate; roll/pitch held at the segment's scripted offset; thrust vz-damped (or the
-    open-loop climb ramp on takeoff)."""
+    PANO yaw-rate; roll/pitch held at the segment's scripted offset; thrust = the M2 law
+    (vz_leak damper + pseudo-alt soft trim), or the VELOCITY-GATED climb ramp on takeoff."""
     tick = 1.0 / control_hz
     prev_imu_ns = None
     yaw_target = None                 # set from the AHRS yaw once we have a real attitude
@@ -543,6 +658,7 @@ def _fly_schedule(client, schedule, ahrs, vest, tick_log, *, control_hz, kp_att,
     seg_t0 = time.monotonic()
     next_t = time.monotonic()
     n_tick = 0
+    climb_done = False                # M2 takeoff velocity-gate LATCH (once over, stays over)
     while seg_i < len(schedule) and not stop.is_set():
         while time.monotonic() < next_t:
             client.pump()
@@ -559,13 +675,16 @@ def _fly_schedule(client, schedule, ahrs, vest, tick_log, *, control_hz, kp_att,
             continue
 
         roll, pitch, yaw, body_rate, vz_imu, prev_imu_ns = _step_estimators(
-            client, ahrs, vest, prev_imu_ns, np, a_up_from_specific_force)
+            client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force)
         if watchdog is not None:
             watchdog(now, prev_imu_ns, body_rate)
         if yaw_target is None:
             yaw_target = float(yaw)
 
-        sp = segment_setpoint(seg, t_in_seg, tick)
+        # M2 velocity-gated takeoff: latch the climb-over verdict (vz_leak UP-positive).
+        if seg.kind == SEG_TAKEOFF and not climb_done:
+            climb_done = climb_phase_over(seg, t_in_seg, pv.vz_leak)
+        sp = segment_setpoint(seg, t_in_seg, tick, climb_done=climb_done)
         yaw_target = float(yaw_target + sp.dyaw_rad)
 
         # attitude -> body rate: feed the AHRS TRUE euler MINUS the desired tilt offset (same
@@ -577,29 +696,30 @@ def _fly_schedule(client, schedule, ahrs, vest, tick_log, *, control_hz, kp_att,
         )
 
         if sp.thrust_mode == "climb":
-            thr = float(np.clip(HOVER_THRUST + sp.climb_thrust_delta, 0.18, 0.42))
+            thr = float(np.clip(HOVER_THRUST + sp.climb_thrust_delta, THRUST_LO, THRUST_HI))
         else:
-            thr = _thrust_from_vz(vz_imu, kd_vz, np)
+            thr = thrust_command(pv.vz_leak, pv.z_pseudo, kd_vz, kp_zp)
 
         client.send_command(ControlCommand(mode=ControlMode.BODY_RATE,
                                            sim_time_ns=int(client.state.sim_time_ns),
                                            body_rate=omega, thrust=float(thr)))
         n_tick += 1
         _log_tick(tick_log, json, time, seg.name, sp, roll, pitch, yaw, yaw_target,
-                  omega, thr, vz_imu, np)
+                  omega, thr, vz_imu, pv, np)
         if n_tick % max(int(control_hz), 1) == 0:
             print(f"  [{seg.name:<12}] t_seg={t_in_seg:5.1f}/{seg.duration_s:4.1f}s  "
                   f"rpy=({np.degrees(roll):+5.1f},{np.degrees(pitch):+5.1f},"
-                  f"{np.degrees(yaw):+6.1f})deg  thr={thr:.3f}  vz={_f(vz_imu):+.2f}   ",
+                  f"{np.degrees(yaw):+6.1f})deg  thr={thr:.3f}  vzL={pv.vz_leak:+.2f}  "
+                  f"zP={pv.z_pseudo:+.1f}   ",
                   end="\r", flush=True)
     print()
 
 
-def _fly_hold(client, ahrs, vest, tick_log, *, hold_s, control_hz, kp_att, kd_att, max_rate,
-              kd_vz, body_rate_sign, stop, np, ControlCommand, ControlMode,
+def _fly_hold(client, ahrs, vest, pv, tick_log, *, hold_s, control_hz, kp_att, kd_att, max_rate,
+              kd_vz, kp_zp, body_rate_sign, stop, np, ControlCommand, ControlMode,
               level_hold_body_rate, a_up_from_specific_force, time, json):
-    """Stream LEVEL, vz-damped hover for ``hold_s`` seconds (the clean-exit tail), holding the
-    final yaw."""
+    """Stream LEVEL hover on the M2 thrust law for ``hold_s`` seconds (the clean-exit tail),
+    holding the final yaw."""
     tick = 1.0 / control_hz
     prev_imu_ns = None
     yaw_target = None
@@ -612,7 +732,7 @@ def _fly_hold(client, ahrs, vest, tick_log, *, hold_s, control_hz, kp_att, kd_at
         next_t = time.monotonic() + tick
         client.pump()
         roll, pitch, yaw, body_rate, vz_imu, prev_imu_ns = _step_estimators(
-            client, ahrs, vest, prev_imu_ns, np, a_up_from_specific_force)
+            client, ahrs, vest, pv, prev_imu_ns, np, a_up_from_specific_force)
         if yaw_target is None:
             yaw_target = float(yaw)
         omega = level_hold_body_rate(
@@ -620,23 +740,16 @@ def _fly_hold(client, ahrs, vest, tick_log, *, hold_s, control_hz, kp_att, kd_at
             np.asarray(body_rate, dtype=float),
             kp=kp_att, kd=kd_att, body_rate_sign=body_rate_sign, max_rate=max_rate, ff_gain=1.0,
         )
-        thr = _thrust_from_vz(vz_imu, kd_vz, np)
+        thr = thrust_command(pv.vz_leak, pv.z_pseudo, kd_vz, kp_zp)
         client.send_command(ControlCommand(mode=ControlMode.BODY_RATE,
                                            sim_time_ns=int(client.state.sim_time_ns),
                                            body_rate=omega, thrust=float(thr)))
         _log_tick(tick_log, json, time, "hold", None, roll, pitch, yaw, yaw_target,
-                  omega, thr, vz_imu, np)
-
-
-def _f(x) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return float("nan")
+                  omega, thr, vz_imu, pv, np)
 
 
 def _log_tick(tick_log, json, time, seg_name, sp, roll, pitch, yaw, yaw_target,
-              omega, thr, vz_imu, np):
+              omega, thr, vz_imu, pv, np):
     try:
         rec = {
             "t_mono_ns": time.monotonic_ns(),
@@ -645,6 +758,10 @@ def _log_tick(tick_log, json, time, seg_name, sp, roll, pitch, yaw, yaw_target,
             "thrust": round(float(thr), 5),
             "ahrs_rpy": [round(float(roll), 5), round(float(pitch), 5), round(float(yaw), 5)],
             "yaw_target": round(float(yaw_target), 5),
+            # M2 flight channel (UP-positive) + the racing washout (NED DOWN-positive) side by
+            # side -- the comparison that would have shown the M1 bleed offline.
+            "vz_leak": round(float(pv.vz_leak), 5),
+            "z_pseudo": round(float(pv.z_pseudo), 4),
             "vz_imu": (None if (vz_imu is None or not np.isfinite(vz_imu)) else round(float(vz_imu), 5)),
         }
         if sp is not None:
@@ -679,7 +796,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-rate", type=float, default=0.8,
                     help="composed body-rate clamp (rad/s) -- conservative for mapping")
     ap.add_argument("--kd-vz", type=float, default=0.06,
-                    help="thrust damper gain on vz_imu (thrust = hover + kd*(0 - vz_imu))")
+                    help="thrust damper gain on the mission-local leaky vz "
+                         "(thrust = hover + kd*(0 - vz_leak); vz_leak UP-positive)")
+    ap.add_argument("--vz-tau", type=float, default=45.0,
+                    help="leak time-constant (s) of the mission-local vz integrator -- LOW leak "
+                         "so a steady climb stays visible to the damper (the racing 2 s washout "
+                         "bled the M1 climb out and the drone coasted into the ceiling)")
+    ap.add_argument("--kp-zpseudo", type=float, default=0.004,
+                    help="pseudo-altitude soft-trim gain (thrust per metre of z_pseudo error, "
+                         f"clipped to +/-{ZP_TRIM_CLIP:g} collective; 0 disables)")
     ap.add_argument("--wait-seconds", type=float, default=180.0,
                     help="how long to wait for RACE_STATUS started before aborting")
     ap.add_argument("--arm-timeout", type=float, default=5.0)

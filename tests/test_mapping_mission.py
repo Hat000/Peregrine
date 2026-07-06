@@ -188,6 +188,117 @@ def test_dry_run_matches_segment_durations():
 
 
 # ---------------------------------------------------------------------------
+# M2 vertical channel (post-M1-ceiling-crash): PseudoVertical + gate + thrust signs
+# ---------------------------------------------------------------------------
+def test_leaky_vz_keeps_steady_climb_visible_for_30s():
+    """M1 root cause regression: the racing washout (tau=2 s) forgets a steady climb within
+    seconds. The mission channel (tau=45 s) must keep a 1 m/s climb >0.5 m/s visible after
+    30 s of constant-velocity coast (a_up = 0), so the damper keeps opposing it."""
+    pv = mm.PseudoVertical(tau_s=45.0)
+    dt = 0.01
+    for _ in range(10):                 # 10 m/s^2 x 0.1 s accel pulse -> ~1.0 m/s climb
+        pv.step(10.0, dt)
+    assert 0.95 <= pv.vz_leak <= 1.01
+    for _ in range(3000):               # 30 s steady climb: zero kinematic accel
+        pv.step(0.0, dt)
+    assert pv.vz_leak > 0.5             # exp(-30/45) = 0.513 of the 1 m/s still visible
+    assert pv.vz_leak < 0.6             # ...and the leak IS working (not a pure integrator)
+
+
+def test_accel_bias_error_is_bounded():
+    """A sustained accel bias (the measured ground-stationary bound ~0.004 m/s^2) must NOT run
+    away: vz_leak converges to bias*tau = 0.18 m/s (< 0.4) and z_pseudo drifts bounded-linearly
+    (< 20 m over 100 s) -- the leak is what buys this over a pure integrator."""
+    pv = mm.PseudoVertical(tau_s=45.0)
+    dt = 0.01
+    for _ in range(10_000):             # 100 s of constant +0.004 m/s^2 bias
+        pv.step(0.004, dt)
+    assert abs(pv.vz_leak) < 0.4        # spec bound (analytic ss: 0.004*45 = 0.18)
+    assert abs(pv.vz_leak) > 0.1        # sanity: it converged near the analytic value
+    assert abs(pv.z_pseudo) < 20.0      # spec bound (analytic: ~10.8 m at t=100 s)
+
+
+def test_takeoff_gate_fires_on_vz_threshold():
+    seg = _seg("takeoff")
+    assert seg.climb_gate_vz_mps == pytest_approx(0.8)
+    # well inside the time cap, climb rate reaches the gate -> climb OVER
+    assert mm.climb_phase_over(seg, t_in_seg=0.6, vz_up_mps=0.85) is True
+    # same time, climb rate below the gate -> still climbing
+    assert mm.climb_phase_over(seg, t_in_seg=0.6, vz_up_mps=0.5) is False
+
+
+def test_takeoff_gate_fires_on_time_cap():
+    seg = _seg("takeoff")
+    assert seg.climb_s == pytest_approx(2.0)
+    # cap reached with NO climb registered -> still over (whichever comes FIRST)
+    assert mm.climb_phase_over(seg, t_in_seg=2.0, vz_up_mps=0.0) is True
+    assert mm.climb_phase_over(seg, t_in_seg=1.9, vz_up_mps=0.0) is False
+
+
+def test_takeoff_setpoint_honors_the_latched_gate():
+    """Once the caller's latch says the climb is over, the setpoint is trim (damp) even before
+    the time cap -- and the segment DURATION is unchanged (schedule-stable early gate)."""
+    seg = _seg("takeoff")
+    sp_climbing = mm.segment_setpoint(seg, t_in_seg=0.5, dt=0.01, climb_done=False)
+    assert sp_climbing.thrust_mode == "climb"
+    sp_gated = mm.segment_setpoint(seg, t_in_seg=0.5, dt=0.01, climb_done=True)
+    assert sp_gated.thrust_mode == "damp"
+    cfg = mm.MissionConfig()
+    assert seg.duration_s == cfg.takeoff_climb_s + cfg.takeoff_trim_s
+
+
+def test_thrust_sign_climbing_reduces_thrust():
+    """THE M1 sign bug regression (anti-damping flew into the ceiling): with the UP-positive
+    convention, CLIMBING (vz_leak > 0) must REDUCE thrust below hover; DESCENDING must raise it."""
+    at_target = mm.Z_TARGET_M
+    hover = mm.thrust_command(0.0, at_target, kd_vz=0.06, kp_zp=0.004)
+    climbing = mm.thrust_command(+1.0, at_target, kd_vz=0.06, kp_zp=0.004)
+    descending = mm.thrust_command(-1.0, at_target, kd_vz=0.06, kp_zp=0.004)
+    assert hover == pytest_approx(mm.HOVER_THRUST)
+    assert climbing < hover < descending
+
+
+def test_thrust_sign_above_target_reduces_thrust_and_trim_is_clipped():
+    """Pseudo-altitude trim: ABOVE target must REDUCE thrust, BELOW must raise it, and the trim
+    authority is clipped to +/-0.010 regardless of the error magnitude."""
+    kd, kp = 0.06, 0.004
+    at = mm.thrust_command(0.0, mm.Z_TARGET_M, kd, kp)
+    above = mm.thrust_command(0.0, mm.Z_TARGET_M + 1.0, kd, kp)
+    below = mm.thrust_command(0.0, mm.Z_TARGET_M - 1.0, kd, kp)
+    assert above < at < below
+    assert at - above == pytest_approx(kp * 1.0)
+    # clip: a huge error contributes at most +/-0.010
+    way_above = mm.thrust_command(0.0, mm.Z_TARGET_M + 100.0, kd, kp)
+    way_below = mm.thrust_command(0.0, mm.Z_TARGET_M - 100.0, kd, kp)
+    assert way_above == pytest_approx(mm.HOVER_THRUST - mm.ZP_TRIM_CLIP)
+    assert way_below == pytest_approx(mm.HOVER_THRUST + mm.ZP_TRIM_CLIP)
+    # kp_zp = 0 disables the trim entirely
+    assert mm.thrust_command(0.0, 50.0, kd, 0.0) == pytest_approx(mm.HOVER_THRUST)
+
+
+def test_thrust_outer_clamp_never_rails():
+    """The [0.18, 0.42] outer clamp bounds the composed command (the sim mixer couples
+    thrust<->rates near the rails)."""
+    assert mm.thrust_command(+10.0, 0.0, kd_vz=0.06, kp_zp=0.004) == pytest_approx(mm.THRUST_LO)
+    assert mm.thrust_command(-10.0, 0.0, kd_vz=0.06, kp_zp=0.004) == pytest_approx(mm.THRUST_HI)
+
+
+def test_pseudo_vertical_reset_and_glitch_guards():
+    pv = mm.PseudoVertical(tau_s=45.0)
+    pv.step(1.0, 0.01)
+    assert pv.vz_leak > 0.0
+    # glitch guards: non-positive dt, oversized dt (sim reset/stutter), non-finite a_up
+    v0, z0 = pv.vz_leak, pv.z_pseudo
+    pv.step(1.0, 0.0)
+    pv.step(1.0, 1.0)
+    pv.step(float("nan"), 0.01)
+    assert pv.vz_leak == v0 and pv.z_pseudo == z0
+    # reset (race restart / backward sim-clock jump) zeroes both states
+    pv.reset()
+    assert pv.vz_leak == 0.0 and pv.z_pseudo == 0.0
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 def _seg(name: str):
