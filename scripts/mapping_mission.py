@@ -66,6 +66,13 @@ _G = 9.80665
 HOVER_THRUST = 0.2656
 
 
+class DeadStreamAbort(RuntimeError):
+    """Sim streams are not live for THIS client (video never arrives / canned-frozen IMU).
+    Flying on requires working feedback and produces zero mapping value -- abort fast.
+    (M1 2026-07-05 flew 100 s blind with frames=0 and a bitwise-frozen AHRS: a second
+    attached client had the streams. This abort caps that failure at ~3 s.)"""
+
+
 # ---------------------------------------------------------------------------
 # PURE SCHEDULER (no network, no sim-stack imports) -- the unit-tested core.
 # ---------------------------------------------------------------------------
@@ -384,7 +391,32 @@ def _run_go(args: argparse.Namespace) -> int:
             print("[mapping] arm not confirmed via HEARTBEAT; proceeding (best-effort).",
                   file=sys.stderr)
 
-        # ---- 3) run the segment state machine at ~control_hz ----
+        # ---- 3) dead-stream watchdog: frames must arrive and the IMU must be LIVE ----
+        wd_s = float(args.watchdog_s)
+        wd = {"t0": None, "imu_ns": None, "imu_since": None, "gyro": None, "gyro_since": None}
+
+        def watchdog(mono_now, imu_ns, body_rate):
+            if wd_s <= 0.0:
+                return
+            if wd["t0"] is None:
+                wd["t0"] = mono_now
+            t_flight = mono_now - wd["t0"]
+            if t_flight > wd_s and recorder.n_frames == 0:
+                raise DeadStreamAbort(
+                    f"no video frame {t_flight:.1f}s after race start "
+                    f"(port {args.video_port or 5600} hijacked by another client, or stream dead)")
+            if imu_ns != wd["imu_ns"]:
+                wd["imu_ns"], wd["imu_since"] = imu_ns, mono_now
+            elif wd["imu_since"] is not None and mono_now - wd["imu_since"] > wd_s:
+                raise DeadStreamAbort(f"IMU clock frozen {wd_s:g}s (no fresh HIGHRES_IMU)")
+            g = None if body_rate is None else (float(body_rate[0]), float(body_rate[1]),
+                                                float(body_rate[2]))
+            if g != wd["gyro"]:
+                wd["gyro"], wd["gyro_since"] = g, mono_now
+            elif wd["gyro_since"] is not None and mono_now - wd["gyro_since"] > wd_s:
+                raise DeadStreamAbort(f"gyro bitwise-frozen {wd_s:g}s (canned IMU tuple)")
+
+        # ---- 4) run the segment state machine at ~control_hz ----
         _fly_schedule(
             client, schedule, ahrs, vest, tick_log,
             control_hz=args.control_hz, kp_att=kp_att, kd_att=kd_att, max_rate=max_rate,
@@ -392,9 +424,10 @@ def _run_go(args: argparse.Namespace) -> int:
             ControlCommand=ControlCommand, ControlMode=ControlMode,
             level_hold_body_rate=level_hold_body_rate,
             a_up_from_specific_force=a_up_from_specific_force, time=time, json=json,
+            watchdog=watchdog,
         )
 
-        # ---- 4) post-mission: keep streaming LEVEL hover for --hold-after-s, then stop ----
+        # ---- 5) post-mission: keep streaming LEVEL hover for --hold-after-s, then stop ----
         print(f"\n[mapping] mission complete -> holding hover {args.hold_after_s:g}s, then disarm.")
         _fly_hold(
             client, ahrs, vest, tick_log, hold_s=args.hold_after_s,
@@ -404,6 +437,10 @@ def _run_go(args: argparse.Namespace) -> int:
             level_hold_body_rate=level_hold_body_rate,
             a_up_from_specific_force=a_up_from_specific_force, time=time, json=json,
         )
+    except DeadStreamAbort as exc:
+        print(f"\n[mapping] DEAD-STREAM ABORT: {exc} -> disarming NOW, no mission flown.",
+              file=sys.stderr)
+        rc = 2
     except KeyboardInterrupt:
         print("\n[mapping] Ctrl-C -> disarming.")
     except Exception:
@@ -495,7 +532,7 @@ def _thrust_from_vz(vz_imu, kd_vz, np) -> float:
 
 def _fly_schedule(client, schedule, ahrs, vest, tick_log, *, control_hz, kp_att, kd_att,
                   max_rate, kd_vz, body_rate_sign, stop, np, ControlCommand, ControlMode,
-                  level_hold_body_rate, a_up_from_specific_force, time, json):
+                  level_hold_body_rate, a_up_from_specific_force, time, json, watchdog=None):
     """Run the segment state machine at ~control_hz. Yaw target is PERSISTENT and slewed by the
     PANO yaw-rate; roll/pitch held at the segment's scripted offset; thrust vz-damped (or the
     open-loop climb ramp on takeoff)."""
@@ -523,6 +560,8 @@ def _fly_schedule(client, schedule, ahrs, vest, tick_log, *, control_hz, kp_att,
 
         roll, pitch, yaw, body_rate, vz_imu, prev_imu_ns = _step_estimators(
             client, ahrs, vest, prev_imu_ns, np, a_up_from_specific_force)
+        if watchdog is not None:
+            watchdog(now, prev_imu_ns, body_rate)
         if yaw_target is None:
             yaw_target = float(yaw)
 
@@ -644,6 +683,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--wait-seconds", type=float, default=180.0,
                     help="how long to wait for RACE_STATUS started before aborting")
     ap.add_argument("--arm-timeout", type=float, default=5.0)
+    ap.add_argument("--watchdog-s", type=float, default=3.0,
+                    help="dead-stream watchdog: abort if no video frame OR the IMU is "
+                         "frozen for this many seconds after race start (0 disables)")
     ap.add_argument("--hold-after-s", type=float, default=5.0,
                     help="stream level hover this long after SETTLE, then disarm")
     ap.add_argument("--connect-timeout", type=float, default=15.0)
