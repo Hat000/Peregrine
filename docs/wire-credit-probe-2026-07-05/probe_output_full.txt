@@ -1,0 +1,571 @@
+20260607_194047_gate0_lower (rs=267, pos=11120):
+   gate 0 credited at depth=  +0.54 m  linf= 0.51 m  (rs_gap= 250 ms, pos_gap=  12 ms)
+20260607_194615_course_60s (rs=420, pos=17659):
+   gate 0 credited at depth=  +0.18 m  linf= 0.36 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.84 m  linf= 0.49 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +0.08 m  linf= 0.04 m  (rs_gap= 249 ms, pos_gap=   3 ms)
+   gate 3 credited at depth=  +0.60 m  linf= 0.19 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.53 m  linf= 0.22 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+20260607_200505_vq1 (rs=180, pos=7481):
+   gate 0 credited at depth=  +0.02 m  linf= 0.18 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.03 m  linf= 0.13 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +0.40 m  linf= 0.28 m  (rs_gap= 249 ms, pos_gap=  11 ms)
+   gate 3 credited at depth=  +0.19 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.12 m  linf= 0.08 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+20260607_200650_vq1 (rs=168, pos=7007):
+   gate 0 credited at depth=  +0.60 m  linf= 0.55 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.50 m  linf= 0.37 m  (rs_gap= 249 ms, pos_gap=   7 ms)
+   gate 2 credited at depth=  +0.76 m  linf= 0.31 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.46 m  linf= 0.29 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 4 credited at depth=  +0.61 m  linf= 0.27 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+20260607_200906_vq1 (rs=176, pos=7325):
+   gate 0 credited at depth=  +0.46 m  linf= 0.36 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.31 m  linf= 0.25 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +0.61 m  linf= 0.43 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.61 m  linf= 0.33 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 4 credited at depth=  +0.68 m  linf= 0.23 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+20260610_031258_vq1_ramp (rs=181, pos=7559):
+   gate 0 credited at depth=  +0.15 m  linf= 0.26 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +0.21 m  linf= 0.26 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +0.56 m  linf= 0.21 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.25 m  linf= 0.26 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.31 m  linf= 0.10 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.06 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+20260610_031410_vq1_ramp2 (rs=204, pos=8553):
+   gate 0 credited at depth=  +0.44 m  linf= 0.49 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.53 m  linf= 0.57 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +0.03 m  linf= 0.04 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.64 m  linf= 0.37 m  (rs_gap= 252 ms, pos_gap=   5 ms)
+   gate 4 credited at depth=  +0.79 m  linf= 0.29 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.06 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260610_031509_vq1_ramp3 (rs=171, pos=7150):
+   gate 0 credited at depth=  +0.51 m  linf= 0.51 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.57 m  linf= 0.59 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 2 credited at depth=  +0.07 m  linf= 0.13 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+   gate 3 credited at depth=  +0.01 m  linf= 0.12 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 4 credited at depth=  +0.08 m  linf= 0.07 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.07 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+20260610_031604_vq1_ramp4 (rs=200, pos=8337):
+   gate 0 credited at depth=  +0.83 m  linf= 0.76 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +0.74 m  linf= 0.58 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +0.09 m  linf= 0.05 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.75 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=   2 ms)
+   gate 4 credited at depth=  +0.81 m  linf= 0.27 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  -0.00 m  linf= 0.06 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260610_034719_diag_alt_01 (rs=181, pos=7515):
+   gate 0 credited at depth=  +0.43 m  linf= 0.43 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.42 m  linf= 0.35 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 2 credited at depth=  +0.62 m  linf= 0.09 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.15 m  linf= 0.13 m  (rs_gap= 249 ms, pos_gap=   3 ms)
+   gate 4 credited at depth=  +0.16 m  linf= 0.13 m  (rs_gap= 250 ms, pos_gap=   4 ms)
+   gate 5 credited at depth=  +0.02 m  linf= 0.08 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+20260611_151950_rl_s14_live_f1 (rs=559, pos=23672):
+   gate 0 credited at depth=  +1.12 m  linf= 0.42 m  (rs_gap= 249 ms, pos_gap=   4 ms)
+20260611_152246_rl_s14_live_f4 (rs=367, pos=15426):
+   gate 0 credited at depth=  +0.11 m  linf= 0.32 m  (rs_gap= 250 ms, pos_gap=  12 ms)
+20260611_184444_rl_inc5_live_f5 (rs=442, pos=18648):
+   gate 0 credited at depth=  +0.55 m  linf= 0.56 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+20260611_184823_rl_inc5_live_f7 (rs=440, pos=18602):
+   gate 0 credited at depth=  +0.14 m  linf= 0.33 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+20260611_195159_rl_inc5_mr12_f4 (rs=401, pos=17057):
+   gate 0 credited at depth=  +1.50 m  linf= 0.89 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+20260611_195346_rl_inc5_mr12_f5 (rs=365, pos=15379):
+   gate 0 credited at depth=  +0.04 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+20260611_195907_rl_inc5_ys0_f1 (rs=99, pos=4074):
+   gate 0 credited at depth=  +1.01 m  linf= 0.85 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +1.19 m  linf= 0.13 m  (rs_gap= 251 ms, pos_gap=   4 ms)
+20260611_195938_rl_inc5_ys0_f2 (rs=61, pos=2554):
+   gate 0 credited at depth=  +0.90 m  linf= 0.52 m  (rs_gap= 249 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +0.19 m  linf= 0.18 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+20260611_200016_rl_inc5_ys0_f4 (rs=176, pos=7327):
+   gate 0 credited at depth=  +0.64 m  linf= 0.80 m  (rs_gap= 250 ms, pos_gap=   1 ms)
+   gate 1 credited at depth=  +0.34 m  linf= 0.26 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+20260611_200123_rl_inc5_ys0_f6 (rs=52, pos=2177):
+   gate 0 credited at depth=  +1.63 m  linf= 1.12 m  (rs_gap= 249 ms, pos_gap=   7 ms)
+20260611_200733_rl_inc5_ys0b_f1 (rs=97, pos=3992):
+   gate 0 credited at depth=  +0.89 m  linf= 0.81 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +0.80 m  linf= 0.27 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+20260611_200821_rl_inc5_ys0b_f3 (rs=50, pos=2111):
+   gate 0 credited at depth=  +0.27 m  linf= 0.65 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260611_200839_rl_inc5_ys0b_f4 (rs=57, pos=2406):
+   gate 0 credited at depth=  +0.43 m  linf= 0.86 m  (rs_gap= 249 ms, pos_gap=   3 ms)
+   gate 1 credited at depth=  +0.20 m  linf= 0.24 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+20260611_200914_rl_inc4_ys0_f1 (rs=84, pos=3396):
+   gate 0 credited at depth=  +0.13 m  linf= 0.29 m  (rs_gap= 259 ms, pos_gap=   1 ms)
+20260611_200959_rl_inc4_ys0_f3 (rs=44, pos=1835):
+   gate 0 credited at depth=  +0.97 m  linf= 0.57 m  (rs_gap=   9 ms, pos_gap=   0 ms)
+20260612_040440_inc6_bridge_f1 (rs=720, pos=22021):
+   gate 0 credited at depth=  +1.95 m  linf= 0.41 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260612_040748_inc6_bridge_f2 (rs=521, pos=22190):
+   gate 0 credited at depth=  +2.37 m  linf= 0.45 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+20260612_041004_inc6_bridge_f3 (rs=98, pos=4145):
+   gate 0 credited at depth=  +2.17 m  linf= 0.42 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+20260612_041035_inc6_bridge_f4 (rs=126, pos=5411):
+   gate 0 credited at depth=  +0.71 m  linf= 0.27 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260612_041113_inc6_bridge_f5 (rs=242, pos=10288):
+   gate 0 credited at depth=  +2.02 m  linf= 0.43 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+20260612_133654_inc6_bridge_f1 (rs=560, pos=23711):
+   gate 0 credited at depth=  +0.84 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+20260612_133921_inc6_bridge_f2 (rs=219, pos=9381):
+   gate 0 credited at depth=  +0.63 m  linf= 0.15 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+20260612_134022_inc6_bridge_f3 (rs=516, pos=22019):
+   gate 0 credited at depth=  +0.85 m  linf= 0.16 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+20260612_134238_inc6_bridge_f4 (rs=203, pos=8633):
+   gate 0 credited at depth=  +0.23 m  linf= 0.15 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+20260612_134335_inc6_bridge_f5 (rs=518, pos=22074):
+   gate 0 credited at depth=  +2.04 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+20260612_183920_rl_inc6_frameaudit_std_f1 (rs=247, pos=1831):
+   gate 0 credited at depth=  +0.80 m  linf= 0.16 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +2.80 m  linf= 0.76 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +0.35 m  linf= 0.21 m  (rs_gap= 249 ms, pos_gap=  11 ms)
+   gate 3 credited at depth=  +0.20 m  linf= 0.12 m  (rs_gap= 259 ms, pos_gap=  11 ms)
+20260612_184209_rl_inc6_frameaudit_brg_f1 (rs=118, pos=4916):
+   gate 0 credited at depth=  +1.65 m  linf= 0.17 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +1.59 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=   0 ms)
+   gate 2 credited at depth=  +2.85 m  linf= 0.75 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +1.32 m  linf= 0.23 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 4 credited at depth=  +0.96 m  linf= 0.05 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.05 m  linf= 0.22 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+20260612_184246_rl_inc6_frameaudit_brg_f2 (rs=73, pos=3088):
+   gate 0 credited at depth=  +0.97 m  linf= 0.22 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.54 m  linf= 0.17 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 2 credited at depth=  +2.39 m  linf= 0.68 m  (rs_gap= 249 ms, pos_gap=   1 ms)
+   gate 3 credited at depth=  +0.88 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 4 credited at depth=  +0.50 m  linf= 0.04 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.22 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+20260612_184406_rl_inc6_frameaudit_std_ext_f1 (rs=82, pos=3330):
+   gate 0 credited at depth=  +0.71 m  linf= 0.15 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +2.80 m  linf= 0.76 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+   gate 2 credited at depth=  +0.46 m  linf= 0.23 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.37 m  linf= 0.13 m  (rs_gap= 255 ms, pos_gap=  11 ms)
+20260612_184443_rl_inc6_frameaudit_std_ext_f3 (rs=43, pos=1862):
+   gate 0 credited at depth=  +0.52 m  linf= 0.16 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +2.63 m  linf= 0.70 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 2 credited at depth=  +0.26 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.17 m  linf= 0.13 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+20260612_184501_rl_inc6_frameaudit_std_ext_f4 (rs=43, pos=1835):
+   gate 0 credited at depth=  +0.40 m  linf= 0.16 m  (rs_gap= 249 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +2.57 m  linf= 0.68 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +0.12 m  linf= 0.16 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 3 credited at depth=  +0.19 m  linf= 0.12 m  (rs_gap= 257 ms, pos_gap=   0 ms)
+20260612_185356_rl_inc6_gate3demo_f1 (rs=98, pos=3988):
+   gate 0 credited at depth=  +0.54 m  linf= 0.16 m  (rs_gap= 252 ms, pos_gap=   4 ms)
+   gate 1 credited at depth=  +2.56 m  linf= 0.68 m  (rs_gap= 252 ms, pos_gap=  12 ms)
+   gate 2 credited at depth=  +0.17 m  linf= 0.18 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.10 m  linf= 0.11 m  (rs_gap= 255 ms, pos_gap=  11 ms)
+20260612_191658_rl_inc6_watch_std_f1 (rs=95, pos=1908):
+   gate 0 credited at depth=  +0.65 m  linf= 0.16 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +2.64 m  linf= 0.70 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 2 credited at depth=  +0.15 m  linf= 0.17 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.06 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+20260612_191742_rl_inc6_watch_brg_f1 (rs=115, pos=4753):
+   gate 0 credited at depth=  +2.16 m  linf= 0.18 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +2.31 m  linf= 0.53 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +3.36 m  linf= 0.86 m  (rs_gap= 250 ms, pos_gap=   0 ms)
+   gate 3 credited at depth=  +1.00 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=   4 ms)
+   gate 4 credited at depth=  +0.53 m  linf= 0.04 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 5 credited at depth=  +0.03 m  linf= 0.21 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260612_202927_rl_inc6_gate3demo2_f1 (rs=91, pos=3717):
+   gate 0 credited at depth=  +0.64 m  linf= 0.16 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +2.64 m  linf= 0.71 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 2 credited at depth=  +0.23 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 3 credited at depth=  +0.27 m  linf= 0.12 m  (rs_gap= 254 ms, pos_gap=  10 ms)
+20260613_033558_rl_inc7_std_f1 (rs=163, pos=2321):
+   gate 0 credited at depth=  +1.07 m  linf= 0.09 m  (rs_gap= 251 ms, pos_gap=   4 ms)
+   gate 1 credited at depth=  +4.08 m  linf= 0.95 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +1.86 m  linf= 0.36 m  (rs_gap= 254 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.33 m  linf= 0.13 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+   gate 4 credited at depth=  +0.75 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 5 credited at depth=  +0.02 m  linf= 0.19 m  (rs_gap= 249 ms, pos_gap=   7 ms)
+20260613_033646_rl_inc7_std_f2 (rs=48, pos=2025):
+   gate 0 credited at depth=  +0.49 m  linf= 0.05 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +3.82 m  linf= 0.90 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 2 credited at depth=  +1.64 m  linf= 0.30 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+   gate 3 credited at depth=  +0.25 m  linf= 0.12 m  (rs_gap= 251 ms, pos_gap=   2 ms)
+   gate 4 credited at depth=  +0.83 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   2 ms)
+   gate 5 credited at depth=  +0.04 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260613_033704_rl_inc7_std_f3 (rs=48, pos=2021):
+   gate 0 credited at depth=  +0.61 m  linf= 0.05 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +3.63 m  linf= 0.84 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+   gate 2 credited at depth=  +1.44 m  linf= 0.25 m  (rs_gap= 249 ms, pos_gap=   4 ms)
+   gate 3 credited at depth=  +0.17 m  linf= 0.11 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 4 credited at depth=  +0.63 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 5 credited at depth=  +0.07 m  linf= 0.18 m  (rs_gap= 252 ms, pos_gap=   5 ms)
+20260613_033723_rl_inc7_std_f4 (rs=48, pos=2023):
+   gate 0 credited at depth=  +0.51 m  linf= 0.05 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +3.74 m  linf= 0.87 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+   gate 2 credited at depth=  +1.62 m  linf= 0.30 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.21 m  linf= 0.11 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.64 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 5 credited at depth=  +0.04 m  linf= 0.20 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+20260613_033741_rl_inc7_std_f5 (rs=48, pos=2022):
+   gate 0 credited at depth=  +0.59 m  linf= 0.06 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +3.66 m  linf= 0.85 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +1.60 m  linf= 0.29 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.13 m  linf= 0.10 m  (rs_gap= 251 ms, pos_gap=   4 ms)
+   gate 4 credited at depth=  +0.55 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 5 credited at depth=  +0.08 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+20260613_033813_rl_inc7_brg_f1 (rs=114, pos=4716):
+   gate 0 credited at depth=  +1.01 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +1.44 m  linf= 0.35 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +3.61 m  linf= 0.74 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.49 m  linf= 0.16 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 4 credited at depth=  +0.33 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 5 credited at depth=  +0.10 m  linf= 0.19 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+20260613_033848_rl_inc7_brg_f2 (rs=69, pos=2912):
+   gate 0 credited at depth=  +0.14 m  linf= 0.09 m  (rs_gap= 251 ms, pos_gap=   2 ms)
+   gate 1 credited at depth=  +4.08 m  linf= 0.99 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +1.00 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 3 credited at depth=  +3.49 m  linf= 0.94 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 4 credited at depth=  +1.58 m  linf= 0.12 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 5 credited at depth=  +0.06 m  linf= 0.16 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+20260613_164120_p0_clean_f1 (rs=164, pos=7005):
+   gate 0 credited at depth=  +1.34 m  linf= 0.11 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +4.21 m  linf= 0.99 m  (rs_gap= 252 ms, pos_gap=   5 ms)
+   gate 2 credited at depth=  +2.07 m  linf= 0.42 m  (rs_gap= 249 ms, pos_gap=   3 ms)
+   gate 3 credited at depth=  +0.56 m  linf= 0.16 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.65 m  linf= 0.08 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 5 credited at depth=  +0.06 m  linf= 0.19 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+20260613_164410_p0_latejoin_f1 (rs=41, pos=1786):
+   gate 0 credited at depth=  +1.33 m  linf= 0.11 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +4.31 m  linf= 1.00 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +1.88 m  linf= 0.36 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.51 m  linf= 0.15 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 4 credited at depth=  +0.71 m  linf= 0.08 m  (rs_gap= 252 ms, pos_gap=   3 ms)
+   gate 5 credited at depth=  +0.02 m  linf= 0.20 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260613_165145_instr_cr1b_f1 (rs=91, pos=3909):
+   gate 0 credited at depth=  +1.14 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +4.04 m  linf= 0.94 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +1.76 m  linf= 0.33 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.46 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 4 credited at depth=  +0.66 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.09 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+20260614_023806_simopsA_smoke_c01_f1 (rs=58, pos=2496):
+   gate 0 credited at depth=  +1.27 m  linf= 0.10 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +4.23 m  linf= 0.99 m  (rs_gap= 251 ms, pos_gap=   4 ms)
+   gate 2 credited at depth=  +2.00 m  linf= 0.39 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 3 credited at depth=  +0.46 m  linf= 0.15 m  (rs_gap= 251 ms, pos_gap=   2 ms)
+   gate 4 credited at depth=  +0.62 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=   2 ms)
+   gate 5 credited at depth=  +0.05 m  linf= 0.20 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+20260614_023846_simopsA_smoke_c02_f1 (rs=58, pos=2484):
+   gate 0 credited at depth=  +1.24 m  linf= 0.10 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +4.18 m  linf= 0.98 m  (rs_gap= 249 ms, pos_gap=   7 ms)
+   gate 2 credited at depth=  +1.82 m  linf= 0.35 m  (rs_gap= 250 ms, pos_gap=   1 ms)
+   gate 3 credited at depth=  +0.39 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=   4 ms)
+   gate 4 credited at depth=  +0.45 m  linf= 0.09 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+   gate 5 credited at depth=  +0.08 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260614_023957_simopsA_c01_f1 (rs=58, pos=2494):
+   gate 0 credited at depth=  +1.53 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+   gate 1 credited at depth=  +4.33 m  linf= 1.01 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 2 credited at depth=  +1.95 m  linf= 0.38 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.50 m  linf= 0.15 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 4 credited at depth=  +0.89 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 5 credited at depth=  +0.08 m  linf= 0.18 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260614_024036_simopsA_c02_f1 (rs=58, pos=2483):
+   gate 0 credited at depth=  +1.26 m  linf= 0.10 m  (rs_gap= 249 ms, pos_gap=   5 ms)
+   gate 1 credited at depth=  +4.17 m  linf= 0.97 m  (rs_gap= 250 ms, pos_gap=   4 ms)
+   gate 2 credited at depth=  +2.03 m  linf= 0.40 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.47 m  linf= 0.15 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+   gate 4 credited at depth=  +0.72 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 5 credited at depth=  +0.08 m  linf= 0.18 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+20260614_024116_simopsA_c03_f1 (rs=59, pos=2505):
+   gate 0 credited at depth=  +1.12 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +4.13 m  linf= 0.97 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+   gate 2 credited at depth=  +1.82 m  linf= 0.35 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 3 credited at depth=  +0.32 m  linf= 0.13 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.77 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.02 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+20260614_024156_simopsA_c04_f1 (rs=58, pos=2497):
+   gate 0 credited at depth=  +1.36 m  linf= 0.12 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +4.32 m  linf= 1.02 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+   gate 2 credited at depth=  +1.91 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 3 credited at depth=  +0.45 m  linf= 0.14 m  (rs_gap= 252 ms, pos_gap=   7 ms)
+   gate 4 credited at depth=  +0.65 m  linf= 0.09 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+   gate 5 credited at depth=  +0.08 m  linf= 0.19 m  (rs_gap= 249 ms, pos_gap=  11 ms)
+20260614_024235_simopsA_c05_f1 (rs=58, pos=2483):
+   gate 0 credited at depth=  +1.21 m  linf= 0.10 m  (rs_gap= 249 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +4.22 m  linf= 0.98 m  (rs_gap= 250 ms, pos_gap=   4 ms)
+   gate 2 credited at depth=  +1.97 m  linf= 0.38 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.53 m  linf= 0.15 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.58 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=   2 ms)
+   gate 5 credited at depth=  +0.05 m  linf= 0.20 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260614_024315_simopsA_c06_f1 (rs=58, pos=2496):
+   gate 0 credited at depth=  +1.30 m  linf= 0.11 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +4.26 m  linf= 1.00 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +2.03 m  linf= 0.40 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 3 credited at depth=  +0.50 m  linf= 0.15 m  (rs_gap= 249 ms, pos_gap=   7 ms)
+   gate 4 credited at depth=  +0.94 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 5 credited at depth=  +0.09 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+20260614_024354_simopsA_c07_f1 (rs=59, pos=2505):
+   gate 0 credited at depth=  +1.10 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +4.09 m  linf= 0.94 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +2.04 m  linf= 0.40 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.49 m  linf= 0.15 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.88 m  linf= 0.07 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.03 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260614_024434_simopsA_c08_f1 (rs=59, pos=2501):
+   gate 0 credited at depth=  +1.16 m  linf= 0.09 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +4.26 m  linf= 0.99 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 2 credited at depth=  +1.84 m  linf= 0.35 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 3 credited at depth=  +0.34 m  linf= 0.13 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.88 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.20 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+20260614_024514_simopsA_c09_f1 (rs=59, pos=2512):
+   gate 0 credited at depth=  +1.20 m  linf= 0.10 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +4.22 m  linf= 0.98 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +2.00 m  linf= 0.40 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.44 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +1.09 m  linf= 0.07 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 5 credited at depth=  +0.03 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260614_024553_simopsA_c10_f1 (rs=58, pos=2496):
+   gate 0 credited at depth=  +1.21 m  linf= 0.10 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +4.28 m  linf= 0.99 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +1.86 m  linf= 0.36 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.46 m  linf= 0.15 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 4 credited at depth=  +0.98 m  linf= 0.07 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 5 credited at depth=  +0.08 m  linf= 0.18 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+20260614_024858_simops_fra_c01_f1 (rs=58, pos=2516):
+   gate 0 credited at depth=  +1.17 m  linf= 0.09 m  (rs_gap= 252 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +4.18 m  linf= 0.97 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+   gate 2 credited at depth=  +1.83 m  linf= 0.35 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 3 credited at depth=  +0.48 m  linf= 0.15 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.66 m  linf= 0.09 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+   gate 5 credited at depth=  +0.02 m  linf= 0.20 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+20260614_191448_boresight_g0 (rs=71, pos=3063):
+   gate 0 credited at depth=  +0.43 m  linf= 0.04 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+20260614_191730_boresight_g0 (rs=67, pos=2861):
+   gate 0 credited at depth=  +0.32 m  linf= 0.01 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+20260614_191820_boresight_g0 (rs=71, pos=3066):
+   gate 0 credited at depth=  +0.08 m  linf= 0.08 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+20260614_191912_boresight_g0 (rs=72, pos=3100):
+   gate 0 credited at depth=  +0.59 m  linf= 0.10 m  (rs_gap= 251 ms, pos_gap=   4 ms)
+20260614_192003_boresight_g0 (rs=71, pos=3045):
+   gate 0 credited at depth=  +0.11 m  linf= 0.05 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260614_192054_boresight_g0 (rs=67, pos=2861):
+   gate 0 credited at depth=  +0.42 m  linf= 0.03 m  (rs_gap= 249 ms, pos_gap=   0 ms)
+20260614_192145_boresight_g0 (rs=67, pos=2890):
+   gate 0 credited at depth=  +0.32 m  linf= 0.04 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+20260614_192235_boresight_g0g1 (rs=91, pos=3902):
+   gate 0 credited at depth=  +0.66 m  linf= 0.57 m  (rs_gap= 252 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +0.43 m  linf= 0.08 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+20260614_192331_boresight_g0g1 (rs=91, pos=3855):
+   gate 0 credited at depth=  +0.30 m  linf= 0.40 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +0.30 m  linf= 0.04 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+20260615_163609_atspd_smoke_s8_p1 (rs=72, pos=3069):
+   gate 0 credited at depth=  +0.82 m  linf= 0.67 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.50 m  linf= 0.06 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+20260615_164006_atspd_s1_s14_p1 (rs=61, pos=2609):
+   gate 0 credited at depth=  +0.13 m  linf= 0.05 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +0.09 m  linf= 0.21 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260615_164045_atspd_s1_s14_p2 (rs=76, pos=3248):
+   gate 0 credited at depth=  +0.02 m  linf= 0.28 m  (rs_gap= 252 ms, pos_gap=  12 ms)
+   gate 1 credited at depth=  +0.61 m  linf= 0.20 m  (rs_gap= 251 ms, pos_gap=  12 ms)
+20260615_164127_atspd_s1_s14_p3 (rs=76, pos=3216):
+   gate 0 credited at depth=  +0.03 m  linf= 0.28 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.06 m  linf= 0.22 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+20260615_164210_atspd_s1_s14_p4 (rs=67, pos=2866):
+   gate 0 credited at depth=  +0.15 m  linf= 0.27 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.12 m  linf= 0.22 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+20260615_164250_atspd_s1_s20_p1 (rs=61, pos=2641):
+   gate 0 credited at depth=  +0.34 m  linf= 0.12 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.30 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+20260615_164329_atspd_s1_s20_p2 (rs=68, pos=2881):
+   gate 0 credited at depth=  +0.84 m  linf= 0.54 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.64 m  linf= 0.19 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+20260615_164409_atspd_s1_s20_p3 (rs=75, pos=3216):
+   gate 0 credited at depth=  +0.38 m  linf= 0.24 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.32 m  linf= 0.20 m  (rs_gap= 251 ms, pos_gap=   4 ms)
+20260615_164451_atspd_s1_s20_p4 (rs=67, pos=2894):
+   gate 0 credited at depth=  +0.03 m  linf= 0.32 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +0.54 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=  12 ms)
+20260615_164532_atspd_s1_s26_p1 (rs=61, pos=2623):
+   gate 0 credited at depth=  +0.15 m  linf= 0.04 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  -0.01 m  linf= 0.20 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+20260615_164611_atspd_s1_s26_p2 (rs=67, pos=2850):
+   gate 0 credited at depth=  +0.03 m  linf= 0.26 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +0.02 m  linf= 0.21 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260615_164651_atspd_s1_s26_p3 (rs=67, pos=2863):
+   gate 0 credited at depth=  +0.31 m  linf= 0.26 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +0.10 m  linf= 0.20 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+20260615_164731_atspd_s1_s26_p4 (rs=67, pos=2865):
+   gate 0 credited at depth=  +0.72 m  linf= 0.40 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.58 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   2 ms)
+20260615_164811_atspd_s1_s32_p1 (rs=61, pos=2639):
+   gate 0 credited at depth=  +0.66 m  linf= 0.45 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +0.55 m  linf= 0.17 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260615_164850_atspd_s1_s32_p2 (rs=67, pos=2862):
+   gate 0 credited at depth=  +0.57 m  linf= 0.26 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 1 credited at depth=  +0.31 m  linf= 0.18 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+20260615_164930_atspd_s1_s32_p3 (rs=67, pos=2885):
+   gate 0 credited at depth=  +0.56 m  linf= 0.23 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +0.34 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+20260615_165011_atspd_s1_s32_p4 (rs=67, pos=2901):
+   gate 0 credited at depth=  +0.33 m  linf= 0.24 m  (rs_gap= 250 ms, pos_gap=  12 ms)
+   gate 1 credited at depth=  +0.01 m  linf= 0.20 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+20260615_165148_atspd_s2_s20_p1 (rs=128, pos=5500):
+   gate 0 credited at depth=  +0.22 m  linf= 0.29 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.34 m  linf= 0.21 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 2 credited at depth=  +0.16 m  linf= 0.33 m  (rs_gap= 252 ms, pos_gap=   1 ms)
+   gate 3 credited at depth=  +0.36 m  linf= 0.34 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 4 credited at depth=  +0.24 m  linf= 0.35 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+   gate 5 credited at depth=  +0.02 m  linf= 0.30 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+20260615_165252_atspd_s2_s20_p2 (rs=130, pos=5547):
+   gate 0 credited at depth=  +0.19 m  linf= 0.27 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+   gate 1 credited at depth=  +0.78 m  linf= 0.28 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +0.35 m  linf= 0.32 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 3 credited at depth=  +0.31 m  linf= 0.35 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.06 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.30 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+20260615_165356_atspd_s2_s20_p3 (rs=129, pos=5517):
+   gate 0 credited at depth=  +0.30 m  linf= 0.27 m  (rs_gap= 252 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +0.20 m  linf= 0.21 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 2 credited at depth=  +0.05 m  linf= 0.34 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.53 m  linf= 0.32 m  (rs_gap= 252 ms, pos_gap=   2 ms)
+   gate 4 credited at depth=  +0.50 m  linf= 0.33 m  (rs_gap= 249 ms, pos_gap=   8 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.30 m  (rs_gap= 252 ms, pos_gap=   3 ms)
+20260615_165500_atspd_s2_s30_p1 (rs=129, pos=5506):
+   gate 0 credited at depth=  +0.13 m  linf= 0.25 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +0.03 m  linf= 0.22 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 2 credited at depth=  +0.19 m  linf= 0.30 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.51 m  linf= 0.33 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.23 m  linf= 0.35 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.30 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+20260615_165604_atspd_s2_s30_p2 (rs=132, pos=5657):
+   gate 0 credited at depth=  +0.07 m  linf= 0.03 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.06 m  linf= 0.20 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+   gate 2 credited at depth=  +0.57 m  linf= 0.28 m  (rs_gap= 250 ms, pos_gap=   4 ms)
+   gate 3 credited at depth=  +0.45 m  linf= 0.34 m  (rs_gap= 252 ms, pos_gap=   2 ms)
+   gate 4 credited at depth=  +0.16 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.30 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+20260615_165709_atspd_s2_s30_p3 (rs=138, pos=5866):
+   gate 0 credited at depth=  +0.21 m  linf= 0.26 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +0.81 m  linf= 0.35 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +0.39 m  linf= 0.28 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 3 credited at depth=  +0.56 m  linf= 0.34 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.31 m  linf= 0.34 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 5 credited at depth=  +0.00 m  linf= 0.30 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+20260615_172451_rl_canary_f1 (rs=65, pos=2801):
+   gate 0 credited at depth=  +1.25 m  linf= 0.10 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +4.26 m  linf= 0.99 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 2 credited at depth=  +1.91 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 3 credited at depth=  +0.38 m  linf= 0.13 m  (rs_gap= 249 ms, pos_gap=  11 ms)
+   gate 4 credited at depth=  +0.83 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.09 m  linf= 0.18 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+20260614_051929_l3smoke_c01_f1 (rs=60, pos=2554):
+   gate 0 credited at depth=  +1.15 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +4.18 m  linf= 0.97 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +1.88 m  linf= 0.36 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.44 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=   0 ms)
+   gate 4 credited at depth=  +0.83 m  linf= 0.08 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 5 credited at depth=  +0.05 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+20260614_052045_l3atspeed_c01_f1 (rs=61, pos=2581):
+   gate 0 credited at depth=  +1.07 m  linf= 0.09 m  (rs_gap= 249 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +4.13 m  linf= 0.96 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 2 credited at depth=  +1.77 m  linf= 0.34 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 3 credited at depth=  +0.44 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 4 credited at depth=  +0.74 m  linf= 0.08 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.07 m  linf= 0.19 m  (rs_gap= 252 ms, pos_gap=  12 ms)
+20260614_052126_l3atspeed_c02_f1 (rs=61, pos=2574):
+   gate 0 credited at depth=  +1.25 m  linf= 0.10 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +4.26 m  linf= 0.99 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+   gate 2 credited at depth=  +1.95 m  linf= 0.38 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.37 m  linf= 0.13 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.83 m  linf= 0.08 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 5 credited at depth=  +0.04 m  linf= 0.19 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+20260614_052207_l3atspeed_c03_f1 (rs=60, pos=2589):
+   gate 0 credited at depth=  +1.03 m  linf= 0.09 m  (rs_gap= 249 ms, pos_gap=  11 ms)
+   gate 1 credited at depth=  +4.12 m  linf= 0.95 m  (rs_gap= 249 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +1.92 m  linf= 0.37 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.40 m  linf= 0.14 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.49 m  linf= 0.09 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+   gate 5 credited at depth=  +0.06 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+20260614_052247_l3atspeed_c04_f1 (rs=60, pos=2563):
+   gate 0 credited at depth=  +1.30 m  linf= 0.11 m  (rs_gap= 252 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +4.31 m  linf= 1.00 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +1.86 m  linf= 0.36 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.36 m  linf= 0.13 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.89 m  linf= 0.08 m  (rs_gap= 251 ms, pos_gap=   2 ms)
+   gate 5 credited at depth=  +0.02 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+20260614_052328_l3atspeed_c05_f1 (rs=60, pos=2574):
+   gate 0 credited at depth=  +1.31 m  linf= 0.11 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+   gate 1 credited at depth=  +4.21 m  linf= 0.99 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+   gate 2 credited at depth=  +2.01 m  linf= 0.39 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.52 m  linf= 0.15 m  (rs_gap= 252 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.85 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 5 credited at depth=  +0.08 m  linf= 0.18 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+20260614_052409_l3atspeed_c06_f1 (rs=60, pos=2554):
+   gate 0 credited at depth=  +1.17 m  linf= 0.10 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +4.24 m  linf= 0.99 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 2 credited at depth=  +1.93 m  linf= 0.37 m  (rs_gap= 252 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.44 m  linf= 0.14 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.96 m  linf= 0.07 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 5 credited at depth=  +0.09 m  linf= 0.18 m  (rs_gap= 249 ms, pos_gap=   6 ms)
+20260614_052449_l3atspeed_c07_f1 (rs=61, pos=2588):
+   gate 0 credited at depth=  +1.35 m  linf= 0.12 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +4.21 m  linf= 0.98 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+   gate 2 credited at depth=  +1.89 m  linf= 0.36 m  (rs_gap= 249 ms, pos_gap=   8 ms)
+   gate 3 credited at depth=  +0.48 m  linf= 0.15 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 4 credited at depth=  +0.72 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 5 credited at depth=  +0.01 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=  11 ms)
+20260614_052530_l3atspeed_c08_f1 (rs=59, pos=2521):
+   gate 0 credited at depth=  +1.20 m  linf= 0.09 m  (rs_gap= 250 ms, pos_gap=   3 ms)
+   gate 1 credited at depth=  +4.18 m  linf= 0.98 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 2 credited at depth=  +1.80 m  linf= 0.34 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.39 m  linf= 0.14 m  (rs_gap= 250 ms, pos_gap=   4 ms)
+   gate 4 credited at depth=  +0.94 m  linf= 0.08 m  (rs_gap= 252 ms, pos_gap=   4 ms)
+   gate 5 credited at depth=  +0.09 m  linf= 0.18 m  (rs_gap= 249 ms, pos_gap=   5 ms)
+20260614_052610_l3atspeed_c09_f1 (rs=60, pos=2556):
+   gate 0 credited at depth=  +1.52 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 1 credited at depth=  +4.41 m  linf= 1.03 m  (rs_gap= 251 ms, pos_gap=   8 ms)
+   gate 2 credited at depth=  +2.06 m  linf= 0.41 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+   gate 3 credited at depth=  +0.63 m  linf= 0.16 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 4 credited at depth=  +0.58 m  linf= 0.09 m  (rs_gap= 251 ms, pos_gap=  11 ms)
+   gate 5 credited at depth=  +0.09 m  linf= 0.19 m  (rs_gap= 251 ms, pos_gap=   7 ms)
+20260614_052651_l3atspeed_c10_f1 (rs=58, pos=2500):
+   gate 0 credited at depth=  +1.24 m  linf= 0.10 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 1 credited at depth=  +4.20 m  linf= 0.97 m  (rs_gap= 249 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +1.88 m  linf= 0.36 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 3 credited at depth=  +0.49 m  linf= 0.15 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 4 credited at depth=  +0.63 m  linf= 0.09 m  (rs_gap= 252 ms, pos_gap=  11 ms)
+   gate 5 credited at depth=  +0.03 m  linf= 0.20 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+20260614_052732_l3atspeed_c11_f1 (rs=59, pos=2530):
+   gate 0 credited at depth=  +1.41 m  linf= 0.13 m  (rs_gap= 249 ms, pos_gap=   4 ms)
+   gate 1 credited at depth=  +4.34 m  linf= 1.02 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+   gate 2 credited at depth=  +1.96 m  linf= 0.38 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 3 credited at depth=  +0.45 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=   2 ms)
+   gate 4 credited at depth=  +0.92 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   5 ms)
+   gate 5 credited at depth=  +0.03 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+20260614_052813_l3atspeed_c12_f1 (rs=48, pos=2074):
+   gate 0 credited at depth=  +1.52 m  linf= 0.14 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+   gate 1 credited at depth=  +0.20 m  linf= 0.06 m  (rs_gap= 252 ms, pos_gap=   5 ms)
+   gate 2 credited at depth=  +3.53 m  linf= 0.74 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+   gate 3 credited at depth=  +0.63 m  linf= 0.18 m  (rs_gap= 252 ms, pos_gap=   7 ms)
+   gate 4 credited at depth=  +0.47 m  linf= 0.08 m  (rs_gap= 251 ms, pos_gap=   9 ms)
+   gate 5 credited at depth=  +0.07 m  linf= 0.20 m  (rs_gap= 249 ms, pos_gap=   9 ms)
+20260614_053104_l3fra_c01_f1 (rs=60, pos=2568):
+   gate 0 credited at depth=  +1.32 m  linf= 0.11 m  (rs_gap= 252 ms, pos_gap=  12 ms)
+   gate 1 credited at depth=  +4.36 m  linf= 1.02 m  (rs_gap= 250 ms, pos_gap=  10 ms)
+   gate 2 credited at depth=  +2.08 m  linf= 0.41 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+   gate 3 credited at depth=  +0.60 m  linf= 0.16 m  (rs_gap= 251 ms, pos_gap=   3 ms)
+   gate 4 credited at depth=  +0.63 m  linf= 0.09 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 5 credited at depth=  +0.05 m  linf= 0.19 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260614_202117_boresight_g0_smoke (rs=162, pos=6938):
+   gate 0 credited at depth=  +0.37 m  linf= 0.05 m  (rs_gap= 250 ms, pos_gap=   6 ms)
+20260614_202646_boresight_g0 (rs=56, pos=2395):
+   gate 0 credited at depth=  +0.17 m  linf= 0.03 m  (rs_gap= 250 ms, pos_gap=  12 ms)
+20260614_202724_boresight_g0 (rs=57, pos=2461):
+   gate 0 credited at depth=  +0.59 m  linf= 0.04 m  (rs_gap= 251 ms, pos_gap=   2 ms)
+20260614_202802_boresight_g0 (rs=57, pos=2466):
+   gate 0 credited at depth=  +0.58 m  linf= 0.02 m  (rs_gap= 251 ms, pos_gap=   6 ms)
+20260614_202839_boresight_g0 (rs=55, pos=2350):
+   gate 0 credited at depth=  +0.12 m  linf= 0.06 m  (rs_gap= 250 ms, pos_gap=   8 ms)
+20260614_202917_boresight_g0 (rs=57, pos=2410):
+   gate 0 credited at depth=  +0.00 m  linf= 0.08 m  (rs_gap= 250 ms, pos_gap=   9 ms)
+20260614_202954_boresight_g0 (rs=54, pos=2332):
+   gate 0 credited at depth=  +0.37 m  linf= 0.03 m  (rs_gap= 251 ms, pos_gap=   5 ms)
+20260614_203031_boresight_g0g1 (rs=83, pos=3575):
+   gate 0 credited at depth=  +0.46 m  linf= 0.37 m  (rs_gap= 252 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.29 m  linf= 0.04 m  (rs_gap= 250 ms, pos_gap=   7 ms)
+20260614_203116_boresight_g0g1 (rs=76, pos=3233):
+   gate 0 credited at depth=  +0.35 m  linf= 0.34 m  (rs_gap= 251 ms, pos_gap=  10 ms)
+   gate 1 credited at depth=  +0.22 m  linf= 0.04 m  (rs_gap= 251 ms, pos_gap=  10 ms)
