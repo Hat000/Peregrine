@@ -35,3 +35,26 @@ feature branch (`claude/optimistic-chaum-6c893b`): `668347f` (code) + `9b7d737` 
   held off — scratch quota was 67% (26 GiB headroom) and 5 seeds would strain it.
 - B2 experimental base preserved in `b2_base_backup_2026-07-07/` (restorable). squeue was empty at deploy.
 - If a stage crashes overnight I'll diagnose/fix/resubmit autonomously and note it here.
+
+## UPDATE — single_gate FAILED, root-caused to 3 bugs, all fixed (job 3297088 ego_b now testing)
+The first ladder (3297042) trained single_gate cleanly but **learned nothing** (success ~0, FLIGHTCHECK
+correctly halted it before the hard stages — the "don't waste compute" guard working). I diagnosed it
+(ultracode workflow + local geometry probes + isolated Adroit A/B experiments) to **three independent,
+individually-fatal bugs** — and the isolated experiments PROVED each:
+1. **RC1 — the emulated camera pointed backward.** The drone flies tail-first (your VQ1 control alias),
+   but the ego's `gate_visibility` never applied the nose-first camera flip, so the camera looked 180°
+   away from every gate → **0% detectable at all ranges** (local probe) → the vision obs was structurally
+   blind. inc8 was immune only because it used a non-camera KF gate vector. FIX: apply `fly_rl`'s
+   `_RZ_PI_BODY` flip to the *emulated camera only* (control/rel_pos untouched). Probe: 0% → 100%.
+2. **RC2 — exploration noise ran away** to the std ceiling (bang-bang) because the `apply_noise_schedule`
+   brake was never wired into the ego trainer. FIX: wired it + a flat std=0.30 held ceiling. (The
+   entropy_loss=−13.68 I first read as "collapse to deterministic" was actually the *opposite* — the
+   workflow caught my sign error.)
+3. **RC3 — reward made approaching −EV** (finish 20 vs terminal 200). FIX: rw_progress 1→6, miss/oob
+   200→30 (contact stays 200). Approach-then-miss ≈ hover; only *passing* pays.
+Isolated proof: the proven inc7 reward on the ego obs still failed (obs was binding, not reward); RC1+RC2
+alone still failed (reward also needed). All three committed (`5a252a4`), redeployed, and **ladder
+`ego_b` (job 3297088) is running the stacked fix** — its single_gate stage is the decisive test. If it
+learns, the ladder continues automatically. Cluster note: gpu partition got congested (~108 pending) but
+fair-share priority got us a node immediately. Camera-flip is default-ON in code; a full picture of the
+diagnosis is in memory (`vq2-rl-commander-2026-07-05.md`).
