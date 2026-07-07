@@ -67,13 +67,17 @@ def test_gate_counts_and_spacing_match_design():
 # (2) THE B2b SCOPING DISCIPLINE: hard-stage knobs NOT in _COMMON / not on easy stages.
 # ================================================================================================
 def test_common_is_easy_safe_no_hard_stage_pressure():
-    """_COMMON (applied to single_gate) must carry ONLY the clean champion reward: base rw_passage=1.0
-    and exit_align OFF. The B2b lesson: a hard-stage knob in _COMMON regressed single_gate 0.82->0.035."""
-    assert C._COMMON["rw_passage"] == 1.0
-    assert C._COMMON["rw_exit_align"] == 0.0
-    assert C._COMMON["rw_progress"] == 1.0
+    """_COMMON (applied to single_gate) must carry NO HARD-STAGE pressure: base rw_passage=1.0 and
+    exit_align OFF (the B2b invariant -- a hard-stage knob in _COMMON regressed single_gate 0.82->0.035).
+    The RC3 discovery rebalance (rw_progress=6, miss/oob=30) is DISCOVERY-FRIENDLY, not hard-stage, so it
+    lives here; contact stays catastrophic (200) so sprint-and-clip stays defeated."""
+    assert C._COMMON["rw_passage"] == 1.0            # NO hard-stage passage bump
+    assert C._COMMON["rw_exit_align"] == 0.0         # exit-line OFF on easy/discovery stages
+    assert C._COMMON["rw_progress"] == 6.0           # RC3: strong dense pull to the (now-visible) gate
+    assert C._COMMON["rw_terminal_miss"] == 30.0     # RC3: approach-miss ~= hover (not catastrophic)
+    assert C._COMMON["rw_terminal_oob"] == 30.0      # RC3: approach-oob ~= hover
     assert C._COMMON["rw_terminal_progress_scaled"] is True
-    assert C._COMMON["rw_terminal_base"] == 200.0
+    assert C._COMMON["rw_terminal_base"] == 200.0    # CONTACT stays catastrophic (zero-contact rule)
 
 
 def test_hard_knobs_absent_from_easy_stages_present_on_hard_stages():

@@ -69,6 +69,11 @@ from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
 from peregrine_racing_ego import PeregrineRacingEgo
 from inc8_warmstart import maybe_warmstart
+# NOISE-CEILING lever (RC2 fix): resolve_noise_anneal is a pure getattr (None when +algo.noise_anneal is
+# unset -> byte-identical off-path, no torch); apply_noise_schedule clamps actor_logstd to the scheduled
+# std ceiling BEFORE each rollout. Without this the constant entropy bonus drives actor_logstd to the
+# LOG_STD_MAX ceiling (std=exp(2)=7.39, bang-bang) with nothing capping it -- the ego single_gate collapse.
+from inc8_noise_anneal import resolve_noise_anneal, apply_noise_schedule
 
 try:                                    # newer inc8_warmstart.py exports the logstd-reset helper
     from inc8_warmstart import reset_actor_logstd
@@ -172,6 +177,13 @@ def _run_with_ego_lifelines(self):
     # ================================ FIX #2: the warm-start lifeline ================================
     logger = self.logger
 
+    # NOISE CEILING (RC2): resolve the std-ceiling schedule (None when +algo.noise_anneal unset ->
+    # byte-identical). Applied per-update BELOW, BEFORE each rollout, so actor_logstd cannot run away to
+    # the LOG_STD_MAX bang-bang ceiling. Mirror of rl/peregrine_train_inc8.py's proven wiring.
+    noise_sched = resolve_noise_anneal(cfg)
+    if noise_sched is not None:
+        print(f"[noise-anneal] ON: {noise_sched}")
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -179,6 +191,13 @@ def _run_with_ego_lifelines(self):
     counter = {"i": 0}
 
     def step_with_periodic_save(*a, **k):
+        # NOISE CEILING (RC2): clamp actor_logstd to the scheduled std ceiling BEFORE this rollout so the
+        # sampled actions obey it (OFF -> noise_sched None -> skipped, byte-identical). Mirrors inc8.
+        if noise_sched is not None:
+            nv = apply_noise_schedule(agent, counter["i"], noise_sched)
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[noise-anneal] update {counter['i']}: std_ceil={nv['std_ceil']:.4f} "
+                      f"entropy_weight={nv['entropy_weight']:.5f} (progress={nv['progress']:.2f})")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:

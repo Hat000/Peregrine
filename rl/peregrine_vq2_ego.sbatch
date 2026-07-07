@@ -81,7 +81,15 @@ BASE=(
   algo=appo algo.entropy_weight=${ENT_WEIGHT} headless=True device=0
   algo.critic_grad_norm=1.0
   export.jit=false export.onnx=false
+  +algo.noise_anneal=true +algo.noise_std_hold=0.30 +algo.noise_std_floor=0.30
+  +algo.noise_hold_frac=1.0 +algo.noise_entropy_floor=0.0
 )
+# ^ NOISE CEILING (RC2 fix, 2026-07-07): a FLAT held std ceiling at 0.30 for the WHOLE run
+# (std_hold==std_floor, hold_frac=1.0 -> no decay). Without it the constant entropy bonus drives
+# actor_logstd to the LOG_STD_MAX bang-bang ceiling (std=exp(2)=7.39) -> undiscoverable rollouts (the
+# ego single_gate collapse). Wired into peregrine_train_ego.py (mirror of the inc8 lifeline). The B2b
+# lesson: the HELD ceiling is the flight win; decay-to-zero hurts easy stages -> no decay here.
+# Paired with the emulated-camera nose-first virtual flip (RC1, default-ON in peregrine_racing_ego.py).
 # ^ export.jit/onnx OFF: diffaero's ONNX/JIT exporter (utils/exporter.py) does NOT support the CTBR
 # body-rate action_frame ("Unknown action frame: body" in post_process) -> close()'s post-train export
 # raises, which would make the stage exit NONZERO and STOP the ladder even though training + the

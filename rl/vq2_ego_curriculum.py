@@ -64,10 +64,18 @@ _COMMON = {
     "ego": True,                     # +env.ego=true -> the 21-dim position-free obs + refined-B reward
     "standing_start_frac": 1.0,      # trivial 1 m dash REMOVED -- genuine standing start EVERY episode
     "course_mode": "random",         # per-env procedural courses (spacing/geometry per stage below)
-    # --- refined-B reward EASY-SAFE defaults (== EgoRewardWeights defaults; safe on single_gate) ---
-    "rw_progress": 1.0,              # Geles-scale dense segment-projected progress (NOT the inc8 10.0/m)
+    # --- refined-B reward EASY-SAFE defaults (safe/HELPFUL on single_gate) ---
+    # RC3 DISCOVERY REBALANCE (2026-07-07): rw_progress 1.0->6.0 (a STRONG dense pull toward the now-
+    # visible gate -- with the camera-flip RC1 fix the gate is finally in the obs) and miss/oob terminal
+    # base 200->30 (progress-scaled: approach-then-miss nets -base = ~-30 ~= hover, so imperfect approach
+    # attempts are no longer catastrophic; passing still nets ~+158). CONTACT base stays 200 (zero-contact
+    # rule; sprint-and-clip stays defeated by construction: contact forfeits banked + 200). These are
+    # DISCOVERY-FRIENDLY -> _COMMON is correct (they HELP single_gate; NOT the B2b hard-stage-leak footgun).
+    "rw_progress": 6.0,              # dense segment-projected progress (was 1.0 -- too weak to pull to gate)
     "rw_passage": 1.0,              # L-inf centering passage, base scale (bumped ONLY on hard stages)
-    "rw_terminal_base": 200.0,       # kill-on-contact base magnitude
+    "rw_terminal_base": 200.0,       # kill-on-contact base magnitude (CONTACT stays catastrophic)
+    "rw_terminal_miss": 30.0,        # fly-by miss: ~hover-level (progress-scaled -> approach-miss nets ~-30)
+    "rw_terminal_oob": 30.0,         # out-of-bounds: ~hover-level (same rationale as miss)
     "rw_terminal_progress_scaled": True,  # forfeit banked progress + base -> sprint-and-clip never wins
     "rw_exit_align": 0.0,           # next-gate exit-line OFF on easy stages (ON only hard stages below)
     "rw_rate": 1.0e-3, "rw_dact": 1.0e-3,  # MINUSCULE smoothness (3-4 orders below progress)

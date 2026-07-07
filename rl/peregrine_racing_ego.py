@@ -343,7 +343,7 @@ try:                                    # pragma: no cover - exercised on the cl
     from peregrine_racing import (PeregrineRacing, world_to_gateframe, crossing_events,
                                   slab_frame_hits, tilt_cos_from_quat_xyzw, roll_from_quat_xyzw,
                                   compute_reward_terms, rel_tables)
-    from inc8_estimator_emul import quat_xyzw_to_matrix_torch
+    from inc8_estimator_emul import quat_xyzw_to_matrix_torch, _RZ_PI_BODY_NP
     _HAVE_DIFFAERO = True
 except Exception:                       # pragma: no cover
     _HAVE_DIFFAERO = False
@@ -363,6 +363,17 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
 
         dev = self.device
         self._ego_dtype = self.gate_pos.dtype
+        # EMULATED-CAMERA VIRTUAL FLIP (RC1 fix, 2026-07-07): the drone flies TAIL-FIRST (the VQ1/CTBR
+        # control alias -- DO NOT touch the control sign config), but the REAL deploy camera is
+        # NOSE-FIRST, so the emulated camera must apply fly_rl's pi-about-body-z flip (_RZ_PI_BODY) to
+        # look along the TRAVEL direction and SEE the gates ahead. Without it the camera points ~180 deg
+        # away from travel -> the gate is NEVER detectable (proven locally: 0% at spawn/approach/5m,
+        # flipped=100%) -> rel_pos stays masked -> single_gate is unlearnable (the observed collapse).
+        # Only the CAMERA is rotated; the control frame, rel_pos, velocity and rates keep the unflipped
+        # tail-first body frame (consistent). ON by default (unflipped was a bug);
+        # +env.ego_camera_virtual_flip=false restores the raw camera for A/B.
+        self._cam_flip = bool(getattr(cfg, "ego_camera_virtual_flip", True))
+        self._Rz_cam = torch.as_tensor(_RZ_PI_BODY_NP, device=dev, dtype=self._ego_dtype)
         self._ego_contact_penalty = float(getattr(cfg, "ego_contact_penalty",
                                                    EGO_CONTACT_PENALTY_DEFAULT))
 
@@ -531,11 +542,20 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self.gate_pos[env_idx, prev_idx.clamp(min=0)])               # else previous gate centre
         return seg_start, seg_end
 
+    # ---- EMULATED-CAMERA body->world (nose-first virtual flip; see __init__) --------------------
+    def _cam_R_wb(self):
+        """Body->world matrix for the emulated CAMERA visibility test. Applies the virtual
+        pi-about-body-z flip so the tail-first-flying drone's camera looks along the TRAVEL direction
+        (nose-first deploy convention) and sees the gates AHEAD. Only the camera is rotated -- the
+        control frame / rel_pos / velocity / rates all use the unflipped self._q."""
+        R_wb = quat_xyzw_to_matrix_torch(self._q)
+        return R_wb @ self._Rz_cam if self._cam_flip else R_wb
+
     # ---- STEP the estimator one control step at the CURRENT truth (mutates estimator state) ----
     def _step_estimator(self, prev_q):
         with torch.no_grad():
-            detectable, _ = gate_detectable(self._p, self._q, self.gate_pos, self.gate_yaw,
-                                            far_cap_m=self._ego_cfg.far_cap_m, is_quat=True)
+            detectable, _ = gate_detectable(self._p, self._cam_R_wb(), self.gate_pos, self.gate_yaw,
+                                            far_cap_m=self._ego_cfg.far_cap_m, is_quat=False)
             est = self._estimator.step(self._p, self._v, self._q, self._w, float(self.dt),
                                        detectable=detectable, prev_quat=prev_q)
         self._stepped = True
@@ -543,8 +563,8 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
 
     def _current_detectable(self):
         with torch.no_grad():
-            detectable, _ = gate_detectable(self._p, self._q, self.gate_pos, self.gate_yaw,
-                                            far_cap_m=self._ego_cfg.far_cap_m, is_quat=True)
+            detectable, _ = gate_detectable(self._p, self._cam_R_wb(), self.gate_pos, self.gate_yaw,
+                                            far_cap_m=self._ego_cfg.far_cap_m, is_quat=False)
         return detectable
 
     # ---- observation (ego 26-dim; OFF -> byte-identical inc7) ----------------------------------
