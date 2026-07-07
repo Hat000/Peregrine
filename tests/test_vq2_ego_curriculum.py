@@ -74,8 +74,8 @@ def test_common_is_easy_safe_no_hard_stage_pressure():
     assert C._COMMON["rw_passage"] == 1.0            # NO hard-stage passage bump
     assert C._COMMON["rw_exit_align"] == 0.0         # exit-line OFF on easy/discovery stages
     assert C._COMMON["rw_progress"] == 6.0           # RC3: strong dense pull to the (now-visible) gate
-    assert C._COMMON["rw_terminal_miss"] == 30.0     # RC3: approach-miss ~= hover (not catastrophic)
-    assert C._COMMON["rw_terminal_oob"] == 30.0      # RC3: approach-oob ~= hover
+    assert C._COMMON["rw_terminal_miss"] == 30.0     # RC3: MISS (wide gate attempt) forgiving ~= hover
+    assert C._COMMON["rw_terminal_oob"] == 200.0     # OOB (leaving arena) STAYS discouraged (96% OOB @ 30)
     assert C._COMMON["rw_terminal_progress_scaled"] is True
     assert C._COMMON["rw_terminal_base"] == 200.0    # CONTACT stays catastrophic (zero-contact rule)
 

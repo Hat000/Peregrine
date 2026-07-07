@@ -74,8 +74,12 @@ _COMMON = {
     "rw_progress": 6.0,              # dense segment-projected progress (was 1.0 -- too weak to pull to gate)
     "rw_passage": 1.0,              # L-inf centering passage, base scale (bumped ONLY on hard stages)
     "rw_terminal_base": 200.0,       # kill-on-contact base magnitude (CONTACT stays catastrophic)
-    "rw_terminal_miss": 30.0,        # fly-by miss: ~hover-level (progress-scaled -> approach-miss nets ~-30)
-    "rw_terminal_oob": 30.0,         # out-of-bounds: ~hover-level (same rationale as miss)
+    "rw_terminal_miss": 30.0,        # fly-by MISS (wide gate attempt, stays in-arena): ~hover -> forgiving
+    # OOB (leaving the ARENA) STAYS discouraged at 200 -- distinct from MISS. Measured 2026-07-07: at
+    # oob=30 the drone had NO pressure to stay in bounds and 96% of episodes OOB'd at ~2 s (l_episode
+    # 2 s vs the 33 s in-bounds hover at oob=200), never reaching the gate. The RC3 fix forgives the
+    # GATE ATTEMPT (miss), NOT leaving the arena. Approaching the gate stays in-bounds -> not punished.
+    "rw_terminal_oob": 200.0,        # out-of-bounds = leaving the arena -> stays discouraged (NOT ~hover)
     "rw_terminal_progress_scaled": True,  # forfeit banked progress + base -> sprint-and-clip never wins
     "rw_exit_align": 0.0,           # next-gate exit-line OFF on easy stages (ON only hard stages below)
     "rw_rate": 1.0e-3, "rw_dact": 1.0e-3,  # MINUSCULE smoothness (3-4 orders below progress)
