@@ -781,7 +781,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 vel_world=self._v, curr_center=curr_center, next_center=next_center,
                 dt=float(self.dt),
                 area_true=area_true, dist_to_gate=dist_to_gate, passed_gate_index=tg,
-                perp_dist=perp_dist)
+                perp_dist=perp_dist,
+                # HOVER-HOLD probe: GT altitude + spawn altitude for the give-up-resistant altitude-hold
+                # bonus (OFF unless rw_altitude_hold>0, i.e. only the hover_hold diagnostic stage).
+                z=curr_pos[:, 2], z_spawn=self.spawn_pos[:, 2])
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious
@@ -875,6 +878,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 "exit_timeout": c_time[reset].float(),
                 # how far off-centre every target-plane crossing lands (pass + frame + wide miss), L-inf m
                 "cross_offset_m": pass_linf[crossed_tg],
+                # HOVER-HOLD / altitude read: |z - z_spawn| (m) at episode end -> "sub-metre hold?" for the
+                # hover_hold probe, and the vertical error of every terminating episode generally.
+                "alt_err_m": (cp[:, 2] - self.spawn_pos[:, 2]).abs()[reset],
                 "peak_tilt_deg": torch.rad2deg(self._peak_tilt)[reset],
                 "peak_roll_deg": torch.rad2deg(self._peak_roll)[reset],
                 "mean_speed": (self._speed_sum / self.progress.clamp(min=1).float())[reset],

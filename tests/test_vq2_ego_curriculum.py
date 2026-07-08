@@ -166,3 +166,42 @@ def test_common_pins_fixed_spawn_heading():
     # Fengyou 2026-07-07: the egocentric obs is heading-invariant, so segment-0 heading is pinned (0.0)
     # to de-circle the world-frame layout without changing the egocentric training distribution.
     assert C._COMMON["course_spawn_heading"] == 0.0
+
+
+# ================================================================================================
+# HOVER-HOLD probe stage (Fengyou greenlight 2026-07-08; the H1-vs-H2 disambiguator).
+# ================================================================================================
+def test_common_altitude_hold_default_off():
+    # the hover-hold bonus is OFF on every real stage (turned ON only by the hover_hold probe stage).
+    assert C._COMMON["rw_altitude_hold"] == 0.0
+    # every ordered ladder stage inherits _COMMON's OFF (no stage accidentally enables the probe bonus).
+    for s in C.STAGE_ORDER:
+        assert C.STAGES[s]["rw_altitude_hold"] == 0.0, s
+
+
+def test_hover_hold_is_a_fixed_offladder_altitude_probe():
+    """The hover_hold probe: OFF-LADDER, a fixed 15 m LEVEL gate, and the reward is the altitude-hold
+    bonus ONLY -- every gate-homing term (progress/passage/increment/area/centering/exit) is zeroed, so
+    holding spawn altitude is the unique optimum with no competing forward objective."""
+    assert "hover_hold" not in C.STAGE_ORDER                       # off-ladder, standalone only
+    s = C.STAGES["hover_hold"]
+    assert s["course_n_gates"] == 1
+    assert s["course_spawn_dist_lo"] == s["course_spawn_dist_hi"] == 15.0   # fixed 15 m
+    assert s["course_drop_lo"] == s["course_drop_hi"] == 0.0               # level
+    # the probe bonus is ON ...
+    assert s["rw_altitude_hold"] == 1.0
+    assert s["rw_altitude_hold_band_m"] == 8.0
+    # ... and EVERY gate-homing term is OFF (pure altitude-hold, no forward pull).
+    for k in ("rw_progress", "rw_passage", "rw_passage_increment", "rw_area_dist_ref_m",
+              "rw_centering", "rw_exit_align"):
+        assert s[k] == 0.0, k
+    assert s["ego"] is True and s["_raw"]["algo.gamma"] == C._GAMMA
+
+
+def test_hover_hold_renders_valid_tokens():
+    toks = C.render_overrides("hover_hold")
+    assert "+env.rw_altitude_hold=1.0" in toks
+    assert "+env.rw_progress=0.0" in toks              # forward homing zeroed
+    assert "+env.rw_passage=0.0" in toks
+    assert "+env.course_spawn_dist_lo=15.0" in toks
+    assert "algo.gamma=0.9975" in toks                # _raw verbatim (no +)

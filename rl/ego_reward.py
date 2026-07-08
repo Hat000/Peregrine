@@ -154,6 +154,20 @@ class EgoRewardWeights:
     centering: float = 0.0           # rw_centering; 0 == OFF (turned ON by the curriculum)
     centering_max_m: float = 2.0     # clamp (m) on the perpendicular offset so a big early drift is bounded
 
+    # --- HOVER-HOLD altitude probe (Fengyou greenlight 2026-07-08; the H1-vs-H2 disambiguator) ---
+    # A GIVE-UP-RESISTANT POSITIVE altitude-hold bonus for the `hover_hold` diagnostic stage ONLY (no gate
+    # homing/passage): r = altitude_hold * (1 - clip(|z - z_spawn| / band, 0, 1)). It PEAKS (+altitude_hold)
+    # at the spawn altitude and decays linearly to 0 at |Δz| >= band -> spawn altitude is the UNIQUE optimum,
+    # AND the reward is POSITIVE everywhere, so ending the episode FORFEITS the future bonus == the policy is
+    # paid to SURVIVE at altitude. That is why this form carries NO give-up incentive, unlike a -k|Δz|
+    # MAGNITUDE penalty (the rw_centering / through_centering back-fire class, which can drive a FAILING
+    # policy to floor sooner to stop the accruing bleed and thus CONFOUND a control-learning read). With no
+    # competing forward objective, altitude-hold is strictly optimal here, so a FLOOR exit is an unambiguous
+    # CONTROL-LEARNING (H2) signal rather than reward give-up. 0 == OFF (default; off on every non-probe stage).
+    altitude_hold: float = 0.0       # rw_altitude_hold; 0 == OFF
+    altitude_hold_band_m: float = 8.0  # (m) half-width over which the hold bonus decays to 0 (restoring
+    #                                    gradient present over the whole reachable descent range)
+
     # --- TERMINAL (kill-on-contact). Two modes; ``terminal_progress_scaled`` picks. ---
     # FIXED mode: penalty = terminal_base (large, dominates the banked progress return).
     # PROGRESS-SCALED mode: penalty = terminal_base + accumulated_progress_return (clipping forfeits
@@ -332,6 +346,23 @@ def through_centering_reward(perp_dist: Tensor, rw_centering: float, centering_m
     if rw_centering == 0.0:
         return torch.zeros_like(perp_dist)
     return -rw_centering * perp_dist.clamp(0.0, centering_max_m)
+
+
+def altitude_hold_reward(z: Tensor, z_spawn: Tensor, rw_altitude_hold: float,
+                         band_m: float) -> Tensor:
+    """R_alt = rw_altitude_hold * (1 - clip(|z - z_spawn| / band, 0, 1)). A POSITIVE, bounded per-step
+    bonus peaking (+rw_altitude_hold) at the spawn altitude and decaying linearly to 0 at |Δz| >= band.
+    Used ONLY by the `hover_hold` diagnostic probe stage (Fengyou 2026-07-08): with NO gate homing/passage
+    it makes holding spawn altitude the UNIQUE optimum, and because it PAYS THE POLICY TO SURVIVE (positive
+    reward -> ending the episode forfeits the future bonus) it carries NO give-up incentive -- distinct from
+    a -k|Δz| MAGNITUDE penalty (the rw_centering back-fire class) that can drive a failing policy to floor
+    sooner to stop the bleed and CONFOUND the H1-vs-H2 read. rw_altitude_hold==0 -> OFF (zeros). z / z_spawn
+    are (N,) GT world Z-up altitudes. Returns (N,)."""
+    assert torch is not None
+    if rw_altitude_hold == 0.0:
+        return torch.zeros_like(z)
+    err = (z - z_spawn).abs() / max(band_m, 1e-9)
+    return rw_altitude_hold * (1.0 - err.clamp(0.0, 1.0))
 
 
 # ================================================================================================
@@ -526,6 +557,8 @@ def compute_ego_reward(
     dist_to_gate: "Tensor | None" = None,
     passed_gate_index: "Tensor | None" = None,
     perp_dist: "Tensor | None" = None,
+    z: "Tensor | None" = None,
+    z_spawn: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
@@ -555,6 +588,10 @@ def compute_ego_reward(
     # -> ~0). Complements the area coupling (angle); this shapes lateral POSITION toward a centred cross.
     r_center = (through_centering_reward(perp_dist, w.centering, w.centering_max_m)
                 if perp_dist is not None else torch.zeros_like(r_prog))
+    # HOVER-HOLD probe bonus (OFF unless w.altitude_hold>0, i.e. only the hover_hold diagnostic stage): a
+    # give-up-resistant positive pull to the spawn altitude with no competing forward objective.
+    r_alt = (altitude_hold_reward(z, z_spawn, w.altitude_hold, w.altitude_hold_band_m)
+             if (z is not None and z_spawn is not None) else torch.zeros_like(r_prog))
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
@@ -562,12 +599,13 @@ def compute_ego_reward(
     r_time = -w.time
     term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w)
 
-    reward = r_prog + r_pass + r_center + r_fin + r_cone + r_smooth + r_exit + r_time - term
+    reward = r_prog + r_pass + r_center + r_alt + r_fin + r_cone + r_smooth + r_exit + r_time - term
 
     components = {
         "prog_reward": float(r_prog.mean()),
         "pass_reward": float(r_pass.mean()),
         "center_pen": float((-r_center).mean()),
+        "alt_hold_reward": float(r_alt.mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),

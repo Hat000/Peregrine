@@ -141,6 +141,9 @@ _COMMON = {
     "rw_exit_align": 0.0,           # next-gate exit-line OFF on easy stages (ON only hard stages below)
     "rw_rate": 1.0e-3, "rw_dact": 1.0e-3,  # MINUSCULE smoothness (3-4 orders below progress)
     "rw_tilt_free_rad": 1.0471976,   # FIXED 60 deg free cone
+    # HOVER-HOLD probe bonus OFF on every real stage (turned ON only by the hover_hold diagnostic stage).
+    "rw_altitude_hold": 0.0,         # give-up-resistant spawn-altitude bonus; 0 == OFF
+    "rw_altitude_hold_band_m": 8.0,  # (m) decay half-width (unused while rw_altitude_hold==0)
 }
 
 # The gamma value shared by every stage (LOAD-BEARING for terminal dominance at deployment scale). It
@@ -173,6 +176,29 @@ STAGES: dict[str, dict] = {
         "course_n_gates": 1,
         "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # FIXED 15 m (override _COMMON 10-20)
         "course_drop_lo": 0.0, "course_drop_hi": 0.0,                 # LEVEL gate (no climb) -- isolate
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # HOVER-HOLD PROBE (Fengyou greenlight 2026-07-08): the H1-vs-H2 disambiguator for the single_gate_static
+    # 100% floor-dive. NO gate homing/passage/centering -- the reward is a give-up-RESISTANT positive
+    # altitude-hold bonus (ego_reward.altitude_hold_reward) ONLY, so holding the spawn altitude is the UNIQUE
+    # optimum with NO competing forward objective. A fixed 15 m LEVEL gate is present (course_n_gates=1) but
+    # IGNORED by the reward; standing start; terminals = floor(=contact)/oob/timeout unchanged. READ from the
+    # box-exit classifier: OUTCOME A -> exit_floor collapses to ~0 + exit_timeout dominant + alt_err_m
+    # sub-metre = altitude-hold IS learnable from a clean vertical gradient (H1 / missing-early-gradient;
+    # GREEN-LIGHT the contouring/reference lever). OUTCOME B -> exit_floor stays high = a CONTROL-LEARNING
+    # basin the policy will not climb out of regardless of gradient (H2; PIVOT to a hover warm-start /
+    # action-bias-toward-hover, do NOT add another reward term). OFF-LADDER (not in STAGE_ORDER); run
+    # standalone via STAGES=hover_hold.
+    "hover_hold": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # fixed 15 m level gate (ignored)
+        "course_drop_lo": 0.0, "course_drop_hi": 0.0,
+        # ZERO every gate-homing term -> pure altitude-hold, no forward pull, no passage/centering/exit.
+        "rw_progress": 0.0, "rw_passage": 0.0, "rw_passage_increment": 0.0,
+        "rw_area_dist_ref_m": 0.0, "rw_centering": 0.0, "rw_exit_align": 0.0,
+        # the give-up-resistant POSITIVE hold bonus ON: spawn altitude is the unique optimum.
+        "rw_altitude_hold": 1.0, "rw_altitude_hold_band_m": 8.0,
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
     },
     # 2. HANDOFF_DRILL (DESIGN.md §D): 2 gates, focus the FIRST gate handoff. Spacing 10-20 m (the VQ2

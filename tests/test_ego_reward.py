@@ -611,3 +611,63 @@ def test_fixed_terminal_guard_fires_when_base_below_max_bankable():
     with pytest.raises(AssertionError):
         R.EgoRewardWeights(terminal_progress_scaled=False, terminal_base=1000.0,
                            terminal_miss=50.0, guard_max_course_gates=6, guard_max_seg_len_m=45.0)
+
+
+# ================================================================================================
+# HOVER-HOLD altitude probe (Fengyou greenlight 2026-07-08; the H1-vs-H2 disambiguator).
+# ================================================================================================
+def test_altitude_hold_peaks_at_spawn_and_decays_symmetrically():
+    """R_alt peaks (+rw) at the spawn altitude, decays linearly, and is 0 at |Δz|>=band -- symmetric in
+    the sign of Δz (spawn altitude is the UNIQUE optimum)."""
+    z0 = _t([0.0, 0.0, 0.0, 0.0, 0.0])
+    band = 8.0
+    z = _t([0.0, 4.0, -4.0, 8.0, 12.0])                 # Δz = 0, +4, -4, +8 (=band), +12 (>band)
+    r = R.altitude_hold_reward(z, z0, rw_altitude_hold=1.0, band_m=band)
+    assert r[0].item() == pytest.approx(1.0)            # at spawn altitude -> full bonus
+    assert r[1].item() == pytest.approx(0.5)            # 4 m off -> half
+    assert r[2].item() == pytest.approx(0.5)            # SYMMETRIC: -4 m == +4 m
+    assert r[3].item() == pytest.approx(0.0)            # at band -> 0
+    assert r[4].item() == pytest.approx(0.0)            # beyond band -> clamped 0 (not negative)
+
+
+def test_altitude_hold_is_positive_no_giveup():
+    """The bonus is NON-NEGATIVE everywhere -> the policy is PAID TO SURVIVE at altitude; ending the
+    episode forfeits the future bonus, so unlike a -k|Δz| magnitude penalty it has NO give-up incentive."""
+    z0 = _t([0.0, 0.0, 0.0])
+    z = _t([-20.0, -3.0, 5.0])                          # far below, near, above
+    r = R.altitude_hold_reward(z, z0, rw_altitude_hold=2.0, band_m=8.0)
+    assert (r >= 0.0).all(), r                          # never a penalty -> no cheaper-to-end-early trap
+    assert r.max().item() <= 2.0 + 1e-9                 # bounded by rw (no farming)
+
+
+def test_altitude_hold_off_when_weight_zero():
+    z0 = _t([0.0, 0.0]); z = _t([3.0, -5.0])
+    r = R.altitude_hold_reward(z, z0, rw_altitude_hold=0.0, band_m=8.0)
+    assert torch.equal(r, torch.zeros_like(r))          # OFF (default on every non-probe stage)
+
+
+def test_altitude_hold_wired_into_compute_ego_reward():
+    """compute_ego_reward adds the alt bonus when z/z_spawn are supplied and altitude_hold>0, and exposes
+    it as the 'alt_hold_reward' component; it is OFF (0) when the weight is 0."""
+    n = 3
+    z0 = torch.zeros(n, dtype=DT)
+    z = _t([0.0, 4.0, -8.0])                            # full / half / zero bonus at band=8
+    kw = dict(
+        s_curr=torch.zeros(n, dtype=DT), s_prev=torch.zeros(n, dtype=DT),
+        gate_passed=torch.zeros(n, dtype=torch.bool), pass_linf=torch.zeros(n, dtype=DT),
+        w_g_half=0.375,
+        gate_collision=torch.zeros(n, dtype=torch.bool), gate_miss=torch.zeros(n, dtype=torch.bool),
+        oob=torch.zeros(n, dtype=torch.bool), banked_progress_return=torch.zeros(n, dtype=DT),
+        newly_finished=torch.zeros(n, dtype=torch.bool), time_left_s=torch.zeros(n, dtype=DT),
+        tilt_cos_r33=torch.ones(n, dtype=DT), omega=torch.zeros(n, 3, dtype=DT),
+        action_norm=torch.full((n, 4), 0.5, dtype=DT), last_action_norm=torch.full((n, 4), 0.5, dtype=DT),
+        vel_world=torch.zeros(n, 3, dtype=DT), curr_center=torch.zeros(n, 3, dtype=DT),
+        next_center=torch.zeros(n, 3, dtype=DT), dt=1 / 30,
+    )
+    w_on = R.EgoRewardWeights(altitude_hold=1.0, altitude_hold_band_m=8.0)
+    _, comps_on, _ = R.compute_ego_reward(w_on, z=z, z_spawn=z0, **kw)
+    assert comps_on["alt_hold_reward"] == pytest.approx((1.0 + 0.5 + 0.0) / 3)
+    # OFF when the weight is 0 -> the component is 0 and the term contributes nothing.
+    w_off = R.EgoRewardWeights(altitude_hold=0.0)
+    _, comps_off, _ = R.compute_ego_reward(w_off, z=z, z_spawn=z0, **kw)
+    assert comps_off["alt_hold_reward"] == pytest.approx(0.0)
