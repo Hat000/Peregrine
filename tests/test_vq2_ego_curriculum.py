@@ -205,3 +205,38 @@ def test_hover_hold_renders_valid_tokens():
     assert "+env.rw_passage=0.0" in toks
     assert "+env.course_spawn_dist_lo=15.0" in toks
     assert "algo.gamma=0.9975" in toks                # _raw verbatim (no +)
+
+
+# ================================================================================================
+# MPCC-clean contouring lever (Fengyou greenlight 2026-07-08; hover-hold-confirmed).
+# ================================================================================================
+def test_common_corridor_default_off():
+    # MPCC contouring OFF on every real stage (turned ON only by the single_gate_static_mpcc lever stage).
+    assert C._COMMON["rw_corridor"] == 0.0
+    for s in C.STAGE_ORDER:
+        assert C.STAGES[s]["rw_corridor"] == 0.0, s
+    # the ladder stays on the isotropic 3D homing (progress_to_center) -- the MPCC lag/contouring split is
+    # the diagnostic lever only, not (yet) baked into the ladder.
+    assert C._COMMON["rw_progress_to_center"] is True
+
+
+def test_single_gate_static_mpcc_is_lag_plus_contouring_offladder():
+    """The MPCC lever: OFF-LADDER, SAME fixed 15 m level gate as single_gate_static (apples-to-apples box-
+    exit vs the 100%-floor baseline), progress switched to ALONG-TRACK LAG (progress_to_center False) with
+    the PBRS CONTOURING term ON to supply the perpendicular homing."""
+    assert "single_gate_static_mpcc" not in C.STAGE_ORDER              # off-ladder, standalone only
+    s = C.STAGES["single_gate_static_mpcc"]
+    assert s["course_n_gates"] == 1
+    assert s["course_spawn_dist_lo"] == s["course_spawn_dist_hi"] == 15.0   # == the sgs baseline geometry
+    assert s["course_drop_lo"] == s["course_drop_hi"] == 0.0
+    assert s["rw_progress_to_center"] is False        # ALONG-TRACK LAG (segment-arc), NOT the isotropic norm
+    assert s["rw_corridor"] == 2.0                    # PBRS contouring ON
+    assert s["ego"] is True and s["_raw"]["algo.gamma"] == C._GAMMA
+
+
+def test_single_gate_static_mpcc_renders_valid_tokens():
+    toks = C.render_overrides("single_gate_static_mpcc")
+    assert "+env.rw_corridor=2.0" in toks
+    assert "+env.rw_progress_to_center=false" in toks   # lag mode (bool lowercase)
+    assert "+env.course_drop_lo=0.0" in toks
+    assert "algo.gamma=0.9975" in toks

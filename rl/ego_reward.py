@@ -168,6 +168,23 @@ class EgoRewardWeights:
     altitude_hold_band_m: float = 8.0  # (m) half-width over which the hold bonus decays to 0 (restoring
     #                                    gradient present over the whole reachable descent range)
 
+    # --- MPCC CONTOURING (Fengyou greenlight 2026-07-08; the floor-dive lever, hover-hold-confirmed) ---
+    # A give-up-RESISTANT PBRS (telescoping potential) term on the PERPENDICULAR deviation from the current
+    # gate-centre segment: phi_corr = -perp, reward = corridor * clip(perp_prev - perp_curr, band). Positive
+    # when the drone moves TOWARD the line (perp shrinks), negative when it drifts off. Pairs with the
+    # ALONG-TRACK LAG progress (progress_to_center=False / segment_arc_position) to form the MPCC lag+
+    # contouring decomposition: LAG drives forward, CONTOURING supplies the vertical+lateral homing that
+    # segment-arc lag omits -- REPLACING the isotropic gate_center_potential's vertical component (no
+    # double-count). WHY PBRS not the raw through_centering PENALTY: the penalty accrues a standing tax on a
+    # centred mean under held noise + invites give-up (end early to stop the bleed = the ego_ctr 72%-OOB
+    # class); a telescoping potential has E[Δ]~0 at a centred mean (zero standing tax) and its episode sum
+    # telescopes to a boundary term (ending early yields no escape). The hover-hold probe (job 3297613:
+    # 91% hover, alt_err 1.2m) PROVED altitude control is learnable from a clean vertical gradient; this
+    # supplies exactly that gradient during forward transit. 0 == OFF (default). γ=1 differencing (matches
+    # the along-track progress term's convention); the γ<1 residual is a negligible off-line penalty.
+    corridor: float = 0.0            # rw_corridor (PBRS contouring weight); 0 == OFF
+    corridor_clip_mps: float = 39.0  # clip band (m/step = mps*dt) trimming the gate-handoff re-projection burst
+
     # --- TERMINAL (kill-on-contact). Two modes; ``terminal_progress_scaled`` picks. ---
     # FIXED mode: penalty = terminal_base (large, dominates the banked progress return).
     # PROGRESS-SCALED mode: penalty = terminal_base + accumulated_progress_return (clipping forfeits
@@ -365,6 +382,24 @@ def altitude_hold_reward(z: Tensor, z_spawn: Tensor, rw_altitude_hold: float,
     return rw_altitude_hold * (1.0 - err.clamp(0.0, 1.0))
 
 
+def corridor_progress_reward(perp_curr: Tensor, perp_prev: Tensor, rw_corridor: float,
+                             vmax_mps: float, dt: float) -> Tensor:
+    """R_corr = rw_corridor * clip(perp_prev - perp_curr, -band, +band). The MPCC CONTOURING term: a
+    telescoping potential (phi_corr = -perp) differenced at gamma=1, so it is POSITIVE when the drone moves
+    TOWARD the current gate-centre segment (perp shrinks) and negative when it drifts off. NON-farmable
+    (the episode sum telescopes to perp_0 - perp_T, a boundary term -> no accrual to pump, no give-up
+    escape) and it levies NO standing tax on a centred mean (E[Δ]~0), unlike the raw through_centering
+    magnitude penalty. The band = vmax_mps*dt (m/step) trims only the discontinuous perp re-projection at a
+    gate handoff (same rationale as segment_progress_reward); at real flight speed it is INACTIVE. Pairs
+    with the ALONG-TRACK LAG progress (progress_to_center=False) to supply the vertical+lateral homing the
+    lag omits. rw_corridor==0 -> OFF (zeros). Returns (N,)."""
+    assert torch is not None
+    if rw_corridor == 0.0:
+        return torch.zeros_like(perp_curr)
+    band = vmax_mps * dt
+    return rw_corridor * (perp_prev - perp_curr).clamp(min=-band, max=band)
+
+
 # ================================================================================================
 # R_pass: PASSAGE + L-INF centering (matches crossing_events' Linf), idempotent per gate.
 # ================================================================================================
@@ -559,6 +594,7 @@ def compute_ego_reward(
     perp_dist: "Tensor | None" = None,
     z: "Tensor | None" = None,
     z_spawn: "Tensor | None" = None,
+    perp_prev: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
@@ -592,6 +628,11 @@ def compute_ego_reward(
     # give-up-resistant positive pull to the spawn altitude with no competing forward objective.
     r_alt = (altitude_hold_reward(z, z_spawn, w.altitude_hold, w.altitude_hold_band_m)
              if (z is not None and z_spawn is not None) else torch.zeros_like(r_prog))
+    # MPCC CONTOURING (OFF unless w.corridor>0): PBRS potential on the perpendicular offset from the gate-
+    # centre segment -- the vertical+lateral homing that pairs with the along-track lag progress. Like
+    # r_corr it is NOT banked (only r_prog is), so a contact terminal does not forfeit accumulated contouring.
+    r_corr = (corridor_progress_reward(perp_dist, perp_prev, w.corridor, w.corridor_clip_mps, dt)
+              if (perp_dist is not None and perp_prev is not None) else torch.zeros_like(r_prog))
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
@@ -599,13 +640,15 @@ def compute_ego_reward(
     r_time = -w.time
     term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w)
 
-    reward = r_prog + r_pass + r_center + r_alt + r_fin + r_cone + r_smooth + r_exit + r_time - term
+    reward = (r_prog + r_pass + r_center + r_alt + r_corr + r_fin + r_cone + r_smooth + r_exit
+              + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
         "pass_reward": float(r_pass.mean()),
         "center_pen": float((-r_center).mean()),
         "alt_hold_reward": float(r_alt.mean()),
+        "corridor_reward": float(r_corr.mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),

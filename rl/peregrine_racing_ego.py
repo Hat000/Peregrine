@@ -418,6 +418,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # (undiscounted) progress return, for the PROGRESS-SCALED terminal (forfeit banked progress).
         self._seg_s_prev = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         self._banked_prog = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        # per-env PBRS contouring potential state: the previous-step perpendicular offset from the current
+        # gate-centre segment (for the MPCC contouring term corridor*(perp_prev - perp_curr)).
+        self._corr_perp_prev = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         # estimator config (all knobs Fengyou-pinnable via +env.*)
         ecfg = EgoEstimatorConfig(
             visible_area_sigma=float(getattr(cfg, "ego_visible_area_sigma",
@@ -453,6 +456,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             seg_a, seg_b = self._current_segment(self._arange)
             self._seg_s_prev.copy_(self._progress_scalar(self._p, seg_a, seg_b))
             self._banked_prog.zero_()
+            self._corr_perp_prev.copy_(segment_perp_distance(self._p, seg_a, seg_b))
 
     # ---- course-variation wiring (component D): forward the curriculum course_* keys to the sampler --
     def _sample_ego_courses(self, m: int):
@@ -549,6 +553,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 seg_a, seg_b = self._current_segment(env_idx)
                 self._seg_s_prev[env_idx] = self._progress_scalar(self._p[env_idx], seg_a, seg_b)
                 self._banked_prog[env_idx] = 0.0
+                self._corr_perp_prev[env_idx] = segment_perp_distance(self._p[env_idx], seg_a, seg_b)
 
     # ---- current-target gate-centre SEGMENT [prev_center -> target_center] (GT, Z-up) ----------
     def _current_segment(self, env_idx=None):
@@ -784,7 +789,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 perp_dist=perp_dist,
                 # HOVER-HOLD probe: GT altitude + spawn altitude for the give-up-resistant altitude-hold
                 # bonus (OFF unless rw_altitude_hold>0, i.e. only the hover_hold diagnostic stage).
-                z=curr_pos[:, 2], z_spawn=self.spawn_pos[:, 2])
+                z=curr_pos[:, 2], z_spawn=self.spawn_pos[:, 2],
+                # MPCC CONTOURING: previous-step perp offset for the PBRS contouring potential (OFF unless
+                # rw_corridor>0). perp_dist above is the current-step offset from the same segment.
+                perp_prev=self._corr_perp_prev)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious
@@ -792,10 +800,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self._banked_prog = self._banked_prog + r_prog.detach()
             new_s_prev = s_curr.detach().clone()
             adv_idx = advance.nonzero().view(-1)
+            new_perp_prev = perp_dist.detach().clone()                     # roll the contouring potential
             if adv_idx.numel() > 0:
                 seg_a, seg_b = self._current_segment(adv_idx)               # NEW (post-advance) segment
                 new_s_prev[adv_idx] = self._progress_scalar(curr_pos[adv_idx], seg_a, seg_b)
+                # re-seed perp_prev onto the NEW segment too (mirror _seg_s_prev) so the handoff adds no
+                # spurious contouring burst (the clip band is the backstop if the re-projection jumps).
+                new_perp_prev[adv_idx] = segment_perp_distance(curr_pos[adv_idx], seg_a, seg_b)
             self._seg_s_prev = new_s_prev
+            self._corr_perp_prev = new_perp_prev
             loss_components["ego_collision_rate"] = float(gate_collision.float().mean())
             loss_components["banked_prog_mean"] = float(self._banked_prog.mean())
         else:

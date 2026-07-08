@@ -144,6 +144,9 @@ _COMMON = {
     # HOVER-HOLD probe bonus OFF on every real stage (turned ON only by the hover_hold diagnostic stage).
     "rw_altitude_hold": 0.0,         # give-up-resistant spawn-altitude bonus; 0 == OFF
     "rw_altitude_hold_band_m": 8.0,  # (m) decay half-width (unused while rw_altitude_hold==0)
+    # MPCC CONTOURING OFF by default (turned ON only by the single_gate_static_mpcc lever stage).
+    "rw_corridor": 0.0,              # PBRS perpendicular-contouring weight; 0 == OFF
+    "rw_corridor_clip_mps": 39.0,    # contouring clip band (m/step = mps*dt); trims gate-handoff bursts
 }
 
 # The gamma value shared by every stage (LOAD-BEARING for terminal dominance at deployment scale). It
@@ -176,6 +179,28 @@ STAGES: dict[str, dict] = {
         "course_n_gates": 1,
         "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # FIXED 15 m (override _COMMON 10-20)
         "course_drop_lo": 0.0, "course_drop_hi": 0.0,                 # LEVEL gate (no climb) -- isolate
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # MPCC-CLEAN CONTOURING LEVER (Fengyou greenlight 2026-07-08, hover-hold-confirmed): the fix for the
+    # single_gate_static 100% floor-dive. SAME fixed 15 m level dead-ahead gate as single_gate_static (so
+    # the box-exit read is apples-to-apples vs the 100%-floor baseline), but the reward is decomposed MPCC-
+    # style: (1) ALONG-TRACK LAG -- rw_progress_to_center=False so progress = segment_arc_position (forward
+    # advance along the spawn->gate line ONLY; perpendicular drift earns 0 progress); (2) PBRS CONTOURING --
+    # rw_corridor supplies the vertical+lateral homing onto the line that the lag omits, REPLACING the
+    # isotropic gate_center_potential's vertical component (no double-count -> no fighting k-sweep). The
+    # hover-hold probe (job 3297613: 91% hover, alt_err 1.2m) proved altitude control is LEARNABLE from a
+    # clean vertical gradient; this delivers that gradient during forward transit. SUCCESS (box-exit
+    # classifier): exit_floor collapses 100%->~0, cross_offset_m 9.7->0, exit_thread rises (leading
+    # indicator exit_plane_miss up first = crosses the plane in-bounds before centring). WATCH exit_ceiling
+    # (vertical over-correction) -> if high, drop rw_corridor. k=2.0 = parity with the lag rw_progress; needs
+    # a sweep. OFF-LADDER; run standalone via STAGES=single_gate_static_mpcc.
+    "single_gate_static_mpcc": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # fixed 15 m (== the sgs baseline)
+        "course_drop_lo": 0.0, "course_drop_hi": 0.0,                 # level gate
+        "rw_progress_to_center": False,   # ALONG-TRACK LAG (segment-arc), NOT the isotropic 3D norm
+        "rw_corridor": 2.0,               # PBRS CONTOURING ON (perpendicular homing; parity w/ lag rw_progress)
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
     },
     # HOVER-HOLD PROBE (Fengyou greenlight 2026-07-08): the H1-vs-H2 disambiguator for the single_gate_static

@@ -671,3 +671,75 @@ def test_altitude_hold_wired_into_compute_ego_reward():
     w_off = R.EgoRewardWeights(altitude_hold=0.0)
     _, comps_off, _ = R.compute_ego_reward(w_off, z=z, z_spawn=z0, **kw)
     assert comps_off["alt_hold_reward"] == pytest.approx(0.0)
+
+
+# ================================================================================================
+# MPCC CONTOURING (Fengyou greenlight 2026-07-08; the floor-dive lever, hover-hold-confirmed).
+# ================================================================================================
+def test_corridor_rewards_return_penalises_drift():
+    """R_corr = corridor*clip(perp_prev - perp_curr): POSITIVE when perp shrinks (moving toward the line),
+    NEGATIVE when it grows (drifting off)."""
+    k, dt = 2.0, 1 / 30
+    r_toward = R.corridor_progress_reward(_t([0.6]), _t([1.0]), k, vmax_mps=39.0, dt=dt)   # perp 1.0->0.6
+    assert r_toward.item() == pytest.approx(k * 0.4)                       # +0.8 (homing toward line)
+    r_away = R.corridor_progress_reward(_t([1.0]), _t([0.6]), k, vmax_mps=39.0, dt=dt)     # perp 0.6->1.0
+    assert r_away.item() == pytest.approx(-k * 0.4)                        # -0.8 (drifting off)
+
+
+def test_corridor_telescopes_to_zero_on_closed_path():
+    """Potential-based -> NON-farmable: drift OUT then return IN sums to ~0 (you cannot pump reward by
+    oscillating perpendicular to the line)."""
+    k, dt = 2.0, 1 / 30
+    perps = [0.0, 0.5, 1.0, 0.7, 0.3, 0.0]                                 # leave the line and come back
+    total = 0.0
+    for prev, curr in zip(perps[:-1], perps[1:]):
+        total += R.corridor_progress_reward(_t([curr]), _t([prev]), k, 39.0, dt).item()
+    assert abs(total) < 1e-9, total                                       # telescopes to k*(perp_0 - perp_T)=0
+
+
+def test_corridor_no_standing_tax_unlike_penalty():
+    """A CENTRED-ish mean holding a CONSTANT perp pays ~0 corridor (E[Δ]=0) -- the give-up-resistance /
+    no-standing-tax property. Contrast: the raw through_centering PENALTY at the same perp is strictly
+    negative (a standing tax that invites give-up)."""
+    k = 2.0
+    r_hold = R.corridor_progress_reward(_t([0.5]), _t([0.5]), k, 39.0, 1 / 30)   # perp unchanged
+    assert r_hold.item() == pytest.approx(0.0)                            # NO standing tax
+    r_pen = R.through_centering_reward(_t([0.5]), rw_centering=k, centering_max_m=2.0)
+    assert r_pen.item() < 0.0                                             # the penalty form DOES tax a held offset
+
+
+def test_corridor_clip_band_trims_handoff_burst():
+    """A large perp discontinuity (gate re-projection) is clamped to +/- vmax*dt (m/step)."""
+    band = 39.0 * (1 / 30)                                                # 1.3 m/step
+    r = R.corridor_progress_reward(_t([0.0]), _t([20.0]), rw_corridor=1.0, vmax_mps=39.0, dt=1 / 30)
+    assert r.item() == pytest.approx(band)                               # 20 m jump clipped to the band
+
+
+def test_corridor_off_when_weight_zero():
+    r = R.corridor_progress_reward(_t([0.5]), _t([1.0]), rw_corridor=0.0, vmax_mps=39.0, dt=1 / 30)
+    assert torch.equal(r, torch.zeros_like(r))
+
+
+def test_corridor_wired_into_compute_ego_reward_and_not_banked():
+    """compute_ego_reward adds the contouring term when perp_dist+perp_prev are supplied and corridor>0,
+    exposes 'corridor_reward', and does NOT fold it into the banked progress return (r_prog only) -- so a
+    contact terminal never forfeits accumulated contouring."""
+    n = 2
+    perp_curr = _t([0.4, 1.0]); perp_prev = _t([1.0, 0.4])                # env0 homing in, env1 drifting out
+    kw = dict(
+        s_curr=torch.zeros(n, dtype=DT), s_prev=torch.zeros(n, dtype=DT),
+        gate_passed=torch.zeros(n, dtype=torch.bool), pass_linf=torch.zeros(n, dtype=DT),
+        w_g_half=0.375,
+        gate_collision=torch.zeros(n, dtype=torch.bool), gate_miss=torch.zeros(n, dtype=torch.bool),
+        oob=torch.zeros(n, dtype=torch.bool), banked_progress_return=torch.zeros(n, dtype=DT),
+        newly_finished=torch.zeros(n, dtype=torch.bool), time_left_s=torch.zeros(n, dtype=DT),
+        tilt_cos_r33=torch.ones(n, dtype=DT), omega=torch.zeros(n, 3, dtype=DT),
+        action_norm=torch.full((n, 4), 0.5, dtype=DT), last_action_norm=torch.full((n, 4), 0.5, dtype=DT),
+        vel_world=torch.zeros(n, 3, dtype=DT), curr_center=torch.zeros(n, 3, dtype=DT),
+        next_center=torch.zeros(n, 3, dtype=DT), dt=1 / 30,
+    )
+    w = R.EgoRewardWeights(corridor=2.0)
+    _, comps, r_prog = R.compute_ego_reward(w, perp_dist=perp_curr, perp_prev=perp_prev, **kw)
+    # env0 (perp 1.0->0.4) pays +2*0.6, env1 (0.4->1.0) pays -2*0.6 -> mean 0
+    assert comps["corridor_reward"] == pytest.approx(0.0)
+    assert torch.equal(r_prog, torch.zeros(n, dtype=DT))                  # contouring is NOT in r_prog (banked)
