@@ -170,11 +170,28 @@ def test_single_gate_varied_varies_position_and_height_offladder():
     assert "single_gate_varied" not in C.STAGE_ORDER              # off-ladder, standalone only
     s = C.STAGES["single_gate_varied"]
     assert s["course_n_gates"] == 1
-    assert s["course_spawn_dist_lo"] == 10.0 and s["course_spawn_dist_hi"] == 20.0   # varied range
+    assert s["course_spawn_dist_lo"] == 8.0 and s["course_spawn_dist_hi"] == 15.0    # varied range (8-15 m)
     assert s["course_spawn_below_g0_lo"] == -6.0 and s["course_spawn_below_g0_hi"] == 6.0  # +-6 m height
     assert s["rw_progress_vert_weight"] == 1.0        # ISOTROPIC (inherited) -> geometry-only test
     toks = C.render_overrides("single_gate_varied")
     assert "+env.course_spawn_below_g0_lo=-6.0" in toks and "+env.course_spawn_below_g0_hi=6.0" in toks
+
+
+def test_varied_combo_stages_race_coupled_vs_decoupled():
+    """The two varied-gate reward-form contenders (adversarial 2026-07-08): COUPLED aniso vs DECOUPLED
+    MPCC, both OFF-LADDER, both on the SAME varied geometry (dist 8-15 m, height +-6 m)."""
+    for s in ("single_gate_varied_aniso", "single_gate_varied_mpcc"):
+        assert s not in C.STAGE_ORDER
+        d = C.STAGES[s]
+        assert d["course_spawn_dist_lo"] == 8.0 and d["course_spawn_dist_hi"] == 15.0
+        assert d["course_spawn_below_g0_lo"] == -6.0 and d["course_spawn_below_g0_hi"] == 6.0
+    # COUPLED aniso: isotropic-base progress ON + moderate vertical weight.
+    a = C.STAGES["single_gate_varied_aniso"]
+    assert a["rw_progress_to_center"] is True and a["rw_progress_vert_weight"] == 6.0
+    # DECOUPLED MPCC: along-track LAG (progress_to_center False) + separate corridor k raised from 2 -> 4.
+    m = C.STAGES["single_gate_varied_mpcc"]
+    assert m["rw_progress_to_center"] is False and m["rw_corridor"] == 4.0
+    assert "+env.rw_corridor=4.0" in C.render_overrides("single_gate_varied_mpcc")
 
 
 def test_common_pins_fixed_spawn_heading():

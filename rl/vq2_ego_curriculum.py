@@ -197,8 +197,43 @@ STAGES: dict[str, dict] = {
     "single_gate_varied": {
         **_COMMON,
         "course_n_gates": 1,
-        "course_spawn_dist_lo": 10.0, "course_spawn_dist_hi": 20.0,        # varied range
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,         # varied range (Fengyou 2026-07-08: 8-15 m)
         "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,  # gate +-6 m in HEIGHT (the un-burier)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # VARIED + MODERATE-ANISO COMBO (Fengyou 2026-07-08): the synthesis of the two partial successes. The
+    # varied-gate (geometry) run un-buried the vertical GEOMETRICALLY (floor 100%->20% still dropping, alt_err
+    # 13->7m) and shifted the failure floor-dive -> WIDE-MISS (reaches the plane, crosses ~7m low), but
+    # ISOTROPIC left the vertical only partially un-buried. Flat + aniso w=25 fully un-buried but OVER-
+    # corrected (80% backward drift). This combines both at LOW w: geometry does most of the un-burying, a
+    # MILD vertical weight (w=6, vs the flat case's 25) sharpens the residual 7m without starving forward.
+    # Same varied geometry (dist 8-15 m, height +-6 m). Longer budget (varied-isotropic was still improving
+    # at 1500). OFF-LADDER; run standalone via STAGES=single_gate_varied_aniso.
+    "single_gate_varied_aniso": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "rw_progress_to_center": True,
+        "rw_progress_vert_weight": 6.0,   # MODERATE (geometry already un-buries; low w avoids w=25 over-correction)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # DECOUPLED MPCC lag+corridor on the VARIED gate (adversarial 2026-07-08): raced HEAD-TO-HEAD vs the
+    # COUPLED aniso above. The aniso couples forward+vertical in one potential (raising w steals forward ->
+    # the w=25 exit_BACK over-correction); the MPCC DECOMPOSITION splits them -- forward = the along-track
+    # LAG (rw_progress on segment_arc, progress_to_center=False, undiminished off-altitude) + vertical/lateral
+    # homing = the SEPARATE PBRS corridor (rw_corridor). So raising corridor-k to kill the floor does NOT
+    # touch forward -> dissolves the aniso knife-edge. The prior corridor FAILURE (single_gate_static_mpcc,
+    # k=2, 100% floor) was a MAGNITUDE undershoot (per-step sink penalty 0.27 < forward 0.4), a monotonic
+    # raise-k fix; PBRS telescoping means higher k adds NO give-up/standing-tax. k=4 (vs the failed 2). Same
+    # varied geometry as the aniso combo. OFF-LADDER; run via STAGES=single_gate_varied_mpcc.
+    "single_gate_varied_mpcc": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "rw_progress_to_center": False,   # ALONG-TRACK LAG (decoupled forward drive)
+        "rw_corridor": 4.0,               # SEPARATE PBRS vertical/lateral homing (raised from the failed k=2)
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
     },
     # ANISOTROPIC VERTICAL-WEIGHT LEVER (Fengyou greenlight 2026-07-08): the floor-dive fix that SUPERSEDES
