@@ -743,3 +743,32 @@ def test_corridor_wired_into_compute_ego_reward_and_not_banked():
     # env0 (perp 1.0->0.4) pays +2*0.6, env1 (0.4->1.0) pays -2*0.6 -> mean 0
     assert comps["corridor_reward"] == pytest.approx(0.0)
     assert torch.equal(r_prog, torch.zeros(n, dtype=DT))                  # contouring is NOT in r_prog (banked)
+
+
+# ================================================================================================
+# ANISOTROPIC VERTICAL WEIGHT on the distance-to-gate potential (Fengyou greenlight 2026-07-08).
+# ================================================================================================
+def test_gate_center_potential_isotropic_default_byte_compatible():
+    """vert_weight=1.0 reproduces the exact isotropic Euclidean norm (the byte-compatible default so every
+    non-lever stage is unchanged)."""
+    pos = _t([[3.0, 4.0, 12.0], [1.0, 0.0, 0.0]])
+    ctr = torch.zeros(2, 3, dtype=DT)
+    iso = R.gate_center_potential(pos, ctr)                               # default vert_weight=1.0
+    assert torch.allclose(iso, -torch.linalg.norm(pos - ctr, dim=-1))
+    assert iso[0].item() == pytest.approx(-13.0)                          # 3-4-12 -> 13
+
+
+def test_vert_weight_unburies_vertical_vs_lateral():
+    """A VERTICAL offset is penalised sqrt(w) x more than the SAME-size LATERAL offset -> the altitude
+    signal is un-buried. With w=25, a 1 m vertical drop costs 5x a 1 m lateral drift."""
+    ctr = torch.zeros(1, 3, dtype=DT)
+    up = _t([[0.0, 0.0, 1.0]]); side = _t([[0.0, 1.0, 0.0]])
+    phi_up = R.gate_center_potential(up, ctr, vert_weight=25.0)
+    phi_side = R.gate_center_potential(side, ctr, vert_weight=25.0)
+    assert phi_up.item() == pytest.approx(-5.0)                           # sqrt(25*1) = 5
+    assert phi_side.item() == pytest.approx(-1.0)                         # lateral unweighted
+    # forward-buried case: at 15 m out, a 1 m sink barely moves the isotropic norm but clearly moves w=25.
+    far = _t([[15.0, 0.0, 1.0]]); far_level = _t([[15.0, 0.0, 0.0]])
+    d_iso = (R.gate_center_potential(far, ctr) - R.gate_center_potential(far_level, ctr)).abs()
+    d_w = (R.gate_center_potential(far, ctr, 25.0) - R.gate_center_potential(far_level, ctr, 25.0)).abs()
+    assert d_w.item() > 10 * d_iso.item()                                # the weighted norm feels the sink far more

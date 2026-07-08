@@ -583,7 +583,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         ``seg_end`` is the CURRENT target gate centre either way. Downstream (clip, banked forfeit, area
         coupling, passage centering) is identical -- only the potential differs."""
         if self._egorw.progress_to_center:
-            return gate_center_potential(pos, seg_end)
+            return gate_center_potential(pos, seg_end, self._egorw.progress_vert_weight)
         return segment_arc_position(pos, seg_start, seg_end)
 
     # ---- EMULATED-CAMERA body->world (nose-first virtual flip; see __init__) --------------------

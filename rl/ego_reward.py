@@ -120,6 +120,12 @@ class EgoRewardWeights:
     # distance to a POINT). The env swaps ONLY the s computation on this flag; the clip band, banked-
     # progress forfeit, area-distance coupling and passage centering are all unchanged.
     progress_to_center: bool = False
+    # ANISOTROPIC VERTICAL WEIGHT for the progress_to_center potential (Fengyou greenlight 2026-07-08, the
+    # floor-dive fix). 1.0 == isotropic Euclidean (default, byte-compatible). >1 up-weights the vertical
+    # (Z, gravity-loaded) axis in phi = -sqrt(dx^2 + dy^2 + w*dz^2) so a same-height approach does not bury
+    # the altitude signal -> sinking costs progress ~w x more. No hover-farm, no ceiling on w (see
+    # gate_center_potential). Only consulted when progress_to_center is True.
+    progress_vert_weight: float = 1.0
     # v_max clamp: the per-step arc-advance clip band = vmax_mps * dt (m/step). vmax_mps derived from
     # the TRUE peak speed (~30 m/s) + ~30% headroom (-> 39 m/s), so the clamp trims only UNPHYSICAL
     # bursts, never legit top speed. dt is passed at call time (env control dt, ~1/30 s).
@@ -286,19 +292,29 @@ def segment_arc_position(pos: Tensor, seg_start: Tensor, seg_end: Tensor) -> Ten
     return s
 
 
-def gate_center_potential(pos: Tensor, gate_center: Tensor) -> Tensor:
-    """Progress potential s = -||pos - gate_centre|| (N,), Z-up GT. Fed to ``segment_progress_reward``,
-    reward = clip(s_curr - s_prev) becomes the 3D CLOSING rate toward the current gate CENTRE -- a dense
-    homing gradient in EVERY axis (the inc7 / Swift distance-to-gate progress). Contrast
-    segment_arc_position, which credits only along-track advance (perpendicular drift -> 0) and so gives
-    NO lateral/vertical homing -- the 2026-07-07 render's diffuse-and-miss failure on a dead-ahead gate.
+def gate_center_potential(pos: Tensor, gate_center: Tensor, vert_weight: float = 1.0) -> Tensor:
+    """Progress potential s = -sqrt(dx^2 + dy^2 + vert_weight*dz^2) (N,), Z-up GT. Fed to
+    ``segment_progress_reward``, reward = clip(s_curr - s_prev) becomes the CLOSING rate toward the current
+    gate CENTRE -- a dense homing gradient in EVERY axis (the inc7 / Swift distance-to-gate progress).
+    Contrast segment_arc_position, which credits only along-track advance (perpendicular drift -> 0).
 
-    A true Euclidean potential: over any closed path the telescoping sum is ~0, so it is NON-farmable
-    and cannot farm lateral drift (moving perpendicular TOWARD the centre reduces the distance = genuine
-    homing = exactly what we want; moving away is penalised). ``gate_center`` = the CURRENT target gate
-    centre (N,3) -- the same seg_end the segment mode projects onto."""
+    ANISOTROPIC VERTICAL WEIGHT (Fengyou greenlight 2026-07-08 -- the floor-dive fix). ``vert_weight`` (=1
+    == isotropic Euclidean, the default) up-weights the VERTICAL (Z, gravity-loaded) axis so a same-height
+    approach does not BURY the altitude signal under forward progress. On a level dead-ahead gate the drone
+    and gate are co-altitude, so the unit-to-gate points purely FORWARD (dz=0) and the vertical restoring
+    gradient of the isotropic norm is ~0 -- the 100%-floor-dive root cause. Weighting dz by w makes the
+    vertical/forward gradient ratio ~ w*dz/dx (vs dz/dx isotropic), i.e. w x louder: sinking now COSTS
+    progress in proportion to w. No hover-farm (it is progress TOWARD the gate; sitting still earns 0) and
+    NO ceiling on w -- crank it until the vertical pull beats the gravity+thrust-vectoring down-push. w==1
+    reproduces the exact isotropic norm (byte-compatible default for every non-lever stage).
+
+    A true (weighted-Euclidean) potential: telescopes over a closed path -> NON-farmable. ``gate_center`` =
+    the CURRENT target gate centre (N,3) -- the same seg_end the segment mode projects onto."""
     assert torch is not None
-    return -torch.linalg.norm(pos - gate_center, dim=-1)
+    if vert_weight == 1.0:
+        return -torch.linalg.norm(pos - gate_center, dim=-1)
+    d = pos - gate_center
+    return -torch.sqrt(d[..., 0] ** 2 + d[..., 1] ** 2 + vert_weight * d[..., 2] ** 2 + 1e-12)
 
 
 def segment_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float,

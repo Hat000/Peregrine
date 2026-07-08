@@ -240,3 +240,35 @@ def test_single_gate_static_mpcc_renders_valid_tokens():
     assert "+env.rw_progress_to_center=false" in toks   # lag mode (bool lowercase)
     assert "+env.course_drop_lo=0.0" in toks
     assert "algo.gamma=0.9975" in toks
+
+
+# ================================================================================================
+# Anisotropic vertical-weight lever (Fengyou greenlight 2026-07-08; supersedes MPCC contouring).
+# ================================================================================================
+def test_common_vert_weight_default_isotropic():
+    # isotropic (1.0) on every real stage -> byte-compatible with the plain Euclidean norm.
+    assert C._COMMON["rw_progress_vert_weight"] == 1.0
+    for s in C.STAGE_ORDER:
+        assert C.STAGES[s]["rw_progress_vert_weight"] == 1.0, s
+
+
+def test_single_gate_static_aniso_cranks_vertical_weight_offladder():
+    """The anisotropic lever: OFF-LADDER, SAME fixed 15 m level gate as the sgs baseline, isotropic-base
+    progress ON (progress_to_center True) with the VERTICAL weight cranked up to un-bury the altitude
+    signal (the floor-dive fix)."""
+    assert "single_gate_static_aniso" not in C.STAGE_ORDER            # off-ladder, standalone only
+    s = C.STAGES["single_gate_static_aniso"]
+    assert s["course_n_gates"] == 1
+    assert s["course_spawn_dist_lo"] == s["course_spawn_dist_hi"] == 15.0   # == the sgs baseline geometry
+    assert s["course_drop_lo"] == s["course_drop_hi"] == 0.0
+    assert s["rw_progress_to_center"] is True         # isotropic-base homing ON (the un-buried driver)
+    assert s["rw_progress_vert_weight"] == 25.0       # vertical weight cranked (>> 1)
+    assert s["ego"] is True and s["_raw"]["algo.gamma"] == C._GAMMA
+
+
+def test_single_gate_static_aniso_renders_valid_tokens():
+    toks = C.render_overrides("single_gate_static_aniso")
+    assert "+env.rw_progress_vert_weight=25.0" in toks
+    assert "+env.rw_progress_to_center=true" in toks
+    assert "+env.course_spawn_dist_lo=15.0" in toks
+    assert "algo.gamma=0.9975" in toks

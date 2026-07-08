@@ -144,9 +144,13 @@ _COMMON = {
     # HOVER-HOLD probe bonus OFF on every real stage (turned ON only by the hover_hold diagnostic stage).
     "rw_altitude_hold": 0.0,         # give-up-resistant spawn-altitude bonus; 0 == OFF
     "rw_altitude_hold_band_m": 8.0,  # (m) decay half-width (unused while rw_altitude_hold==0)
-    # MPCC CONTOURING OFF by default (turned ON only by the single_gate_static_mpcc lever stage).
+    # MPCC CONTOURING OFF by default (superseded by the anisotropic vertical weight below; kept as a
+    # 0-knob, not deleted -- the PBRS-rate form was too weak/policy-invariant to escape the sink basin).
     "rw_corridor": 0.0,              # PBRS perpendicular-contouring weight; 0 == OFF
     "rw_corridor_clip_mps": 39.0,    # contouring clip band (m/step = mps*dt); trims gate-handoff bursts
+    # ANISOTROPIC VERTICAL WEIGHT isotropic (1.0) by default -> byte-compatible with the isotropic norm on
+    # every real stage; the floor-dive lever (single_gate_static_aniso) cranks it to un-bury the vertical.
+    "rw_progress_vert_weight": 1.0,  # 1.0 == isotropic Euclidean; >1 up-weights the vertical (Z) axis
 }
 
 # The gamma value shared by every stage (LOAD-BEARING for terminal dominance at deployment scale). It
@@ -179,6 +183,26 @@ STAGES: dict[str, dict] = {
         "course_n_gates": 1,
         "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # FIXED 15 m (override _COMMON 10-20)
         "course_drop_lo": 0.0, "course_drop_hi": 0.0,                 # LEVEL gate (no climb) -- isolate
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # ANISOTROPIC VERTICAL-WEIGHT LEVER (Fengyou greenlight 2026-07-08): the floor-dive fix that SUPERSEDES
+    # the MPCC-clean contouring below (the PBRS-rate contouring was too weak -- policy-invariant, couldn't
+    # escape the sink basin, and a pure additive line-bonus HOVER-FARMS: strong-enough-to-hold == strong-
+    # enough-to-hover-at-spawn). This instead UN-BURIES the vertical INSIDE the single distance-to-gate
+    # potential: phi = -sqrt(dx^2 + dy^2 + w*dz^2), w>>1 (rw_progress_vert_weight). SAME fixed 15 m level
+    # gate as single_gate_static (apples-to-apples box-exit vs the 100%-floor baseline). isotropic progress
+    # ON (progress_to_center=True) with the vertical weight cranked so sinking costs progress ~w x more. NO
+    # hover-farm (progress TOWARD the gate; sitting earns 0) and NO ceiling on w. SUCCESS: exit_floor 100%
+    # ->~0, cross_offset_m 9.7->0, exit_thread rises. WATCH exit_ceiling (over-correction -> lower w). w=25
+    # (vertical ~1.7x forward pull at 1 m sink from 15 m) is the start; sweep. OFF-LADDER; run standalone via
+    # STAGES=single_gate_static_aniso.
+    "single_gate_static_aniso": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # fixed 15 m (== the sgs baseline)
+        "course_drop_lo": 0.0, "course_drop_hi": 0.0,                 # level gate
+        "rw_progress_to_center": True,    # isotropic base potential ON (the un-buried homing driver)
+        "rw_progress_vert_weight": 25.0,  # crank the VERTICAL weight -> sinking costs progress ~25x more
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
     },
     # MPCC-CLEAN CONTOURING LEVER (Fengyou greenlight 2026-07-08, hover-hold-confirmed): the fix for the
