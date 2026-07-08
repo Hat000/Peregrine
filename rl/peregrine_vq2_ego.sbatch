@@ -103,7 +103,31 @@ BOUNDARY_OV=( +warmstart_reset_logstd=true +warmstart_reset_logstd_std=0.18 +cri
 nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 20 > ${GPUUTIL} 2>&1 &
 SMI_PID=$!
 
-STAGES="single_gate handoff_drill dual_gate_full multi_gate"
+# STAGES is overridable (default = the full ladder). Pass --export=ALL,STAGES=single_gate to run ONE
+# stage in ISOLATION (the single_gate DIAGNOSTIC: validate a reward change to ~0.8 BEFORE the ladder can
+# prematurely advance -- the flightcheck below only catches a TOTAL stall, DESIGN.md §6.7).
+STAGES="${STAGES:-single_gate handoff_drill dual_gate_full multi_gate}"
+
+# ---- OPTIONAL FAST PRECHECK (PRECHECK=1): construct + 3 updates at 512 envs on the FIRST stage, to
+# catch a wiring / NaN / tensor-shape bug BEFORE the real budget is spent. Guards the 2026-07-07 reward-
+# redesign env code specifically (the below-floor->contact reclassify, the area-distance GT foreshorten/
+# distance computation, and the 3 new compute_ego_reward kwargs). A crash here exits nonzero immediately.
+if [ "${PRECHECK:-0}" = "1" ]; then
+  PC_STAGE=$(echo ${STAGES} | awk '{print $1}')
+  PC_OV=( $(python ${CURR} ${PC_STAGE}) )
+  echo "=== EGO PRECHECK: stage=${PC_STAGE}, 512 envs x 3 updates (wiring/NaN/dim) ==="
+  python ${TRAIN} "${BASE[@]}" "${PC_OV[@]}" "${BOUNDARY_OV[@]}" \
+    n_envs=512 n_updates=3 save_freq=1000 log_freq=1 seed=${SEED} \
+    runname=ego_precheck${RUN_SUFFIX} ${EXTRA:-}
+  PRECHECK_RC=$?
+  echo "EGO_PRECHECK_RC=${PRECHECK_RC}"
+  if [ "${PRECHECK_RC}" != "0" ]; then
+    echo "🚩 EGO PRECHECK FAILED (RC=${PRECHECK_RC}) -- aborting before the real budget. Fix the wiring."
+    kill ${SMI_PID} 2>/dev/null
+    exit ${PRECHECK_RC}
+  fi
+fi
+
 PREV_CKPT=""
 for STAGE in ${STAGES}; do
   STAGE_OV=( $(python ${CURR} ${STAGE}) )

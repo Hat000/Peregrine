@@ -64,21 +64,78 @@ _COMMON = {
     "ego": True,                     # +env.ego=true -> the 21-dim position-free obs + refined-B reward
     "standing_start_frac": 1.0,      # trivial 1 m dash REMOVED -- genuine standing start EVERY episode
     "course_mode": "random",         # per-env procedural courses (spacing/geometry per stage below)
+    # --- CLOSER FIRST GATE (Fengyou 2026-07-07): the standing-start pad -> gate-0 distance. The sampler
+    #     default is 18-28 m, but the spec / VQ2 co-visibility regime wants the first gate 10-20 m out.
+    #     A shorter first approach is (a) easier to DISCOVER (less distance for aim + altitude error to
+    #     compound) and (b) leaves less altitude budget to bleed before the gate (the diagnosed dive).
+    #     Applies to EVERY stage so the first leg matches the 10-20 m gate->gate spacing (no odd long
+    #     first leg). Consumed by peregrine_racing_ego.resolve_course_overrides -> spawn_dist_m. ---
+    "course_spawn_dist_lo": 10.0, "course_spawn_dist_hi": 20.0,
+    # --- FIXED SPAWN HEADING (Fengyou 2026-07-07): pin the segment-0 world heading so the courses do NOT
+    #     fan into a redundant circle. The egocentric position-free obs (and the body-frame privileged
+    #     critic) are INVARIANT to the global course heading, so the sampler's random heading adds zero
+    #     training signal -- it only scattered the world-frame render. Fixing it leaves the egocentric
+    #     training distribution IDENTICAL while placing every course ahead of the pad (cleaner + clearer).
+    #     Relative gate placement still varies via the spawn attitude jitter (0.3 rad) + the turn/drop walk. ---
+    "course_spawn_heading": 0.0,
     # --- refined-B reward EASY-SAFE defaults (safe/HELPFUL on single_gate) ---
-    # RC3 DISCOVERY REBALANCE (2026-07-07): rw_progress 1.0->6.0 (a STRONG dense pull toward the now-
-    # visible gate -- with the camera-flip RC1 fix the gate is finally in the obs) and miss/oob terminal
-    # base 200->30 (progress-scaled: approach-then-miss nets -base = ~-30 ~= hover, so imperfect approach
-    # attempts are no longer catastrophic; passing still nets ~+158). CONTACT base stays 200 (zero-contact
-    # rule; sprint-and-clip stays defeated by construction: contact forfeits banked + 200). These are
-    # DISCOVERY-FRIENDLY -> _COMMON is correct (they HELP single_gate; NOT the B2b hard-stage-leak footgun).
-    "rw_progress": 6.0,              # dense segment-projected progress (was 1.0 -- too weak to pull to gate)
-    "rw_passage": 1.0,              # L-inf centering passage, base scale (bumped ONLY on hard stages)
+    # REWARD REDESIGN (2026-07-07, Fengyou "you get the final call"): the render diagnosed a GENUINE
+    # wide/angled miss + a near-spawn dive, NOT a scoring bug. The fixes, all DISCOVERY-FRIENDLY (they
+    # HELP single_gate -> _COMMON is correct; NOT the B2b hard-stage-leak footgun):
+    #   * rw_progress 6.0 -> 2.0: 6.0 over-rewarded rushing forward (the drone pitched hard + dived at the
+    #     gate). 2.0 is a moderate dense pull -- still 2x the original 1.0 that was "too weak", but no
+    #     longer a sprint incentive. The AREA-DISTANCE coupling (below) further conditions it on a
+    #     square-on close-in approach.
+    #   * rw_passage 1.0 -> 5.0 + rw_passage_increment 1.0: passing CENTERED is now clearly worth more
+    #     than approaching (gate 0 -> +5, gate 1 -> +6, ...); later gates pay more (get deeper = better).
+    #   * rw_area_dist_ref_m 6.0: DISTANCE-GATED area coupling of the positive progress -- a shallow /
+    #     off-axis approach in the final ~6 m earns LESS (it threads at an angle and exits wide), a
+    #     beeline from far earns FULL. Directly attacks the diagnosed angled wide miss; ref sets the
+    #     close-in distance over which it engages (see ego_reward.area_distance_progress_factor).
+    #   * miss/oob terminals: MISS stays forgiving (~hover) so an imperfect gate ATTEMPT is not
+    #     catastrophic; OOB (leaving the arena) stays discouraged; CONTACT stays catastrophic (200).
+    # PROGRESS-TO-CENTRE (2026-07-07, THE root-cause fix). The render+geometry diagnosis: on a DEAD-AHEAD
+    # gate (spawn azimuth 0) the drone still diffused ~8 m laterally / ~6 m vertically and missed
+    # (single_gate 0% across ~5 reward variants). Cause: segment-projected progress credits only
+    # ALONG-TRACK advance -- perpendicular drift earns ZERO -- so a diagonal flight banks near-full
+    # progress while sliding off the line; there was NO dense lateral/vertical homing gradient. The
+    # centering PENALTY (below) tried to add one but as a magnitude penalty it triggered a "give up and
+    # leave the box" pathology (the render's 72% early OOB). FIX: switch the progress POTENTIAL to
+    # phi = -||pos - gate_centre|| (the inc7/Swift distance-to-gate progress) -> a dense homing gradient
+    # in EVERY axis. A true Euclidean potential telescopes -> NON-farmable (does not farm lateral drift,
+    # unlike the polyline argmin that motivated segment-only). This is the champion (Swift) progress; the
+    # refined-B rework had dropped it for segment-only and THAT is the single_gate regression.
+    "rw_progress_to_center": True,   # dense 3D homing to the gate CENTRE (was segment-only along-track)
+    "rw_progress": 2.0,              # dense homing progress weight (per metre closed toward the centre)
+    "rw_passage": 5.0,               # L-inf centering passage BASE (was 1.0); passing >> approaching now
+    "rw_passage_increment": 1.0,     # per-gate passage bump: gate g pays (5 + 1*g) -> deeper = better
+    # AREA-DISTANCE coupling now OFF (reward-audit 2026-07-07). With rw_progress_to_center=True the
+    # progress scalar BUNDLES the lateral/vertical homing correction; the area multiplier (factor in
+    # [area,1], area->0 when off-axis) attenuated that homing by ~35-58% in the final 1-3 m -- worst for
+    # the most off-center drones, exactly where centering must happen -- and on a DEAD-AHEAD single_gate
+    # its "square-up before an oblique exit" rationale does not even apply. Re-enable ONLY on turning
+    # stages if wanted, and only on the ALONG-TRACK component, never as a tax on the homing scalar.
+    "rw_area_dist_ref_m": 0.0,       # distance-gated area coupling ramp (m); 0 == coupling OFF
+    # DENSE LATERAL CENTERING -- now OFF. It was the WRONG FORM: a per-step magnitude penalty
+    # (-rw_centering*perp) the policy could not yet avoid, so it learned to END the episode early (leave
+    # the box) to cap the accruing loss -> the render's 72% early-OOB blow-out (worse than the 93% wide
+    # miss without it). The progress-to-centre potential above supplies the lateral/vertical homing
+    # CONSTRUCTIVELY (reward for getting closer, no give-up incentive), so this redundant + harmful
+    # penalty is disabled. Kept as a 0-knob for A/B, not deleted.
+    "rw_centering": 0.0,             # OFF (superseded by rw_progress_to_center; the penalty form back-fired)
+    "rw_centering_max_m": 2.0,       # (unused while rw_centering==0) clamp (m) on the perpendicular offset
     "rw_terminal_base": 200.0,       # kill-on-contact base magnitude (CONTACT stays catastrophic)
-    "rw_terminal_miss": 30.0,        # fly-by MISS (wide gate attempt, stays in-arena): ~hover -> forgiving
+    # MISS base lowered 30 -> 8 (reward-audit 2026-07-07). Now that a miss KEEPS its banked approach
+    # progress (the forfeit is contact-only), the miss base must be <= the banked approach (~20 at the
+    # 10 m spawn end, ~30 at 20 m) so an HONEST close-but-missed attempt reliably nets POSITIVE vs
+    # hovering -- restoring the documented "~hover, forgiving" intent (30 was ~4x the true discounted
+    # hover cost, and at the short-spawn end an attempt still lost to hover). Pairs with the forfeit fix.
+    "rw_terminal_miss": 8.0,         # fly-by MISS (wide gate attempt, stays in-arena): ~hover -> forgiving
     # OOB (leaving the ARENA) STAYS discouraged at 200 -- distinct from MISS. Measured 2026-07-07: at
     # oob=30 the drone had NO pressure to stay in bounds and 96% of episodes OOB'd at ~2 s (l_episode
-    # 2 s vs the 33 s in-bounds hover at oob=200), never reaching the gate. The RC3 fix forgives the
-    # GATE ATTEMPT (miss), NOT leaving the arena. Approaching the gate stays in-bounds -> not punished.
+    # 2 s vs the 33 s in-bounds hover at oob=200), never reaching the gate. The fix forgives the GATE
+    # ATTEMPT (miss), NOT leaving the arena. NOTE: a below-FLOOR dive is NOT oob -- the ego env now
+    # reclassifies it as a CONTACT (terminal_base=200, a crash/DQ), so oob here = lateral/ceiling only.
     "rw_terminal_oob": 200.0,        # out-of-bounds = leaving the arena -> stays discouraged (NOT ~hover)
     "rw_terminal_progress_scaled": True,  # forfeit banked progress + base -> sprint-and-clip never wins
     "rw_exit_align": 0.0,           # next-gate exit-line OFF on easy stages (ON only hard stages below)
@@ -106,6 +163,18 @@ STAGES: dict[str, dict] = {
         "course_n_gates": 1,
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
     },
+    # DIAGNOSTIC STAGE (Fengyou 2026-07-07): a STATIC single gate -- FIXED 15 m dead-ahead, LEVEL (drop 0),
+    # heading pinned -- so the gate does NOT move between episodes. Removes ALL course variance to isolate
+    # the gross control failure ("turn down the scope to single gate, gate doesn't move"). NOT in the ladder
+    # (STAGE_ORDER); run standalone via STAGES=single_gate_static. Reads out metrics/exit_* (box-exit
+    # classification) for reliable spatial geometry from the STOCHASTIC rollouts (renders are untrustworthy).
+    "single_gate_static": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # FIXED 15 m (override _COMMON 10-20)
+        "course_drop_lo": 0.0, "course_drop_hi": 0.0,                 # LEVEL gate (no climb) -- isolate
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
     # 2. HANDOFF_DRILL (DESIGN.md §D): 2 gates, focus the FIRST gate handoff. Spacing 10-20 m (the VQ2
     #    co-visibility regime where the next gate is trackable through the current one). Still the EASY
     #    reward (no rw_passage bump, exit OFF) -- drill the handoff MECHANICS (window promotion, no
@@ -117,23 +186,22 @@ STAGES: dict[str, dict] = {
         "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA},
     },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
-    #    knobs turn ON here (NOT in _COMMON): rw_passage x3 (thin centering margin through a sharp turn
-    #    at race speed) + a small exit_align (next-gate exit-line, gate-gated -> safe). ~5000-6000 updates.
+    #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
+    #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate
+    #    increment (the old x3 flat bump is superseded; it would have UNDERCUT the new base 5). ~5000-6000.
     "dual_gate_full": {
         **_COMMON,
         "course_n_gates": 2,
         "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
-        "rw_passage": 3.0,           # STAGE-SPECIFIC: wider centering basin for the sharp turn (NOT _COMMON)
         "rw_exit_align": 0.1,        # STAGE-SPECIFIC: next-gate exit-line (gate-gated once/pass -> safe)
         "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA},
     },
-    # 4. MULTI_GATE (HARD/turning): N gates, spacing 10-20 m, the full lap. Same hard-stage reward
-    #    knobs as dual_gate_full. n_envs 4096 (set in the sbatch for throughput). ~5000-6000 updates.
+    # 4. MULTI_GATE (HARD/turning): N gates, spacing 10-20 m, the full lap. Same hard-stage exit-line as
+    #    dual_gate_full. n_envs 4096 (set in the sbatch for throughput). ~5000-6000 updates.
     "multi_gate": {
         **_COMMON,
         "course_n_gates": 6,
         "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
-        "rw_passage": 3.0,           # STAGE-SPECIFIC (hard turning)
         "rw_exit_align": 0.1,        # STAGE-SPECIFIC (hard turning)
         "_raw": {"env.max_time": 100, "algo.gamma": _GAMMA},
     },
@@ -147,7 +215,9 @@ STAGE_ORDER = ("single_gate", "handoff_drill", "dual_gate_full", "multi_gate")
 # agree on the contract; they are additive `+env.` cfg keys -- unset => the sampler's defaults). This
 # mirrors the inc8 curriculum's COURSE_SAMPLER_KEYS convention.
 COURSE_SAMPLER_KEYS = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi",
-                       "course_drop_lo", "course_drop_hi")
+                       "course_drop_lo", "course_drop_hi",
+                       "course_spawn_dist_lo", "course_spawn_dist_hi",
+                       "course_spawn_heading")
 
 # The reward knobs that are HARD-STAGE-ONLY (must NEVER appear in _COMMON / never hit single_gate or
 # handoff_drill). Named so the test can assert the B2b scoping discipline structurally.

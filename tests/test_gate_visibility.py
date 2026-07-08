@@ -208,3 +208,48 @@ def test_batched_and_quat_matrix_parity():
     dq, nq = GV.gate_detectable(dp, q, gp1, gy1, is_quat=True)
     dR, nR = GV.gate_detectable(dp, R1, gp1, gy1, is_quat=False)
     assert bool((nq == nR).all()) and bool((dq == dR).all())
+
+
+# ================================================================================================
+# (h) APPARENT PROJECTED AREA (Fengyou 2026-07-07): the vision-faithful "how square-on" cue. Normalized
+#     projected inner-opening area in [0,1], 1 == square-on, range-invariant, monotone falloff with tilt.
+# ================================================================================================
+def _apparent_headon(range_m, tilt_deg=0.0):
+    """gate_apparent_area for ONE gate straight ahead at range_m (Z-up), yaw=tilt (the gate-plane tilt
+    relative to the view ray), drone level at origin."""
+    drone_pos = torch.zeros(1, 3, dtype=DT)
+    import math
+    gate_pos = torch.tensor([[[float(range_m), 0.0, 0.0]]], dtype=DT)
+    gate_yaw = torch.full((1, 1), math.radians(tilt_deg), dtype=DT)
+    return GV.gate_apparent_area(drone_pos, _level_pose(), gate_pos, gate_yaw, is_quat=False)[0, 0].item()
+
+
+def test_apparent_area_square_on_is_one_and_range_invariant():
+    """A head-on (square-on) opening reads ~1 at EVERY range (the range normalization cancels the
+    inverse-square shrink) -- exactly 'normalized to gate size so max square-on square is 1'."""
+    for r in (5.0, 10.0, 15.0, 25.0):
+        a = _apparent_headon(r, 0.0)
+        assert a == pytest.approx(1.0, abs=1e-3), (r, a)
+
+
+def test_apparent_area_monotone_falloff_with_tilt_and_in_range():
+    """Tilting the gate plane off the view ray foreshortens the projected opening -> the ratio DROPS
+    monotonically (0 deg -> 1, ~60 deg -> ~0.6, ~80 deg -> ~0.2), staying in [0,1]. It is FLATTER than a
+    pure cosine near square-on (tolerant of small misalignments) -- the projected-area, not |cos|, model."""
+    vals = [_apparent_headon(15.0, d) for d in (0, 20, 40, 60, 80)]
+    for a in vals:
+        assert 0.0 <= a <= 1.0, vals
+    # strictly decreasing from 40 deg on (0 and 20 both saturate at ~1 -- the tolerant near-square-on band)
+    assert vals[0] == pytest.approx(1.0, abs=1e-3)
+    assert vals[2] > vals[3] > vals[4], vals               # 40 > 60 > 80
+    assert vals[3] < 0.75 and vals[4] < 0.35, vals          # clearly foreshortened at 60/80 deg
+
+
+def test_apparent_area_gate_behind_camera_is_zero():
+    """A gate BEHIND the camera (no corner in front) has a meaningless projection -> area 0."""
+    drone_pos = torch.zeros(1, 3, dtype=DT)
+    import math
+    gate_pos = torch.tensor([[[-15.0, 0.0, 0.0]]], dtype=DT)     # behind the +x-facing level drone
+    gate_yaw = torch.full((1, 1), math.pi, dtype=DT)
+    a = GV.gate_apparent_area(drone_pos, _level_pose(), gate_pos, gate_yaw, is_quat=False)[0, 0].item()
+    assert a == 0.0, a

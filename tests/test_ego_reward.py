@@ -84,6 +84,42 @@ def test_progress_clamped_below_out_of_segment_clamp():
     assert R.segment_arc_position(_t([[15.0, 0.0, 0.0]]), seg_a, seg_b).item() == 10.0  # past end
 
 
+def test_gate_center_potential_homes_in_every_axis():
+    """The progress-to-centre potential (rw_progress_to_center=True, the 2026-07-07 root-cause fix):
+    s = -||pos - gate_centre||, so reward = clip(s_curr - s_prev) is the 3D closing rate. THE property
+    segment mode lacks: PERPENDICULAR motion toward the centre earns POSITIVE progress (dense lateral +
+    vertical homing), where segment_arc_position credits it ZERO."""
+    gate = _t([[10.0, 0.0, 0.0]])                      # gate centre 10 m ahead on +x
+    # (1) s == -distance to the centre.
+    assert R.gate_center_potential(_t([[0.0, 0.0, 0.0]]), gate).item() == pytest.approx(-10.0)
+    assert R.gate_center_potential(_t([[10.0, 0.0, 0.0]]), gate).item() == pytest.approx(0.0)
+
+    # (2) PERPENDICULAR homing: a drone off to the side at fixed along-track x, moving laterally TOWARD
+    #     the line (y 8 -> 7), earns POSITIVE progress under center mode (distance shrinks) ...
+    s_prev = R.gate_center_potential(_t([[10.0, 8.0, 0.0]]), gate)
+    s_curr = R.gate_center_potential(_t([[10.0, 7.0, 0.0]]), gate)
+    r_center = R.segment_progress_reward(s_curr, s_prev, rw_progress=1.0, vmax_mps=39.0, dt=1 / 30)
+    assert r_center.item() == pytest.approx(1.0)       # 8 -> 7 = 1 m closer to the centre
+    # ... whereas the SAME lateral move earns EXACTLY ZERO under segment mode (the diagnosed gap).
+    seg_a, seg_b = _t([[0.0, 0.0, 0.0]]), gate
+    sa = R.segment_arc_position(_t([[10.0, 8.0, 0.0]]), seg_a, seg_b)
+    sb = R.segment_arc_position(_t([[10.0, 7.0, 0.0]]), seg_a, seg_b)
+    assert abs(R.segment_progress_reward(sb, sa, 1.0, 39.0, 1 / 30).item()) < 1e-9
+
+    # (3) vertical homing works identically (z toward the centre pays), and (4) it telescopes over a loop
+    #     (out-and-back to the same point sums ~0 -> non-farmable, no lateral-drift farming).
+    s_up = R.gate_center_potential(_t([[10.0, 0.0, 3.0]]), gate)
+    s_dn = R.gate_center_potential(_t([[10.0, 0.0, 2.0]]), gate)
+    assert R.segment_progress_reward(s_dn, s_up, 1.0, 39.0, 1 / 30).item() == pytest.approx(1.0)
+    pts = [[2.0, 1.0, 0.0], [3.0, 0.5, 0.5], [4.0, 0.0, 0.0], [3.0, 0.5, 0.5], [2.0, 1.0, 0.0]]
+    total, sp = 0.0, R.gate_center_potential(_t([pts[0]]), gate)
+    for p in pts[1:]:
+        sc = R.gate_center_potential(_t([p]), gate)
+        total += R.segment_progress_reward(sc, sp, 1.0, 39.0, 1 / 30).item()
+        sp = sc
+    assert abs(total) < 1e-6, total
+
+
 # ================================================================================================
 # (e) v_max CLAMP is ABOVE the true peak per-step arc advance (never caps legit top speed).
 # ================================================================================================
@@ -104,6 +140,91 @@ def test_vmax_clamp_above_true_peak_advance():
     assert r_burst.item() == pytest.approx(w.progress * band)            # clipped to band
     # headroom is ~30% (the design target).
     assert band / true_peak_advance == pytest.approx(1.3, abs=0.01)
+
+
+# ================================================================================================
+# AREA-DISTANCE coupled progress (Fengyou 2026-07-07): far -> full credit; close + off-axis -> reduced.
+# ================================================================================================
+def test_area_distance_progress_factor():
+    # FAR (dist >= ref): factor -> 1 regardless of area (a beeline from far is NOT penalised).
+    assert R.area_distance_progress_factor(_t([0.2]), _t([12.0]), 6.0).item() == pytest.approx(1.0)
+    # CLOSE (dist -> 0): factor -> area (a shallow / off-axis approach earns less).
+    assert R.area_distance_progress_factor(_t([0.2]), _t([0.0]), 6.0).item() == pytest.approx(0.2)
+    # HALF the ramp distance: blend area + (1-area)*0.5.
+    assert R.area_distance_progress_factor(_t([0.2]), _t([3.0]), 6.0).item() == pytest.approx(0.2 + 0.8 * 0.5)
+    # SQUARE-ON (area=1): factor == 1 at ALL distances (never penalised, near or far).
+    assert R.area_distance_progress_factor(_t([1.0]), _t([0.0]), 6.0).item() == pytest.approx(1.0)
+    assert R.area_distance_progress_factor(_t([1.0]), _t([6.0]), 6.0).item() == pytest.approx(1.0)
+
+
+def test_area_coupling_scales_only_positive_progress():
+    """compute_ego_reward applies the area-distance factor to POSITIVE progress only: a close+off-axis
+    forward step earns less; the same step from far earns full; a backward step ALWAYS pays full."""
+    w = R.EgoRewardWeights()                              # progress 1.0, area_dist_ref_m 6.0
+    seg_a, seg_b = _t([[0.0, 0.0, 0.0]]), _t([[10.0, 0.0, 0.0]])
+    s_prev = R.segment_arc_position(_t([[8.0, 0.0, 0.0]]), seg_a, seg_b)       # 8.0
+    s_curr = R.segment_arc_position(_t([[8.5, 0.0, 0.0]]), seg_a, seg_b)       # 8.5 -> +0.5 forward
+    common = dict(
+        gate_passed=_t([0.0]).bool(), pass_linf=_t([0.0]), w_g_half=0.75,
+        gate_collision=_t([0.0]).bool(), gate_miss=_t([0.0]).bool(), oob=_t([0.0]).bool(),
+        banked_progress_return=_t([0.0]), newly_finished=_t([0.0]).bool(), time_left_s=_t([2.0]),
+        tilt_cos_r33=_t([0.999]), omega=_t([[0.0, 0.0, 0.0]]),
+        action_norm=_t([[0.5, 0.5, 0.5, 0.5]]), last_action_norm=_t([[0.5, 0.5, 0.5, 0.5]]),
+        vel_world=_t([[5.0, 0.0, 0.0]]), curr_center=seg_b, next_center=seg_b, dt=1 / 30)
+    # CLOSE (dist 1.5 < ref 6) + off-axis (area 0.3): factor = 0.3 + 0.7*(1.5/6) = 0.475.
+    _, _, rp_close = R.compute_ego_reward(w, s_curr=s_curr, s_prev=s_prev,
+                                          area_true=_t([0.3]), dist_to_gate=_t([1.5]), **common)
+    factor = 0.3 + 0.7 * (1.5 / 6.0)
+    assert rp_close.item() == pytest.approx(w.progress * 0.5 * factor)
+    # FAR (dist 12 >= ref): factor 1 -> unscaled full credit.
+    _, _, rp_far = R.compute_ego_reward(w, s_curr=s_curr, s_prev=s_prev,
+                                        area_true=_t([0.3]), dist_to_gate=_t([12.0]), **common)
+    assert rp_far.item() == pytest.approx(w.progress * 0.5)
+    # BACKWARD progress is NEVER scaled (retreat pays full even when close + off-axis).
+    _, _, rp_back = R.compute_ego_reward(w, s_curr=s_prev, s_prev=s_curr,      # -0.5
+                                         area_true=_t([0.3]), dist_to_gate=_t([1.5]), **common)
+    assert rp_back.item() == pytest.approx(-w.progress * 0.5)
+
+
+# ================================================================================================
+# DENSE LATERAL CENTERING (Fengyou 2026-07-07, post-render): pull onto the gate-centre segment.
+# ================================================================================================
+def test_segment_perp_distance():
+    seg_a, seg_b = _t([[0.0, 0.0, 0.0]]), _t([[10.0, 0.0, 0.0]])     # segment along +x
+    assert R.segment_perp_distance(_t([[5.0, 0.0, 0.0]]), seg_a, seg_b).item() == pytest.approx(0.0)  # on line
+    assert R.segment_perp_distance(_t([[5.0, 3.0, 0.0]]), seg_a, seg_b).item() == pytest.approx(3.0)  # y off
+    assert R.segment_perp_distance(_t([[5.0, 0.0, 4.0]]), seg_a, seg_b).item() == pytest.approx(4.0)  # z off
+    assert R.segment_perp_distance(_t([[5.0, 3.0, 4.0]]), seg_a, seg_b).item() == pytest.approx(5.0)  # 3-4-5
+    # past the end -> clamped to seg_end -> distance to the endpoint (10,0,0)
+    assert R.segment_perp_distance(_t([[15.0, 3.0, 0.0]]), seg_a, seg_b).item() == pytest.approx(
+        (25.0 + 9.0) ** 0.5)
+
+
+def test_through_centering_reward():
+    assert R.through_centering_reward(_t([1.0]), 0.15, 2.0).item() == pytest.approx(-0.15)   # off-line
+    assert R.through_centering_reward(_t([5.0]), 0.15, 2.0).item() == pytest.approx(-0.30)   # clamp @ 2 m
+    assert R.through_centering_reward(_t([0.0]), 0.15, 2.0).item() == pytest.approx(0.0)      # on-line -> 0
+    assert R.through_centering_reward(_t([3.0]), 0.0, 2.0).item() == 0.0                      # OFF
+
+
+def test_centering_lowers_reward_for_offline_flight():
+    """In compute_ego_reward the centering penalty enters via perp_dist: off-line flight scores LOWER
+    than on-line by exactly the clamped penalty; on-line (perp 0) it is absent."""
+    w = R.EgoRewardWeights(centering=0.15, centering_max_m=2.0)
+    seg_a, seg_b = _t([[0.0, 0.0, 0.0]]), _t([[10.0, 0.0, 0.0]])
+    s = R.segment_arc_position(_t([[5.0, 0.0, 0.0]]), seg_a, seg_b)          # no progress -> isolate centering
+    common = dict(
+        gate_passed=_t([0.0]).bool(), pass_linf=_t([0.0]), w_g_half=0.75,
+        gate_collision=_t([0.0]).bool(), gate_miss=_t([0.0]).bool(), oob=_t([0.0]).bool(),
+        banked_progress_return=_t([0.0]), newly_finished=_t([0.0]).bool(), time_left_s=_t([2.0]),
+        tilt_cos_r33=_t([0.999]), omega=_t([[0.0, 0.0, 0.0]]),
+        action_norm=_t([[0.5, 0.5, 0.5, 0.5]]), last_action_norm=_t([[0.5, 0.5, 0.5, 0.5]]),
+        vel_world=_t([[5.0, 0.0, 0.0]]), curr_center=seg_b, next_center=seg_b, dt=1 / 30)
+    r_on, _, _ = R.compute_ego_reward(w, s_curr=s, s_prev=s, perp_dist=_t([0.0]), **common)
+    r_off, c_off, _ = R.compute_ego_reward(w, s_curr=s, s_prev=s, perp_dist=_t([2.0]), **common)
+    assert r_off.item() < r_on.item()
+    assert (r_on.item() - r_off.item()) == pytest.approx(0.30, abs=1e-6)     # 0.15 * clamp(2,0,2)
+    assert c_off["center_pen"] == pytest.approx(0.30, abs=1e-6)
 
 
 # ================================================================================================
@@ -147,6 +268,22 @@ def test_passage_idempotent_weaving_recross_pays_once():
     assert r1.item() == pytest.approx(1.0)
     assert r2.item() == 0.0
     assert (r1 + r2).item() == pytest.approx(1.0)        # paid once total
+
+
+def test_passage_per_gate_increment():
+    """Fengyou 2026-07-07: passing a LATER gate pays more -- weight = rw_passage + increment*gate_index
+    (gate 0 -> base, gate 1 -> base+inc, ...). Dead-centre passes so the centering factor is 1."""
+    w_g_half = 0.75
+    passed = _t([1.0, 1.0, 1.0]).bool()
+    linf = _t([0.0, 0.0, 0.0])                           # dead centre -> full weight
+    idx = torch.tensor([0, 1, 3], dtype=DT)
+    r = R.centering_passage_reward(passed, linf, w_g_half, rw_passage=5.0,
+                                   passed_gate_index=idx, passage_increment=1.0)
+    assert r[0].item() == pytest.approx(5.0)             # gate 0 -> 5
+    assert r[1].item() == pytest.approx(6.0)             # gate 1 -> 6
+    assert r[2].item() == pytest.approx(8.0)             # gate 3 -> 8
+    # no index (or increment 0) -> flat base (backward-compatible with the base passage tests).
+    assert R.centering_passage_reward(passed, linf, w_g_half, 5.0)[2].item() == pytest.approx(5.0)
 
 
 # ================================================================================================
@@ -427,6 +564,29 @@ def test_terminal_progress_scaled_dominates_by_construction():
                             guard_max_course_gates=1, guard_max_seg_len_m=45.0)
     term2 = R.terminal_penalty(_t([1.0]).bool(), _t([0.0]).bool(), _t([0.0]).bool(), banked, w2)
     assert term2.item() == pytest.approx(200.0)
+
+
+def test_forfeit_is_contact_only_miss_and_oob_keep_banked():
+    """Reward-audit 2026-07-07 root-cause fix: the banked-progress FORFEIT fires ONLY on a CONTACT.
+    A wide MISS or an OOB is an honest non-contact outcome -- it pays ONLY its fixed base and KEEPS its
+    banked approach progress. Forfeiting there cancelled the dense homing gradient on ~100% of single_gate
+    rollouts and made loitering beat committing to a crossing. Anti-sprint-and-clip is preserved because a
+    frame clip is classified as gate_collision."""
+    w = R.EgoRewardWeights()          # progress-scaled, bases: contact 200, miss 200(default), oob 200
+    banked = _t([40.0])
+    coll = R.terminal_penalty(_t([1.0]).bool(), _t([0.0]).bool(), _t([0.0]).bool(), banked, w)
+    miss = R.terminal_penalty(_t([0.0]).bool(), _t([1.0]).bool(), _t([0.0]).bool(), banked, w)
+    oob = R.terminal_penalty(_t([0.0]).bool(), _t([0.0]).bool(), _t([1.0]).bool(), banked, w)
+    # CONTACT forfeits the banked (base + banked); MISS / OOB do NOT (base only).
+    assert coll.item() == pytest.approx(w.terminal_base + 40.0)
+    assert miss.item() == pytest.approx(w.terminal_miss)          # NO banked forfeit
+    assert oob.item() == pytest.approx(w.terminal_oob)            # NO banked forfeit
+    # with a curriculum-scale forgiving miss base (8) and banked ~30, an honest miss KEEPS net-positive
+    # approach credit: episode return contribution = +banked (streamed) - miss_base = +22 > 0.
+    w_c = R.EgoRewardWeights(terminal_miss=8.0)
+    miss_c = R.terminal_penalty(_t([0.0]).bool(), _t([1.0]).bool(), _t([0.0]).bool(), _t([30.0]), w_c)
+    assert miss_c.item() == pytest.approx(8.0)
+    assert 30.0 - miss_c.item() > 0.0
 
 
 # ================================================================================================

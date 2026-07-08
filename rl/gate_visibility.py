@@ -283,3 +283,56 @@ def gate_detectable(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: Tensor
 
     detectable = (n_visible >= MIN_VISIBLE_CORNERS) & within_cap
     return detectable, n_visible
+
+
+# ================================================================================================
+# Apparent (projected) inner-opening area -- the vision-faithful "how square-on" cue (Fengyou 2026-07-07).
+# ================================================================================================
+def gate_apparent_area(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: Tensor,
+                       gate_yaw: Tensor, *, is_quat: bool | None = None) -> Tensor:
+    """Normalized APPARENT area of each gate's INNER opening as the camera actually sees it, in [0,1]
+    with a perfectly SQUARE-ON view == 1.
+
+    This RECALIBRATES the old |cos(view_ray, gate_normal)| foreshortening proxy (Fengyou 2026-07-07: the
+    real vision system reports the DETECTED opening area, not a cosine -- and |cos| diverges from the true
+    projected area close-in where perspective matters). It is exactly what a corner-detecting detector
+    outputs: the image-space (pinhole-projected) area of the 4 INNER corners, divided by the area a
+    frontal (square-on) opening of the SAME physical size would project at the SAME range. The range
+    normalization cancels the inverse-square shrink AND the intrinsics, so the result is a pure,
+    range-invariant "squareness" ratio: ~1 head-on (a big square), -> 0 edge-on (a foreshortened sliver),
+    capturing the true perspective the |cos| model misses.
+
+    Uses the SAME verified projection as ``gate_detectable`` (the +20 deg mount + K), so the reward's
+    area (privileged GT, noiseless) and the estimator's visible_area obs (this + noise) are the SAME
+    quantity. Pure GT geometry -- masking/staleness/noise live in the estimator.
+
+    drone_pos (N,3) Z-up; drone_quat_or_R (N,4) XYZW OR (N,3,3) body->world Z-up; gate_pos (N,G,3) Z-up;
+    gate_yaw (N,G). Returns (N,G) in [0,1]. A gate with any inner corner BEHIND the camera -> 0 (its
+    projected quad is meaningless; it is not being cleanly seen)."""
+    assert torch is not None, "gate_apparent_area requires torch"
+    device, dtype = drone_pos.device, drone_pos.dtype
+    N, G = gate_pos.shape[0], gate_pos.shape[1]
+    F = torch.as_tensor(FLIP_NP, device=device, dtype=dtype)
+    drone_pos_ned = drone_pos * F
+    gate_pos_ned = gate_pos * F
+    R_wb_ned = _to_R_wb_ned(drone_quat_or_R, is_quat)
+    R_world_gate = ned_gate_frame_torch(gate_yaw.reshape(-1)).reshape(N, G, 3, 3)
+    corners = gate_corners_world_ned(gate_pos_ned, R_world_gate)         # (N,G,8,3)
+    inner = corners[:, :, 0:4, :]                                        # (N,G,4,3) the OPENING quad
+    u, v, tz, _ = project_points_camera(inner.reshape(N, G * 4, 3), drone_pos_ned, R_wb_ned)
+    u = u.reshape(N, G, 4); v = v.reshape(N, G, 4); tz = tz.reshape(N, G, 4)
+    # shoelace area of the projected inner quad (corner ring TL,TR,BR,BL -> convex), abs -> unsigned.
+    area_px = 0.5 * torch.abs(
+        u[..., 0] * v[..., 1] - u[..., 1] * v[..., 0]
+        + u[..., 1] * v[..., 2] - u[..., 2] * v[..., 1]
+        + u[..., 2] * v[..., 3] - u[..., 3] * v[..., 2]
+        + u[..., 3] * v[..., 0] - u[..., 0] * v[..., 3])                 # (N,G) pixels^2
+    # square-on reference at the same range r: a frontal L x L opening at camera-depth r projects to a
+    # (fx*L/r) x (fy*L/r) rectangle -> area = fx*fy*L^2/r^2. Dividing cancels r^2 + fx*fy -> square-on==1.
+    _R_cb, K = _camera_consts(device, dtype)
+    fx, fy = K[0, 0], K[1, 1]
+    rng = torch.linalg.norm(gate_pos_ned - drone_pos_ned.unsqueeze(-2), dim=-1).clamp(min=1e-3)  # (N,G)
+    ref = (fx * fy * (GATE_INNER_M ** 2)) / (rng * rng)
+    all_front = (tz > 0.0).all(dim=-1)                                   # (N,G) opening fully in front
+    ratio = torch.where(all_front, area_px / ref.clamp(min=1e-9), torch.zeros_like(area_px))
+    return ratio.clamp(0.0, 1.0)

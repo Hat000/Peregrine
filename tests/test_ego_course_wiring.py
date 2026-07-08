@@ -44,7 +44,8 @@ def _stage_cfg(stage: str) -> _Cfg:
     what hydra materializes from the +env.course_* tokens render_overrides emits)."""
     d = CUR.STAGES[stage]
     keys = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi",
-            "course_drop_lo", "course_drop_hi")
+            "course_drop_lo", "course_drop_hi",
+            "course_spawn_dist_lo", "course_spawn_dist_hi", "course_spawn_heading")
     return _Cfg(**{k: d[k] for k in keys if k in d})
 
 
@@ -61,6 +62,14 @@ def test_resolve_maps_curriculum_keys_to_sampler_names():
                                          course_seg_len_hi=20.0, course_drop_lo=-2.0,
                                          course_drop_hi=4.0))
     assert ov == {"n_gates": 6, "seg_len_m": (10.0, 20.0), "drop_m": (-2.0, 4.0)}
+    # the closer-first-gate pair maps onto the sampler's spawn_dist_m (Fengyou 2026-07-07); the fixed
+    # spawn-heading scalar maps onto spawn_heading.
+    ov = C.resolve_course_overrides(_Cfg(course_n_gates=1, course_spawn_dist_lo=10.0,
+                                         course_spawn_dist_hi=20.0, course_spawn_heading=0.0))
+    assert ov == {"n_gates": 1, "spawn_dist_m": (10.0, 20.0), "spawn_heading": 0.0}
+    # a half-specified spawn-distance pair raises (same guard as seg_len/drop).
+    with pytest.raises(ValueError):
+        C.resolve_course_overrides(_Cfg(course_spawn_dist_lo=10.0))
     # nothing set -> empty (the sampler keeps its own 6-gate / VQ1-range defaults).
     assert C.resolve_course_overrides(_Cfg()) == {}
 
@@ -125,6 +134,38 @@ def test_multi_gate_stages_spacing_in_10_20_band(stage):
     lo, hi = seg_len.min().item(), seg_len.max().item()
     assert 10.0 - 1e-3 <= lo, f"{stage}: min gate-gate spacing {lo:.3f} < 10 m"
     assert hi <= 20.0 + 1e-3, f"{stage}: max gate-gate spacing {hi:.3f} > 20 m"
+
+
+@pytest.mark.parametrize("stage", ["single_gate", "handoff_drill", "dual_gate_full", "multi_gate"])
+def test_first_gate_distance_in_10_20_band(stage):
+    """Fengyou 2026-07-07: the standing-start pad -> gate-0 horizontal distance must be 10-20 m (was the
+    sampler default 18-28 m). This is the closer first gate -- easier discovery + less altitude to bleed
+    before the gate. Applies to EVERY stage (course_spawn_dist_* lives in _COMMON). The pad is at the
+    origin, so the distance is ||gate_pos[:, 0, :2]||."""
+    c, ov = _sample_stage(stage, 4096)
+    assert ov.get("spawn_dist_m") == (10.0, 20.0), (stage, ov)
+    gp = c["gate_pos"]                                                    # (n, G, 3)
+    spawn = c["spawn_pos"]                                                # (n, 3)
+    d0 = torch.linalg.norm(gp[:, 0, :2] - spawn[:, :2], dim=-1)           # horizontal pad->gate0
+    lo, hi = d0.min().item(), d0.max().item()
+    assert 10.0 - 1e-3 <= lo, f"{stage}: min first-gate distance {lo:.3f} < 10 m"
+    assert hi <= 20.0 + 1e-3, f"{stage}: max first-gate distance {hi:.3f} > 20 m"
+
+
+@pytest.mark.parametrize("stage", ["single_gate", "handoff_drill", "dual_gate_full", "multi_gate"])
+def test_fixed_spawn_heading_pins_courses_not_a_circle(stage):
+    """Fengyou 2026-07-07: with course_spawn_heading pinned (0.0), EVERY course starts along +x -- gate 0
+    is dead ahead (y ~ 0, x > 0), NOT fanned into a circle around the pad. This is the redundant-global-
+    heading removal (the egocentric obs is heading-invariant). Contrast: the sampler's random heading
+    would scatter gate-0 y across [-dist, +dist]."""
+    ov = C.resolve_course_overrides(_stage_cfg(stage))
+    assert ov.get("spawn_heading") == 0.0, (stage, ov)
+    gen = torch.Generator().manual_seed(0)
+    c = sample_courses(4096, generator=gen, **ov)
+    g0 = c["gate_pos"][:, 0, :]                                           # (n, 3)
+    assert g0[:, 0].min().item() > 5.0, f"{stage}: gate-0 x should be ahead (+x), got min {g0[:,0].min()}"
+    assert g0[:, 1].abs().max().item() < 1e-3, (
+        f"{stage}: pinned heading -> gate-0 y ~ 0, got max |y| {g0[:,1].abs().max().item()}")
 
 
 def test_single_gate_differs_from_multi_gate():

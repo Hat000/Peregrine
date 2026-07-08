@@ -62,12 +62,13 @@ except Exception:                       # pragma: no cover - torch absent in som
 
 # Component A (estimator) + B (visibility). Pure-torch, no diffaero.
 from ego_estimator import BatchedEgoEstimator, EgoEstimatorConfig, EgoEstimate
-from gate_visibility import gate_detectable
+from gate_visibility import gate_detectable, gate_apparent_area
 
 # The REFINED-B (champion-consensus) reward -- pure functions, laptop-testable. This is the reward
 # THIS GENERATION TRAINS ON (default ON when +env.ego=true); it REPLACES the inc7 option-B reward the
 # env previously reused via peregrine_racing.compute_reward_terms. See rl/ego_reward.py + DESIGN.md.
-from ego_reward import (EgoRewardWeights, segment_arc_position, compute_ego_reward, wide_flyby_miss)
+from ego_reward import (EgoRewardWeights, segment_arc_position, segment_perp_distance,
+                        gate_center_potential, compute_ego_reward, wide_flyby_miss)
 
 # The obs contract dimensions (FIXED). 2-gate slider [current, next] (Fengyou 2026-07-07).
 WINDOW = 2                              # [current, next]
@@ -107,9 +108,18 @@ def resolve_course_overrides(cfg) -> dict:
     unit test can pin the mapping without the cluster env.
 
     Recognized cfg keys:
-      course_n_gates                              -> n_gates   (int)
-      course_seg_len_lo, course_seg_len_hi        -> seg_len_m (lo, hi)   [both must be set together]
-      course_drop_lo,    course_drop_hi           -> drop_m    (lo, hi)   [both must be set together]
+      course_n_gates                              -> n_gates      (int)
+      course_seg_len_lo,   course_seg_len_hi      -> seg_len_m    (lo, hi)   [both must be set together]
+      course_drop_lo,      course_drop_hi         -> drop_m       (lo, hi)   [both must be set together]
+      course_spawn_dist_lo,course_spawn_dist_hi   -> spawn_dist_m (lo, hi)   [both must be set together]
+      course_spawn_heading                        -> spawn_heading (scalar)  [pins segment-0 heading]
+
+    ``spawn_dist_m`` is the standing-start pad -> gate-0 horizontal distance (Fengyou 2026-07-07: keep
+    the FIRST gate 10-20 m out, not the sampler's default 18-28 m -- a shorter first approach is easier
+    to discover and leaves less altitude to bleed before the gate). ``spawn_heading`` pins the segment-0
+    world heading (Fengyou 2026-07-07: the egocentric obs is heading-invariant, so the sampler's random
+    heading is a redundant global DOF that just fans the world-frame layout into a confusing circle; the
+    ego sets 0.0 so every course starts ahead of the pad, with the egocentric distribution unchanged).
 
     A half-specified pair (only lo OR only hi) raises ValueError -- a silent half-override would sample
     the wrong band and waste compute (the exact class of bug this wiring exists to prevent)."""
@@ -122,6 +132,12 @@ def resolve_course_overrides(cfg) -> dict:
         out["n_gates"] = ng
     out.update(_resolve_pair(cfg, "course_seg_len_lo", "course_seg_len_hi", "seg_len_m"))
     out.update(_resolve_pair(cfg, "course_drop_lo", "course_drop_hi", "drop_m"))
+    out.update(_resolve_pair(cfg, "course_spawn_dist_lo", "course_spawn_dist_hi", "spawn_dist_m"))
+    # course_spawn_heading (scalar): pin the segment-0 world heading so the egocentric courses do not fan
+    # into a redundant circle (the obs is heading-invariant). Unset -> the sampler's random heading.
+    spawn_heading = getattr(cfg, "course_spawn_heading", None)
+    if spawn_heading is not None:
+        out["spawn_heading"] = float(spawn_heading)
     return out
 
 
@@ -376,6 +392,12 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._Rz_cam = torch.as_tensor(_RZ_PI_BODY_NP, device=dev, dtype=self._ego_dtype)
         self._ego_contact_penalty = float(getattr(cfg, "ego_contact_penalty",
                                                    EGO_CONTACT_PENALTY_DEFAULT))
+        # MISS TERMINATION (Fengyou A/B 2026-07-07): default True -> a wide flyby TERMINATES (miss, the
+        # inc7/refined-B behaviour). +env.miss_terminates=false -> a wide flyby does NOT terminate and
+        # carries NO terminal penalty: the drone flies past and must stay in-bounds + re-approach to
+        # score (tests whether removing the clean 'safe-miss' exit helps vs the centering fix alone).
+        # CONTACT and OOB always terminate regardless.
+        self._miss_terminates = bool(getattr(cfg, "miss_terminates", True))
 
         # ===== COURSE VARIATION (component D / DESIGN.md §D): make single_gate REALLY 1 gate, dual 2,
         # multi 6, at the VQ2 10-20 m spacing. The base env hard-codes n_gates=6 (VQ1 JSON) and calls
@@ -410,6 +432,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # STATIC coarse map, auto-filled from the course geometry; settable/overridable via set_coarse_map
         self._coarse_map = build_coarse_map(self.gate_pos, self.spawn_pos)   # (N,G,2) long
         self._prev_q = self._q.clone()
+        # GT apparent opening area (normalized, square-on==1) for ALL gates, refreshed every _step_estimator
+        # (the reward's area-distance coupling reads the current target's). Zeros until the first step.
+        self._apparent_area_gt = torch.zeros(self.n_envs, self.n_gates, device=dev, dtype=self._ego_dtype)
         # The estimator is STEPPED exactly ONCE per env-step (inside step()). get_observations() and
         # get_state() only READ estimator STATE via .estimate() (never re-step) -- a double step would
         # corrupt the per-gate staleness clocks / colored-gyro AR(1) state. This mirrors inc8, where
@@ -426,7 +451,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._reset_estimator(self._arange)
         if self._use_refined_b:
             seg_a, seg_b = self._current_segment(self._arange)
-            self._seg_s_prev.copy_(segment_arc_position(self._p, seg_a, seg_b))
+            self._seg_s_prev.copy_(self._progress_scalar(self._p, seg_a, seg_b))
             self._banked_prog.zero_()
 
     # ---- course-variation wiring (component D): forward the curriculum course_* keys to the sampler --
@@ -522,7 +547,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # first step's (s_curr - s_prev) starts from the true spawn projection (no spurious
                 # first-step burst), and clear the banked-progress accumulator.
                 seg_a, seg_b = self._current_segment(env_idx)
-                self._seg_s_prev[env_idx] = segment_arc_position(self._p[env_idx], seg_a, seg_b)
+                self._seg_s_prev[env_idx] = self._progress_scalar(self._p[env_idx], seg_a, seg_b)
                 self._banked_prog[env_idx] = 0.0
 
     # ---- current-target gate-centre SEGMENT [prev_center -> target_center] (GT, Z-up) ----------
@@ -542,6 +567,20 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self.gate_pos[env_idx, prev_idx.clamp(min=0)])               # else previous gate centre
         return seg_start, seg_end
 
+    def _progress_scalar(self, pos, seg_start, seg_end):
+        """The progress POTENTIAL s for these envs, selected by rw_progress_to_center:
+          * False (default) -> segment_arc_position: along-track advance on the current gate SEGMENT
+            (perpendicular drift earns ZERO -- the refined-B champion default).
+          * True -> gate_center_potential: s = -||pos - gate_centre|| == the inc7/Swift distance-to-gate
+            progress -> a DENSE homing gradient in every axis (lateral + vertical + along-track). Fixes
+            the 2026-07-07 diagnosis: segment-only progress starved lateral/vertical homing so the drone
+            diffused off a dead-ahead gate and missed (single_gate 0%).
+        ``seg_end`` is the CURRENT target gate centre either way. Downstream (clip, banked forfeit, area
+        coupling, passage centering) is identical -- only the potential differs."""
+        if self._egorw.progress_to_center:
+            return gate_center_potential(pos, seg_end)
+        return segment_arc_position(pos, seg_start, seg_end)
+
     # ---- EMULATED-CAMERA body->world (nose-first virtual flip; see __init__) --------------------
     def _cam_R_wb(self):
         """Body->world matrix for the emulated CAMERA visibility test. Applies the virtual
@@ -554,10 +593,18 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
     # ---- STEP the estimator one control step at the CURRENT truth (mutates estimator state) ----
     def _step_estimator(self, prev_q):
         with torch.no_grad():
-            detectable, _ = gate_detectable(self._p, self._cam_R_wb(), self.gate_pos, self.gate_yaw,
+            cam_R = self._cam_R_wb()
+            detectable, _ = gate_detectable(self._p, cam_R, self.gate_pos, self.gate_yaw,
                                             far_cap_m=self._ego_cfg.far_cap_m, is_quat=False)
+            # APPARENT projected opening area (normalized, square-on==1), computed with the EMULATED
+            # (flipped) camera so the obs matches what the detector sees. Stored (GT, noiseless) for the
+            # reward's area-distance coupling; passed to the estimator which noises it for the obs.
+            apparent_area = gate_apparent_area(self._p, cam_R, self.gate_pos, self.gate_yaw,
+                                               is_quat=False)
+            self._apparent_area_gt = apparent_area
             est = self._estimator.step(self._p, self._v, self._q, self._w, float(self.dt),
-                                       detectable=detectable, prev_quat=prev_q)
+                                       detectable=detectable, prev_quat=prev_q,
+                                       apparent_area=apparent_area)
         self._stepped = True
         return est, detectable
 
@@ -652,7 +699,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             seg_start_pre = torch.where(
                 (tg == 0).unsqueeze(-1), self.spawn_pos,
                 self.gate_pos[ar, (tg - 1).clamp(min=0)])
-            s_curr = segment_arc_position(curr_pos, seg_start_pre, seg_end_pre)   # (N,)
+            s_curr = self._progress_scalar(curr_pos, seg_start_pre, seg_end_pre)   # (N,)
 
         is_last = tg == (G - 1)
         newly_finished = gate_passed & is_last & ~self.finished
@@ -663,10 +710,23 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         tg_new = self.target_gates.long()
         self.target_pos.copy_(self.gate_pos[ar, tg_new])
 
-        oob = ((curr_pos < self.box_min) | (curr_pos > self.box_max)).any(dim=-1)
+        oob_full = ((curr_pos < self.box_min) | (curr_pos > self.box_max)).any(dim=-1)
+        # FLOOR CONTACT = a CRASH / DISQUALIFICATION, as expensive as a gate strike (Fengyou 2026-07-07).
+        # Diving below the arena floor (Z-up z < box_min_z) is physically a GROUND CONTACT, not merely
+        # "off course": in the competition hitting the floor and hitting a gate are BOTH DQs. So fold a
+        # below-floor exit into gate_collision -> it costs terminal_base (== gate contact) and is counted
+        # in collision_rate (honest: a floor dive IS a crash). ``oob`` then means a LATERAL/CEILING arena
+        # exit only (kept distinct so it can later be tuned independently of the lethal floor).
+        below_floor = curr_pos[:, 2] < self.box_min[:, 2]
+        gate_collision = gate_collision | below_floor
+        oob = oob_full & ~below_floor
 
         # ===== HARD KILL-ON-CONTACT: any gate contact -> done + large negative reward =====
-        terminated = gate_collision | gate_miss | oob | self.finished
+        # A wide flyby (gate_miss) terminates ONLY when miss_terminates (default). When OFF it does not
+        # terminate and carries no terminal penalty (miss_term zeroed) -- the drone flies past + must
+        # re-approach; CONTACT and OOB always terminate. gate_miss (real) is still used for stats below.
+        miss_term = gate_miss if self._miss_terminates else torch.zeros_like(gate_miss)
+        terminated = gate_collision | miss_term | oob | self.finished
         truncated = self.truncated()
         self.progress += 1
         if self.renderer is not None:
@@ -696,17 +756,32 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             next_idx = (tg + 1).clamp(max=G - 1)
             curr_center = self.gate_pos[ar, tg]
             next_center = self.gate_pos[ar, next_idx]
+            # AREA-DISTANCE coupled progress (Fengyou 2026-07-07): the PRIVILEGED GT APPARENT opening
+            # area of the current target gate (normalized projected inner-opening area, [0,1], 1 ==
+            # square-on) + GT metres to it. area_true is the SAME quantity the estimator's visible_area obs
+            # carries (recalibrated 2026-07-07 from the old |cos| proxy to the true projected area a
+            # detector reports), noiseless -- computed with the emulated camera in _step_estimator this
+            # step. Progress is credited less for a shallow CLOSE-in approach (exits wide), full for a
+            # beeline from far -- distance gates the coupling (see ego_reward.area_distance_*).
+            los = curr_center - curr_pos                                     # (N,3) Z-up drone->gate
+            dist_to_gate = torch.linalg.norm(los, dim=-1)                    # (N,)
+            area_true = self._apparent_area_gt[ar, tg]                       # (N,) in [0,1], square-on==1
+            # DENSE lateral centering: perpendicular offset from the PRE-ADVANCE current-target segment
+            # (spawn->gate0 or gate[k-1]->gate[k]); the reward pulls this toward 0 -> a CENTRED crossing.
+            perp_dist = segment_perp_distance(curr_pos, seg_start_pre, seg_end_pre)   # (N,)
             reward, loss_components, r_prog = compute_ego_reward(
                 self._egorw,
                 s_curr=s_curr, s_prev=self._seg_s_prev,
                 gate_passed=gate_passed, pass_linf=pass_linf,
                 w_g_half=self.gate_half_opening_m,
-                gate_collision=gate_collision, gate_miss=gate_miss, oob=oob,
+                gate_collision=gate_collision, gate_miss=miss_term, oob=oob,
                 banked_progress_return=self._banked_prog,
                 newly_finished=newly_finished, time_left_s=time_left_s,
                 tilt_cos_r33=tilt_cos, omega=self._w, action_norm=a_norm, last_action_norm=last_norm,
                 vel_world=self._v, curr_center=curr_center, next_center=next_center,
-                dt=float(self.dt))
+                dt=float(self.dt),
+                area_true=area_true, dist_to_gate=dist_to_gate, passed_gate_index=tg,
+                perp_dist=perp_dist)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious
@@ -716,7 +791,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             adv_idx = advance.nonzero().view(-1)
             if adv_idx.numel() > 0:
                 seg_a, seg_b = self._current_segment(adv_idx)               # NEW (post-advance) segment
-                new_s_prev[adv_idx] = segment_arc_position(curr_pos[adv_idx], seg_a, seg_b)
+                new_s_prev[adv_idx] = self._progress_scalar(curr_pos[adv_idx], seg_a, seg_b)
             self._seg_s_prev = new_s_prev
             loss_components["ego_collision_rate"] = float(gate_collision.float().mean())
             loss_components["banked_prog_mean"] = float(self._banked_prog.mean())
@@ -745,6 +820,34 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
 
         reset = terminated | truncated
         reset_indices = reset.nonzero().view(-1)
+
+        # ===================== BOX-EXIT CLASSIFICATION (Fengyou 2026-07-07 diagnostic) =====================
+        # Partition every terminating/truncating episode by WHERE its path leaves the arena box (self.box_min/
+        # max is the diagnostic bounding box) or HOW it ends -- logged as metrics/exit_* from the STOCHASTIC
+        # training rollouts (the deterministic render proved untrustworthy). Mutually EXCLUSIVE by priority so
+        # the classes sum to ~1. PURE DIAGNOSTIC: reads the already-final terminal flags + curr_pos; touches
+        # NEITHER reward nor termination. Also logs cross_offset_m = the L-inf off-centre distance for EVERY
+        # target-plane crossing (pass + frame + wide miss), so we see HOW FAR OFF the crossings actually land.
+        with torch.no_grad():
+            cp = curr_pos
+            bx_lo, bx_hi = self.box_min, self.box_max
+            _asg = torch.zeros(self.n_envs, dtype=torch.bool, device=cp.device)
+
+            def _take(mask):                                                # first-come priority, exclusive
+                m = mask & ~_asg
+                _asg[m] = True
+                return m
+            c_thread = _take(success)                                       # threaded the gate (WIN)
+            c_floor = _take(below_floor)                                    # dived below the floor (contact)
+            c_frame = _take(gate_collision)                                 # hit the gate FRAME (contact, non-floor)
+            c_pmiss = _take(gate_miss)                                      # crossed the gate PLANE wide (in-bounds)
+            c_ceil = _take(oob & (cp[:, 2] > bx_hi[:, 2]))                 # climbed out the CEILING
+            c_side = _take(oob & ((cp[:, 1] < bx_lo[:, 1]) | (cp[:, 1] > bx_hi[:, 1])))   # ran out a SIDE wall
+            c_back = _take(oob & (cp[:, 0] < bx_lo[:, 0]))                 # flew BACKWARD out the back wall
+            c_front = _take(oob & (cp[:, 0] > bx_hi[:, 0]))               # overshot out the FRONT wall
+            c_time = _take(truncated)                                       # hovered in-box to TIMEOUT
+            crossed_tg = (ev["fwd"] | ev["bwd"])[ar, tg]                    # any target-plane crossing this step
+
         extra = {
             "truncated": truncated,
             "l": self.progress.clone(),
@@ -760,6 +863,18 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 "collision_rate": gate_collision[reset].float(),
                 "miss_rate": gate_miss[reset].float(),
                 "oob_rate": oob[reset].float(),
+                # box-exit breakdown (mutually exclusive, sum ~1) -> metrics/exit_*
+                "exit_thread": c_thread[reset].float(),
+                "exit_floor": c_floor[reset].float(),
+                "exit_frame": c_frame[reset].float(),
+                "exit_plane_miss": c_pmiss[reset].float(),
+                "exit_ceiling": c_ceil[reset].float(),
+                "exit_side": c_side[reset].float(),
+                "exit_back": c_back[reset].float(),
+                "exit_front": c_front[reset].float(),
+                "exit_timeout": c_time[reset].float(),
+                # how far off-centre every target-plane crossing lands (pass + frame + wide miss), L-inf m
+                "cross_offset_m": pass_linf[crossed_tg],
                 "peak_tilt_deg": torch.rad2deg(self._peak_tilt)[reset],
                 "peak_roll_deg": torch.rad2deg(self._peak_roll)[reset],
                 "mean_speed": (self._speed_sum / self.progress.clamp(min=1).float())[reset],

@@ -106,14 +106,53 @@ class EgoRewardWeights:
     """Refined-B reward weights. Geles/Swift/SB scale -- deliberately NOT the inc8 10.0/m progress
     (the critics proved 10.0 makes sprint-and-clip a positive-return strategy)."""
     # --- PRIMARY dense progress (Geles scale ~1.0) ---
-    progress: float = 1.0            # R_prog, per meter of segment-projected arc advance
+    progress: float = 1.0            # R_prog, per meter of progress-potential advance
+    # PROGRESS POTENTIAL MODE (Fengyou 2026-07-07). False (default) -> segment-projected arc position
+    # (s = along-track advance on the current gate SEGMENT; perpendicular drift earns ZERO -- the
+    # refined-B champion default). True -> 3D distance-to-current-gate-CENTRE potential
+    # (phi = -||pos - gate_centre||) == the inc7 / Swift distance-to-gate progress: a dense homing
+    # gradient in ALL axes (lateral + vertical + along-track). WHY the switch exists: the 2026-07-07
+    # render PROVED segment-only progress STARVES lateral/vertical homing -- on a DEAD-AHEAD gate
+    # (azimuth 0) the drone diffused ~8 m laterally / ~6 m vertically and missed (single_gate stuck 0%),
+    # because a diagonal flight banks near-full along-track progress while sliding off the line. A true
+    # Euclidean potential telescopes over any closed path (sum ~0) so it does NOT "farm lateral drift"
+    # (the objection that motivated segment-only was about the NON-potential global polyline argmin, not
+    # distance to a POINT). The env swaps ONLY the s computation on this flag; the clip band, banked-
+    # progress forfeit, area-distance coupling and passage centering are all unchanged.
+    progress_to_center: bool = False
     # v_max clamp: the per-step arc-advance clip band = vmax_mps * dt (m/step). vmax_mps derived from
     # the TRUE peak speed (~30 m/s) + ~30% headroom (-> 39 m/s), so the clamp trims only UNPHYSICAL
     # bursts, never legit top speed. dt is passed at call time (env control dt, ~1/30 s).
     vmax_mps: float = 39.0
 
     # --- PASSAGE + centering (SB ~1.0; knob to ~4x for the vision-noise regime) ---
-    passage: float = 1.0             # R_pass, on (1 - e_lat / w_g_half) at the crossing
+    passage: float = 1.0             # R_pass BASE, on (1 - e_lat / w_g_half) at the crossing
+    # PER-GATE passage increment (Fengyou 2026-07-07): the passage weight for gate g is
+    # ``passage + passage_increment * g`` so passing a LATER gate pays more (gate 0 -> base, gate 1
+    # -> base+inc, ...). Rewards getting DEEPER into the course (a partial run that reaches gate 3 beats
+    # one that only reaches gate 1). 0 == flat passage (no increment). Sparse (fires once per gate) so
+    # it is non-farmable, like the base passage.
+    passage_increment: float = 1.0
+
+    # --- AREA-DISTANCE coupled progress (Fengyou 2026-07-07) ---
+    # Scale the (positive) progress reward by how SQUARE-ON the gate is -- but ONLY when close. Far out a
+    # beeline at an angle is fine (you straighten out); in the final metres a shallow/off-axis approach
+    # leads to a wide, clipped exit, so it should earn LESS -> the policy learns to square up before the
+    # gate. factor = area + (1-area)*clip(dist/ref, 0, 1): dist>=ref -> 1 (no angle penalty far out),
+    # dist->0 -> area (|cos(view_ray, gate_normal)| in [0,1]). ``area_dist_ref_m`` is the ramp distance
+    # (m) over which the coupling engages; <=0 == coupling OFF (factor == 1 everywhere).
+    area_dist_ref_m: float = 6.0
+
+    # --- DENSE LATERAL CENTERING (Fengyou 2026-07-07) ---
+    # A per-step pull onto the CURRENT gate-centre segment so the drone crosses CENTERED, not wide. The
+    # area coupling shapes the approach ANGLE; THIS shapes the lateral POSITION. The render (2026-07-07)
+    # showed 93% WIDE miss with the dive SOLVED -- the drone reliably reaches the plane and crosses
+    # off-aperture, a pure centering-GRADIENT gap (the reward already pays a centred crossing +25 vs a
+    # wide miss -30, so it WANTS to centre; it just has no dense signal for HOW). Penalty =
+    # -rw_centering * clamp(perp_dist, 0, max). At convergence (on-line, perp~0) it is ZERO, so it only
+    # makes OFF-line flight costly -- it cannot be farmed and adds nothing once the policy flies centred.
+    centering: float = 0.0           # rw_centering; 0 == OFF (turned ON by the curriculum)
+    centering_max_m: float = 2.0     # clamp (m) on the perpendicular offset so a big early drift is bounded
 
     # --- TERMINAL (kill-on-contact). Two modes; ``terminal_progress_scaled`` picks. ---
     # FIXED mode: penalty = terminal_base (large, dominates the banked progress return).
@@ -216,6 +255,21 @@ def segment_arc_position(pos: Tensor, seg_start: Tensor, seg_end: Tensor) -> Ten
     return s
 
 
+def gate_center_potential(pos: Tensor, gate_center: Tensor) -> Tensor:
+    """Progress potential s = -||pos - gate_centre|| (N,), Z-up GT. Fed to ``segment_progress_reward``,
+    reward = clip(s_curr - s_prev) becomes the 3D CLOSING rate toward the current gate CENTRE -- a dense
+    homing gradient in EVERY axis (the inc7 / Swift distance-to-gate progress). Contrast
+    segment_arc_position, which credits only along-track advance (perpendicular drift -> 0) and so gives
+    NO lateral/vertical homing -- the 2026-07-07 render's diffuse-and-miss failure on a dead-ahead gate.
+
+    A true Euclidean potential: over any closed path the telescoping sum is ~0, so it is NON-farmable
+    and cannot farm lateral drift (moving perpendicular TOWARD the centre reduces the distance = genuine
+    homing = exactly what we want; moving away is penalised). ``gate_center`` = the CURRENT target gate
+    centre (N,3) -- the same seg_end the segment mode projects onto."""
+    assert torch is not None
+    return -torch.linalg.norm(pos - gate_center, dim=-1)
+
+
 def segment_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float,
                             vmax_mps: float, dt: float) -> Tensor:
     """R_prog = rw_progress * clip(s_curr - s_prev, -vmax*dt, +vmax*dt).
@@ -231,26 +285,85 @@ def segment_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float,
     return rw_progress * delta
 
 
+def area_distance_progress_factor(area_true: Tensor, dist_to_gate: Tensor,
+                                  area_dist_ref_m: float) -> Tensor:
+    """The DISTANCE-GATED area coupling multiplier (Fengyou 2026-07-07 "area-distance coupled progress").
+
+        factor = area + (1 - area) * clip(dist / ref, 0, 1)   in [area, 1]
+
+      * FAR (dist >= ref): factor -> 1 -- a beeline approach is NOT penalised for its angle (the drone
+        will straighten out on the way in); progress earns full credit.
+      * CLOSE (dist -> 0): factor -> area (= |cos(view_ray, gate_normal)| in [0,1], 1 == perfectly
+        square-on) -- a shallow / off-axis approach in the final metres earns LESS, because that geometry
+        threads the aperture at an angle and exits WIDE. The policy learns to square up before the gate.
+
+    ``area_true`` (N,) in [0,1] is the PRIVILEGED GT foreshortening (the same |cos| the estimator's
+    visible_area channel exposes, but noiseless); ``dist_to_gate`` (N,) is the GT metres to the current
+    target gate centre. Both are translation- and yaw-invariant (a normalised difference / a norm), so
+    the coupled reward stays GT-only / position-free-safe. Returns (N,)."""
+    assert torch is not None
+    ramp = (dist_to_gate / max(area_dist_ref_m, 1e-9)).clamp(0.0, 1.0)
+    return area_true + (1.0 - area_true) * ramp
+
+
+def segment_perp_distance(pos: Tensor, seg_start: Tensor, seg_end: Tensor) -> Tensor:
+    """Perpendicular distance (N,) from ``pos`` to the FINITE segment [seg_start -> seg_end] -- the lateral
+    offset from the current gate-centre line. Reuses the segment projection: closest = seg_start + s*u
+    (s clamped to [0, seg_len]), perp = ||pos - closest||. A degenerate zero-length segment -> distance to
+    seg_start. (N,3) inputs, Z-up GT."""
+    assert torch is not None
+    d = seg_end - seg_start                                   # (N,3)
+    seg_len = torch.linalg.norm(d, dim=-1)                    # (N,)
+    safe = seg_len.clamp(min=1e-9)
+    u = d / safe.unsqueeze(-1)                                # unit along-track
+    s = ((pos - seg_start) * u).sum(dim=-1)                   # signed projection
+    s = s.clamp(min=torch.zeros_like(seg_len), max=seg_len)   # clamp to the FINITE segment
+    closest = seg_start + s.unsqueeze(-1) * u                 # nearest point on the segment
+    return torch.linalg.norm(pos - closest, dim=-1)           # (N,) lateral offset
+
+
+def through_centering_reward(perp_dist: Tensor, rw_centering: float, centering_max_m: float) -> Tensor:
+    """R_center = -rw_centering * clamp(perp_dist, 0, centering_max_m). A DENSE per-step pull onto the
+    gate-centre segment (Fengyou 2026-07-07): off-line flight is penalised (clamped so a big early drift
+    does not dominate), on-line flight (perp~0) pays ~0 -> non-farmable, vanishes at convergence. Shapes
+    the lateral POSITION toward a CENTRED crossing (complement to the area coupling's ANGLE shaping).
+    rw_centering==0 -> OFF. Returns the (negative) penalty (N,)."""
+    assert torch is not None
+    if rw_centering == 0.0:
+        return torch.zeros_like(perp_dist)
+    return -rw_centering * perp_dist.clamp(0.0, centering_max_m)
+
+
 # ================================================================================================
 # R_pass: PASSAGE + L-INF centering (matches crossing_events' Linf), idempotent per gate.
 # ================================================================================================
 def centering_passage_reward(gate_passed: Tensor, pass_linf: Tensor, w_g_half: float,
-                             rw_passage: float) -> Tensor:
-    """R_pass = rw_passage * (1 - e_lat / w_g_half) on a VALID fwd pass, else 0.
+                             rw_passage: float, passed_gate_index: Tensor | None = None,
+                             passage_increment: float = 0.0) -> Tensor:
+    """R_pass = (rw_passage + passage_increment * gate_index) * (1 - e_lat / w_g_half) on a VALID fwd
+    pass, else 0.
 
     e_lat == ``pass_linf`` == the L-INF (max(|y|,|z|)) in-plane offset at the interpolated crossing
     point (the SAME quantity crossing_events reports and the SAME metric pass_ok thresholds against
-    w_g_half). A dead-centre pass (e_lat=0) pays the full rw_passage; a pass at the aperture edge
+    w_g_half). A dead-centre pass (e_lat=0) pays the full weight; a pass at the aperture edge
     (e_lat=w_g_half) pays ~0 -> the anti-corner-cut / centering signal. Clamped >= 0 so an edge pass
     never pays NEGATIVE (a valid pass is always non-negative; the miss/contact terminals carry the
     penalty side).
+
+    PER-GATE INCREMENT (Fengyou 2026-07-07): when ``passed_gate_index`` (N,) is supplied, the weight for
+    each env is ``rw_passage + passage_increment * passed_gate_index`` so a LATER gate pays more (gate 0
+    -> base, gate 1 -> base+inc, ...). ``passed_gate_index`` is the CURRENT-target index at the crossing
+    (before the target advances). Omit it (or passage_increment=0) for a flat passage.
 
     IDEMPOTENCY is enforced by the CALLER: ``gate_passed`` is true for exactly the ONE step the target
     gate is crossed forward AND the target index strictly increments, so a weaving re-crossing of an
     already-passed gate is NOT the current target -> gate_passed is False -> pays nothing again."""
     assert torch is not None
     centered = (1.0 - pass_linf / max(w_g_half, 1e-9)).clamp(min=0.0)
-    return rw_passage * centered * gate_passed.to(pass_linf.dtype)
+    weight = rw_passage
+    if passed_gate_index is not None and passage_increment != 0.0:
+        weight = rw_passage + passage_increment * passed_gate_index.to(pass_linf.dtype)
+    return weight * centered * gate_passed.to(pass_linf.dtype)
 
 
 # ================================================================================================
@@ -261,33 +374,40 @@ def terminal_penalty(gate_collision: Tensor, gate_miss: Tensor, oob: Tensor,
     """The hard terminal penalty (subtracted from the reward on the terminating step).
 
     Two modes (``w.terminal_progress_scaled``):
-      * PROGRESS-SCALED (recommended): penalty = base + max(banked_progress_return, 0). Clipping a gate
-        FORFEITS all banked progress return PLUS a base, so a sprint-and-clip can NEVER out-earn
-        continuing -- the defect the critics caught (10.0/m made clipping positive-return) is closed by
-        construction regardless of course length. ``banked_progress_return`` = the (undiscounted)
-        progress reward accumulated so far this episode (the env tracks it).
+      * PROGRESS-SCALED (recommended): penalty = base + max(banked_progress_return, 0) ON A CONTACT ONLY.
+        Clipping a gate (a frame contact) FORFEITS all banked progress return PLUS a base, so a
+        sprint-and-clip can NEVER out-earn continuing -- the defect the critics caught (10.0/m made
+        clipping positive-return) is closed by construction regardless of course length. A wide MISS or
+        an OOB is an HONEST non-contact outcome: it pays ONLY its fixed base and KEEPS its banked
+        approach progress (forfeiting there was the 2026-07-07 single_gate root cause -- it cancelled the
+        dense homing gradient and made loitering beat committing). ``banked_progress_return`` = the
+        (undiscounted) progress reward accumulated so far this episode (the env tracks it).
       * FIXED: penalty = base (a large fixed magnitude). Requires base > max bankable progress return;
         the rollout check picks base.
 
     Applied to ANY of contact / miss / oob (each terminal). Returns a NON-NEGATIVE magnitude (N,) to
-    SUBTRACT; the caller does reward - terminal_penalty(...). Contact uses ``terminal_base``, miss uses
-    ``terminal_miss``, oob uses ``terminal_oob`` (default all equal)."""
+    SUBTRACT; the caller does reward - terminal_penalty(...). Contact uses ``terminal_base`` (+ forfeit),
+    miss uses ``terminal_miss``, oob uses ``terminal_oob`` (default bases all equal)."""
     assert torch is not None
     dt = banked_progress_return.dtype
     coll = gate_collision.to(dt)
     miss = gate_miss.to(dt)
     ob = oob.to(dt)
-    # per-terminal base magnitude (take the max base across the terminals that fired this step)
-    base = (w.terminal_base * coll
-            + w.terminal_miss * miss
-            + w.terminal_oob * ob)
-    # if multiple fire on the same step, the additive form above would double-count; collapse to the
-    # LARGEST single base that fired (a single terminal event, one penalty).
+    # per-terminal base magnitude: the LARGEST single base that fired (a single terminal event pays ONE
+    # penalty; if several fire on a step we take the max, never the sum).
     base = torch.maximum(torch.maximum(w.terminal_base * coll, w.terminal_miss * miss),
                          w.terminal_oob * ob)
     fired = (coll + miss + ob) > 0
     if w.terminal_progress_scaled:
-        forfeit = banked_progress_return.clamp(min=0.0)
+        # FORFEIT the banked progress ONLY on a CONTACT (reward-audit 2026-07-07 -- THE single_gate
+        # root cause). ``banked`` is the undiscounted sum of the SAME r_prog already streamed into the
+        # per-step return, so forfeiting it EXACTLY CANCELS that dense progress. Doing so on a wide MISS
+        # or an OOB -- honest NON-contact outcomes -- cancelled the homing gradient on ~100% of rollouts
+        # AND made "approach then loiter/miss" out-earn committing to a crossing (an unescapable
+        # exploration trap). The sprint-and-clip defence is fully preserved: a frame clip is classified
+        # as gate_collision (env: in_frame -> contact), so clipping STILL forfeits. Miss/oob keep their
+        # banked approach progress and pay ONLY their fixed base.
+        forfeit = banked_progress_return.clamp(min=0.0) * coll
         return (base + forfeit) * fired.to(dt)
     return base * fired.to(dt)
 
@@ -402,17 +522,39 @@ def compute_ego_reward(
     tilt_cos_r33: Tensor, omega: Tensor, action_norm: Tensor, last_action_norm: Tensor,
     vel_world: Tensor, curr_center: Tensor, next_center: Tensor,
     dt: float,
+    area_true: "Tensor | None" = None,
+    dist_to_gate: "Tensor | None" = None,
+    passed_gate_index: "Tensor | None" = None,
+    perp_dist: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
-    banked progress return for the progress-scaled terminal.
+    banked progress return for the progress-scaled terminal (r_prog is the AREA-DISTANCE-scaled progress
+    actually credited, so the banked-forfeit reflects what was earned).
 
     The terminal is applied LAST and SUBTRACTS a magnitude that dominates the banked progress; on a
     terminating step the shaping terms still apply but the terminal swamps them (verified by the
-    rollout check). All quantities are PRIVILEGED GT (never the position-free obs)."""
+    rollout check). All quantities are PRIVILEGED GT (never the position-free obs).
+
+    ``area_true``/``dist_to_gate`` (N,) enable the DISTANCE-GATED area coupling of the POSITIVE progress
+    (Fengyou 2026-07-07): far -> full credit, close + off-axis -> reduced (see area_distance_progress_
+    factor). Backward progress is never scaled (you always pay full for retreating). Omit them (or set
+    w.area_dist_ref_m<=0) to disable. ``passed_gate_index`` (N,) enables the per-gate passage increment."""
     assert torch is not None
     r_prog = segment_progress_reward(s_curr, s_prev, w.progress, w.vmax_mps, dt)
-    r_pass = centering_passage_reward(gate_passed, pass_linf, w_g_half, w.passage)
+    # DISTANCE-GATED area coupling: scale ONLY the positive (forward) progress -- a shallow close-in
+    # approach earns less; a beeline from far earns full; retreat always pays full (never discounted).
+    area_factor = None
+    if area_true is not None and dist_to_gate is not None and w.area_dist_ref_m > 0.0:
+        area_factor = area_distance_progress_factor(area_true, dist_to_gate, w.area_dist_ref_m)
+        r_prog = torch.where(r_prog > 0, r_prog * area_factor, r_prog)
+    r_pass = centering_passage_reward(gate_passed, pass_linf, w_g_half, w.passage,
+                                      passed_gate_index=passed_gate_index,
+                                      passage_increment=w.passage_increment)
+    # DENSE lateral centering: pull onto the current gate-centre segment (off-line -> penalised, on-line
+    # -> ~0). Complements the area coupling (angle); this shapes lateral POSITION toward a centred cross.
+    r_center = (through_centering_reward(perp_dist, w.centering, w.centering_max_m)
+                if perp_dist is not None else torch.zeros_like(r_prog))
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
@@ -420,11 +562,12 @@ def compute_ego_reward(
     r_time = -w.time
     term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w)
 
-    reward = r_prog + r_pass + r_fin + r_cone + r_smooth + r_exit + r_time - term
+    reward = r_prog + r_pass + r_center + r_fin + r_cone + r_smooth + r_exit + r_time - term
 
     components = {
         "prog_reward": float(r_prog.mean()),
         "pass_reward": float(r_pass.mean()),
+        "center_pen": float((-r_center).mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),
@@ -434,5 +577,8 @@ def compute_ego_reward(
         "miss_rate": float(gate_miss.float().mean()),
         "oob_rate": float(oob.float().mean()),
         "total_reward": float(reward.mean()),
+        # mean area-distance coupling multiplier applied to progress this step (1.0 == coupling off /
+        # all far-or-square-on); < 1 == some envs are close AND off-axis (being nudged to square up).
+        "area_factor": float(area_factor.mean()) if area_factor is not None else 1.0,
     }
     return reward, components, r_prog

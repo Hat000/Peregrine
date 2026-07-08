@@ -84,8 +84,10 @@ from inc8_estimator_emul import (
 # when the caller does not (and so a test can drive it end-to-end).
 try:
     from gate_visibility import gate_detectable as _gate_detectable
+    from gate_visibility import gate_apparent_area as _gate_apparent_area
 except Exception:                       # pragma: no cover - allow standalone import ordering
     _gate_detectable = None
+    _gate_apparent_area = None
 
 
 GRAVITY_MAG = float(np.linalg.norm(GRAVITY_NED_NP))     # 9.80665
@@ -126,15 +128,15 @@ class EgoEstimatorConfig:
     gyro_ar1_rho: float = 0.75           # lag-1 autocorrelation of the injected gyro noise
     gyro_sigma: float = 5e-5             # marginal std (rad/s) of the injected gyro noise
 
-    # ---- visible-area (foreshortening) channel (DESIGN.md §5.C) ----
-    # A ROBUST replacement for the dropped PnP normal: the apparent-opening foreshortening ratio in
-    # [0,1] = |cos(view_ray, gate_normal)|. Head-on (view anti-parallel to the through-axis) -> ~1 (a
-    # big square, easy to thread); edge-on -> ~0 (a foreshortened diamond -> the policy learns to square
-    # up first). Computed from GROUND TRUTH (gate normal from gate_yaw; view ray = normalize(gate -
-    # drone)) + a MODEST placeholder noise (much smaller than the dropped normal's angular sigma), a
-    # config knob FLAGGED for real vision measurement (deploy: projected inner-quad area / expected
-    # head-on area at the range from rel_pos). Masked (0) when the gate is not detectable/stale, exactly
-    # like ``confidence``.
+    # ---- visible-area (apparent projected opening area) channel (DESIGN.md §5.C) ----
+    # A ROBUST replacement for the dropped PnP normal: the NORMALIZED apparent opening area in [0,1], 1 ==
+    # square-on. Fengyou 2026-07-07 RECALIBRATION: this is the actual projected inner-opening area a
+    # corner detector reports (gate_visibility.gate_apparent_area), normalized by the square-on area at
+    # the range -> range-invariant, and PERSPECTIVE-accurate (the old |cos(view_ray, gate_normal)| proxy
+    # diverged from the true projected area close-in and would not match the deployed detector). Head-on
+    # -> ~1 (a big square, easy to thread); edge-on -> ~0 (a foreshortened sliver -> the policy learns to
+    # square up first). GT geometry + a MODEST placeholder noise (config knob, flagged for the real vision
+    # measurement). Masked (0) when the gate is not detectable/stale, exactly like ``confidence``.
     visible_area_sigma: float = 0.05     # placeholder additive-noise std on the ratio (config knob)
 
     # ---- init uncertainty (feeds the KF gain shape only; no world state) ----
@@ -160,8 +162,9 @@ class EgoEstimate:
     velocity     (N,3)    drone velocity in the BODY frame (IMU-primary, vision-corrected).
     roll_pitch   (N,2)    gravity-leveled roll, pitch (rad). NO yaw.
     body_rates   (N,3)    body angular rates (rad/s, FLU) with colored gyro noise added.
-    visible_area (N,G)    per-gate foreshortening ratio in [0,1] = |cos(view_ray, gate_normal)| from GT
-                          + modest placeholder noise; 0 == MASKED (not detectable/stale), like confidence.
+    visible_area (N,G)    per-gate NORMALIZED apparent opening area in [0,1] (1 == square-on) -- the
+                          projected inner-opening area a corner detector reports, range-normalized (GT
+                          via gate_apparent_area) + modest noise; 0 == MASKED (not detectable/stale).
     """
     rel_pos: Tensor
     rel_normal: Tensor
@@ -359,7 +362,7 @@ class BatchedEgoEstimator:
     # -------------------------------------------------------------------- the step
     def step(self, drone_pos: Tensor, drone_vel: Tensor, drone_quat: Tensor,
              body_rates: Tensor, dt: float, detectable: Tensor | None = None,
-             prev_quat: Tensor | None = None) -> EgoEstimate:
+             prev_quat: Tensor | None = None, apparent_area: Tensor | None = None) -> EgoEstimate:
         """Advance ALL envs one control step and return the current estimate.
 
         Inputs (Z-up / FLU truth, available in training):
@@ -371,6 +374,10 @@ class BatchedEgoEstimator:
           detectable (N,G)   optional precomputed visibility mask; if None, computed via gate_detectable
           prev_quat  (N,4)   optional previous attitude for the ego-propagation rotation (defaults to
                              the current attitude -> a small-rotation ego-propagation)
+          apparent_area (N,G) optional precomputed NORMALIZED projected inner-opening area (in [0,1],
+                             square-on==1) for the visible_area channel -- the env passes it computed with
+                             the EMULATED (flipped) camera so the obs matches what the detector sees; if
+                             None it is computed here from the raw drone attitude (gate_apparent_area).
 
         Returns an ``EgoEstimate``. NO world position / heading anywhere in the returned tensors or state.
         """
@@ -472,21 +479,21 @@ class BatchedEgoEstimator:
         self._rel_normal = torch.where(acc3, noisy_normal, self._rel_normal)
         self._normal_sig = torch.where(accepted, normal_sig, self._normal_sig)
 
-        # ---- visible-area (foreshortening) channel: ROBUST area cue from GT + modest noise ----
-        # ratio = |cos(view_ray, gate_normal)| in [0,1]. view_ray = normalize(gate_pos - drone_pos)
-        # (WORLD Z-up); gate_normal = the gate downrange/through-axis (WORLD Z-up). Both are world unit
-        # vectors, so |dot| is a scalar invariant to a global translation OR yaw (a rotation applied to
-        # both leaves the dot unchanged) -- no world coordinate leaks. Head-on view (anti-parallel to the
-        # normal) -> |cos|=1 (big square); edge-on -> 0 (foreshortened). Placeholder additive noise is
-        # SMALL (visible_area_sigma, a config knob flagged for real vision measurement), then clipped to
-        # [0,1]. Only refreshed on an ACCEPTED fix (a real detection measures the apparent opening);
-        # otherwise it holds, and it is MASKED to 0 in estimate() exactly like confidence when stale.
-        view_ray_world = self.gate_pos - drone_pos.unsqueeze(1)            # (N,G,3) world Z-up lever
-        view_ray_world = view_ray_world / torch.linalg.norm(
-            view_ray_world, dim=-1, keepdim=True).clamp(min=1e-9)
-        normal_world = self.R_world_gate[..., :, 1]                        # (N,G,3) downrange (through-axis)
-        cos_ang = (view_ray_world * normal_world).sum(dim=-1)             # (N,G) cos(view, normal)
-        area_true = cos_ang.abs()                                          # foreshortening ratio in [0,1]
+        # ---- visible-area (APPARENT PROJECTED OPENING area) channel: the vision-faithful "how square-on"
+        # cue (Fengyou 2026-07-07 recalibration). ratio in [0,1], 1 == perfectly square-on -- the
+        # NORMALIZED image-space area of the projected inner opening (what a corner detector actually
+        # reports), NOT the old |cos(view_ray, gate_normal)| proxy (which diverges from the true projected
+        # area close-in, where perspective matters, and would not match the deployed detector's output).
+        # The env passes ``apparent_area`` computed with the EMULATED (flipped) camera so the obs matches
+        # the camera the detector sees through (and equals the reward's privileged area); a standalone
+        # caller falls back to the raw attitude. Range-normalized -> invariant to distance. + modest
+        # placeholder noise, refreshed only on an ACCEPTED fix, masked to 0 in estimate() when stale.
+        if apparent_area is None:
+            if _gate_apparent_area is None:                               # pragma: no cover
+                raise RuntimeError("gate_visibility.gate_apparent_area unavailable; pass apparent_area=")
+            apparent_area = _gate_apparent_area(drone_pos, drone_quat, self.gate_pos, self.gate_yaw,
+                                                is_quat=True)
+        area_true = apparent_area                                          # (N,G) in [0,1], square-on==1
         area_noisy = (area_true + self.cfg.visible_area_sigma * self._randn(N, G)).clamp(0.0, 1.0)
         self._visible_area = torch.where(accepted, area_noisy, self._visible_area)
 

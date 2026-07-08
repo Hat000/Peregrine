@@ -441,13 +441,16 @@ def test_e_no_world_state_attributes():
 
 
 # ================================================================================================
-# (f) VISIBLE_AREA (foreshortening) channel: |cos(view_ray, gate_normal)| from GT + modest noise,
-#     ~1 head-on, small at a sharp angle, MASKED (0) when not detectable/stale.
+# (f) VISIBLE_AREA (apparent projected opening area) channel: normalized projected inner-opening area
+#     from GT + modest noise, ~1 head-on, small at a sharp angle, MASKED (0) when not detectable/stale.
 # ================================================================================================
 def test_f_visible_area_headon_vs_sharp_angle_and_mask():
-    """visible_area = |cos(view_ray, gate_normal)| in [0,1]. Approaching a gate ALONG its through-axis
-    (head-on) -> ~1 (big square). Approaching at a sharp angle to the normal -> small (foreshortened).
-    A gate that is not detectable is MASKED to visible_area 0 (like confidence)."""
+    """visible_area = the NORMALIZED apparent projected opening area in [0,1] (Fengyou 2026-07-07
+    recalibration, gate_apparent_area -- NOT the old |cos| proxy). Approaching a gate ALONG its
+    through-axis (head-on) -> ~1 (a full square). A sharp angle to the normal foreshortens the projected
+    opening -> smaller. A gate that is not detectable is MASKED to visible_area 0 (like confidence).
+    The projected area is FLATTER than |cos| near square-on (tolerant of small misalignments) and drops
+    off for genuinely shallow approaches -- the standalone path here uses the raw-attitude camera."""
     N = 20000
     # HEAD-ON: gate straight ahead (yaw=0 -> normal along +x world), drone at origin looking +x.
     # view_ray = normalize(gate - drone) = +x; gate normal (downrange) = +x -> |cos| = 1.
@@ -476,9 +479,11 @@ def test_f_visible_area_headon_vs_sharp_angle_and_mask():
     est2.reset_idx(torch.arange(N), pos, vel, q)
     out2 = est2.step(pos, vel, q, torch.zeros(N, 3, dtype=DT), dt=1.0 / 30.0, detectable=detect, prev_quat=q)
     va_sharp = out2.visible_area[:, 0].mean().item()
-    print(f"[f] sharp-angle (60 deg) visible_area mean = {va_sharp:.3f} (target ~0.5, < head-on)")
+    print(f"[f] sharp-angle (60 deg) visible_area mean = {va_sharp:.3f} (projected-area ~0.60, < head-on)")
     assert va_sharp < mean_headon, (va_sharp, mean_headon)      # foreshortened -> smaller
-    assert abs(va_sharp - 0.5) < 0.1, va_sharp                  # |cos 60| = 0.5
+    # projected opening area at 60 deg tilt (~0.60; higher than |cos60|=0.5 -- perspective, not a cosine):
+    # clearly foreshortened (well below head-on) but not as steep as a pure cosine.
+    assert 0.45 < va_sharp < 0.75, va_sharp
 
     # MASK: a NON-detectable gate -> visible_area 0 (stale mask), same as confidence.
     est3 = _make_est(N, gate_pos, gate_yaw, cfg, seed=23)

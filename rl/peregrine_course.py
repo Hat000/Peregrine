@@ -136,6 +136,15 @@ DEFAULT_COURSE_RANGES = dict(
     spawn_dist_m=(18.0, 28.0),    # standing-start pad -> gate 0 horizontal; VQ1 23.3
     spawn_below_g0_m=(0.5, 2.5),  # gate-0 centre this far ABOVE the pad; VQ1 1.41
     min_pair_dist_m=10.0,         # reject layouts with any two gates (or a gate and the pad) closer
+    spawn_heading=None,           # segment-0 world heading. None -> random in (-pi, pi] (the VQ1/inc8
+                                  # behaviour: courses fan around the pad). A FIXED value -> every course
+                                  # starts along that heading (Fengyou 2026-07-07: for the EGOCENTRIC
+                                  # position-free policy the global course heading is REDUNDANT -- the obs
+                                  # is heading-invariant -- so the random fan adds no training signal and
+                                  # just scatters the world-frame render into a confusing circle. Fixing
+                                  # it (ego sets 0.0) leaves the egocentric distribution IDENTICAL while
+                                  # placing every course ahead of the pad. The relative gate placement
+                                  # still varies via the spawn attitude jitter + the turn/drop walk.)
 )
 
 # VQ1 standing-start pad (Z-up), from the S1.2 live recordings (see peregrine_racing.py).
@@ -180,8 +189,13 @@ def sample_courses(n, device="cpu", generator=None, **overrides):
         return lo + (hi - lo) * torch.rand(*shape, device=device, generator=generator)
 
     def draw(m):
-        # heading random walk: heading[k] = direction of segment k (segment 0 = pad->gate0)
-        h0 = U(-np.pi, np.pi, m, 1)
+        # heading random walk: heading[k] = direction of segment k (segment 0 = pad->gate0). The
+        # segment-0 heading is random (VQ1/inc8) unless spawn_heading is fixed (egocentric: heading is a
+        # redundant global DOF -> pin it so the world-frame layout is not a confusing circle).
+        if R["spawn_heading"] is None:
+            h0 = U(-np.pi, np.pi, m, 1)
+        else:
+            h0 = torch.full((m, 1), float(R["spawn_heading"]), device=device)
         turns = U(-R["turn_rad"], R["turn_rad"], m, G - 1)
         headings = torch.cat([h0, h0 + torch.cumsum(turns, dim=1)], dim=1)          # (m, G)
         seg_len = torch.empty(m, G, device=device)
