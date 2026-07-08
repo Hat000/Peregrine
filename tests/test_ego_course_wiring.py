@@ -43,10 +43,7 @@ def _stage_cfg(stage: str) -> _Cfg:
     """Build a cfg bag carrying exactly the course_* keys the curriculum sets for ``stage`` (mirrors
     what hydra materializes from the +env.course_* tokens render_overrides emits)."""
     d = CUR.STAGES[stage]
-    keys = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi",
-            "course_drop_lo", "course_drop_hi",
-            "course_spawn_dist_lo", "course_spawn_dist_hi", "course_spawn_heading")
-    return _Cfg(**{k: d[k] for k in keys if k in d})
+    return _Cfg(**{k: d[k] for k in CUR.COURSE_SAMPLER_KEYS if k in d})
 
 
 # ================================================================================================
@@ -67,6 +64,10 @@ def test_resolve_maps_curriculum_keys_to_sampler_names():
     ov = C.resolve_course_overrides(_Cfg(course_n_gates=1, course_spawn_dist_lo=10.0,
                                          course_spawn_dist_hi=20.0, course_spawn_heading=0.0))
     assert ov == {"n_gates": 1, "spawn_dist_m": (10.0, 20.0), "spawn_heading": 0.0}
+    # the gate-0 HEIGHT band maps onto spawn_below_g0_m (Fengyou 2026-07-08 varied-gate stage).
+    ov = C.resolve_course_overrides(_Cfg(course_n_gates=1, course_spawn_below_g0_lo=-6.0,
+                                         course_spawn_below_g0_hi=6.0))
+    assert ov == {"n_gates": 1, "spawn_below_g0_m": (-6.0, 6.0)}
     # a half-specified spawn-distance pair raises (same guard as seg_len/drop).
     with pytest.raises(ValueError):
         C.resolve_course_overrides(_Cfg(course_spawn_dist_lo=10.0))

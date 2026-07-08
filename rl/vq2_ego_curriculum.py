@@ -185,6 +185,22 @@ STAGES: dict[str, dict] = {
         "course_drop_lo": 0.0, "course_drop_hi": 0.0,                 # LEVEL gate (no climb) -- isolate
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
     },
+    # VARIED-GATE STAGE (Fengyou 2026-07-08): the gate spawns at VARIABLE distance (10-20 m) AND VARIABLE
+    # HEIGHT (+-6 m via spawn_below_g0) so it appears at different positions in the FOV every episode. Two
+    # purposes: (1) forces the policy to USE its inputs (the gate rel_pos) -- it can't memorise one static
+    # open-loop trajectory the way a fixed gate allows; (2) UN-BURIES the vertical GEOMETRICALLY -- a gate
+    # at varying heights makes the distance-to-gate's vertical component non-trivial from the start (the
+    # flat same-height gate is the degenerate worst case for the floor-dive). ISOTROPIC reward inherited
+    # from _COMMON (rw_progress_vert_weight=1) so this is a CLEAN test of whether geometry variation ALONE
+    # fixes the dive; override +env.rw_progress_vert_weight=25 to test the geometry+anisotropic combo.
+    # OFF-LADDER; run standalone via STAGES=single_gate_varied.
+    "single_gate_varied": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 10.0, "course_spawn_dist_hi": 20.0,        # varied range
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,  # gate +-6 m in HEIGHT (the un-burier)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
     # ANISOTROPIC VERTICAL-WEIGHT LEVER (Fengyou greenlight 2026-07-08): the floor-dive fix that SUPERSEDES
     # the MPCC-clean contouring below (the PBRS-rate contouring was too weak -- policy-invariant, couldn't
     # escape the sink basin, and a pure additive line-bonus HOVER-FARMS: strong-enough-to-hold == strong-
@@ -292,6 +308,7 @@ STAGE_ORDER = ("single_gate", "handoff_drill", "dual_gate_full", "multi_gate")
 COURSE_SAMPLER_KEYS = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi",
                        "course_drop_lo", "course_drop_hi",
                        "course_spawn_dist_lo", "course_spawn_dist_hi",
+                       "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
                        "course_spawn_heading")
 
 # The reward knobs that are HARD-STAGE-ONLY (must NEVER appear in _COMMON / never hit single_gate or

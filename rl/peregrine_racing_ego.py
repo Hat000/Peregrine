@@ -112,6 +112,12 @@ def resolve_course_overrides(cfg) -> dict:
       course_seg_len_lo,   course_seg_len_hi      -> seg_len_m    (lo, hi)   [both must be set together]
       course_drop_lo,      course_drop_hi         -> drop_m       (lo, hi)   [both must be set together]
       course_spawn_dist_lo,course_spawn_dist_hi   -> spawn_dist_m (lo, hi)   [both must be set together]
+      course_spawn_below_g0_lo, course_spawn_below_g0_hi -> spawn_below_g0_m (lo, hi) [gate-0 HEIGHT band;
+                                                    +ve == gate ABOVE the pad. Vary it to un-bury the
+                                                    vertical signal geometrically -- a gate at varying
+                                                    heights makes the distance-to-gate's vertical component
+                                                    non-trivial from the start (the flat same-height gate is
+                                                    the degenerate worst case for the floor-dive).]
       course_spawn_heading                        -> spawn_heading (scalar)  [pins segment-0 heading]
 
     ``spawn_dist_m`` is the standing-start pad -> gate-0 horizontal distance (Fengyou 2026-07-07: keep
@@ -133,6 +139,8 @@ def resolve_course_overrides(cfg) -> dict:
     out.update(_resolve_pair(cfg, "course_seg_len_lo", "course_seg_len_hi", "seg_len_m"))
     out.update(_resolve_pair(cfg, "course_drop_lo", "course_drop_hi", "drop_m"))
     out.update(_resolve_pair(cfg, "course_spawn_dist_lo", "course_spawn_dist_hi", "spawn_dist_m"))
+    out.update(_resolve_pair(cfg, "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
+                             "spawn_below_g0_m"))
     # course_spawn_heading (scalar): pin the segment-0 world heading so the egocentric courses do not fan
     # into a redundant circle (the obs is heading-invariant). Unset -> the sampler's random heading.
     spawn_heading = getattr(cfg, "course_spawn_heading", None)

@@ -154,12 +154,27 @@ def test_render_overrides_unknown_stage_raises():
 
 
 def test_course_sampler_keys_documented():
-    # the sampler-key contract (matches the inc8 curriculum convention; + the spawn-distance pair and the
-    # fixed spawn-heading scalar added 2026-07-07 for the closer first gate + de-circled render).
+    # the sampler-key contract (matches the inc8 curriculum convention; + the spawn-distance pair, the
+    # fixed spawn-heading scalar, and the gate-0 HEIGHT band added 2026-07-08 for the varied-gate stage).
     assert C.COURSE_SAMPLER_KEYS == ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi",
                                      "course_drop_lo", "course_drop_hi",
                                      "course_spawn_dist_lo", "course_spawn_dist_hi",
+                                     "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
                                      "course_spawn_heading")
+
+
+def test_single_gate_varied_varies_position_and_height_offladder():
+    """The varied-gate stage: OFF-LADDER, ONE gate at VARIABLE distance (10-20 m) AND VARIABLE height
+    (+-6 m via spawn_below_g0) so it lands at different FOV positions each episode -- forces input-use +
+    un-buries the vertical geometrically. Isotropic reward inherited (a clean geometry-only test)."""
+    assert "single_gate_varied" not in C.STAGE_ORDER              # off-ladder, standalone only
+    s = C.STAGES["single_gate_varied"]
+    assert s["course_n_gates"] == 1
+    assert s["course_spawn_dist_lo"] == 10.0 and s["course_spawn_dist_hi"] == 20.0   # varied range
+    assert s["course_spawn_below_g0_lo"] == -6.0 and s["course_spawn_below_g0_hi"] == 6.0  # +-6 m height
+    assert s["rw_progress_vert_weight"] == 1.0        # ISOTROPIC (inherited) -> geometry-only test
+    toks = C.render_overrides("single_gate_varied")
+    assert "+env.course_spawn_below_g0_lo=-6.0" in toks and "+env.course_spawn_below_g0_hi=6.0" in toks
 
 
 def test_common_pins_fixed_spawn_heading():
