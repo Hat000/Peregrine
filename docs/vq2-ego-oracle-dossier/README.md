@@ -23,19 +23,24 @@ Written 2026-07-08 by the RL commander (Claude, Opus 4.8) for Fengyou. Repo: `Pe
 
 - **Goal:** ≥90% single-gate *thread* rate (clean pass through the aperture, zero contact),
   as a gate before multi-gate work.
-- **Best policy to date:** `vglpan` — **~20% thread** (trusted in-training metric, stochastic + domain
-  randomization), mean crossing offset **~0.88 m** L-inf.
+- **Best policy to date:** `vglpan` — **~20% thread** (trusted in-training metric), and **22.6%
+  deterministic** (faithful `_run_det_eval` — see below), mean crossing offset **~0.88 m** L-inf.
 - **The trusted diagnosis (from the in-loop box-exit, not the broken offline harness): a pure
   centring problem.** ~100% of drones reach the gate and cross the plane; **71% clip the frame**
   (cross at L-inf 0.75–1.36 m, *just* outside the aperture); ~9% miss wide; oob≈0, floor≈0. There is
   **no reach-rate problem** — the earlier "46% never reach" was an eval-harness artifact.
-- **The real target is sub-0.42 m, not sub-0.75 m:** the 0.28–0.38 m body radius shrinks the 0.75 m
-  geometric aperture to a ~0.42 m clean-pass window, so a 0.5–0.7 m crossing still clips. Pulling the
-  0.88 m mean into ~0.42 m converts most of the 71% frame-clip reservoir into threads.
-- **Central unsolved questions:** (a) how to get the crossing mean from ~0.88 m to sub-0.42 m for the
-  *deployed deterministic* policy — which we **cannot currently measure faithfully** (no working
-  deterministic eval); (b) why the policy **collapses whenever a warm-started reward is changed
-  structurally** (observed 6×), forcing fresh runs each iteration.
+- **NO determinism gap:** the deployed (deterministic-mean) policy threads **22.6%** ≥ the stochastic
+  20% — the held exploration noise was mildly *hurting*. The "deployed policy is much worse" fear (from
+  the broken harness's 0%) is false. Every run now self-reports a faithful `DET_EVAL[...]`.
+- **The centring floor is CONTROL-limited at ~0.88 m — reward shaping is spent.** More training, a
+  tighter reward zero (`vglp05`→worse), and a sharper noise floor (`vglpshp`→collapse) all fail; at the
+  0.75 m end zero a 0.88 m crossing already earns a *negative* reward and the policy still can't tighten.
+- **The real target is sub-0.42 m** (body radius shrinks the 0.75 m aperture), so the fix is to *lower
+  the control floor*, not tighten the reward past what control can hit.
+- **Central live question:** is the ~0.88 m floor caused by **speed** (crossing ~8 m/s, too fast to
+  thread 0.42 m — under test via `rw_vmax_mps` caps, `vglpsl*`), by **perception** (estimator noise),
+  or does it need an **arrive-head-on / low-lateral-velocity** term? Plus the standing puzzle: the
+  policy **collapses whenever a warm-started reward is changed structurally** (observed 6×).
 
 ---
 

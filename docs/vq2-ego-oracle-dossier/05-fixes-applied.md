@@ -48,6 +48,17 @@ Each entry: what it is, why we built it, outcome.
 - **appo/privileged-critic assert + camera-flip (RC1) + warm-start reset-logstd + critic-warmup.**
   Infrastructure guards, all held (see [02]).
 
+- **Faithful deterministic eval (`_run_det_eval` in `peregrine_train_ego.py`).** After the training
+  loop, runs the policy `test=True` on the **live** training env (the exact instance that produced the
+  trusted metrics) and prints a greppable `DET_EVAL[...] thread/collision/miss/oob` line. Why: the
+  training box-exit is stochastic and the standalone offline harness diverges badly (46% oob vs
+  training's 0.05%), so we had no trustworthy deterministic (deployed-policy) measurement. Faithful by
+  construction; runs post-training so it cannot affect the checkpoint/result; auto-on
+  (`+eval_det_steps=0` disables). To evaluate an existing checkpoint, launch a 5-update warm-start run
+  (`n_updates=5` < the critic-warmup 100 → actor frozen → the loaded mean is evaluated unchanged).
+  Held — validated that its oob (0.03%) matches training, and it revealed there is **no determinism
+  gap** (vglpan deterministic 22.6% ≥ stochastic 20%). See [00-CORRECTION](00-CORRECTION-eval-harness.md).
+
 ## Built but ABANDONED (back-fired)
 
 - **`frame_clip_is_miss` (frame-moat fix).** Make a frame-clip forfeit no banked progress (nets == a

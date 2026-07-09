@@ -1,5 +1,12 @@
 # 08 — Ideas Rejected, and Everything We Never Tried / Never Saw
 
+> **UPDATE (2026-07-09) — several items below have since moved.** Newly **rejected** (tested, failed):
+> the sub-aperture anneal (`vglp05`, zero→0.5 → *worse*, 1.7 m) and the sharper endgame noise floor
+> (`vglpshp`, 0.015 → collapse). Newly **measured/resolved**: the deterministic policy (faithful
+> `_run_det_eval` — deployed 22.6%, **no determinism gap**); the reach-rate "gap" was an **eval-harness
+> artifact** (training oob 0.05%, not 46%), so Part B's "reach-rate breakdown" is moot. Now **being
+> tried**: the speed cap (`rw_vmax_mps` → 5/3, `vglpsl*`). See [04] Era 6 and [00-CORRECTION].
+
 ## Part A — Ideas we deliberately rejected (with why)
 
 - **Gate-normal in the observation.** We *had* a gate-normal channel and **removed it**: perceiving the

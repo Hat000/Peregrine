@@ -61,11 +61,13 @@ into geometry, not the reward weight.**
 `vgvf` (line progress) beat `vgvfh` (isotropic homing + line contouring): the line arcs to gate height
 and arrives horizontal; isotropic homing pulls diagonal-to-centre and permits the sink.
 
-### L10. The deterministic mean can't sharpen below the held exploration noise.
+### L10. There is essentially NO determinism gap (corrected).
 
-The held std floor is a structural precision cap on the deployed policy. But the determinism gap is
-*modest* (16%→10%) at the floors we used — noise is **not** the dominant blocker (we initially over-
-weighted it).
+We initially feared the deployed (deterministic-mean) policy was far worse than the stochastic training
+number. The faithful `_run_det_eval` refuted this: vglpan deterministic **22.6%** ≥ stochastic **20%**
+(oob 0.03%, matching training). The held exploration noise was mildly *hurting*, not helping. So the
+noise floor is **not** a blocker to close a deployment gap — and sharpening it further *collapses* the
+endgame ([L14], `vglpshp`). (The earlier "16%→10% modest gap" was itself a broken-harness artifact.)
 
 ### L11. Turning DR fully off is not "nominal deployment."
 
@@ -83,3 +85,21 @@ render was the source of the ~"successes" that were actually noise.
 `success == exit_thread == n_passed_gates` agree exactly; `pass_offset_m < 0.75`. A 0% is genuine
 non-arrival, not a blind classifier. (We *did* have a reconstruction bug in the *offline* hit-map — we
 sliced off the crossing step and had to extrapolate — but the *in-training* counting is verified.)
+
+### L14. The ~0.88 m crossing is a CONTROL-precision floor, not a reward/noise/convergence limit.
+
+Three independent pushes all fail to tighten it: more training (`vglpan6` == `vglpan`), a tighter
+reward zero (`vglp05` 4→0.5 → **worse**, 1.7 m), a sharper noise floor (`vglpshp` → **collapse**).
+Decisive: at the working end zero of 0.75 m, a 0.88 m crossing *already* earns a **negative** parabola
+(`≈ −7.6`) — the reward is already pushing tighter and the policy **cannot comply**. → Further reward
+shaping is spent; the lever is now **control / speed / perception**. Leading hypothesis: the policy
+crosses too fast (~8 m/s) to thread a ~0.42 m window because progress pays closing-rate up to
+`rw_vmax_mps = 39 m/s`. Under test (`vglpsl5`/`vglpsl3`, capped rewarded speed).
+
+### L15. The reward geometry (0.75 m) and the real target (0.42 m) disagree — but you can't just retarget.
+
+The body radius (0.28–0.38 m) makes the *effective* clean-pass ~0.42 m, so a 0.6–0.7 m crossing clips
+even though it's inside the 0.75 m geometric aperture. Intuition says anneal the reward zero to ~0.42 m —
+but `vglp05` shows that *back-fires* when the policy is control-limited above that (it just punishes
+achievable crossings and destabilises). Closing the reward-vs-body gap requires first *lowering the
+control floor* (slow down / better perception), not tightening the reward past what control can hit.

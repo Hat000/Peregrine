@@ -155,7 +155,58 @@ and reconstructed the gate-frame crossing point per episode:
 | **stochastic** (training metric) | thread **16%**, vert-bias +1.2 m | thread 1%, vert-bias +3.2 m |
 | **deterministic** (deployed mean) | thread **10%**, vert-bias +1.6 m | thread **0%**, vert-bias +3.2 m |
 
-Findings: the training "~20%" is **real** (16% at stoch+DR-on); the determinism gap is modest
-(16%→10%). The **DR-off column is a sensitivity probe, not deployment** (removes modeled aero, latency
-→ OOD 0). In the realistic (DR-on) regime: **~46% of drones never reach the gate**, and arriving
-crossings scatter ~1–2 m with a mild vertical high-bias against the ~0.42 m effective aperture.
+Findings (AS WE BELIEVED THEM AT THE TIME): the training "~20%" is real; DR-off is a sensitivity probe;
+in DR-on ~46% never reach the gate; crossings scatter with a vertical high-bias.
+
+> 🛑 **RETRACTED — see [00-CORRECTION](00-CORRECTION-eval-harness.md).** The rollout harness that
+> produced this table is unfaithful (it reports 46% oob where the real training env logs 0.05%). The
+> "46% never reach", "+3.2 m high-bias", and these 2×2 numbers are **artifacts**. The trusted picture
+> is the in-loop box-exit (Era 6): **20% thread, 71% frame-clip, ~0% oob/floor, xoff 0.88 m — a pure
+> centring problem.**
+
+---
+
+## Era 6 — Faithful evaluation, the "no determinism gap" result, and the control-limited pivot
+
+After Era 5 we stopped trusting the offline harness and re-derived from the authoritative in-training
+box-exit. That changed the diagnosis and the strategy.
+
+**Trusted training truth for `vglpan`** (in-loop, stochastic, DR-on, step 3990):
+`success = exit_thread = 19.9%`, `collision (frame-clip) = 71.3%`, `plane-miss = 8.7%`,
+`oob = 0.05%`, `floor ≈ 0`, `timeout ≈ 0`, `xoff = 0.88 m`. → **pure centring problem; no reach-rate
+problem** (the Era-5 "46%" was a harness artifact).
+
+- 🟢 **`_run_det_eval` (fix, not a run):** added a post-training deterministic eval to
+  `peregrine_train_ego.py` — runs the policy `test=True` on the LIVE env and prints `DET_EVAL[...]`.
+  Faithful by construction; auto-on for all future runs; evaluate an old ckpt via a 5-update warm run
+  (actor frozen by the critic-warmup). See [05].
+- 🟢 **`vglpanEV`** — faithful deterministic eval of vglpan (5-update frozen-actor warm run).
+  **`DET_EVAL: thread 22.6%, frame-clip 68.4%, miss 8.9%, oob 0.03%`** (~20k episodes). 🚩 **oob 0.03%
+  matches training (0.05%), NOT the broken harness's 46%** — confirms `_run_det_eval` faithful and
+  `ego_render_rollout` broken. 🚩 **deterministic (22.6%) ≥ stochastic (20%): essentially NO
+  determinism gap** — the held noise was mildly *hurting*. The deployed policy is as good as training.
+- 🔴 **`vglp05`** — fresh anneal (warm vglp4), zero **4→0.5** (target the effective aperture, contra the
+  earlier L7 worry, since a 0.6 m crossing clips anyway). Result: xoff **1.7 m, thread 7%** — *worse*
+  than vglpan (0.88 m, 20%). **Over-tightening the reward zero back-fires** (crossings the policy can't
+  achieve get strongly-negative parabola → destabilises → crosses wider).
+- 🔴 **`vglpshp`** — fresh anneal + sharper endgame noise floor **0.03→0.015**. **End-collapsed**
+  (xoff 9.9, thread 0). Over-sharpening destabilises the endgame (anneal-into-worse).
+
+**Conclusion — the ~0.88 m crossing is a CONTROL-PRECISION floor, not a reward/noise/convergence
+limit** (answers [09] Q5):
+- more training doesn't help (`vglpan6` == `vglpan`);
+- a tighter reward zero makes it worse (`vglp05`);
+- a sharper noise floor collapses it (`vglpshp`);
+- **decisive:** at vglpan's end zero of 0.75 m, a 0.88 m crossing *already* earns a **negative**
+  parabola (`20·(1−(0.88/0.75)²) ≈ −7.6`) — the reward is already punishing it and the policy still
+  cannot tighten. Reward shaping is spent.
+
+**Pivot to control/speed/perception.** Leading hypothesis: the drone crosses at ~8 m/s (≈12 m in
+~1.5 s) — too fast to thread a ~0.42 m window. The progress reward pays closing-rate up to
+`rw_vmax_mps = 39 m/s`, a standing speed incentive.
+
+- 🎯 **`vglpsl5` / `vglpsl3` (IN FLIGHT, 2026-07-09):** the vglpan recipe with the rewarded-speed cap
+  `rw_vmax_mps` lowered to **5** and **3 m/s** (slow-lap for precision). Both auto-print `DET_EVAL`.
+  Watcher `bf3jri3ft`. **Fork:** slower → tighter xoff ⇒ speed is the lever (ramp the slow-lap toward
+  the 0.42 m target and 90%); no change ⇒ the limit is perception (ablate estimator noise) or the
+  policy needs an arrive-head-on / low-lateral-velocity term.

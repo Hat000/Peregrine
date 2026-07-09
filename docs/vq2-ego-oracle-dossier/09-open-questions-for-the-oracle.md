@@ -1,7 +1,25 @@
 # 09 — Open Questions for the Oracle (ranked)
 
-The core ask: **how do we get a single egocentric gate from ~16% (realistic-regime) thread to ≥90%
-for the deployed deterministic policy, zero contact?** Broken into the questions we most want answered.
+The core ask: **how do we get a single egocentric gate from ~20% thread to ≥90% for the deployed
+policy, zero contact?**
+
+> **UPDATE (2026-07-09) — the question list below has shifted; read this first.**
+> - **Q1 (reach rate) is DISSOLVED** — the "46% never reach" was an eval-harness artifact; the real
+>   env has ~0% oob/floor, ~100% reach. There is no reach-rate front.
+> - **Q4 (deployment eval) is partly ANSWERED** — a faithful in-training deterministic eval now exists
+>   (`_run_det_eval`); the deployed policy threads **22.6%** (≈ training; **no determinism gap**). The
+>   remaining part of Q4 (does the competition sim match our DR distribution?) still stands.
+> - **Q5 (control- vs reward-limited) is ANSWERED: CONTROL-limited.** More training, tighter reward
+>   zero, and sharper noise all fail to beat ~0.88 m; the reward is already negative at 0.88 m and the
+>   policy can't comply. Reward shaping is spent.
+> - **The live question is now the control/speed/perception fork** (was Q5's implication): is the
+>   ~0.88 m floor caused by **speed** (crossing too fast to thread 0.42 m — under test via
+>   `rw_vmax_mps` caps), by **perception** (estimator noise caps precision — Q6), or does it need an
+>   **arrive-head-on / low-lateral-velocity** term? **This is the top question now.** Q2 (0.75 vs
+>   0.42 m reward geometry), Q3 (warm-start fragility), Q6 (obs sufficiency), Q7 (global strategy)
+>   below all still stand.
+
+Original ranked questions (kept for the record; re-prioritise per the update above):
 
 ## Q1 — Reach rate (the biggest, least-explored lever)
 
