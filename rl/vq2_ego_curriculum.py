@@ -124,18 +124,25 @@ _COMMON = {
     # penalty is disabled. Kept as a 0-knob for A/B, not deleted.
     "rw_centering": 0.0,             # OFF (superseded by rw_progress_to_center; the penalty form back-fired)
     "rw_centering_max_m": 2.0,       # (unused while rw_centering==0) clamp (m) on the perpendicular offset
-    "rw_terminal_base": 200.0,       # kill-on-contact base magnitude (CONTACT stays catastrophic)
-    # MISS base lowered 30 -> 8 (reward-audit 2026-07-07). Now that a miss KEEPS its banked approach
-    # progress (the forfeit is contact-only), the miss base must be <= the banked approach (~20 at the
-    # 10 m spawn end, ~30 at 20 m) so an HONEST close-but-missed attempt reliably nets POSITIVE vs
-    # hovering -- restoring the documented "~hover, forgiving" intent (30 was ~4x the true discounted
-    # hover cost, and at the short-spawn end an attempt still lost to hover). Pairs with the forfeit fix.
-    "rw_terminal_miss": 8.0,         # fly-by MISS (wide gate attempt, stays in-arena): ~hover -> forgiving
+    # TERMINAL EQUALIZATION (Fengyou 2026-07-08): if a wide MISS is punished FAR less than a gate CONTACT,
+    # bailing wide becomes a strictly-safer play than committing to thread -> the policy learns to AVOID the
+    # gate (the risk). Fix: bring the miss and contact BASES to parity (both catastrophic DQ-scale) so
+    # bailing is no longer a cheap escape. CONTACT lowered 200 -> 100 (Fengyou-authorized: -100 is still
+    # unmistakably a DQ-level penalty, and it buys headroom to raise the miss toward it). MISS raised 8 ->
+    # 100 to MATCH. The residual advantage of a miss over a contact is now ONLY the contact's banked-
+    # progress FORFEIT (~30 max on a single 8-15 m gate) -- the irreducible sprint-and-clip defence, which
+    # must stay contact-only -- shrinking the old bail-incentive gap (~252) to ~banked (~30). Ordering
+    # holds: clean pass > miss > contact.
+    "rw_terminal_base": 100.0,       # kill-on-contact base (DQ-scale; lowered 200->100 for miss-parity)
+    "rw_terminal_miss": 100.0,       # fly-by MISS raised 8->100 == contact base (no cheap bail)
     # OOB (leaving the ARENA) STAYS discouraged at 200 -- distinct from MISS. Measured 2026-07-07: at
     # oob=30 the drone had NO pressure to stay in bounds and 96% of episodes OOB'd at ~2 s (l_episode
     # 2 s vs the 33 s in-bounds hover at oob=200), never reaching the gate. The fix forgives the GATE
     # ATTEMPT (miss), NOT leaving the arena. NOTE: a below-FLOOR dive is NOT oob -- the ego env now
-    # reclassifies it as a CONTACT (terminal_base=200, a crash/DQ), so oob here = lateral/ceiling only.
+    # reclassifies it as a CONTACT (terminal_base=100, a crash/DQ), so oob here = lateral/ceiling only.
+    # OOB kept at 200 (NOT lowered to the new 100 miss/contact parity): it is the anti-arena-exit wall
+    # (at oob=30, 96% of episodes OOB'd at ~2 s), a separate failure mode from the gate-avoidance one the
+    # miss/contact parity addresses; the GVF line lives inside the arena so this rarely binds anyway.
     "rw_terminal_oob": 200.0,        # out-of-bounds = leaving the arena -> stays discouraged (NOT ~hover)
     "rw_terminal_progress_scaled": True,  # forfeit banked progress + base -> sprint-and-clip never wins
     "rw_exit_align": 0.0,           # next-gate exit-line OFF on easy stages (ON only hard stages below)
@@ -235,6 +242,487 @@ STAGES: dict[str, dict] = {
         "rw_progress_to_center": False,   # ALONG-TRACK LAG (decoupled forward drive)
         "rw_corridor": 4.0,               # SEPARATE PBRS vertical/lateral homing (raised from the failed k=2)
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # VECTOR-FIELD (GVF) RACING LINE on the VARIED gate (Fengyou greenlight 2026-07-08 -- branch 3 of the
+    # 3-branch split; aniso=fallback, mpcc=hard-line, THIS=vector field). Builds an ONLINE non-optimal
+    # HERMITE line spawn->gate that arrives HEAD-ON (tangent == gate normal), then measures BOTH reward
+    # potentials against that CURVED line instead of the straight segment: progress = arc length of the
+    # nearest point (rw_progress_to_center=False routes _progress_scalar to the line's s), contouring =
+    # cross-track distance to the line (rw_corridor). This IS Fengyou's dot(v, F) field -- F = line tangent
+    # + k*(cross-track pull) -- expressed as the two telescoping potentials (farm-proof; no lag ref to
+    # outrun). DIFFERS from single_gate_varied_mpcc ONLY in use_racing_line: mpcc's straight spawn->gate
+    # segment arrives at the gate at an ANGLE when the gate is off-axis (the +-6 m height => a vertical
+    # angle), whereas the GVF line CURVES to arrive level/head-on -- so the vertical homing target is the
+    # floor-dive-correct geometry. k=4 parity with mpcc for a clean A/B. OFF-LADDER; run via
+    # STAGES=single_gate_varied_gvf.
+    "single_gate_varied_gvf": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,          # progress s + contouring perp read from the CURVED head-on line
+        "rw_progress_to_center": False,   # (ignored under use_racing_line; s comes from the line arc length)
+        "rw_corridor": 4.0,               # cross-track contouring pull onto the racing line (parity w/ mpcc)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # HOMING + LINE-CONTOURING (Fengyou 2026-07-08 race read -- the data-indicated winner). The vaniso/vmpcc
+    # race proved ISOTROPIC 3D HOMING (progress_to_center, w=1) is the ONLY form that reaches the gate plane
+    # (varied-isotropic 70% plane-reach, floor 50->20%, STILL improving at cutoff), while BOTH "fixes" that
+    # touched the PROGRESS term regressed it: aniso (couples the vertical -> rotates the forward gradient ->
+    # 97% side) and mpcc (drops homing for segment-lag -> 60% floor). The residual gap is a pure CENTERING
+    # deficit (crosses ~7 m off). So KEEP the isotropic homing that reaches the plane and ADD ONLY the line's
+    # DECOUPLED cross-track contouring (perpendicular pull, does NOT touch the forward homing direction) to
+    # center the 7 m. racing_line_progress=False routes progress back to the isotropic gate_center_potential
+    # while the line supplies perp for rw_corridor. This is the untested cell: homing + decoupled contouring
+    # (== Fengyou's "line tracking + distance from gate"). OFF-LADDER; run via STAGES=single_gate_varied_gvfh.
+    "single_gate_varied_gvfh": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,          # line supplies the cross-track perp (contouring) ...
+        "racing_line_progress": False,    # ... but progress STAYS on isotropic homing (the plane-reacher)
+        "rw_progress_to_center": True,    # isotropic 3D distance-to-centre homing (w=1, the un-buried driver)
+        "rw_progress_vert_weight": 1.0,   # ISOTROPIC (varied geometry already supplies the vertical gradient)
+        "rw_corridor": 4.0,               # DECOUPLED cross-track centering onto the line (vertical + lateral)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
+    },
+    # GVF + NOISE ANNEAL (Fengyou 2026-07-08, the THREAD-RATE endgame): vgvf (pure GVF) is the winning
+    # trajectory (plane 83%, floor 3%, xoff 10->5) but PLATEAUED at ~3.9m vertical + ~3.1m lateral off --
+    # too wide to thread a 0.75m aperture. The held std-0.30 exploration noise is a STRUCTURAL cap: the
+    # DEPLOYED (deterministic mean) policy can't sharpen below the noise smear. This holds 0.30 for the
+    # first HALF (learn the field like vgvf did), then ANNEALS to 0.05 over the back half to SHARPEN the
+    # mean toward a threading crossing. `_raw` ++overrides the sbatch BASE's flat-0.30 noise knobs. Isolates
+    # the anneal (k=4, same as vgvf) so a win attributes to sharpening, not stronger centering. Run via
+    # STAGES=single_gate_varied_gvf_anneal, UPD_single_gate_varied_gvf_anneal=4000.
+    "single_gate_varied_gvf_anneal": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,   # progress from the line arc-length (the winning GVF form)
+        "rw_corridor": 4.0,               # SAME k as vgvf (isolate the anneal)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    # GVF + STRONGER CONTOURING (k=10) + NOISE ANNEAL (Fengyou 2026-07-08, the go-for-90% run): combines
+    # the two thread-rate levers -- stronger cross-track centering (k 4->10 to pull the ~3-4m/axis residual
+    # tighter) AND the endgame anneal (sharpen the mean). If this threads and the anneal-alone run does not,
+    # the extra centering was needed; if both thread, anneal was sufficient. Run via
+    # STAGES=single_gate_varied_gvf_k10a, UPD_single_gate_varied_gvf_k10a=4000.
+    "single_gate_varied_gvf_k10a": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 10.0,              # STRONGER cross-track centering (up from the plateaued k=4)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    # GVF + SQUARE-ON coupling (Fengyou night-lever 2026-07-08 backup): the winning GVF field + k=10 + anneal
+    # PLUS the distance-gated AREA coupling (rw_area_dist_ref_m>0) turned back ON. It scales the POSITIVE
+    # progress by how square-on the gate is when CLOSE (factor = area + (1-area)*clip(dist/ref)): a shallow
+    # off-axis final approach earns less -> the policy squares up before the gate = a HEAD-ON centred crossing
+    # (complements the contouring's position-centering with an ANGLE signal). Was off (reward-audit taxed the
+    # buried homing); safe to revisit now the homing works. Run via STAGES=single_gate_varied_gvf_squareon.
+    "single_gate_varied_gvf_squareon": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 10.0,
+        "rw_area_dist_ref_m": 6.0,        # SQUARE-ON coupling ON (head-on-arrival angle signal)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    # GVF + HARDER PUSH (Fengyou night-lever 2026-07-08 backup): k=15 (stronger centering than k10) + a SHARPER
+    # anneal floor (0.02 vs 0.05) to squeeze the deterministic mean tighter toward the 0.75m aperture, if k10+
+    # 0.05 plateaus above 90%. Run via STAGES=single_gate_varied_gvf_k15.
+    "single_gate_varied_gvf_k15": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 15.0,             # even stronger cross-track centering
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.02, "++algo.noise_hold_frac": 0.5},
+    },
+    # GVF + MAGNITUDE CENTERING (Fengyou 2026-07-08, the standing-offset lever). vganl (GVF+anneal, k=4)
+    # solved the floor (0.7%) + reaches the plane (81%) but the crossing offset PLATEAUED at ~4.4m (3.4m
+    # vert + 3.2m lat) and the ANNEAL did NOT tighten it -> the offset is a MEAN-POLICY limit, not noise. ROOT:
+    # the PBRS contouring TELESCOPES (rewards REDUCING perp), so a SUSTAINED 4.4m offset earns ZERO gradient
+    # -- the policy parks there. FIX: add the DENSE MAGNITUDE centering penalty (through_centering_reward =
+    # -rw_centering*clamp(perp,0,max)) on the line perp -- it NAGS a standing offset continuously (the gradient
+    # PBRS lacks). Clamp WIDENED to 6m so the gradient spans the whole 4.4m (default 2m would be flat past 2m).
+    # Moderate weight (0.4) so it nags without dominating the progress (~2/step) or triggering the give-up/OOB
+    # back-fire (now countered by the miss=100 terminal). Keeps k=4 PBRS (guides the approach) + anneal. FRESH
+    # 4000 upd. Run via STAGES=single_gate_varied_gvf_ctr.
+    "single_gate_varied_gvf_ctr": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,               # PBRS contouring (fast approach guide) -- keep k=4 (k10 collapsed)
+        "rw_centering": 0.4,              # NEW: dense MAGNITUDE centering (nags the standing offset)
+        "rw_centering_max_m": 6.0,        # clamp widened past the 4.4m offset so the gradient spans it
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    # WARM-START centering (Fengyou 2026-07-08, efficient): CONTINUE from vganl's checkpoint (floor solved,
+    # parked at 4.4m) and apply the magnitude centering to sharpen the standing offset -- applying the penalty
+    # AFTER the field is learned avoids the early-training give-up risk a fresh magnitude penalty carries.
+    # Starts at LOW noise (warm base) and anneals lower; 2500 upd (from a good base). +init_from loads the
+    # vganl actor+critic .pth. Run via STAGES=single_gate_varied_gvf_ctrw.
+    "single_gate_varied_gvf_ctrw": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4,
+        "rw_centering_max_m": 6.0,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_anneal_seed0_vganl/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.35},
+    },
+    # BOTH-FIXES centering (Fengyou 2026-07-08): warm-start from vganl + MAGNITUDE centering (the integral/
+    # standing-offset gradient the telescoping PBRS lacks) + FRAME-MOAT fix (frame_clip_is_miss -> a frame-clip
+    # nets == a wide miss, so the ring around the aperture stops punishing getting-close and the CENTRE becomes
+    # attractive). Isolation control = ctrw (centering only, no frame fix). Run via
+    # STAGES=single_gate_varied_gvf_ctrf.
+    "single_gate_varied_gvf_ctrf": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4,
+        "rw_centering_max_m": 6.0,
+        "frame_clip_is_miss": True,       # FRAME-MOAT fix: frame-clip nets == wide miss (centre attractive)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_anneal_seed0_vganl/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.35},
+    },
+    # APERTURE CURRICULUM stage 1 (Fengyou 2026-07-08 structural lever for the 3.4m plateau). Warm-start from
+    # vgctrw (best centering, parked at 3.4m) and WIDEN the training aperture to 8m (half 4m) so the passage
+    # reward gives a gradient across the current offset -- the real 0.75m aperture leaves a DEAD ZONE beyond it
+    # that the telescoping field can't bridge. WATCH cross_offset_m (aperture-independent), NOT thread (which is
+    # inflated at a wide aperture). If the wide target pulls xoff below 3.4m -> the shrink ladder (ap8->ap4->
+    # ap2->ap1.5-real, each warm-started) converts it to real threads; if even a wide aperture can't centre, the
+    # limit is CONTROL not reward. Run via STAGES=single_gate_varied_gvf_ap8.
+    "single_gate_varied_gvf_ap8": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4,
+        "rw_centering_max_m": 6.0,
+        "gate_inner_opening_m": 8.0,      # WIDE training aperture (half 4m) -> passage gradient at 3.4m
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_ctrw_seed0_vgctrw/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.35},
+    },
+    # GVF DIRECTION-ALIGNMENT reward (Fengyou 2026-07-08 -- the TRUE vector field). Progress (along the line) +
+    # dot(v_hat, F_hat) alignment REPLACING the telescoping contouring: rewards the velocity DIRECTION following
+    # the guiding field everywhere, so a parallel-flying standing offset (the contouring blind spot) is still
+    # pressured onto the path. rw_align_gain = the CONVERGENCE TIGHTNESS (Fengyou's "how sharp a turn onto the
+    # line"). Two-value SWEEP: SMOOTH (gain 0.5, wide asymptotic curve) vs SHARP (gain 3.0, whip onto the line).
+    # FRESH (the align reward is a direction signal, not a magnitude penalty, so it does not back-fire fresh the
+    # way the magnitude centering did; and it penalises diving early -> more stable than fresh centering). No
+    # corridor/centering (align is the cross-track mechanism now). Run via STAGES=single_gate_varied_gvf_align_smooth
+    # / single_gate_varied_gvf_align_sharp.
+    "single_gate_varied_gvf_align_smooth": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,   # along-track = line arc-length progress (speed incentive)
+        "rw_corridor": 0.0,               # align REPLACES the telescoping contouring
+        "rw_centering": 0.0,
+        "rw_align": 2.0,                  # GVF direction-alignment weight
+        "rw_align_gain": 0.5,             # SMOOTH convergence (wide asymptotic curve)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    "single_gate_varied_gvf_align_sharp": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 0.0,
+        "rw_centering": 0.0,
+        "rw_align": 2.0,
+        "rw_align_gain": 3.0,             # SHARP corner onto the line (steep inward angle)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    # PARABOLA + LATERAL-FOV + ALIGN (Fengyou 2026-07-08 -- the combined upgrade): GVF field + dot(v_hat,F_hat)
+    # alignment (cross-track) + the SMOOTH PARABOLIC crossing reward (replaces the thread/clip/miss cliff -> no
+    # moat, smooth centering gradient) + LATERAL FOV variation (spawn_yaw_jitter so the gate appears left/right
+    # across the view, not just dead-ahead -- realistic). Two align tightnesses swept. Fresh. Run via
+    # STAGES=single_gate_varied_gvf_para_smooth / single_gate_varied_gvf_para_sharp.
+    "single_gate_varied_gvf_para_smooth": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.35,  # +-20deg lateral FOV variation (gate appears left/right of centre)
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 0.0, "rw_centering": 0.0,
+        "rw_align": 2.0, "rw_align_gain": 0.5,   # SMOOTH convergence
+        "rw_parabola_crossing": True,     # smooth parabola replaces passage + frame/miss terminals
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    "single_gate_varied_gvf_para_sharp": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.35,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 0.0, "rw_centering": 0.0,
+        "rw_align": 2.0, "rw_align_gain": 3.0,   # SHARP convergence
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    # CHAMPION + PARABOLA (Fengyou 2026-07-08, isolated): warm-start the CHAMPION recipe (field + contouring
+    # k4 + magnitude centering 0.4 -- the best centering to date, xoff 3.4m) from vgctrw's checkpoint and add
+    # ONLY the smooth PARABOLIC crossing (replaces the passage + frame/miss cliff -> no moat, smooth final-
+    # centering gradient). NO align, NO lateral (the vector field underperformed; lateral needs its own warm-
+    # start). critic_warmup 400 so the warm-started critic re-adapts to the parabola crossing reward before the
+    # actor moves (avoids the frame-fix-style value-mismatch collapse). Run via STAGES=single_gate_varied_gvf_cpara.
+    "single_gate_varied_gvf_cpara": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,               # champion contouring (approach)
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,   # champion magnitude centering (approach)
+        "rw_parabola_crossing": True,     # NEW: smooth parabola crossing (no moat, sharpens the crossing)
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,
+        # NOTE: the sbatch BOUNDARY_OV always appends `+critic_warmup_updates=100`; setting it AGAIN here
+        # (as `++...=400`) is a Hydra APPEND-COLLISION ("item already at critic_warmup_updates") that killed
+        # the 2026-07-08 vgcp launch (RC=1, no tfevents). Inherit the 100 default instead of re-adding it.
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_ctrw_seed0_vgctrw/checkpoints",
+                 "++algo.noise_std_hold": 0.10, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.35},
+    },
+    # ================================================================================================
+    # LATERAL-FOV AXIS (Fengyou 2026-07-08): the champion lineage (vgvf->vganl->vgctrw) varied only gate
+    # DEPTH (8-15m) and HEIGHT (+-6m) with spawn_yaw_jitter=0 -- so the gate ALWAYS appeared dead-centre
+    # horizontally and the body-frame obs channel rel_pos[1] (lateral) was ~0 in 100% of training. The
+    # policy can SEE an off-axis gate (rel_pos is a full metric FLU vector) but was never rewarded for
+    # centring one. This is the untrained axis + a likely contributor to the 3.4m crossing plateau, and
+    # it is the honest prerequisite before multigate (after a turn the next gate appears off-axis). Two
+    # runs isolate the SAME new axis (course_spawn_yaw_jitter, +-14deg, within HFOV so the gate stays
+    # visible): _lat = FRESH on the known-good vganl recipe (GVF + anneal, k=4, NO magnitude centering --
+    # fresh magnitude centering back-fires, vgctr 100% floor); _latw = WARM-START the champion vgctrw
+    # (its 3.4m centring skill intact) and only WIDEN the distribution. Distribution-widening is a gentler
+    # change than the reward-SEMANTIC changes that collapsed warm-starts (frame-moat/wide-aperture), so
+    # _latw may hold where those floored. WATCH cross_offset_m + exit_side (lateral misses).
+    # Run via STAGES=single_gate_varied_gvf_lat / single_gate_varied_gvf_latw.
+    # ================================================================================================
+    "single_gate_varied_gvf_lat": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,  # +-14deg lateral FOV variation (the UNTRAINED axis)
+        "use_racing_line": True,
+        "rw_progress_to_center": False,   # GVF line-arc progress (vganl recipe -- reaches the plane fresh)
+        "rw_corridor": 4.0,               # k=4 contouring (floor solved, no fresh magnitude-centering risk)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "++algo.noise_std_floor": 0.05, "++algo.noise_hold_frac": 0.5},
+    },
+    "single_gate_varied_gvf_latw": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,  # SAME new axis, warm-started onto the champion's centring skill
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,   # champion magnitude centering (now nags LATERAL too)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_ctrw_seed0_vgctrw/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.35},
+    },
+    # ================================================================================================
+    # LATERAL + PARABOLA-CENTERING (Fengyou 2026-07-08, the unified attack). vglat/vglatw proved the DISEASE:
+    # with lateral jitter the drone REACHES the plane (75%, unchanged from champion) but crosses ~6m off --
+    # it flies forward and lets the whole lateral offset pass UNCORRECTED (ignores rel_pos[1]). Same root as
+    # the champion's 3.4m no-jitter plateau: the per-step centering is too WEAK to beat the progress "fly
+    # forward fast" incentive. FIX = Fengyou's smooth PARABOLA crossing reward (+cross_center at centre ->
+    # 0 at the zero radius -> negative outside) as a STRONG terminal centering gradient the per-step terms
+    # lack. Key: the zero radius must be WIDE (~6m) so there is gradient across the current 6m offset (at the
+    # real 0.75m aperture it is a DEAD ZONE out there). Warm from champion, lateral ON. Success = xoff DROPS
+    # below the 6m plateau (proving the parabola centres); then SHRINK cross_zero_m (6->4->3->1.5->0.75) over
+    # warm-started rungs to strengthen the near-centre gradient toward real threads. Sweep the zero radius via
+    # EXTRA=++env.rw_cross_zero_m=4.0 (default 6.0). Run via STAGES=single_gate_varied_gvf_lpara.
+    # ================================================================================================
+    "single_gate_varied_gvf_lpara": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,  # lateral FOV on (the axis the champion ignores)
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,                              # PBRS contouring approach guide (kept)
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,  # per-step magnitude nag (kept)
+        "rw_parabola_crossing": True,                    # NEW strong terminal centering gradient
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 6.0, "rw_cross_neg_cap": 100.0,  # WIDE zero spans the ~6m offset
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_ctrw_seed0_vgctrw/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.35},
+    },
+    # ZERO-SHRINK LADDER rung 2 (Fengyou 2026-07-08): vglp4 (lpara zero=4.0) BROKE the plateau -- xoff
+    # 6.0->2.2m WITH lateral jitter on, thread 0->4.3% and still improving (the wide zero=6.0 vglp6 FAILED:
+    # too flat near centre, drifted to 10m -- so the zero must be TIGHT enough to make a centring gradient).
+    # This rung tightens the parabola zero 4.0->3.0 and WARM-STARTS from vglp4's final checkpoint so the
+    # centring COMPOUNDS. Principle: keep the zero ~1.3-1.5x the current offset so the drone sits in the
+    # POSITIVE region with a live gradient (zero=3.0 at 2.2m offset -> para=+9.2, safe; too-tight punishes
+    # early -> give-up/floor). Continue 3.0->2.0->1.5->0.75 (real aperture) as xoff falls. Lateral stays on.
+    # Run via STAGES=single_gate_varied_gvf_lpara3.
+    "single_gate_varied_gvf_lpara3": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 3.0, "rw_cross_neg_cap": 100.0,  # tightened 4.0->3.0
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.35},
+    },
+    # IN-RUN ZERO ANNEAL (Fengyou 2026-07-08, the cure for the discrete-shrink collapse). vglp3/vglp3b PROVED
+    # a discrete 4->3 zero STEP on warm-start detonates the policy (jumps to 8m, recovers only to ~6m -- the
+    # reward for the current crossings drops/goes negative before the critic recalibrates). FIX = shrink the
+    # parabola zero CONTINUOUSLY within ONE run (peregrine_train_ego._cross_zero_schedule mutates
+    # env._egorw.cross_zero_m per update): NO discontinuity, the near-centre gradient sharpens smoothly as the
+    # policy centres. Warm from vglp4 (already ~2m at zero=4) and anneal the zero 4.0->0.75 (real aperture) over
+    # the back 90% of a LONGER 4000-upd run. Lateral stays on. Success = xoff -> sub-1m + thread climbing.
+    # Run via STAGES=single_gate_varied_gvf_lpara_anneal, UPD_single_gate_varied_gvf_lpara_anneal=4000.
+    "single_gate_varied_gvf_lpara_anneal": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # initial (anneal overrides live)
+        "cross_zero_anneal": True, "cross_zero_start": 4.0, "cross_zero_end": 0.75, "cross_zero_hold_frac": 0.1,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
+    # ENDGAME FINE-TUNE (Fengyou 2026-07-08): vglpan/vglpan6 (the 4->0.75 anneal) BOTH plateau at xoff ~0.9m /
+    # thread ~20% (the 6000-upd run == the 4000 -> NOT convergence-limited). The last 0.9->~0.4m to reach the
+    # 0.75m aperture is an ENDGAME precision gap. Two levers, each warm-started from vglpan (the 20% policy),
+    # tighter endgame noise floor (0.03->0.02) for a sharper deterministic mean:
+    #   _ft_sub = continue the zero anneal BELOW the aperture (0.75->0.5) to pull the crossing MEAN tighter
+    #             (marginal edge-threads get punished, but the miss=100 terminal blocks give-up; the bet is
+    #             the mean shifts inside 0.75). _ft_c40 = DOUBLE the centre bonus (20->40) at a FIXED 0.75 zero
+    #             = stronger pull with NO sub-aperture risk (valid threads stay positive). Whichever lifts
+    #             thread more wins the next rung. Run via STAGES=single_gate_varied_gvf_lpara_ft_sub / _ft_c40.
+    "single_gate_varied_gvf_lpara_ft_sub": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,
+        "cross_zero_anneal": True, "cross_zero_start": 0.75, "cross_zero_end": 0.5, "cross_zero_hold_frac": 0.1,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_anneal_seed0_vglpan/checkpoints",
+                 "++algo.noise_std_hold": 0.06, "++algo.noise_std_floor": 0.02, "++algo.noise_hold_frac": 0.3},
+    },
+    "single_gate_varied_gvf_lpara_ft_c40": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 40.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,  # DOUBLE pull, fixed 0.75 zero
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_anneal_seed0_vglpan/checkpoints",
+                 "++algo.noise_std_hold": 0.06, "++algo.noise_std_floor": 0.02, "++algo.noise_hold_frac": 0.3},
+    },
+    # PERCEPTION-REWARD FINE-TUNE (Fengyou 2026-07-09; the r_perc lever). The vglpns0 ablation PROVED the
+    # ~0.88 m centring floor is PERCEPTION-limited (a PERFECT estimator -> 0.52 m and falling / thread 0.20->
+    # 0.32), NOT control-limited -- ~0.28 m of measurement noise is amplified by the closed loop into ~0.4 m+
+    # of crossing offset. The field's proven fix for exactly this (Swift + Geles both carry it; Geles gate-
+    # passing error 0.5 m -> 0.15 m) is the PERCEPTION reward r_perc = perception*exp(-delta_cam^4): pay the
+    # policy to keep the camera axis on the gate CENTRE so the gate stays DETECTABLE near the plane (in OUR
+    # sim gate_detectable is FOV-geometry-dependent -> a gate that drifts out of frame on a fast offset
+    # approach gets MASKED and rel_pos drifts exactly at the crossing; r_perc prevents that loss-of-lock) +
+    # an attention pressure to fly at the gate. Warm from vglpan (the champion -- the L1-survivable base for a
+    # NEW structural term) with a FIXED 0.75 zero (no re-anneal) so the ONLY change vs vglpan is r_perc. Set
+    # the weight via EXTRA=++env.rw_perception (dose-response, e.g. 0.05 / 0.15). ~2000 upd.
+    # Run via STAGES=single_gate_varied_gvf_lpara_perc, UPD_single_gate_varied_gvf_lpara_perc=2000.
+    "single_gate_varied_gvf_lpara_perc": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,   # champion settings, fixed 0.75
+        "rw_perception": 0.05, "rw_perception_exponent": 4.0,     # r_perc ON (override weight via EXTRA)
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_anneal_seed0_vglpan/checkpoints",
+                 "++algo.noise_std_hold": 0.06, "++algo.noise_std_floor": 0.02, "++algo.noise_hold_frac": 0.3},
     },
     # ANISOTROPIC VERTICAL-WEIGHT LEVER (Fengyou greenlight 2026-07-08): the floor-dive fix that SUPERSEDES
     # the MPCC-clean contouring below (the PBRS-rate contouring was too weak -- policy-invariant, couldn't
@@ -344,7 +832,7 @@ COURSE_SAMPLER_KEYS = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi
                        "course_drop_lo", "course_drop_hi",
                        "course_spawn_dist_lo", "course_spawn_dist_hi",
                        "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
-                       "course_spawn_heading")
+                       "course_spawn_heading", "course_spawn_yaw_jitter")
 
 # The reward knobs that are HARD-STAGE-ONLY (must NEVER appear in _COMMON / never hit single_gate or
 # handoff_drill). Named so the test can assert the B2b scoping discipline structurally.

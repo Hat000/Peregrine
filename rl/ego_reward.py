@@ -191,6 +191,44 @@ class EgoRewardWeights:
     corridor: float = 0.0            # rw_corridor (PBRS contouring weight); 0 == OFF
     corridor_clip_mps: float = 39.0  # clip band (m/step = mps*dt) trimming the gate-handoff re-projection burst
 
+    # --- GVF DIRECTION-ALIGNMENT (Fengyou 2026-07-08 -- the TRUE vector-field reward). Unlike the telescoping
+    # contouring (which rewards MOVING toward the line and pays 0 for a parallel-flying standing offset), this
+    # rewards the velocity DIRECTION following the guiding field F everywhere: r = align * dot(v_hat, F_hat),
+    # F = cos(theta)*tangent + sin(theta)*inward, theta = atan(align_gain*perp). On the line -> follow the
+    # tangent; off it -> angle inward, so a parallel drone is MIS-aligned and pressured to turn onto the path
+    # (no blind spot). NON-telescoping (direction, not displacement). Speed-blind ([-1,1]); pair with progress
+    # for the speed incentive. align_gain = the CONVERGENCE TIGHTNESS: HIGH -> sharp corner onto the line, LOW
+    # -> smooth wide asymptotic curve (Fengyou's "how tight a turn"). 0 == OFF.
+    align: float = 0.0               # rw_align (GVF alignment weight); 0 == OFF
+    align_gain: float = 1.0          # convergence tightness (theta = atan(align_gain*perp)); higher = sharper
+
+    # --- PERCEPTION reward (Fengyou 2026-07-09; the Swift/Geles field-proven CENTERING lever). A dense,
+    # POSITIVE per-step bonus for keeping the camera optical axis pointed at the gate CENTRE:
+    #   r_perc = perception · exp(−δ_cam^perception_exponent),  δ_cam = angle(optical axis, drone→gate-centre)
+    # (radians; cos δ_cam from gate_visibility.gate_center_view_cos). Peaks (+perception) with the gate dead-
+    # centre in view, decaying as it drifts to the frame edge. WHY: Swift AND Geles both carry this term and
+    # NOTHING else in their reward, yet it takes gate-passing error from ~0.5 m (no r_perc) to ~0.12–0.22 m
+    # (Geles Table I) -- our ~0.88 m L-inf floor is ~the field's no-r_perc baseline. Mechanism = keeping the
+    # gate centred in the FOV yields a better estimate on approach (the concrete form of "reduce the noise
+    # arriving to the policy") AND an attention pressure to fly at the gate. Positive + dense (like Swift's
+    # r_perc, subtracted-crash convention aside); it cannot be farmed off-gate (points AT the gate). 0 == OFF
+    # (default -> byte-identical). Geles uses λ₂=0.025, exponent 4; Swift ≈ same. Tune via +env.rw_perception.
+    perception: float = 0.0          # rw_perception; 0 == OFF
+    perception_exponent: float = 4.0 # δ_cam power inside the exp (Geles/Swift = 4)
+
+    # --- SMOOTH PARABOLIC CROSSING reward (Fengyou 2026-07-08 -- "policy reacts better to smooth things").
+    # Replaces the DISCONTINUOUS {thread=+passage, clip=-100, miss=-100} cliff with one smooth downward
+    # parabola of the crossing offset e (L-inf): r = clamp(cross_center * (1 - (e/cross_zero_m)^2), -cross_neg_
+    # cap, cross_center). +cross_center dead-centre, 0 at the aperture edge (cross_zero_m = half-opening),
+    # growing NEGATIVE outside and capped. SMOOTH + MONOTONIC -> no cliff, and NO MOAT (closer is ALWAYS
+    # better) -- the property frame_clip_is_miss failed to give (it removed the penalty and floor-dived; this
+    # keeps a growing penalty). When ON: the passage reward is REPLACED and the frame-clip/miss TERMINAL
+    # penalties are dropped (floor + oob keep theirs). parabola_crossing==False -> legacy.
+    parabola_crossing: bool = False
+    cross_center: float = 20.0       # peak (dead-centre) crossing reward
+    cross_zero_m: float = 0.75       # offset where the parabola crosses 0 (== the gate half-opening / aperture edge)
+    cross_neg_cap: float = 100.0     # floor on the (negative) wide-crossing penalty (avoids a giant terminal)
+
     # --- TERMINAL (kill-on-contact). Two modes; ``terminal_progress_scaled`` picks. ---
     # FIXED mode: penalty = terminal_base (large, dominates the banked progress return).
     # PROGRESS-SCALED mode: penalty = terminal_base + accumulated_progress_return (clipping forfeits
@@ -416,6 +454,60 @@ def corridor_progress_reward(perp_curr: Tensor, perp_prev: Tensor, rw_corridor: 
     return rw_corridor * (perp_prev - perp_curr).clamp(min=-band, max=band)
 
 
+def alignment_reward(vel_world: Tensor, tangent: Tensor, inward_unit: Tensor, perp: Tensor,
+                     rw_align: float, align_gain: float) -> Tensor:
+    """GVF DIRECTION-ALIGNMENT reward (Fengyou 2026-07-08): r = rw_align * dot(v_hat, F_hat), the cosine
+    alignment of the drone's velocity DIRECTION with the guiding vector field F. F angles from the line
+    tangent toward the line by ``theta = atan(align_gain * perp)``:
+
+        F = cos(theta) * tangent + sin(theta) * inward_unit          (already unit: tangent ⟂ inward_unit)
+
+      * ON the line (perp=0 -> theta=0): F = tangent -> reward following the path down-course.
+      * OFF the line: F angles INWARD; a drone flying PARALLEL (v ⟂ inward) is MIS-aligned (dot < 1), so it
+        is pressured to turn its velocity toward the path -- the standing-offset blind spot the telescoping
+        contouring has (dot(v, F_cross)=0 for parallel motion) is GONE, because this scores DIRECTION not
+        displacement.
+
+    ``align_gain`` is the CONVERGENCE TIGHTNESS (Fengyou's "how sharp a turn onto the path"): high gain ->
+    theta reaches ~90deg close to the line -> a SHARP corner; low gain -> a gentle, wide, asymptotic curve.
+    Speed-blind (unit vectors, dot in [-1,1]); pair with the progress term for the speed/racing incentive.
+    A near-stationary drone (|v|~0) has an ill-defined direction -> its alignment is damped toward 0 by the
+    velocity-norm guard, so it earns ~0 (neither rewarded nor punished) rather than a spurious value.
+    rw_align==0 -> OFF (zeros). vel_world/tangent/inward_unit (N,3) world Z-up; perp (N,). Returns (N,)."""
+    assert torch is not None
+    if rw_align == 0.0:
+        return torch.zeros(vel_world.shape[0], device=vel_world.device, dtype=vel_world.dtype)
+    theta = torch.atan(align_gain * perp)                              # (N,) inward angle
+    F = (torch.cos(theta).unsqueeze(-1) * tangent
+         + torch.sin(theta).unsqueeze(-1) * inward_unit)               # (N,3) unit guiding field
+    v_norm = torch.linalg.norm(vel_world, dim=-1, keepdim=True)
+    v_hat = vel_world / v_norm.clamp(min=1e-6)                         # (N,3); ~0 when stationary
+    align = (v_hat * F).sum(dim=-1)                                    # (N,) dot(v_hat, F_hat) in [-1,1]
+    # damp the alignment for a near-stationary drone (ill-defined direction) so it earns ~0, not a spurious
+    # value: scale by v/(v+eps_speed) which -> 1 at speed, -> 0 at rest.
+    speed_gate = v_norm.squeeze(-1) / (v_norm.squeeze(-1) + 0.2)
+    return rw_align * align * speed_gate
+
+
+def crossing_parabola_reward(cross_offset: Tensor, crossed: Tensor, cross_center: float,
+                             cross_zero_m: float, cross_neg_cap: float) -> Tensor:
+    """Smooth PARABOLIC crossing reward (Fengyou 2026-07-08): fires ONCE on a forward gate-plane crossing.
+        r = clamp(cross_center * (1 - (e/R)^2), -cross_neg_cap, cross_center)
+    where e = ``cross_offset`` (L-inf in-plane offset at the crossing) and R = ``cross_zero_m`` (the aperture
+    half-opening). +cross_center dead-centre -> 0 at the aperture edge -> a downward parabola growing NEGATIVE
+    outside, floored at -cross_neg_cap. SMOOTH + MONOTONIC in the offset: no thread/clip/miss cliff and NO
+    MOAT (getting closer is ALWAYS better). REPLACES the passage reward + the frame-clip/miss terminal
+    penalties (the env drops those when parabola_crossing is on; floor + oob keep theirs). ``crossed`` (N,)
+    bool = the forward target-plane crossing this step. cross_center==0 -> OFF (zeros). Returns (N,)."""
+    assert torch is not None
+    if cross_center == 0.0:
+        return torch.zeros_like(cross_offset)
+    R = max(cross_zero_m, 1e-6)
+    para = cross_center * (1.0 - (cross_offset / R) ** 2)
+    para = para.clamp(min=-cross_neg_cap, max=cross_center)
+    return para * crossed.to(cross_offset.dtype)
+
+
 # ================================================================================================
 # R_pass: PASSAGE + L-INF centering (matches crossing_events' Linf), idempotent per gate.
 # ================================================================================================
@@ -452,7 +544,8 @@ def centering_passage_reward(gate_passed: Tensor, pass_linf: Tensor, w_g_half: f
 # TERMINAL: kill-on-contact / miss / oob, tuned to DOMINATE the banked progress return.
 # ================================================================================================
 def terminal_penalty(gate_collision: Tensor, gate_miss: Tensor, oob: Tensor,
-                     banked_progress_return: Tensor, w: EgoRewardWeights) -> Tensor:
+                     banked_progress_return: Tensor, w: EgoRewardWeights,
+                     forfeit_mask: "Tensor | None" = None) -> Tensor:
     """The hard terminal penalty (subtracted from the reward on the terminating step).
 
     Two modes (``w.terminal_progress_scaled``):
@@ -489,7 +582,15 @@ def terminal_penalty(gate_collision: Tensor, gate_miss: Tensor, oob: Tensor,
         # exploration trap). The sprint-and-clip defence is fully preserved: a frame clip is classified
         # as gate_collision (env: in_frame -> contact), so clipping STILL forfeits. Miss/oob keep their
         # banked approach progress and pay ONLY their fixed base.
-        forfeit = banked_progress_return.clamp(min=0.0) * coll
+        #
+        # FORFEIT_MASK (Fengyou 2026-07-08, the frame-moat fix): normally the forfeit fires on EVERY contact
+        # (mask == coll). But a FRAME-CLIP costing MORE than a WIDE-MISS makes the ring around the aperture a
+        # MOAT -- getting closer (wide -> frame band) is punished more, so the CENTRE is not attractive and
+        # the policy parks wide (the 4.4m plateau). ``forfeit_mask`` = FLOOR-contact-only makes a frame-clip
+        # forfeit NOTHING (net == a wide miss: both -base, both keep banked) while the floor-dive (a real
+        # crash) still forfeits -> the centre is the strictly-best crossing, no moat.
+        fmask = forfeit_mask.to(dt) if forfeit_mask is not None else coll
+        forfeit = banked_progress_return.clamp(min=0.0) * fmask
         return (base + forfeit) * fired.to(dt)
     return base * fired.to(dt)
 
@@ -594,6 +695,21 @@ def exit_line_reward(vel_world: Tensor, curr_center: Tensor, next_center: Tensor
 # ================================================================================================
 # The full step reward assembly (pure; the env calls this under no_grad).
 # ================================================================================================
+def perception_reward(cos_view: Tensor, rw_perception: float, exponent: float = 4.0) -> Tensor:
+    """Swift/Geles PERCEPTION reward: r = rw_perception · exp(−δ_cam^exponent), δ_cam = angle between the
+    camera optical axis and the drone→gate-centre vector (rad). ``cos_view`` = cos δ_cam in [−1,1] (from
+    gate_visibility.gate_center_view_cos). Peaks at +rw_perception with the gate centre on the optical
+    axis (δ=0) and decays smoothly as the gate drifts to the frame edge -> the policy is paid, every
+    step, to keep the gate centred in view (better approach estimate + attention at the gate; the field's
+    ~0.5 m -> ~0.15 m gate-passing-error lever). Dense + positive; cannot be farmed off-gate (it points
+    AT the gate). 0 == OFF (byte-identical)."""
+    assert torch is not None
+    if rw_perception == 0.0:
+        return torch.zeros_like(cos_view)
+    delta = torch.acos(cos_view.clamp(-1.0, 1.0))
+    return rw_perception * torch.exp(-(delta ** exponent))
+
+
 def compute_ego_reward(
     w: EgoRewardWeights, *,
     s_curr: Tensor, s_prev: Tensor,
@@ -611,6 +727,13 @@ def compute_ego_reward(
     z: "Tensor | None" = None,
     z_spawn: "Tensor | None" = None,
     perp_prev: "Tensor | None" = None,
+    forfeit_mask: "Tensor | None" = None,
+    line_tangent: "Tensor | None" = None,
+    line_inward: "Tensor | None" = None,
+    cross_offset: "Tensor | None" = None,
+    crossed: "Tensor | None" = None,
+    floor_contact: "Tensor | None" = None,
+    cos_view: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
@@ -633,9 +756,16 @@ def compute_ego_reward(
     if area_true is not None and dist_to_gate is not None and w.area_dist_ref_m > 0.0:
         area_factor = area_distance_progress_factor(area_true, dist_to_gate, w.area_dist_ref_m)
         r_prog = torch.where(r_prog > 0, r_prog * area_factor, r_prog)
-    r_pass = centering_passage_reward(gate_passed, pass_linf, w_g_half, w.passage,
-                                      passed_gate_index=passed_gate_index,
-                                      passage_increment=w.passage_increment)
+    # SMOOTH PARABOLIC CROSSING (Fengyou 2026-07-08): when ON it REPLACES the passage reward + drops the
+    # frame-clip/miss terminal penalties (floor+oob keep theirs, below). One smooth downward parabola of the
+    # crossing offset -> no cliff, no moat.
+    parabola_on = (w.parabola_crossing and cross_offset is not None and crossed is not None)
+    r_cross = (crossing_parabola_reward(cross_offset, crossed, w.cross_center, w.cross_zero_m, w.cross_neg_cap)
+               if parabola_on else torch.zeros_like(r_prog))
+    r_pass = (torch.zeros_like(r_prog) if parabola_on else
+              centering_passage_reward(gate_passed, pass_linf, w_g_half, w.passage,
+                                       passed_gate_index=passed_gate_index,
+                                       passage_increment=w.passage_increment))
     # DENSE lateral centering: pull onto the current gate-centre segment (off-line -> penalised, on-line
     # -> ~0). Complements the area coupling (angle); this shapes lateral POSITION toward a centred cross.
     r_center = (through_centering_reward(perp_dist, w.centering, w.centering_max_m)
@@ -649,22 +779,42 @@ def compute_ego_reward(
     # r_corr it is NOT banked (only r_prog is), so a contact terminal does not forfeit accumulated contouring.
     r_corr = (corridor_progress_reward(perp_dist, perp_prev, w.corridor, w.corridor_clip_mps, dt)
               if (perp_dist is not None and perp_prev is not None) else torch.zeros_like(r_prog))
+    # GVF DIRECTION-ALIGNMENT (Fengyou 2026-07-08; OFF unless w.align>0): reward the velocity DIRECTION
+    # following the guiding field (angles onto the line by atan(align_gain*perp)) -- no parallel-flying blind
+    # spot, unlike the telescoping contouring. Needs the line tangent + inward-unit (from racing_line.query).
+    r_align = (alignment_reward(vel_world, line_tangent, line_inward, perp_dist, w.align, w.align_gain)
+               if (line_tangent is not None and line_inward is not None and perp_dist is not None)
+               else torch.zeros_like(r_prog))
+    # PERCEPTION reward (Fengyou 2026-07-09; OFF unless w.perception>0): Swift/Geles r_perc -- keep the
+    # camera axis on the gate centre (cos_view from gate_center_view_cos) -> the field's centering lever.
+    r_perc = (perception_reward(cos_view, w.perception, w.perception_exponent)
+              if cos_view is not None else torch.zeros_like(r_prog))
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
     r_exit = exit_line_reward(vel_world, curr_center, next_center, gate_passed, w)
     r_time = -w.time
-    term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w)
+    if parabola_on and floor_contact is not None:
+        # the parabola IS the frame-clip/miss outcome -> the terminal penalty fires on FLOOR + OOB only
+        # (floor forfeits banked; oob keeps the strong wall). Frame-clip/miss pay ONLY the parabola.
+        term = terminal_penalty(floor_contact, torch.zeros_like(gate_miss), oob,
+                                banked_progress_return, w, forfeit_mask=floor_contact)
+    else:
+        term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w,
+                                forfeit_mask=forfeit_mask)
 
-    reward = (r_prog + r_pass + r_center + r_alt + r_corr + r_fin + r_cone + r_smooth + r_exit
-              + r_time - term)
+    reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_corr + r_align + r_perc + r_fin + r_cone
+              + r_smooth + r_exit + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
         "pass_reward": float(r_pass.mean()),
+        "cross_parabola_reward": float(r_cross.mean()),
         "center_pen": float((-r_center).mean()),
         "alt_hold_reward": float(r_alt.mean()),
         "corridor_reward": float(r_corr.mean()),
+        "align_reward": float(r_align.mean()),
+        "perception_reward": float(r_perc.mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),

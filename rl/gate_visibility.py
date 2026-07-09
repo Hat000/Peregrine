@@ -336,3 +336,26 @@ def gate_apparent_area(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: Ten
     all_front = (tz > 0.0).all(dim=-1)                                   # (N,G) opening fully in front
     ratio = torch.where(all_front, area_px / ref.clamp(min=1e-9), torch.zeros_like(area_px))
     return ratio.clamp(0.0, 1.0)
+
+
+def gate_center_view_cos(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: Tensor,
+                         gate_yaw: Tensor, *, is_quat: bool | None = None) -> Tensor:
+    """Cosine of the angle between the camera OPTICAL AXIS (+Z_cam) and the drone->gate-CENTRE vector,
+    per (env, gate) -> (N,G). ``cos = tz / range``, where tz is the gate-centre camera-depth from the
+    SAME verified +20 deg-mount projection as ``gate_detectable`` / ``gate_apparent_area`` and range =
+    ‖gate_centre − drone‖. +1 == the gate centre lies exactly on the optical axis (perfectly centred in
+    view); it decays as the gate drifts toward the frame edge; a gate BEHIND the camera (tz<0) -> < 0.
+
+    This is the geometric ingredient of the Swift/Geles PERCEPTION reward ``r_perc = λ·exp(−δ_cam⁴)``
+    (δ_cam = arccos of this): the field-proven lever that keeps the gate centred in the FOV every step,
+    improving the estimate on approach (gate-passing error ~0.5 m -> ~0.15 m in Geles). Same Z-up inputs
+    as ``gate_apparent_area``; pass the EMULATED (flipped) camera R so it matches the detector's FOV."""
+    assert torch is not None, "gate_center_view_cos requires torch"
+    device, dtype = drone_pos.device, drone_pos.dtype
+    F = torch.as_tensor(FLIP_NP, device=device, dtype=dtype)
+    drone_pos_ned = drone_pos * F
+    gate_pos_ned = gate_pos * F
+    R_wb_ned = _to_R_wb_ned(drone_quat_or_R, is_quat)
+    _, _, tz, _ = project_points_camera(gate_pos_ned, drone_pos_ned, R_wb_ned)   # (N,G) centre depth
+    rng = torch.linalg.norm(gate_pos_ned - drone_pos_ned.unsqueeze(-2), dim=-1).clamp(min=1e-6)  # (N,G)
+    return (tz / rng).clamp(-1.0, 1.0)

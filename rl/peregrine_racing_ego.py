@@ -62,7 +62,7 @@ except Exception:                       # pragma: no cover - torch absent in som
 
 # Component A (estimator) + B (visibility). Pure-torch, no diffaero.
 from ego_estimator import BatchedEgoEstimator, EgoEstimatorConfig, EgoEstimate
-from gate_visibility import gate_detectable, gate_apparent_area
+from gate_visibility import gate_detectable, gate_apparent_area, gate_center_view_cos
 
 # The REFINED-B (champion-consensus) reward -- pure functions, laptop-testable. This is the reward
 # THIS GENERATION TRAINS ON (default ON when +env.ego=true); it REPLACES the inc7 option-B reward the
@@ -859,6 +859,14 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             if (self._use_racing_line and self._racing_line is not None
                     and self._egorw.align != 0.0):
                 _, _, line_tangent, line_inward = self._racing_line.query(curr_pos)
+            # PERCEPTION reward cue (Fengyou 2026-07-09; None unless rw_perception>0 -> byte-identical off):
+            # cos of the angle between the EMULATED camera's optical axis and the drone->current-gate-centre
+            # vector, for the Swift/Geles r_perc = perception*exp(-acos(cos)^exp). Uses the SAME flipped
+            # camera (self._cam_R_wb) as the detector/visible_area so "point at the gate" matches the FOV.
+            cos_view = None
+            if self._egorw.perception != 0.0:
+                cos_view = gate_center_view_cos(self._p, self._cam_R_wb(), self.gate_pos,
+                                                self.gate_yaw, is_quat=False)[ar, tg]   # (N,)
             reward, loss_components, r_prog = compute_ego_reward(
                 self._egorw,
                 s_curr=s_curr, s_prev=self._seg_s_prev,
@@ -888,7 +896,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # SMOOTH PARABOLIC CROSSING (None-safe; active only when rw_parabola_crossing): the L-inf
                 # crossing offset + the forward target-plane crossing mask + the floor mask (so the terminal
                 # penalty fires on floor+oob only, frame-clip/miss paying the smooth parabola instead).
-                cross_offset=pass_linf, crossed=fwd_t, floor_contact=below_floor.to(self._ego_dtype))
+                cross_offset=pass_linf, crossed=fwd_t, floor_contact=below_floor.to(self._ego_dtype),
+                # PERCEPTION reward (None unless rw_perception>0): cos(optical-axis, drone->gate-centre).
+                cos_view=cos_view)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious
