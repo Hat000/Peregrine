@@ -175,6 +175,25 @@ def _resolve_cross_zero_anneal(cfg):
     )
 
 
+def _unwrap_env_with(env, attr, max_depth=12):
+    """Drill the ``.env`` wrapper chain to the object whose OWN __dict__ holds ``attr`` (e.g. the raw
+    peregrine_racing_ego holding ``_egorw``/``_estimator``). DiffAero's TrainRunner wraps the env in
+    RecordEpisodeStatistics (utils/runner.py), and the wrapper chain's ``__getattr__`` forwarding does
+    NOT reliably reach these attributes from the top -- so ``hasattr(self.env, "_egorw")`` returns False
+    and the in-run anneals silently SKIP (the cross-zero anneal was inert the whole 2026-07-08 campaign).
+    This walks ``vars(e)['env']`` (instance dict, NOT getattr -> no __getattr__ recursion) to find the
+    real holder. Returns the holder object, or None if not found within max_depth."""
+    e = env
+    for _ in range(max_depth):
+        if e is None:
+            return None
+        d = getattr(e, "__dict__", {})
+        if attr in d:
+            return e
+        e = d.get("env", None)
+    return None
+
+
 def _noise_scale_schedule(update_idx: int, n_updates: int, start: float, end: float,
                           hold_frac: float) -> float:
     """LINEAR ramp of the estimator global noise multiplier (ego_noise_scale) from ``start`` to ``end``
@@ -293,22 +312,24 @@ def _run_with_ego_lifelines(self):
     # on; None (OFF) is byte-identical. env._egorw IS the exact object the reward reads (self._egorw), so
     # mutating cross_zero_m before each rollout takes effect the next step.
     cz_sched = _resolve_cross_zero_anneal(cfg)
-    if cz_sched is not None and env is not None and hasattr(env, "_egorw"):
-        print(f"[cross-zero-anneal] ON: {cz_sched} (from {getattr(env._egorw, 'cross_zero_m', '?')})")
+    cz_env = _unwrap_env_with(env, "_egorw") if cz_sched is not None else None
+    if cz_sched is not None and cz_env is not None:
+        print(f"[cross-zero-anneal] ON: {cz_sched} (from {getattr(cz_env._egorw, 'cross_zero_m', '?')})")
     else:
         if cz_sched is not None:
-            print("[cross-zero-anneal] requested but env._egorw missing -- SKIPPED")
+            print("[cross-zero-anneal] requested but _egorw holder not found in env chain -- SKIPPED")
         cz_sched = None
 
     # NOISE CURRICULUM (Fengyou 2026-07-09): anneal the estimator global noise multiplier ego_noise_scale
     # from start->end WITHIN the run (the data-motivated response to vglpns0 = perception-noise-limited).
-    # env._estimator.set_noise_scale mutates the frozen EgoEstimatorConfig live; None (OFF) is byte-identical.
+    # _estimator.set_noise_scale mutates the frozen EgoEstimatorConfig live; None (OFF) is byte-identical.
     ns_sched = _resolve_noise_scale_anneal(cfg)
-    if ns_sched is not None and env is not None and hasattr(env, "_estimator"):
-        print(f"[noise-scale-anneal] ON: {ns_sched} (from {getattr(env._estimator.cfg, 'noise_scale', '?')})")
+    ns_env = _unwrap_env_with(env, "_estimator") if ns_sched is not None else None
+    if ns_sched is not None and ns_env is not None:
+        print(f"[noise-scale-anneal] ON: {ns_sched} (from {getattr(ns_env._estimator.cfg, 'noise_scale', '?')})")
     else:
         if ns_sched is not None:
-            print("[noise-scale-anneal] requested but env._estimator missing -- SKIPPED")
+            print("[noise-scale-anneal] requested but _estimator holder not found in env chain -- SKIPPED")
         ns_sched = None
 
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
@@ -328,13 +349,13 @@ def _run_with_ego_lifelines(self):
         if cz_sched is not None:
             czv = _cross_zero_schedule(counter["i"], cz_sched["n_updates"],
                                        cz_sched["start"], cz_sched["end"], cz_sched["hold_frac"])
-            env._egorw.cross_zero_m = czv
+            cz_env._egorw.cross_zero_m = czv
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[cross-zero-anneal] update {counter['i']}: cross_zero_m={czv:.3f}")
         if ns_sched is not None:
             nsv = _noise_scale_schedule(counter["i"], ns_sched["n_updates"],
                                         ns_sched["start"], ns_sched["end"], ns_sched["hold_frac"])
-            env._estimator.set_noise_scale(nsv)
+            ns_env._estimator.set_noise_scale(nsv)
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[noise-scale-anneal] update {counter['i']}: ego_noise_scale={nsv:.3f}")
         out = orig_step(*a, **k)

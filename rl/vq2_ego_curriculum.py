@@ -810,10 +810,10 @@ STAGES: dict[str, dict] = {
         "rw_corridor": 4.0,
         "rw_centering": 0.4, "rw_centering_max_m": 6.0,
         "rw_parabola_crossing": True,
-        "rw_cross_center": 20.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,   # champion settings, fixed 0.75
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,   # FIXED zero=4 (== real vglpan; the anneal was inert) -> isolates the noise lever
         "noise_scale_anneal": True, "noise_scale_start": 0.0, "noise_scale_end": 1.0, "noise_scale_hold_frac": 0.1,
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
-                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_anneal_seed0_vglpan/checkpoints",
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
                  "++algo.noise_std_hold": 0.06, "++algo.noise_std_floor": 0.02, "++algo.noise_hold_frac": 0.3},
     },
     # 2. HANDOFF_DRILL (DESIGN.md §D): 2 gates, focus the FIRST gate handoff. Spacing 10-20 m (the VQ2
