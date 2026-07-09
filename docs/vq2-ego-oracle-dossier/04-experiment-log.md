@@ -226,14 +226,20 @@ limit** (answers [09] Q5):
 - 🟢🟢 **`vglpns0` / `vglpns5` (2026-07-09) — PERCEPTION ABLATION: the floor is PERCEPTION-LIMITED, not
   control-limited (overturns L14).** Preliminary (both still running to 4000; watcher read to step 1570):
 
-  | run | `ego_noise_scale` | thread @1570 | xoff @1570 | trend |
-  |---|---|---|---|---|
-  | vglpan (champion) | 1.0 | 0.20 | 0.88 m | converged |
-  | **vglpns0** | **0.0 (perfect estimator)** | **0.32** | **0.52 m** | still falling (0.67→0.52) |
-  | vglpns5 | 0.5 | 0.03 | 2.18 m | slow warm-start transient (anomalous, early) |
+  | run | `ego_noise_scale` | thread (final, stoch) | xoff (final) | **DET_EVAL thread** | failure mode (det) |
+  |---|---|---|---|---|---|
+  | vglpan (champion) | 1.0 | 0.20 | 0.88 m | 0.226 | — |
+  | **vglpns0** | **0.0 (perfect estimator)** | **0.63** | **0.32 m** | **0.641** | collision 0.35, miss 0.008, oob 0.0001 |
+  | vglpns5 | 0.5 | 0.054 | 1.71 m | 0.039 | collision 0.58, miss 0.38 (collapsed basin) |
 
-  **A perfect estimator nearly halved the crossing offset (0.88 → 0.52 m, still dropping) and lifted
-  thread 0.20 → 0.32 (rising).** So the ~0.88 m floor was **substantially perception-limited** — the
+  **FINAL: a perfect estimator took thread 0.20 → 0.63 (3×) and the crossing 0.88 → 0.32 m — inside the
+  0.42 m clean-pass aperture. Deterministic 0.641 (≈ stochastic, no determinism gap).**
+  **The residual after perfect perception is a CONTROL clip:** vglpns0's 36% failures are almost all
+  *collisions* (0.35), not misses (0.008) or oob (0.0001) — i.e. it reaches and crosses near-centred but
+  clips the frame ~⅓ of the time. So the layered truth is: **perception is the dominant cap (0.88→0.32),
+  with a ~36% control/precision clip-residual underneath it.** vglpns5 (half-noise) *converged* badly
+  (collapsed basin, 58% collision) — a real non-monotonicity (a policy warm-started from a full-noise
+  base into half-noise landed in a floor/clip basin; single seed, L1-consistent) — noted, not load-bearing. So the ~0.88 m floor was **substantially perception-limited** — the
   opposite of L14's "control-limited" conclusion. Why L14 was wrong: its three failing pushes (more
   training, tighter zero, sharper *actor* noise) never touched the *estimator* noise. Why the effect
   (~0.4 m+) exceeds the raw ~0.28 m measurement error: the closed loop **amplifies** it — the policy
@@ -244,13 +250,17 @@ limit** (answers [09] Q5):
   vglpns5 non-monotonicity (worse than both 0 and 1) is unexplained and likely an early transient —
   finals pending. → dossier [10](10-hypotheses-and-literature.md), [06](06-empirical-laws.md) L14.
 
-- 🎯 **`r_perc` perception reward BUILT + deployed (2026-07-09), ready to launch.** Swift/Geles
-  `perception·exp(−δ_cam⁴)`, δ_cam = angle(camera axis, drone→gate-center), via new
-  `gate_visibility.gate_center_view_cos`. Stage `single_gate_varied_gvf_lpara_perc` warms from champion
-  vglpan (fixed 0.75 zero → the only change vs vglpan is `r_perc`), weight via `EXTRA=++env.rw_perception`
-  (dose-response 0.05/0.15). In *our* sim its main channel is keeping the gate **detectable** near the
-  plane (our `gate_detectable` is FOV-geometry-dependent) → no loss-of-lock at the crossing. Launch when
-  the vglpns slots free.
+- 🎯 **`r_perc` perception reward — IN FLIGHT (2026-07-09).** Swift/Geles `perception·exp(−δ_cam⁴)`,
+  δ_cam = angle(camera axis, drone→gate-center), via new `gate_visibility.gate_center_view_cos`. Stage
+  `single_gate_varied_gvf_lpara_perc` warms from champion vglpan (fixed 0.75 zero → the only change vs
+  vglpan is `r_perc`). **Dose-response: `vperc05` (job 3298826, rw_perception=0.05) + `vperc15` (job
+  3298827, =0.15)**, 2000 upd, DET_EVAL on, watcher `bp5dpqcmh`. In *our* sim its channel is keeping the
+  gate **detectable** near the plane (`gate_detectable` is FOV-geometry-dependent) → no loss-of-lock at
+  the crossing. **Bet:** move champion's 0.88 m toward the 0.32 m perfect-perception ceiling *with real
+  noise*. **Interpretation:** it can only recover the part of the perception gap due to *loss-of-lock*
+  (masking), not the part due to in-frame σ (our σ is range-based, not image-position-based) — so a
+  partial recovery (say 0.88 → 0.5–0.6 m) is the realistic expectation; the rest needs a better estimator
+  (vision-commander) or richer obs (H2).
 
 - 📄 *(superseded framing below — the perception ablation resolved the fork toward perception.)* **`vglpns0`
   / `vglpns5` (launched 2026-07-09) — the PERCEPTION ablation (the decisive fork).**

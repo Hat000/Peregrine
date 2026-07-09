@@ -18,16 +18,20 @@ On a **single** gate (depth 8–15 m, height ±6 m, tail-first spawn), the champ
 - The **speed lever is refuted**: capping the rewarded closing rate (`rw_vmax_mps` 39→5→3) made
   centering *monotonically worse* (0.88→1.57→3.29 m), because it flattens the far-field progress
   gradient rather than forcing a slower crossing ([04](04-experiment-log.md) Era 6).
-- **PERCEPTION is the cap (the ablation resolved it, 2026-07-09).** `vglpns0` (`ego_noise_scale=0`, a
-  *perfect estimator*, else the champion recipe) drove the crossing **0.88 → 0.52 m and still falling,
-  thread 0.20 → 0.32 rising**. So the floor is **perception-limited, not control-limited** — my ≤0.3 m
-  prior was too low because the **closed loop amplifies** ~0.28 m of measurement noise into ~0.4 m+ of
-  crossing offset (noisy `rel_pos` every step → hedged control). *Preliminary — runs still converging;
-  `vglpns0` is a ceiling, not a deployable number.*
+- **PERCEPTION is the dominant cap (ablation resolved, 2026-07-09, FINAL).** `vglpns0`
+  (`ego_noise_scale=0`, a *perfect estimator*, else the champion recipe) reached **thread 0.63 / xoff
+  0.32 m** (deterministic **0.641**) — vs champion 0.20 / 0.88 m. A perfect estimator **3×'d thread and
+  put the crossing inside the 0.42 m aperture.** So the floor is **perception-limited, not control-
+  limited**; my ≤0.3 m prior was too low because the **closed loop amplifies** ~0.28 m of measurement
+  noise into ~0.5 m of crossing offset (noisy `rel_pos` every step → hedged control).
+- **A control clip-residual sits underneath.** With perfect perception the *remaining* 36% failures are
+  almost all **collisions/frame-clips** (det: collision 0.35, miss 0.008, oob 0.0001) — the drone crosses
+  near-centred but clips ~⅓ of the time. So: perception first (0.88→0.32), then a control/precision layer.
 
-So: the drone arrives at the plane, but **noisy perception drives it ~0.9 m off-center** — and cleaning
-the perception (not the reward) is what tightens it. That resolves the puzzle in favor of Fengyou's
-idea (a).
+So: the drone arrives at the plane, but **noisy perception drives it ~0.9 m off-center** — cleaning the
+perception (not the reward) is what tightens it (Fengyou's idea (a) confirmed). `vglpns0` is a *ceiling*
+(perfect estimator, not deployable); the deployable question is how far `r_perc` closes the gap with real
+noise (in flight).
 
 ---
 
