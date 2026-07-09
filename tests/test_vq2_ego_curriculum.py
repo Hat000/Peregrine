@@ -85,10 +85,29 @@ def test_common_is_easy_safe_no_hard_stage_pressure():
     assert C._COMMON["rw_centering"] == 0.0          # OFF (penalty form back-fired; homing now via progress)
     assert C._COMMON["rw_centering_max_m"] == 2.0    # perpendicular-offset clamp (unused while centering==0)
     assert C._COMMON["course_spawn_dist_lo"] == 10.0 and C._COMMON["course_spawn_dist_hi"] == 20.0
-    assert C._COMMON["rw_terminal_miss"] == 8.0      # MISS forgiving ~= hover (30->8; miss now keeps banked)
+    # TERMINAL EQUALIZATION (Fengyou 2026-07-08): miss raised 8->100 to MATCH contact (100) so bailing wide
+    # is no longer a cheap escape that teaches gate-avoidance; the residual gap is only the contact-only
+    # banked-progress forfeit (the sprint-and-clip defence).
+    assert C._COMMON["rw_terminal_miss"] == 100.0    # MISS == CONTACT base (no cheap bail; anti-gate-avoidance)
     assert C._COMMON["rw_terminal_oob"] == 200.0     # OOB (leaving arena) STAYS discouraged (96% OOB @ 30)
     assert C._COMMON["rw_terminal_progress_scaled"] is True
-    assert C._COMMON["rw_terminal_base"] == 200.0    # CONTACT stays catastrophic (zero-contact rule)
+    assert C._COMMON["rw_terminal_base"] == 100.0    # CONTACT lowered 200->100 (still DQ-scale; miss-parity)
+
+
+def test_single_gate_varied_gvf_stage():
+    """The vector-field (GVF) branch: use_racing_line ON, contouring ON, same varied geometry as the
+    aniso/mpcc branches, and the flag renders as a hydra +env token."""
+    s = C.STAGES["single_gate_varied_gvf"]
+    assert s["use_racing_line"] is True
+    assert s["rw_corridor"] == 4.0                    # cross-track contouring pull onto the line
+    assert s["rw_progress_to_center"] is False        # s comes from the line arc length (flag ignored)
+    assert s["course_n_gates"] == 1
+    assert s["course_spawn_dist_lo"] == 8.0 and s["course_spawn_dist_hi"] == 15.0
+    assert s["course_spawn_below_g0_lo"] == -6.0 and s["course_spawn_below_g0_hi"] == 6.0
+    toks = C.render_overrides("single_gate_varied_gvf")
+    assert "+env.use_racing_line=true" in toks        # boolean renders hydra-lowercase
+    # terminal equalization inherited from _COMMON
+    assert "+env.rw_terminal_miss=100.0" in toks and "+env.rw_terminal_base=100.0" in toks
 
 
 def test_hard_knobs_absent_from_easy_stages_present_on_hard_stages():
@@ -160,7 +179,7 @@ def test_course_sampler_keys_documented():
                                      "course_drop_lo", "course_drop_hi",
                                      "course_spawn_dist_lo", "course_spawn_dist_hi",
                                      "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
-                                     "course_spawn_heading")
+                                     "course_spawn_heading", "course_spawn_yaw_jitter")
 
 
 def test_single_gate_varied_varies_position_and_height_offladder():

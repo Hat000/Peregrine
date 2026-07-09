@@ -136,6 +136,12 @@ DEFAULT_COURSE_RANGES = dict(
     spawn_dist_m=(18.0, 28.0),    # standing-start pad -> gate 0 horizontal; VQ1 23.3
     spawn_below_g0_m=(0.5, 2.5),  # gate-0 centre this far ABOVE the pad; VQ1 1.41
     min_pair_dist_m=10.0,         # reject layouts with any two gates (or a gate and the pad) closer
+    spawn_yaw_jitter_rad=0.0,     # (Fengyou 2026-07-08) jitter the DRONE's spawn yaw off the gate bearing by
+                                  # U(+-jitter) so the gate lands at varied LEFT/RIGHT positions in the FOV
+                                  # (realistic FOV coverage). Distinct from spawn_heading (a GLOBAL rotation =
+                                  # redundant for the heading-invariant egocentric obs); this changes the gate's
+                                  # RELATIVE bearing -> the body-frame rel_pos varies -> real training signal.
+                                  # Keep <= the camera HFOV so the gate stays visible (>=4 keypoints). 0 == OFF.
     spawn_heading=None,           # segment-0 world heading. None -> random in (-pi, pi] (the VQ1/inc8
                                   # behaviour: courses fan around the pad). A FIXED value -> every course
                                   # starts along that heading (Fengyou 2026-07-07: for the EGOCENTRIC
@@ -242,7 +248,13 @@ def sample_courses(n, device="cpu", generator=None, **overrides):
         gate_pos[bad], gate_yaw[bad] = rp, ry
 
     spawn_pos = torch.zeros(n, 3, device=device)
-    spawn_yaw = torch.atan2(torch.sin(gate_yaw[:, 0] + np.pi), torch.cos(gate_yaw[:, 0] + np.pi))
+    # spawn yaw = tail-first toward gate 0 (gate_yaw+pi), PLUS an optional off-bearing jitter so the gate
+    # appears across the FOV (Fengyou 2026-07-08). The jitter is on the drone's facing, NOT the layout, so
+    # it changes the gate's relative bearing (real egocentric signal), unlike a global spawn_heading rotation.
+    base_yaw = gate_yaw[:, 0] + np.pi
+    if R["spawn_yaw_jitter_rad"] > 0.0:
+        base_yaw = base_yaw + U(-R["spawn_yaw_jitter_rad"], R["spawn_yaw_jitter_rad"], n)
+    spawn_yaw = torch.atan2(torch.sin(base_yaw), torch.cos(base_yaw))
     return {"gate_pos": gate_pos, "gate_yaw": gate_yaw,
             "spawn_pos": spawn_pos, "spawn_yaw": spawn_yaw}
 

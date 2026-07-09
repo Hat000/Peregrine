@@ -772,3 +772,69 @@ def test_vert_weight_unburies_vertical_vs_lateral():
     d_iso = (R.gate_center_potential(far, ctr) - R.gate_center_potential(far_level, ctr)).abs()
     d_w = (R.gate_center_potential(far, ctr, 25.0) - R.gate_center_potential(far_level, ctr, 25.0)).abs()
     assert d_w.item() > 10 * d_iso.item()                                # the weighted norm feels the sink far more
+
+
+def test_forfeit_mask_frame_moat_fix():
+    """Fengyou 2026-07-08 frame-moat fix: passing forfeit_mask=floor-only makes a FRAME-CLIP forfeit no
+    banked progress (net == a wide miss) while the FLOOR dive still forfeits -- so the aperture ring is not
+    a moat that punishes getting close. Without the mask (legacy) a frame-clip forfeits like any contact."""
+    import torch
+    from ego_reward import terminal_penalty, EgoRewardWeights
+    w = EgoRewardWeights(terminal_base=100.0, terminal_miss=100.0, terminal_oob=200.0,
+                         terminal_progress_scaled=True)
+    banked = torch.tensor([30.0, 30.0, 30.0])
+    frame = torch.tensor([True, False, False])
+    miss = torch.tensor([False, True, False])
+    floor = torch.tensor([False, False, True])
+    coll = frame | floor                                        # frame + floor are both contacts
+    ob = torch.zeros(3, dtype=torch.bool)
+    legacy = terminal_penalty(coll, miss, ob, banked, w)        # mask=None -> every contact forfeits
+    assert abs(legacy[0].item() - 130.0) < 1e-4                 # frame-clip = base+forfeit (the moat)
+    assert abs(legacy[1].item() - 100.0) < 1e-4                 # wide miss = base only
+    fixed = terminal_penalty(coll, miss, ob, banked, w, forfeit_mask=floor.float())
+    assert abs(fixed[0].item() - fixed[1].item()) < 1e-4        # frame-clip == wide miss (moat GONE)
+    assert fixed[2].item() > fixed[1].item() + 1e-4             # floor STILL forfeits (real crash)
+
+
+def test_alignment_reward_gvf_direction():
+    """GVF alignment reward (Fengyou 2026-07-08): rewards velocity DIRECTION following the guiding field.
+    On the line moving along the tangent -> ~max. Off the line, angling ONTO the path beats flying PARALLEL
+    (the telescoping-contouring blind spot is gone). Higher gain demands a steeper inward angle."""
+    import math
+    import torch
+    from ego_reward import alignment_reward
+    tangent = torch.tensor([[1.0, 0.0, 0.0]])
+    # on the line: perp=0, v along tangent -> ~ +rw_align (cos 0 * speed_gate~1)
+    r_on = alignment_reward(torch.tensor([[5.0, 0.0, 0.0]]), tangent, torch.zeros(1, 3),
+                            torch.tensor([0.0]), rw_align=2.0, align_gain=1.0)
+    assert r_on.item() > 1.9
+    # 3 m off (inward = -z); flying PARALLEL (along tangent) vs flying ALONG F (angled inward)
+    inward = torch.tensor([[0.0, 0.0, -1.0]])
+    perp = torch.tensor([3.0])
+    r_parallel = alignment_reward(torch.tensor([[5.0, 0.0, 0.0]]), tangent, inward, perp,
+                                  rw_align=2.0, align_gain=1.0)
+    theta = math.atan(1.0 * 3.0)                                     # the field's inward angle
+    v_along_F = torch.tensor([[math.cos(theta) * 5, 0.0, -math.sin(theta) * 5]])
+    r_onpath = alignment_reward(v_along_F, tangent, inward, perp, rw_align=2.0, align_gain=1.0)
+    assert r_onpath.item() > r_parallel.item() + 0.1                 # angling onto the path beats parallel
+    # near-stationary -> ~0 (ill-defined direction, damped by the speed gate)
+    r_rest = alignment_reward(torch.tensor([[0.001, 0.0, 0.0]]), tangent, inward, perp,
+                              rw_align=2.0, align_gain=1.0)
+    assert abs(r_rest.item()) < 0.1
+
+
+def test_crossing_parabola_reward():
+    """Smooth parabolic crossing reward (Fengyou 2026-07-08): +center dead-centre, 0 at the aperture edge,
+    growing negative outside, clamped. Monotonic in the offset -> no moat, no cliff."""
+    import torch
+    from ego_reward import crossing_parabola_reward
+    crossed = torch.ones(4, dtype=torch.bool)
+    e = torch.tensor([0.0, 0.75, 1.0, 5.0])                     # centre, edge, just-outside, far
+    r = crossing_parabola_reward(e, crossed, cross_center=20.0, cross_zero_m=0.75, cross_neg_cap=100.0)
+    assert abs(r[0].item() - 20.0) < 1e-4                       # centre -> +20
+    assert abs(r[1].item() - 0.0) < 1e-4                        # aperture edge -> 0
+    assert -20.0 < r[2].item() < 0.0                            # just outside -> small negative
+    assert abs(r[3].item() + 100.0) < 1e-4                      # far -> clamped at -cap
+    assert r[0].item() > r[1].item() > r[2].item() > r[3].item()  # MONOTONIC (no moat)
+    r0 = crossing_parabola_reward(e, torch.zeros(4, dtype=torch.bool), 20.0, 0.75, 100.0)
+    assert (r0 == 0).all()                                      # no crossing -> 0
