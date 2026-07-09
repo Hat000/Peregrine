@@ -64,3 +64,32 @@ mechanism (parabola + in-run zero-anneal) **stand**; the parts framing reach-rat
 2. The forward work is single-front: **centring** (anneal the parabola zero toward the ~0.5 m effective
    aperture + sharpen the endgame noise floor), evaluated on the trusted in-loop box-exit until a
    faithful deterministic metric exists.
+
+## RESOLVED (2026-07-08, same day): faithful deterministic eval built + the determinism gap is ~zero
+
+Added a post-training deterministic eval to `peregrine_train_ego.py` (`_run_det_eval`): after the
+training loop it runs the policy `test=True` on the **live** training env (the exact instance that
+produced the trusted metrics) and prints a greppable `DET_EVAL[...]` line. Faithful by construction;
+runs post-training so it cannot affect the checkpoint/result; auto-on for every future run
+(`+eval_det_steps=0` disables). To evaluate an existing checkpoint, launch a 5-update warm-start run
+(`n_updates=5` < the critic-warmup 100 → actor frozen → the loaded mean is evaluated unchanged).
+
+**Result for vglpan (~20k episodes, deterministic):**
+
+```
+DET_EVAL[vglpan]  thread=0.226  collision(frame-clip)=0.684  miss=0.089  oob=0.0003
+```
+
+vs the trusted training (stochastic) `thread 0.199, collision 0.713, miss 0.087, oob 0.0005`.
+
+**Findings:**
+- **oob 0.03% — matches training (0.05%), NOT the broken harness's 46%.** Confirms `_run_det_eval` is
+  faithful and `ego_render_rollout` is the thing that's broken.
+- **There is essentially NO determinism gap:** deterministic thread (22.6%) ≥ stochastic (19.9%). The
+  held exploration noise was mildly *hurting*, not helping. So the "deployed policy is much worse"
+  fear (from the broken harness's 0%) is **false**, and the noise-floor-sharpen lever is not needed to
+  close a deployment gap (it may still help the mean converge tighter during training — TBD from
+  vglpshp).
+- **The problem is unambiguously CENTRING** — ~68% frame-clip deployed, crossings at ~0.88 m against a
+  ~0.42 m effective window. The only lever that matters is pulling the crossing mean tighter (the
+  parabola zero-anneal toward ~0.42–0.5 m).
