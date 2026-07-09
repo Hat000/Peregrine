@@ -73,6 +73,7 @@ never-reach problem. But it is the thread we were pulling when this dossier was 
 | [07-diagnosis-hitmap.md](07-diagnosis-hitmap.md) | The gate-plane hit-map diagnostic: where crossings land, the 2×2 noise×DR attribution, the reach-rate + effective-aperture reframe. Figures in `figures/`. |
 | [08-ideas-rejected-and-untried.md](08-ideas-rejected-and-untried.md) | Every idea we shot down (with why), and — separately — everything we **never tried** and everything we **never measured**. |
 | [09-open-questions-for-the-oracle.md](09-open-questions-for-the-oracle.md) | The specific questions we want answered, ranked. |
+| [10-hypotheses-and-literature.md](10-hypotheses-and-literature.md) | **Deep analysis (2026-07-09).** Our stack vs. the field's champion reward/obs designs (Swift, Song, Geles, MonoRace, CPC/TOGT); the quantitative centering baseline (~0.5 m field, →0.15 m with a perception reward); the N=1-vs-N=2 crash ablation; refined hypotheses + the sequenced plan (`r_perc` + dual-gate). |
 
 Figures live in [`figures/`](figures/). The analysis is reproducible from the scripts described in
 [07](07-diagnosis-hitmap.md).
