@@ -36,8 +36,20 @@ A pure direction-alignment vector field (`dot(v̂, F̂)`, `vgv2*`) centres to 10
 the distance-reducing contouring + magnitude terms (3.4 m). Direction reward is speed-blind and
 satisfied by a roughly-aligned velocity while crossing wide. Elegant, empirically weaker.
 
-### L6. For a smooth crossing bowl, the "zero radius" must be tight enough to make a gradient — and
-must be *shrunk continuously*, never stepped.
+### L6. ⚠️ PARTLY RETRACTED (2026-07-09) — the "continuous anneal" was never actually running.
+
+The in-run cross-zero anneal hook **silently no-op'd the entire 2026-07-08 campaign** (the trainer's
+`env._egorw` did not reach the raw env through DiffAero's `RecordEpisodeStatistics` wrapper → `hasattr`
+False → SKIP; caught 2026-07-09, see [04]/[05]). So `vglpan` trained at a **FIXED `cross_zero=4.0`**, not
+the 4→0.75 anneal — its centering to ~0.88 m came from fixed zero=4 + corridor + magnitude centering, and
+the "continuous anneal beat the discrete step" claim below is **unproven** (the discrete `vglp3` collapse
+was real, but the surviving alternative was *fixed zero=4*, not a working anneal). The actual 4→0.75
+anneal is now fixed and under test (`vcza2`). The parts of L6 still standing: a fixed zero=6 is too flat
+(drifted worse) and zero=4 pulls (both observed at fixed values); the near-centre gradient scaling
+argument is analytic. **Original (now-suspect) claim below.**
+
+**[SUSPECT] For a smooth crossing bowl, the "zero radius" must be tight enough to make a gradient — and
+must be *shrunk continuously*, never stepped.**
 
 Parabola zero=6 (too flat near centre) drifted worse; zero=4 pulled (`vglp4`); a **continuous** anneal
 4→0.75 rode the offset down (`vglpan`); a **discrete** 4→3 step collapsed (`vglp3`). The gradient near
@@ -129,3 +141,14 @@ even though it's inside the 0.75 m geometric aperture. Intuition says anneal the
 but `vglp05` shows that *back-fires* when the policy is control-limited above that (it just punishes
 achievable crossings and destabilises). Closing the reward-vs-body gap requires first *lowering the
 control floor* (slow down / better perception), not tightening the reward past what control can hit.
+
+### L16. VERIFY A HOOK ACTUALLY FIRES — a silent `hasattr`/wrapper skip can invalidate a whole campaign.
+
+The cross-zero anneal (L6) and the first noise curriculum both *silently skipped* for want of an env
+attribute behind a wrapper, and it went unnoticed for weeks because the runs still produced plausible
+(fixed-config) results. Two tells that caught it: (1) a **dose-response pair that came back bit-identical**
+(`vns01` vs `vns31`, different `noise_scale_start`, identical DET_EVAL) — impossible if the knob were
+live; (2) grepping the run log for the hook's own `ON`/`SKIPPED` line. **Rule:** every in-run hook must
+print `ON` with a live value each log interval, and every experiment must confirm that line (and/or a
+dose-response that *must* differ) before trusting the result. `r_perc` (a reward term read in the env's
+compute path) was NOT affected — only train-loop hooks reaching through the env wrapper were.

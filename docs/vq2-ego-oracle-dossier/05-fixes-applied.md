@@ -82,3 +82,16 @@ Each entry: what it is, why we built it, outcome.
   backup stage (`squareon`) but never cleanly run under the current recipe.
 - **Parabola at the true 0.75 m zero (fixed, no anneal)** — only ever hit via `vgcp` (which never ran)
   or as the anneal *endpoint*. Never run standalone.
+
+## Fix — in-run anneal hooks were silently inert (2026-07-09)
+
+- **`_unwrap_env_with` (env-chain drill).** The trainer (`TrainRunner`) wraps the env in
+  `RecordEpisodeStatistics`, and `env._egorw` / `env._estimator` do not reach the raw
+  `peregrine_racing_ego` from the top of the wrapper chain → the cross-zero and noise-scale anneal
+  setups saw `hasattr == False` and **silently SKIPPED**. This had gone unnoticed since 2026-07-08 (the
+  cross-zero "anneal breakthrough" never actually ran; `vglpan` = fixed `cross_zero=4.0`). The fix walks
+  `vars(e)['env']` (instance dict, avoiding `__getattr__` recursion) to the object whose own `__dict__`
+  holds the attribute, and both anneals now mutate through that holder. Unit-tested against
+  forwarding / broken-forwarding / missing-attr wrapper mocks. Held (committed `4f91bd8`). **Lesson
+  banked as [06](06-empirical-laws.md) L16: confirm every hook prints `ON`, and use dose-response pairs
+  that *must* differ as a tripwire (the bit-identical `vns01`/`vns31` DET_EVAL is what exposed it).**

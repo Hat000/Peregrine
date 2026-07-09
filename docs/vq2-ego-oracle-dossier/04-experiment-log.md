@@ -260,7 +260,31 @@ limit** (answers [09] Q5):
   our noise is range-based, not FOV-position-based). Rejected; see the noise-curriculum below as the
   non-reward alternative. *(Both weights collapsed identically → not a magnitude issue.)*
 
-- 🎯 **NOISE CURRICULUM — IN FLIGHT (2026-07-09), the data-motivated response to vglpns0.** Since the cap
+- 🛑 **LATENT BUG FOUND (2026-07-09): the in-run anneals were SILENTLY INERT.** The first noise-curriculum
+  attempt (`vns01`/`vns31`) collapsed identically (bit-identical DET_EVAL 0.0051) and the logs revealed
+  `[noise-scale-anneal] requested but env._estimator missing -- SKIPPED`. Chasing it: the **champion
+  `vglpan` log shows the SAME for cross-zero** — `[cross-zero-anneal] ... env._egorw missing -- SKIPPED`.
+  **So the cross-zero in-run anneal NEVER RAN in any 2026-07-08 run** — `vglpan` trained at *fixed*
+  `cross_zero=4.0`, not the 4→0.75 anneal the dossier credited as "the breakthrough." Root cause:
+  DiffAero's `TrainRunner` wraps the env in `RecordEpisodeStatistics`, and `env._egorw`/`env._estimator`
+  do not reach the raw env from the top of the wrapper chain (so `hasattr` is False → the anneal setup
+  skips). Only agent-based hooks (logstd noise, warmstart, critic-warmup) ever worked. **Impact:** the
+  cross-zero "anneal breakthrough" narrative (L6) is wrong — centering to 0.88 m came from *fixed* zero=4
+  + corridor + magnitude centering. **NOT impacted:** the perception ablation (`vglpns0`), which set noise
+  via *env-construction config* (`+env.ego_noise_scale` → the estimator at build time), not the hook —
+  that result stands. **Fix:** `_unwrap_env_with` drills the `.env` chain via instance `__dict__` (no
+  `__getattr__` recursion) to the real holder; both anneals now use it (committed `4f91bd8`, unwrap logic
+  unit-tested). *This also means the cross-zero anneal 4→0.75 has never actually been tried — worth a run.*
+
+- 🎯 **RELAUNCHED with the fix (2026-07-09), two now-enabled levers, both warm from the non-fragile
+  `vglp4` base:** **`vcza2`** (job 3298993) = the cross-zero anneal 4→0.75 *for real this time* (isolates
+  the never-run centering anneal; noise fixed 1); **`vnsb`** (job 3298994) = the noise curriculum 0→1
+  (cross-zero fixed at 4 = real-vglpan; isolates the noise lever). Both vs the vglpan control (0.20/0.88).
+  Watcher `bajd0sifx`. **Confirm active via the trajectory:** `vnsb` early (noise≈0) should track the
+  vglpns0 regime (high, climbing), not collapse; `vcza2` should start ≈vglpan then tighten as the zero
+  anneals. *(First attempt `vns01`/`vns31` = the inert/collapsed runs, superseded.)*
+
+- 📄 *(SUPERSEDED — the anneal was inert; see the bug above)* **NOISE CURRICULUM — IN FLIGHT (2026-07-09).** Since the cap
   is perception *noise* (not reward), anneal the estimator noise itself: warm from champion vglpan, hold
   the reward fixed, and ramp `ego_noise_scale` **0 → 1** over the run (`_noise_scale_schedule` +
   `BatchedEgoEstimator.set_noise_scale`, mirroring the cross-zero anneal). The policy centres on a clean
