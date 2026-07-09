@@ -98,7 +98,11 @@ BASE=(
 # Warm-start boundary protections (mirrors the inc8 ladder): reset the exploration logstd after every
 # warm-start load (transfer the means, never the ground-down exploitation schedule) + a critic warmup
 # so the privileged critic adapts to the new return scale before the policy moves.
-BOUNDARY_OV=( +warmstart_reset_logstd=true +warmstart_reset_logstd_std=0.18 +critic_warmup_updates=100 )
+# +eval_det_steps=1200 (up from the peregrine_train_ego.py default of 300): the post-train faithful
+# deterministic box-exit (_run_det_eval) was censoring episodes >10s at the 300-step default -- 1200
+# gives full-lap completions headroom to actually terminate before DET_EVAL[...] aggregates.
+BOUNDARY_OV=( +warmstart_reset_logstd=true +warmstart_reset_logstd_std=0.18 +critic_warmup_updates=100
+              +eval_det_steps=1200 )
 
 nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv -l 20 > ${GPUUTIL} 2>&1 &
 SMI_PID=$!

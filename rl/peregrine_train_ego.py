@@ -147,18 +147,27 @@ _orig_run = TrainRunner.run
 
 def _cross_zero_schedule(update_idx: int, n_updates: int, start: float, end: float,
                          hold_frac: float) -> float:
-    """PURE geometric (log-linear) decay of the parabola ZERO RADIUS (rw_cross_zero_m) from ``start`` to
+    """GEOMETRIC (log-linear) decay of the parabola ZERO RADIUS (rw_cross_zero_m) from ``start`` to
     ``end`` over the back ``1-hold_frac`` of training; hold ``start`` for the first ``hold_frac``. Mirrors
     inc8_noise_anneal's std schedule. Shrinking the zero WITHIN a run sharpens the near-centre crossing
     gradient smoothly as the policy centres -- avoiding the discrete warm-start-into-tighter-zero collapse
-    (vglp3/vglp3b: a 4->3 STEP detonated the warm-start; a gradual anneal has no discontinuity)."""
+    (vglp3/vglp3b: a 4->3 STEP detonated the warm-start; a gradual anneal has no discontinuity).
+
+    Falls back to a LINEAR ramp whenever either endpoint is <=0 (geometric ``start*(end/start)**p`` is
+    undefined/degenerate there -- division by zero or a zero base). The cross-zero caller never hits this
+    branch (start/end are always >0 radii), but the clip-terminal-anneal caller does by design
+    (``clip_pen_start`` defaults to 0.0 -- a penalty weight ramping UP from off). The linear form still
+    correctly HOLDS ``start`` through ``hold_frac`` then ramps to ``end``; the old fallback here was
+    ``return end`` unconditionally, which ignored ``hold_frac`` and ``p`` entirely and snapped straight to
+    ``end`` from update 0 -- silently wrong for any start<=0 caller (dead code for cross-zero, but would
+    have detonated the clip-terminal anneal at update 0 instead of ramping it)."""
     N = max(int(n_updates), 1)
     i0 = hold_frac * N
     span = max(N - i0, 1.0)
     p = min(max((update_idx - i0) / span, 0.0), 1.0)
     if start > 0.0 and end > 0.0:
         return start * (end / start) ** p
-    return end
+    return start + (end - start) * p
 
 
 def _resolve_cross_zero_anneal(cfg):
@@ -194,6 +203,32 @@ def _unwrap_env_with(env, attr, max_depth=12):
     return None
 
 
+def _require_anneal_holder(env, attr, sched, hook_name, cfg):
+    """Drill the env chain (_unwrap_env_with) for the holder carrying ``attr`` on behalf of a requested
+    in-run anneal. Returns None with NO side effect when the anneal itself was never requested (``sched``
+    is None -- the byte-identical OFF path, no print). When the anneal WAS requested (``sched`` is not
+    None) but the holder can't be found in the chain, the default is to RAISE RuntimeError -- footgun L16
+    (2026-07-09): the pre-fix behaviour here was to print '... SKIPPED' and silently fall back to an
+    UNANNEALED run, which let the entire 2026-07-08 cross-zero campaign train at a fixed value under an
+    annealed run name with nobody noticing until a bit-identical dose-response pair exposed it. A
+    requested-but-unfindable hook MUST kill the run loudly, not train a silently-degraded baseline. Set
+    the top-level ``+anneal_allow_skip=true`` to opt back into the old silent-skip-and-continue behaviour
+    (e.g. for a deliberately-degraded smoke run)."""
+    if sched is None:
+        return None
+    holder = _unwrap_env_with(env, attr)
+    if holder is not None:
+        return holder
+    allow_skip = bool(getattr(cfg, "anneal_allow_skip", False))
+    msg = f"[{hook_name}] requested but {attr!r} holder not found in env chain"
+    if allow_skip:
+        print(f"{msg} -- SKIPPED (anneal_allow_skip=true)")
+        return None
+    raise RuntimeError(
+        f"{msg} -- refusing to silently disable a requested in-run anneal (footgun L16). Set "
+        f"+anneal_allow_skip=true if a silent skip is genuinely intended.")
+
+
 def _noise_scale_schedule(update_idx: int, n_updates: int, start: float, end: float,
                           hold_frac: float) -> float:
     """LINEAR ramp of the estimator global noise multiplier (ego_noise_scale) from ``start`` to ``end``
@@ -221,6 +256,27 @@ def _resolve_noise_scale_anneal(cfg):
         start=float(getattr(env, "noise_scale_start", 0.0)),
         end=float(getattr(env, "noise_scale_end", 1.0)),
         hold_frac=float(getattr(env, "noise_scale_hold_frac", 0.1)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
+def _resolve_clip_terminal_anneal(cfg):
+    """Parse the clip-terminal penalty-WEIGHT anneal from cfg.env, or None when OFF (byte-identical
+    default). Gated by ``+env.clip_pen_anneal`` (truthy); ``+env.clip_pen_start/end/hold_frac`` optional.
+    Mutates ``env._egorw.clip_terminal_w`` per update -- mirrors the cross-zero/noise-scale anneal pattern
+    exactly (resolve -> _unwrap_env_with(env, "_egorw") -> per-update mutate + print). Uses
+    _cross_zero_schedule, whose LINEAR fallback handles the default ``clip_pen_start=0.0`` correctly
+    (geometric is undefined at start=0; see _cross_zero_schedule's docstring). ``clip_terminal_w`` is a
+    lever a parallel agent is adding to ego_reward.py -- this anneal setattr's it on ``_egorw`` regardless
+    of whether the attribute exists yet (the ``from_cfg`` wiring that reads it back into the reward
+    computation lands separately; setattr on a plain object simply creates the attribute)."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "clip_pen_anneal", False)):
+        return None
+    return dict(
+        start=float(getattr(env, "clip_pen_start", 0.0)),
+        end=float(getattr(env, "clip_pen_end", 1.0)),
+        hold_frac=float(getattr(env, "clip_pen_hold_frac", 0.1)),
         n_updates=int(getattr(cfg, "n_updates", 0) or 0),
     )
 
@@ -311,26 +367,38 @@ def _run_with_ego_lifelines(self):
     # (the in-run cure for the discrete-shrink warm-start collapse). Requires the live racing env + parabola
     # on; None (OFF) is byte-identical. env._egorw IS the exact object the reward reads (self._egorw), so
     # mutating cross_zero_m before each rollout takes effect the next step.
+    # STRICT (footgun L16, 2026-07-09): a requested-but-unfindable holder RAISES by default via
+    # _require_anneal_holder (opt into the old silent-skip with +anneal_allow_skip=true) -- applies to
+    # all three anneal hooks below (cross-zero, noise-scale, clip-terminal).
     cz_sched = _resolve_cross_zero_anneal(cfg)
-    cz_env = _unwrap_env_with(env, "_egorw") if cz_sched is not None else None
-    if cz_sched is not None and cz_env is not None:
-        print(f"[cross-zero-anneal] ON: {cz_sched} (from {getattr(cz_env._egorw, 'cross_zero_m', '?')})")
-    else:
-        if cz_sched is not None:
-            print("[cross-zero-anneal] requested but _egorw holder not found in env chain -- SKIPPED")
-        cz_sched = None
+    cz_env = _require_anneal_holder(env, "_egorw", cz_sched, "cross-zero-anneal", cfg)
+    if cz_sched is not None:
+        if cz_env is not None:
+            print(f"[cross-zero-anneal] ON: {cz_sched} (from {getattr(cz_env._egorw, 'cross_zero_m', '?')})")
+        else:
+            cz_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
     # NOISE CURRICULUM (Fengyou 2026-07-09): anneal the estimator global noise multiplier ego_noise_scale
     # from start->end WITHIN the run (the data-motivated response to vglpns0 = perception-noise-limited).
     # _estimator.set_noise_scale mutates the frozen EgoEstimatorConfig live; None (OFF) is byte-identical.
     ns_sched = _resolve_noise_scale_anneal(cfg)
-    ns_env = _unwrap_env_with(env, "_estimator") if ns_sched is not None else None
-    if ns_sched is not None and ns_env is not None:
-        print(f"[noise-scale-anneal] ON: {ns_sched} (from {getattr(ns_env._estimator.cfg, 'noise_scale', '?')})")
-    else:
-        if ns_sched is not None:
-            print("[noise-scale-anneal] requested but _estimator holder not found in env chain -- SKIPPED")
-        ns_sched = None
+    ns_env = _require_anneal_holder(env, "_estimator", ns_sched, "noise-scale-anneal", cfg)
+    if ns_sched is not None:
+        if ns_env is not None:
+            print(f"[noise-scale-anneal] ON: {ns_sched} (from {getattr(ns_env._estimator.cfg, 'noise_scale', '?')})")
+        else:
+            ns_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
+    # CLIP-TERMINAL PENALTY anneal: ramp env._egorw.clip_terminal_w from start->end WITHIN the run (a
+    # lever a parallel agent is adding to ego_reward.py). Mirrors the cross-zero/noise-scale pattern
+    # exactly; None (OFF) is byte-identical.
+    ct_sched = _resolve_clip_terminal_anneal(cfg)
+    ct_env = _require_anneal_holder(env, "_egorw", ct_sched, "clip-terminal-anneal", cfg)
+    if ct_sched is not None:
+        if ct_env is not None:
+            print(f"[clip-terminal-anneal] ON: {ct_sched} (from {getattr(ct_env._egorw, 'clip_terminal_w', '?')})")
+        else:
+            ct_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
@@ -358,6 +426,12 @@ def _run_with_ego_lifelines(self):
             ns_env._estimator.set_noise_scale(nsv)
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[noise-scale-anneal] update {counter['i']}: ego_noise_scale={nsv:.3f}")
+        if ct_sched is not None:
+            ctv = _cross_zero_schedule(counter["i"], ct_sched["n_updates"],
+                                       ct_sched["start"], ct_sched["end"], ct_sched["hold_frac"])
+            ct_env._egorw.clip_terminal_w = ctv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[clip-terminal-anneal] update {counter['i']}: clip_terminal_w={ctv:.3f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
