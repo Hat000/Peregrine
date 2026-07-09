@@ -149,7 +149,8 @@ target is the wrong target.**
 |---|---|---|---|---|
 | H1 | **Perception-noise magnitude** caps centering | `vglpns0` tightens | `ego_noise_scale` 0.0/0.5 dose-response | ✅ **CONFIRMED** (0.88→0.52 m, falling) |
 | H3 | **Control** (plant+CTBR+net can't null the last ~0.9 m) | `vglpns0` still floors ~0.88 m | `vglpns0` result | ❌ **REFUTED** (perfect estimator tightens) |
-| H4 | **Missing perception objective** (`r_perc`) — the *deployable* form of H1 | adding `r_perc` tightens with real noise | `single_gate_varied_gvf_lpara_perc` | **BUILT + deployed; launch next** |
+| H4 | **Missing perception objective** (`r_perc`) — the *deployable* form of H1 | adding `r_perc` tightens with real noise | `single_gate_varied_gvf_lpara_perc` | ❌ **REJECTED** — farmable positive dense term → fly-away collapse (oob→1.0) |
+| H1b | **Noise curriculum** — anneal `ego_noise_scale` 0→1 (learn centering clean, then robustify) | thread *hump*, settles > 0.20 at full noise | `vns01`/`vns31` (no reward change, L1-safe) | **IN FLIGHT** |
 | H2 | **Observation representation** (noised center-vector + area ≪ 4 corners) | corner-obs tightens beyond `r_perc` | add gate-corner/normal obs channel | untested (fallback if `r_perc` under-delivers) |
 | H5 | **Task underspecification** — lone-gate crossing point not well-defined (idea b2) | gate-1 offset *tighter* with a 2nd gate | dual-gate: measure gate-1 cross_offset | untested |
 | H6 | **Input regime** — permanently-empty 2nd slot degrades single-gate (idea b1) | dual-gate tightens gate-1 | dual-gate vs single-gate gate-1 offset | untested |

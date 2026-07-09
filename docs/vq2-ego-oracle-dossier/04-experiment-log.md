@@ -250,7 +250,30 @@ limit** (answers [09] Q5):
   vglpns5 non-monotonicity (worse than both 0 and 1) is unexplained and likely an early transient —
   finals pending. → dossier [10](10-hypotheses-and-literature.md), [06](06-empirical-laws.md) L14.
 
-- 🎯 **`r_perc` perception reward — IN FLIGHT (2026-07-09).** Swift/Geles `perception·exp(−δ_cam⁴)`,
+- ❌ **`r_perc` perception reward — DETONATED (2026-07-09), rejected.** `vperc05`/`vperc15` (weights
+  0.05/0.15, warm from champion) both collapsed within ~400 updates: thread 0.19 → **0.00**, xoff blew
+  out to 6–13 m, and **DET_EVAL thread 0.0001 / 0.000 with oob 0.54 / 1.00** (fly-away). Cause: a raw
+  *positive dense* reward that peaks when pointing at the gate is **farmable** — the policy learns to
+  keep the gate in view while flying *away/out of bounds* rather than crossing (crossing risks the
+  parabola clip penalty). A hard L1 warm-start collapse. **Lesson:** the field's `r_perc` does NOT
+  transfer as a raw additive term to our stack (and its estimate-quality channel is weak here anyway —
+  our noise is range-based, not FOV-position-based). Rejected; see the noise-curriculum below as the
+  non-reward alternative. *(Both weights collapsed identically → not a magnitude issue.)*
+
+- 🎯 **NOISE CURRICULUM — IN FLIGHT (2026-07-09), the data-motivated response to vglpns0.** Since the cap
+  is perception *noise* (not reward), anneal the estimator noise itself: warm from champion vglpan, hold
+  the reward fixed, and ramp `ego_noise_scale` **0 → 1** over the run (`_noise_scale_schedule` +
+  `BatchedEgoEstimator.set_noise_scale`, mirroring the cross-zero anneal). The policy centres on a clean
+  signal first (≈ the vglpns0 regime), then adapts that skill to be noise-**robust** as the measured
+  vision noise ramps in. Changes NO reward (not farmable, unlike `r_perc`) and is continuous (L1-safe,
+  unlike the fixed-0.5 `vglpns5` which collapsed). **Dose-response: `vns01` (job 3298988, 0→1) + `vns31`
+  (job 3298989, 0.3→1)**, warm from champion, 2000 upd, DET_EVAL on, watcher `bd1cm993m`. **Control =
+  vglpan (fixed noise 1.0, 0.20/0.88 m).** Success = a thread *hump* (high early at low noise, settling
+  above 0.20 at full noise) → the curriculum found a more noise-robust basin than training at full noise.
+  Risk: it may re-converge to ~0.20 at the end (final regime = champion's). *Diagnose via the success
+  trajectory (curriculum active ⇒ hump; silently skipped ⇒ flat 0.20).*
+
+- 📄 *(superseded)* **`r_perc` perception reward — IN FLIGHT (2026-07-09).** Swift/Geles `perception·exp(−δ_cam⁴)`,
   δ_cam = angle(camera axis, drone→gate-center), via new `gate_visibility.gate_center_view_cos`. Stage
   `single_gate_varied_gvf_lpara_perc` warms from champion vglpan (fixed 0.75 zero → the only change vs
   vglpan is `r_perc`). **Dose-response: `vperc05` (job 3298826, rw_perception=0.05) + `vperc15` (job
