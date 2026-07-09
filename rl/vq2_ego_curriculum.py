@@ -912,6 +912,54 @@ STAGES: dict[str, dict] = {
                  "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
     },
+    # ================================================================================================
+    # DUAL_GATE_FULLSTACK (2026-07-09 audit wave-4 -> multi-gate stage designer). The PROVEN single-gate
+    # champion stack (single_gate_varied_gvf_lpara_anneal: use_racing_line + PBRS corridor 4 + magnitude
+    # centering 0.4 + the per-crossing PARABOLA) ported VERBATIM to 2 gates. The ONLY deltas vs the champion
+    # are the gate count (1->2), the gate0->gate1 spacing (course_seg_len 10-20 m = the VQ2 co-visibility
+    # band), and the parabola zero held STATIC at 4.0 (NO cross-zero anneal in v1: one lever at a time, and
+    # the anneal never beat fixed-4 per the wave data). Everything else is byte-identical to the champion and
+    # is ALREADY 2-gate-correct with NO code change (audit finding, stage-designer 2026-07-09):
+    #   * racing_line.build_racing_line already builds the GLOBAL head-on Hermite line spanning
+    #     spawn->g0->g1 (G segments; tangent == each gate's through-normal at its centre; G1-continuous ->
+    #     no cusp). The GVF query projects onto the WHOLE polyline, so progress s (arc length) AND contouring
+    #     perp (cross-track) are CONTINUOUS across the gate-0 handoff -- there is NO per-target re-plan (the
+    #     env's advance re-query is a position-based no-op on the global line, peregrine_racing_ego.py:970).
+    #     A "gate-2-aware exit tangent" was CONSIDERED and REJECTED: blending gate-0's crossing tangent toward
+    #     gate 1 would BREAK the head-on crossing the parabola + corridor target (the reward wants a CENTRED
+    #     head-on crossing at EACH gate; the inter-gate curve already supplies the turn between them).
+    #   * the parabola (crossing_parabola_reward on pass_linf[tg] / fwd_t[tg]) is TARGET-INDEXED -> pays per
+    #     gate; with miss_terminates=True (default) ANY forward crossing of the target either ADVANCES the
+    #     target or TERMINATES, so fwd_t fires at most once per gate -> once-each payment WITHOUT the latch
+    #     (rw_parabola_latch stays off, exactly as the champion validated; the latch only matters if a future
+    #     variant sets miss_terminates=false).
+    #   * the obs 2nd window slot (WINDOW=2) already carries gate 1 during the gate-0 approach (n_gates=2,
+    #     tg=0 -> slot1=gate1 valid, ego_window_indices); the coarse map + privileged critic are per-gate;
+    #     the terminal fires the finish on the LAST gate (tg==G-1) and advances on the non-last pass.
+    # Warm from vglp4 (the non-fragile base) with the champion 0.12/0.03/0.5 noise-std trio, at
+    # ego_noise_scale=0 (the CALIBRATION regime -- isolate the 2-gate control question from estimator
+    # corruption; the warm arm also FILLS the previously-always-empty 2nd obs slot, the audit's H6 OOD
+    # liability). first-leg geometry (dist 8-15 m, height +-6 m, yaw jitter 0.25) == vglp4's distribution so
+    # the warm-started gate-0 skill transfers cleanly; the 10-20 m gate0->gate1 leg is the new 2-gate content.
+    # OFF-LADDER; run standalone via STAGES=dual_gate_fullstack0, UPD_dual_gate_fullstack0=4000.
+    "dual_gate_fullstack0": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # first leg == vglp4 (clean warm transfer)
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,  # gate-0 height band == vglp4
+        "course_spawn_yaw_jitter": 0.25,                                    # lateral FOV == vglp4
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,              # gate0->gate1 spacing (VQ2 co-visibility)
+        "use_racing_line": True,
+        "rw_progress_to_center": False,                  # progress from the GLOBAL line arc-length (pure GVF)
+        "rw_corridor": 4.0,                              # PBRS cross-track contouring onto the line (champion)
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,  # per-step magnitude centering nag (champion)
+        "rw_parabola_crossing": True,                    # per-crossing smooth parabola (champion)
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # STATIC zero=4 (NO anneal in v1)
+        "ego_noise_scale": 0.0,       # calibration regime (perfect estimator -- isolate the 2-gate control question)
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
     #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
     #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate
