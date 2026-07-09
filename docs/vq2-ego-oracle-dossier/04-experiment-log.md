@@ -205,8 +205,34 @@ limit** (answers [09] Q5):
 ~1.5 s) — too fast to thread a ~0.42 m window. The progress reward pays closing-rate up to
 `rw_vmax_mps = 39 m/s`, a standing speed incentive.
 
-- 🎯 **`vglpsl5` / `vglpsl3` (IN FLIGHT, 2026-07-09):** the vglpan recipe with the rewarded-speed cap
-  `rw_vmax_mps` lowered to **5** and **3 m/s** (slow-lap for precision). Both auto-print `DET_EVAL`.
-  Watcher `bf3jri3ft`. **Fork:** slower → tighter xoff ⇒ speed is the lever (ramp the slow-lap toward
-  the 0.42 m target and 90%); no change ⇒ the limit is perception (ablate estimator noise) or the
-  policy needs an arrive-head-on / low-lateral-velocity term.
+- ❌ **`vglpsl5` / `vglpsl3` (DONE, 2026-07-09) — SPEED LEVER REFUTED, and in the *wrong* direction.**
+  The vglpan recipe with the rewarded-speed cap `rw_vmax_mps` lowered to **5** and **3 m/s**. Same
+  warm-start, same 4000 updates, same anneal. Result (final box-exit):
+
+  | run | `rw_vmax_mps` | thread | xoff |
+  |---|---|---|---|
+  | vglpan (champion) | 39 (none) | ~0.20 | **0.88 m** |
+  | vglpsl5 | 5 | 0.069 | 1.57 m |
+  | vglpsl3 | 3 | 0.027 | 3.29 m |
+
+  Capping the rewarded closing rate made centring **monotonically worse** (3.29 > 1.57 > 0.88 m as the
+  cap tightened). The "crosses too fast to thread 0.42 m" hypothesis predicted slower→tighter; we got
+  slower→looser. **Read carefully:** `rw_vmax_mps` does not *force* slower flight — it flattens the
+  far-field progress gradient, so the drone dawdles far out and arrives at a *worse* offset. So this
+  refutes the *lever* (`rw_vmax_mps` is not the knob), not the physics of "a slower crossing threads
+  better" — a term that penalises *speed at the crossing plane* is still untried. But the standing
+  speed-reward is not the cause of the floor.
+
+- 🎯 **`vglpns0` / `vglpns5` (IN FLIGHT, 2026-07-09) — the PERCEPTION ablation (the decisive fork).**
+  The vglpan recipe with a new single knob `+env.ego_noise_scale` = **0.0** (a perfect truth estimator)
+  and **0.5** (half the measured noise), warm from vglp4, DET_EVAL on. `ego_noise_scale` multiplies ALL
+  injected estimator noise/corruption (vision fix σ, per-episode in-plane bias, teleport/miss/normal-flip
+  probs, IMU accel white + residual-bias drift, colored gyro, visible-area σ); default 1.0 is numerically
+  identical to every prior run. Smoke-verified: scale 0 → rel_pos error 0.000 m; scale 1 → 0.281 m (the
+  measured contract). Jobs 3298802 / 3298803, watcher `bginllvbb`. **Prior (quantitative):** the realized
+  per-gate perception error is ~0.28 m (vertical-dominated) + a ≤0.19 m per-episode bias → perception can
+  account for **at most ~0.25–0.3 m** of the 0.88 m offset, so I *expect* the offset to stay ~0.88 m
+  (control-limited confirmed). **Fork:** offset stays ~0.88 m at scale 0 ⇒ **control-limited, decisively**
+  (perception removed from the suspect list; next lever is the action space or an arrive-head-on term);
+  offset drops toward the ~0.28 m perception floor ⇒ **perception-limited** (harden the estimator / add a
+  perception-aware cue). The 0.5 point gives the dose-response slope either way.

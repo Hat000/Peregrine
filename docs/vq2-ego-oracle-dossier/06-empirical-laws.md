@@ -92,9 +92,19 @@ Three independent pushes all fail to tighten it: more training (`vglpan6` == `vg
 reward zero (`vglp05` 4→0.5 → **worse**, 1.7 m), a sharper noise floor (`vglpshp` → **collapse**).
 Decisive: at the working end zero of 0.75 m, a 0.88 m crossing *already* earns a **negative** parabola
 (`≈ −7.6`) — the reward is already pushing tighter and the policy **cannot comply**. → Further reward
-shaping is spent; the lever is now **control / speed / perception**. Leading hypothesis: the policy
-crosses too fast (~8 m/s) to thread a ~0.42 m window because progress pays closing-rate up to
-`rw_vmax_mps = 39 m/s`. Under test (`vglpsl5`/`vglpsl3`, capped rewarded speed).
+shaping is spent; the lever is now **control / speed / perception**.
+
+**Speed sub-lever REFUTED (`vglpsl5`/`vglpsl3`, 2026-07-09).** Capping the rewarded closing rate
+(`rw_vmax_mps` 39 → 5 → 3) made centring *monotonically worse* (0.88 → 1.57 → 3.29 m), the opposite of
+the "too fast to thread" prediction. Caveat: `rw_vmax_mps` flattens the far-field progress gradient (the
+drone dawdles and arrives worse) rather than forcing a slower *crossing*, so this kills the *lever*, not
+the physics — a speed-at-plane penalty is still untried. But the standing speed reward is not the cause.
+
+**Perception sub-lever under decisive test (`vglpns0`/`vglpns5`, 2026-07-09).** New `+env.ego_noise_scale`
+knob (multiplies all injected estimator noise; 0 = perfect estimator). The realized per-gate perception
+error is only ~0.28 m (+ ≤0.19 m per-episode bias), bounding perception to ≤~0.3 m of the 0.88 m offset —
+so the expectation is the offset stays ~0.88 m at scale 0, which would **prove control-limited decisively**
+and remove perception from the suspect list. If instead it drops toward ~0.28 m, perception was the cap.
 
 ### L15. The reward geometry (0.75 m) and the real target (0.42 m) disagree — but you can't just retarget.
 
