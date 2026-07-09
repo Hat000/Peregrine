@@ -847,6 +847,36 @@ STAGES: dict[str, dict] = {
                  "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
     },
+    # CLIP-TERMINAL CALIBRATION (2026-07-09 audit wave-3). Across THREE noise-0 configs (vglpns0 fixed-4
+    # 0.641 · vczns0 real-anneal 0.574/0.403 · vcoast0 anneal+coast 0.522) the DET ceiling sits at
+    # ~0.5-0.65 with a stubborn 0.4-0.5 FRAME-CLIP residual that neither reward-zero tightening nor
+    # perfect endgame observability (the coast package) touches. The remaining reward suspect: with the
+    # parabola on, a clip still pays +19.2/20 (terminals bypassed) -- the policy is near-indifferent
+    # between threading and clipping. This stage = the vczns0 recipe + the clip-penalty ANNEAL 0->20
+    # (rl/ego_reward.clip_terminal_w via the peregrine_train_ego clip_pen hook; hold 0.3 lets the warm
+    # policy settle before the tail-penalty ramps). ONE lever vs the vczns0 control: if the clip residual
+    # converts to threads, the residual was reward-indifference; if it persists (or converts to misses),
+    # it is control precision. Run via STAGES=single_gate_varied_gvf_lpara_clip0, UPD_..._clip0=4000.
+    "single_gate_varied_gvf_lpara_clip0": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # initial (anneal overrides live)
+        "cross_zero_anneal": True, "cross_zero_start": 4.0, "cross_zero_end": 0.75, "cross_zero_hold_frac": 0.1,
+        "ego_noise_scale": 0.0,       # perfect estimator == the vczns0 calibration regime
+        "rw_clip_terminal": 0.0,      # initial (the clip_pen anneal drives clip_terminal_w live)
+        "clip_pen_anneal": True, "clip_pen_start": 0.0, "clip_pen_end": 20.0, "clip_pen_hold_frac": 0.3,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
     # 2. HANDOFF_DRILL (DESIGN.md §D): 2 gates, focus the FIRST gate handoff. Spacing 10-20 m (the VQ2
     #    co-visibility regime where the next gate is trackable through the current one). Still the EASY
     #    reward (no rw_passage bump, exit OFF) -- drill the handoff MECHANICS (window promotion, no
