@@ -62,7 +62,7 @@ PUBLIC API:
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -319,6 +319,12 @@ class BatchedEgoEstimator:
         depth = torch.full_like(r, p.sigma_depth_floor)
         vert = torch.full_like(r, p.sigma_vertical_floor)
         return self.cfg.noise_scale * torch.stack([lat, depth, vert], dim=-1)   # (N,G,3) gate frame
+
+    def set_noise_scale(self, value: float) -> None:
+        """Live-mutate the global noise multiplier (for an in-run NOISE CURRICULUM: anneal ego_noise_scale
+        0->1 within one training run). All noise-draw sites read ``self.cfg.noise_scale`` live, so replacing
+        the frozen config here takes effect the next step (frozen -> dataclasses.replace, not in-place)."""
+        self.cfg = replace(self.cfg, noise_scale=float(value))
 
     # -------------------------------------------------------------------- lifecycle
     def reset_idx(self, idx: Tensor, drone_pos: Tensor, drone_vel: Tensor, drone_quat: Tensor) -> None:

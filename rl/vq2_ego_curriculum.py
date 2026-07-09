@@ -789,6 +789,33 @@ STAGES: dict[str, dict] = {
         "rw_altitude_hold": 1.0, "rw_altitude_hold_band_m": 8.0,
         "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA},
     },
+    # NOISE CURRICULUM (Fengyou 2026-07-09; the data-motivated response to the vglpns0 finding). The
+    # ablation PROVED the ~0.88 m centring floor is PERCEPTION-NOISE-limited (perfect estimator -> 64%
+    # thread / 0.32 m) and that a FIXED intermediate noise DETONATES a warm-start (vglpns5 0.5 -> collapse),
+    # while r_perc (a new positive dense reward) also detonated (farmable fly-away). This lever changes NO
+    # reward and uses the PROVEN continuous-anneal mechanism: warm from the CHAMPION vglpan (fixed 0.75
+    # zero) and ANNEAL ego_noise_scale 0 -> 1 within the run -> the policy centres on a clean signal first,
+    # then adapts that skill to be noise-ROBUST as the measured vision noise ramps in. Isolates the noise
+    # curriculum as the SINGLE change vs vglpan (control = vglpan at fixed noise 1.0 = 0.20/0.88 m). Start
+    # overridable via EXTRA=++env.noise_scale_start (dose-response 0.0 / 0.3). ~2000 upd.
+    # Run via STAGES=single_gate_varied_gvf_lpara_nscale, UPD_single_gate_varied_gvf_lpara_nscale=2000.
+    "single_gate_varied_gvf_lpara_nscale": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 0.75, "rw_cross_neg_cap": 100.0,   # champion settings, fixed 0.75
+        "noise_scale_anneal": True, "noise_scale_start": 0.0, "noise_scale_end": 1.0, "noise_scale_hold_frac": 0.1,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_anneal_seed0_vglpan/checkpoints",
+                 "++algo.noise_std_hold": 0.06, "++algo.noise_std_floor": 0.02, "++algo.noise_hold_frac": 0.3},
+    },
     # 2. HANDOFF_DRILL (DESIGN.md §D): 2 gates, focus the FIRST gate handoff. Spacing 10-20 m (the VQ2
     #    co-visibility regime where the next gate is trackable through the current one). Still the EASY
     #    reward (no rw_passage bump, exit OFF) -- drill the handoff MECHANICS (window promotion, no
