@@ -1,7 +1,16 @@
 # 07 — Diagnosis: the gate-plane hit-map
 
-This is the deepest look we took at *where* the crossings land, and it reframed the whole problem. It
-is computed **offline from logged trajectories** (not a render), so it is trustworthy.
+> 🛑 **CORRECTION — this section's numbers are UNRELIABLE.** See
+> [00-CORRECTION-eval-harness.md](00-CORRECTION-eval-harness.md). The offline harness
+> (`ego_render_rollout.py`) that produced these figures reports 46% out-of-bounds where the real
+> training env reports 0.05% — it does not faithfully reproduce training. The "46% never reach",
+> "+3.2 m high-bias", and the 2×2 thread numbers below are **artifacts**. The trusted picture (from
+> the in-loop box-exit) is: **20% thread, 71% frame-clip, ~0% oob/floor, xoff 0.88 m — a pure centring
+> problem.** The section is kept as-written for the record and as the reproduction of the bug.
+
+This was our deepest look at *where* the crossings land. We believed it was trustworthy (computed
+offline from logged trajectories, not a render) — but it turned out the *rollout that generated those
+trajectories* was itself unfaithful (see the banner above). Read it as a cautionary tale.
 
 Figures (in [`figures/`](figures/)):
 - `ehm_stoch_dron.png` — **realistic regime** (stochastic + DR-on, the training conditions). The main

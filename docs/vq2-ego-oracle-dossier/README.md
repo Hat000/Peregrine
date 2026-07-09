@@ -13,22 +13,29 @@ Written 2026-07-08 by the RL commander (Claude, Opus 4.8) for Fengyou. Repo: `Pe
 
 ---
 
+> ⚠️ **READ [00-CORRECTION-eval-harness.md](00-CORRECTION-eval-harness.md) FIRST.** After writing the
+> rest of this dossier we found the offline eval harness that produced the [07] hit-map is
+> **unfaithful** (it reports 46% out-of-bounds where the real training env reports 0.05%). The
+> "reach-rate / 46%-never-reach / +3.2 m high-bias" findings are **artifacts** and are corrected there.
+> The TL;DR below is already corrected; [07] is left as-was with a correction banner.
+
 ## TL;DR
 
 - **Goal:** ≥90% single-gate *thread* rate (clean pass through the aperture, zero contact),
   as a gate before multi-gate work.
-- **Best policy to date:** `vglpan` — **~16% thread** (as-trained regime, stochastic + domain
-  randomization), mean crossing offset **~0.9 m** Euclidean. Deterministic (deployed-mean) ~10%.
-- **The last honest diagnostic (the gate-plane "hit map", see [07](07-diagnosis-hitmap.md)) split
-  the failure into two independent problems we had been conflating:**
-  1. **~46% of drones never reach the gate at all** (crash / floor / timeout before the plane).
-  2. The crossings that *do* happen scatter ~1–2 m around the aperture with a mild **vertical
-     high-bias**, against an **effective clean-pass window of only ~0.42 m** (the 0.28–0.38 m body
-     radius shrinks the 0.75 m geometric aperture). We had been targeting sub-0.75 m; the real
-     target is sub-0.42 m.
-- **Central unsolved question:** how to get from 16% → 90% given those two problems, a policy that
-  **collapses whenever a warm-started reward is changed structurally** (observed 6×), and an
-  exploration-noise / domain-randomization sensitivity that muddies which number is "real".
+- **Best policy to date:** `vglpan` — **~20% thread** (trusted in-training metric, stochastic + domain
+  randomization), mean crossing offset **~0.88 m** L-inf.
+- **The trusted diagnosis (from the in-loop box-exit, not the broken offline harness): a pure
+  centring problem.** ~100% of drones reach the gate and cross the plane; **71% clip the frame**
+  (cross at L-inf 0.75–1.36 m, *just* outside the aperture); ~9% miss wide; oob≈0, floor≈0. There is
+  **no reach-rate problem** — the earlier "46% never reach" was an eval-harness artifact.
+- **The real target is sub-0.42 m, not sub-0.75 m:** the 0.28–0.38 m body radius shrinks the 0.75 m
+  geometric aperture to a ~0.42 m clean-pass window, so a 0.5–0.7 m crossing still clips. Pulling the
+  0.88 m mean into ~0.42 m converts most of the 71% frame-clip reservoir into threads.
+- **Central unsolved questions:** (a) how to get the crossing mean from ~0.88 m to sub-0.42 m for the
+  *deployed deterministic* policy — which we **cannot currently measure faithfully** (no working
+  deterministic eval); (b) why the policy **collapses whenever a warm-started reward is changed
+  structurally** (observed 6×), forcing fresh runs each iteration.
 
 ---
 
@@ -51,6 +58,7 @@ never-reach problem. But it is the thread we were pulling when this dossier was 
 
 | File | What's in it |
 |---|---|
+| [00-CORRECTION-eval-harness.md](00-CORRECTION-eval-harness.md) | **Read first.** The offline eval harness is unfaithful; corrects the [07] reach-rate/high-bias findings and states the trusted training numbers. |
 | [01-problem-and-goal.md](01-problem-and-goal.md) | The task, the definition of "thread", validity rules, why single-gate first, the moonshot context. |
 | [02-system-and-stack.md](02-system-and-stack.md) | The full ML stack: observation, privileged critic, algorithm, environment, every reward term, the estimator, the course sampler, the racing line, the training harness, deployment. |
 | [03-physics-frames-dr-geometry.md](03-physics-frames-dr-geometry.md) | The simulated plant, domain randomization (every component), coordinate frames & the tail-first / camera-flip conventions, gate & body geometry, the sensor wire. |
