@@ -143,6 +143,15 @@ class EgoEstimatorConfig:
     rel_pos_std_init: float = 5.0        # cold per-gate relative-position std (m) before the first fix
     far_cap_m: float = 30.0              # visibility far cap (passed to gate_detectable)
 
+    # ---- GLOBAL noise scale (DIAGNOSTIC lever, Fengyou 2026-07-09; the perception-vs-control ablation) ----
+    # A single multiplier on ALL injected estimator noise/corruption: the anisotropic vision fix sigma,
+    # the per-episode in-plane bias, the teleport/miss/normal-flip probabilities, the IMU accel white +
+    # residual-bias drift, the colored gyro, and the visible-area noise. 1.0 == the measured contract
+    # (default -> numerically identical to every prior run). 0.0 == a PERFECT (truth) estimator. Set via
+    # +env.ego_noise_scale to answer "is the ~0.88 m centring floor perception- or control-limited?":
+    # zeroing it and re-training warm-from-champion shows how much of the offset is estimator noise.
+    noise_scale: float = 1.0
+
     def n_eff_mean(self) -> float:
         return 0.5 * (self.n_eff_lo + self.n_eff_hi)
 
@@ -309,7 +318,7 @@ class BatchedEgoEstimator:
         lat = torch.maximum(torch.full_like(r, p.sigma_lateral_floor), p.sigma_lateral_a1 * r)
         depth = torch.full_like(r, p.sigma_depth_floor)
         vert = torch.full_like(r, p.sigma_vertical_floor)
-        return torch.stack([lat, depth, vert], dim=-1)                      # (N,G,3) gate frame
+        return self.cfg.noise_scale * torch.stack([lat, depth, vert], dim=-1)   # (N,G,3) gate frame
 
     # -------------------------------------------------------------------- lifecycle
     def reset_idx(self, idx: Tensor, drone_pos: Tensor, drone_vel: Tensor, drone_quat: Tensor) -> None:
@@ -346,12 +355,12 @@ class BatchedEgoEstimator:
         self._n_eff[idx] = cfg.n_eff_lo + (cfg.n_eff_hi - cfg.n_eff_lo) * u
         # residual accel bias (the drift lever) per axis ~ U[-band, +band]
         if cfg.dr_accel_bias:
-            self._accel_bias[idx] = cfg.accel_bias_band * (2.0 * self._rand(m, 3) - 1.0)
+            self._accel_bias[idx] = cfg.noise_scale * cfg.accel_bias_band * (2.0 * self._rand(m, 3) - 1.0)
         else:
             self._accel_bias[idx] = 0.0
         # per-episode in-plane (lat, vert) bias, one-signed magnitude, depth bias = 0
         if cfg.inject_bias:
-            mag = cfg.bias_mag_hi * self._rand(m, self.G)
+            mag = cfg.noise_scale * cfg.bias_mag_hi * self._rand(m, self.G)
             sign = torch.where(self._rand(m, self.G) < 0.5, torch.ones(m, self.G, device=self.device, dtype=self.dtype),
                                -torch.ones(m, self.G, device=self.device, dtype=self.dtype))
             b = sign * mag                                                  # (m,G)
@@ -389,7 +398,7 @@ class BatchedEgoEstimator:
         self._roll_pitch = _euler_roll_pitch_from_R(R_wb)
         # AR(1) colored gyro noise: e_t = rho*e_{t-1} + sqrt(1-rho^2)*sigma*w_t (stationary marginal sigma)
         rho = self.cfg.gyro_ar1_rho
-        innov = ((1.0 - rho * rho) ** 0.5) * self.cfg.gyro_sigma * self._randn(N, 3)
+        innov = ((1.0 - rho * rho) ** 0.5) * self.cfg.gyro_sigma * self.cfg.noise_scale * self._randn(N, 3)
         self._gyro_ar = rho * self._gyro_ar + innov
         self._body_rates = body_rates + self._gyro_ar
 
@@ -397,7 +406,7 @@ class BatchedEgoEstimator:
         # Body-frame velocity integrates a residual accel bias (the drift lever) + white noise. We work
         # directly in the BODY frame (no world). The bias is the per-episode residual; over Delta-t
         # since the last fix this integrates to bias*Delta_t (the dominant error). White noise is tiny.
-        white = self.cfg.accel_white_sigma * self._randn(N, 3)
+        white = self.cfg.accel_white_sigma * self.cfg.noise_scale * self._randn(N, 3)
         self._vel_body = self._vel_body + dt * (self._accel_bias + white)
 
         # ---- ego-propagate each gate's relative vector through the (possible) no-fix gap ----
@@ -427,18 +436,18 @@ class BatchedEgoEstimator:
         R_bg = self._R_body_gate(R_wb)                                     # (N,G,3,3) gate->body
 
         # anisotropic gate-frame noise [lat, depth, vert]
-        sigma_gate = self._fix_sigma_gate(rng)                             # (N,G,3)
+        sigma_gate = self._fix_sigma_gate(rng)                             # (N,G,3) (already noise_scale'd)
         noise_gate = self._bias + sigma_gate * self._randn(N, G, 3)        # (N,G,3) gate frame
         fix_body = rel_true + torch.einsum("ngij,ngj->ngi", R_bg, noise_gate)   # (N,G,3) body-frame fix
 
         # RANDOM-IN-FRAME TELEPORT OUTLIER: replace the fix with a wildly wrong relative position.
-        teleport = (self._rand(N, G) < self.cfg.teleport_prob) & detectable
+        teleport = (self._rand(N, G) < self.cfg.teleport_prob * self.cfg.noise_scale) & detectable
         wild = rel_true + self.cfg.teleport_scale_m * self._randn(N, G, 3)
         fix_body = torch.where(teleport.unsqueeze(-1), wild, fix_body)
 
         # stochastic per-frame MISS even when visible, and the visibility gate: accept iff visible,
         # not missed. A non-detectable gate gets NO fresh fix (propagate-then-mask).
-        missed = self._rand(N, G) < self.cfg.miss_prob
+        missed = self._rand(N, G) < self.cfg.miss_prob * self.cfg.noise_scale
         accepted = detectable & (~missed)                                  # (N,G) bool
 
         # ---- KF-style smoothing update per accepted gate (scalar-gain, matched to N_eff) ----
@@ -463,7 +472,7 @@ class BatchedEgoEstimator:
 
         # ---- gate normal/yaw: the weakest DOF -- own range-collapsing angular noise + flip ----
         cfg = self.cfg
-        normal_sig = (cfg.normal_sigma_floor_rad
+        normal_sig = cfg.noise_scale * (cfg.normal_sigma_floor_rad
                       + cfg.normal_sigma_a1_rad_per_m * torch.clamp(rng, max=self.p.sigma_growth_max_range_m))
         true_normal_body = torch.einsum("nji,ngj->ngi", R_wb, self.R_world_gate[..., :, 1])   # (N,G,3)
         # perturb the facing by a small random rotation of angular std normal_sig about a random axis,
@@ -473,7 +482,7 @@ class BatchedEgoEstimator:
         axis = axis / torch.linalg.norm(axis, dim=-1, keepdim=True).clamp(min=1e-9)
         dR_n = _axis_angle_rotation(axis, ang)                            # (N,G,3,3)
         noisy_normal = torch.einsum("ngij,ngj->ngi", dR_n, true_normal_body)
-        flip = (self._rand(N, G) < cfg.normal_flip_prob) & accepted
+        flip = (self._rand(N, G) < cfg.normal_flip_prob * cfg.noise_scale) & accepted
         noisy_normal = torch.where(flip.unsqueeze(-1), -noisy_normal, noisy_normal)
         acc3 = accepted.unsqueeze(-1)
         self._rel_normal = torch.where(acc3, noisy_normal, self._rel_normal)
@@ -494,7 +503,7 @@ class BatchedEgoEstimator:
             apparent_area = _gate_apparent_area(drone_pos, drone_quat, self.gate_pos, self.gate_yaw,
                                                 is_quat=True)
         area_true = apparent_area                                          # (N,G) in [0,1], square-on==1
-        area_noisy = (area_true + self.cfg.visible_area_sigma * self._randn(N, G)).clamp(0.0, 1.0)
+        area_noisy = (area_true + self.cfg.visible_area_sigma * self.cfg.noise_scale * self._randn(N, G)).clamp(0.0, 1.0)
         self._visible_area = torch.where(accepted, area_noisy, self._visible_area)
 
         # ---- velocity correction: INDIRECT only (NO direct vision-velocity observation) ----

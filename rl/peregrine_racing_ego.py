@@ -69,6 +69,11 @@ from gate_visibility import gate_detectable, gate_apparent_area
 # env previously reused via peregrine_racing.compute_reward_terms. See rl/ego_reward.py + DESIGN.md.
 from ego_reward import (EgoRewardWeights, segment_arc_position, segment_perp_distance,
                         gate_center_potential, compute_ego_reward, wide_flyby_miss)
+# Vector-field (GVF) racing line: online, batched, per-episode NON-OPTIMAL line through the gate
+# centres, head-on at each gate. When ``+env.use_racing_line=true`` the progress potential s and the
+# contouring perp are measured against THIS curved line (arc length / cross-track) instead of the
+# straight current-gate segment. See rl/racing_line.py.
+from racing_line import build_racing_line, RacingLine
 
 # The obs contract dimensions (FIXED). 2-gate slider [current, next] (Fengyou 2026-07-07).
 WINDOW = 2                              # [current, next]
@@ -146,6 +151,11 @@ def resolve_course_overrides(cfg) -> dict:
     spawn_heading = getattr(cfg, "course_spawn_heading", None)
     if spawn_heading is not None:
         out["spawn_heading"] = float(spawn_heading)
+    # course_spawn_yaw_jitter (scalar, Fengyou 2026-07-08): jitter the drone's spawn yaw off the gate bearing
+    # so the gate lands across the FOV (realistic left/right variation). Unset -> 0 (dead-ahead, legacy).
+    spawn_yaw_jitter = getattr(cfg, "course_spawn_yaw_jitter", None)
+    if spawn_yaw_jitter is not None:
+        out["spawn_yaw_jitter_rad"] = float(spawn_yaw_jitter)
     return out
 
 
@@ -429,11 +439,42 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # per-env PBRS contouring potential state: the previous-step perpendicular offset from the current
         # gate-centre segment (for the MPCC contouring term corridor*(perp_prev - perp_curr)).
         self._corr_perp_prev = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        # VECTOR-FIELD racing line (Fengyou greenlight 2026-07-08). When ON, the progress potential s and
+        # the contouring perp are read from the CURVED head-on racing line (arc length / cross-track)
+        # instead of the straight current-gate segment. Built per-env at reset from GT spawn + gate
+        # centres/normals; consumed only by the reward (never the position-free obs).
+        self._use_racing_line = bool(getattr(cfg, "use_racing_line", False))
+        self._racing_samples_per_seg = int(getattr(cfg, "racing_samples_per_seg", 24))
+        # DECOUPLE knob (Fengyou 2026-07-08 race read): when use_racing_line is on, does the PROGRESS
+        # potential come from the line arc-length too (True, the pure-GVF form), or does progress stay on
+        # the isotropic gate_center_potential HOMING while the line supplies ONLY the cross-track
+        # contouring (False = "homing + line-centering")? The race proved isotropic homing is the ONLY
+        # form that reaches the gate plane (70% vs the along-line/segment-lag forms' side/floor divergence),
+        # so the winning recipe KEEPS homing and only ADDS the line's perpendicular centering. Default True
+        # (pure GVF); set +env.racing_line_progress=false for the homing+contouring variant.
+        self._racing_line_progress = bool(getattr(cfg, "racing_line_progress", True))
+        self._racing_line: RacingLine | None = None
+        # FRAME-MOAT fix (Fengyou 2026-07-08): when True, a FRAME-CLIP forfeits no banked progress (net ==
+        # a wide miss) so the ring around the aperture is not a moat that punishes getting close; the FLOOR
+        # dive (a real crash) still forfeits. Default False = legacy (every contact forfeits).
+        self._frame_clip_is_miss = bool(getattr(cfg, "frame_clip_is_miss", False))
+        # APERTURE CURRICULUM (Fengyou 2026-07-08): override the gate half-opening (the pass/thread radius +
+        # the passage-centering scale w_g_half). The real 0.75m aperture has a DEAD ZONE -- a crossing at the
+        # 3.4m plateau earns ZERO passage reward (linf >> 0.75) so nothing sparse pulls it in. A WIDER training
+        # aperture gives the passage reward a gradient across the current offset; shrink it toward 0.75m across
+        # warm-started stages so the policy centres progressively. Only the INNER scales (base untouched); when
+        # the aperture exceeds the outer frame the frame simply vanishes (a soft target) until it shrinks back.
+        # NOTE: the `thread`/success metric is APERTURE-RELATIVE, so during a wide stage watch cross_offset_m
+        # (aperture-independent), not thread. None -> the real spec aperture. Set via +env.gate_inner_opening_m.
+        _ap = getattr(cfg, "gate_inner_opening_m", None)
+        if _ap is not None:
+            self.gate_half_opening_m = float(_ap) / 2.0
         # estimator config (all knobs Fengyou-pinnable via +env.*)
         ecfg = EgoEstimatorConfig(
             visible_area_sigma=float(getattr(cfg, "ego_visible_area_sigma",
                                              EgoEstimatorConfig.visible_area_sigma)),
             far_cap_m=float(getattr(cfg, "ego_far_cap_m", EgoEstimatorConfig.far_cap_m)),
+            noise_scale=float(getattr(cfg, "ego_noise_scale", EgoEstimatorConfig.noise_scale)),
         )
         self._ego_cfg = ecfg
         # the estimator holds per-env course geometry (Z-up, matching gate_visibility/ego_estimator)
@@ -460,11 +501,12 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # only channels (visible_area, coarse sector, last_collective) the critic omits.
         self.state_dim = EGO_CRITIC_DIM             # 16
         self._reset_estimator(self._arange)
+        self._rebuild_racing_line(self._arange)
         if self._use_refined_b:
             seg_a, seg_b = self._current_segment(self._arange)
             self._seg_s_prev.copy_(self._progress_scalar(self._p, seg_a, seg_b))
             self._banked_prog.zero_()
-            self._corr_perp_prev.copy_(segment_perp_distance(self._p, seg_a, seg_b))
+            self._corr_perp_prev.copy_(self._perp_scalar(self._p, seg_a, seg_b))
 
     # ---- course-variation wiring (component D): forward the curriculum course_* keys to the sampler --
     def _sample_ego_courses(self, m: int):
@@ -555,13 +597,17 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self._reset_estimator(env_idx)
             self._prev_q[env_idx] = self._q[env_idx]
             if getattr(self, "_use_refined_b", False):
-                # re-seed the progress potential on the (post-reset) current-target segment so the
-                # first step's (s_curr - s_prev) starts from the true spawn projection (no spurious
-                # first-step burst), and clear the banked-progress accumulator.
+                # rebuild the racing line for the reset envs on their FRESH geometry, THEN re-seed the
+                # progress potential on the (post-reset) current segment / line so the first step's
+                # (s_curr - s_prev) starts from the true spawn projection (no spurious first-step burst),
+                # and clear the banked-progress accumulator.
+                self._rebuild_racing_line(env_idx)
                 seg_a, seg_b = self._current_segment(env_idx)
-                self._seg_s_prev[env_idx] = self._progress_scalar(self._p[env_idx], seg_a, seg_b)
+                self._seg_s_prev[env_idx] = self._progress_scalar(self._p[env_idx], seg_a, seg_b,
+                                                                  env_idx=env_idx)
                 self._banked_prog[env_idx] = 0.0
-                self._corr_perp_prev[env_idx] = segment_perp_distance(self._p[env_idx], seg_a, seg_b)
+                self._corr_perp_prev[env_idx] = self._perp_scalar(self._p[env_idx], seg_a, seg_b,
+                                                                  env_idx=env_idx)
 
     # ---- current-target gate-centre SEGMENT [prev_center -> target_center] (GT, Z-up) ----------
     def _current_segment(self, env_idx=None):
@@ -580,19 +626,44 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self.gate_pos[env_idx, prev_idx.clamp(min=0)])               # else previous gate centre
         return seg_start, seg_end
 
-    def _progress_scalar(self, pos, seg_start, seg_end):
-        """The progress POTENTIAL s for these envs, selected by rw_progress_to_center:
-          * False (default) -> segment_arc_position: along-track advance on the current gate SEGMENT
-            (perpendicular drift earns ZERO -- the refined-B champion default).
-          * True -> gate_center_potential: s = -||pos - gate_centre|| == the inc7/Swift distance-to-gate
-            progress -> a DENSE homing gradient in every axis (lateral + vertical + along-track). Fixes
-            the 2026-07-07 diagnosis: segment-only progress starved lateral/vertical homing so the drone
-            diffused off a dead-ahead gate and missed (single_gate 0%).
-        ``seg_end`` is the CURRENT target gate centre either way. Downstream (clip, banked forfeit, area
-        coupling, passage centering) is identical -- only the potential differs."""
+    def _rebuild_racing_line(self, env_idx=None) -> None:
+        """(Re)build the vector-field racing line from the CURRENT GT geometry (self.spawn_pos/gate_pos/
+        gate_yaw). No-op unless ``use_racing_line``. Rebuilds the WHOLE batch (the geometry tensors already
+        hold each env's fresh course after the reset's course resample; the query gathers per env), so the
+        ``env_idx`` arg is advisory -- it only gates the no-empty-work guard. Cheap (N*G*spp small)."""
+        if not self._use_racing_line:
+            return
+        if env_idx is not None and int(env_idx.numel()) == 0:
+            return
+        self._racing_line = build_racing_line(self.spawn_pos, self.gate_pos, self.gate_yaw,
+                                              samples_per_seg=self._racing_samples_per_seg)
+
+    def _progress_scalar(self, pos, seg_start, seg_end, env_idx=None):
+        """The progress POTENTIAL s for these envs.
+          * use_racing_line -> arc length of the nearest point on the CURVED head-on racing line (the GVF
+            along-track potential; monotone down-course, telescoping -> non-farmable, bounded by the line
+            length; NO lag reference to outrun). ``env_idx`` selects the per-env lines.
+          * else rw_progress_to_center=False -> segment_arc_position: along-track advance on the current
+            gate SEGMENT (perpendicular drift earns ZERO -- the refined-B champion default).
+          * else rw_progress_to_center=True -> gate_center_potential: s = -||pos - gate_centre|| (aniso-
+            weighted) == the inc7/Swift distance-to-gate homing gradient in every axis.
+        Downstream (clip, banked forfeit, area coupling) is identical -- only the potential differs."""
+        if self._use_racing_line and self._racing_line_progress and self._racing_line is not None:
+            s, _, _, _ = self._racing_line.query(pos, env_idx=env_idx)
+            return s
         if self._egorw.progress_to_center:
             return gate_center_potential(pos, seg_end, self._egorw.progress_vert_weight)
         return segment_arc_position(pos, seg_start, seg_end)
+
+    def _perp_scalar(self, pos, seg_start, seg_end, env_idx=None):
+        """Cross-track offset for the contouring / centering terms: the CURVED racing line's perpendicular
+        distance (the GVF contouring error) when use_racing_line, else the straight current-gate segment
+        perp. Orthogonal to _progress_scalar's along-track s (the two decouple -- raising the contouring
+        weight strengthens line-pull without stealing forward progress)."""
+        if self._use_racing_line and self._racing_line is not None:
+            _, perp, _, _ = self._racing_line.query(pos, env_idx=env_idx)
+            return perp
+        return segment_perp_distance(pos, seg_start, seg_end)
 
     # ---- EMULATED-CAMERA body->world (nose-first virtual flip; see __init__) --------------------
     def _cam_R_wb(self):
@@ -781,7 +852,13 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             area_true = self._apparent_area_gt[ar, tg]                       # (N,) in [0,1], square-on==1
             # DENSE lateral centering: perpendicular offset from the PRE-ADVANCE current-target segment
             # (spawn->gate0 or gate[k-1]->gate[k]); the reward pulls this toward 0 -> a CENTRED crossing.
-            perp_dist = segment_perp_distance(curr_pos, seg_start_pre, seg_end_pre)   # (N,)
+            perp_dist = self._perp_scalar(curr_pos, seg_start_pre, seg_end_pre)   # (N,) seg OR line perp
+            # GVF DIRECTION-ALIGNMENT field (tangent + inward-unit at curr_pos) -- only when the alignment
+            # reward is ON (rw_align != 0) and the racing line exists; else None (term zeros out).
+            line_tangent = line_inward = None
+            if (self._use_racing_line and self._racing_line is not None
+                    and self._egorw.align != 0.0):
+                _, _, line_tangent, line_inward = self._racing_line.query(curr_pos)
             reward, loss_components, r_prog = compute_ego_reward(
                 self._egorw,
                 s_curr=s_curr, s_prev=self._seg_s_prev,
@@ -800,7 +877,18 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 z=curr_pos[:, 2], z_spawn=self.spawn_pos[:, 2],
                 # MPCC CONTOURING: previous-step perp offset for the PBRS contouring potential (OFF unless
                 # rw_corridor>0). perp_dist above is the current-step offset from the same segment.
-                perp_prev=self._corr_perp_prev)
+                perp_prev=self._corr_perp_prev,
+                # FRAME-MOAT fix: when frame_clip_is_miss, ONLY the floor dive forfeits banked progress
+                # (a frame-clip then nets == a wide miss -> no moat around the aperture). Else None ->
+                # every contact forfeits (legacy). below_floor is the GT floor-contact mask this step.
+                forfeit_mask=(below_floor.to(self._ego_dtype) if self._frame_clip_is_miss else None),
+                # GVF direction-alignment field (None unless rw_align>0): reward velocity-direction following
+                # the guiding field so a parallel-flying standing offset is still pressured onto the line.
+                line_tangent=line_tangent, line_inward=line_inward,
+                # SMOOTH PARABOLIC CROSSING (None-safe; active only when rw_parabola_crossing): the L-inf
+                # crossing offset + the forward target-plane crossing mask + the floor mask (so the terminal
+                # penalty fires on floor+oob only, frame-clip/miss paying the smooth parabola instead).
+                cross_offset=pass_linf, crossed=fwd_t, floor_contact=below_floor.to(self._ego_dtype))
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious
@@ -811,10 +899,14 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             new_perp_prev = perp_dist.detach().clone()                     # roll the contouring potential
             if adv_idx.numel() > 0:
                 seg_a, seg_b = self._current_segment(adv_idx)               # NEW (post-advance) segment
-                new_s_prev[adv_idx] = self._progress_scalar(curr_pos[adv_idx], seg_a, seg_b)
+                new_s_prev[adv_idx] = self._progress_scalar(curr_pos[adv_idx], seg_a, seg_b,
+                                                            env_idx=adv_idx)
                 # re-seed perp_prev onto the NEW segment too (mirror _seg_s_prev) so the handoff adds no
                 # spurious contouring burst (the clip band is the backstop if the re-projection jumps).
-                new_perp_prev[adv_idx] = segment_perp_distance(curr_pos[adv_idx], seg_a, seg_b)
+                # With the GLOBAL racing line s/perp are position-based (continuous across gates), so this
+                # re-query returns the same value -- a harmless no-op that keeps the segment path correct.
+                new_perp_prev[adv_idx] = self._perp_scalar(curr_pos[adv_idx], seg_a, seg_b,
+                                                           env_idx=adv_idx)
             self._seg_s_prev = new_s_prev
             self._corr_perp_prev = new_perp_prev
             loss_components["ego_collision_rate"] = float(gate_collision.float().mean())
