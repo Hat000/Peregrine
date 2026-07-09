@@ -228,6 +228,25 @@ class EgoRewardWeights:
     cross_center: float = 20.0       # peak (dead-centre) crossing reward
     cross_zero_m: float = 0.75       # offset where the parabola crosses 0 (== the gate half-opening / aperture edge)
     cross_neg_cap: float = 100.0     # floor on the (negative) wide-crossing penalty (avoids a giant terminal)
+    # --- GRADED ANTI-CLIP terminal ON TOP of the parabola (audit-C5 fix, 2026-07-09; from_cfg key
+    # ``rw_clip_terminal``). When parabola_crossing is ON the frame-clip/miss TERMINAL penalties are dropped
+    # (only floor+oob keep theirs), so at the de-facto fixed cross_zero_m=4.0 a sub-aperture FRAME STRIKE -- a
+    # competition DQ -- earns ~+19 of the +20 peak, ~indistinguishable from a clean thread, and the perfect-
+    # estimator run kept a 35% clip rate with NO reward pressure against it. clip_terminal_w>0 ADDS a flat
+    # -clip_terminal_w on a frame strike (the collision the parabola dropped; the floor dive already pays its
+    # terminal), restoring graded anti-clip pressure while the parabola still pays. Plain mutable python-float
+    # attribute read FRESH each step, so the train-loop anneal machinery (peregrine_train_ego._unwrap_env_with,
+    # mutating _egorw attributes per update) can anneal it 0->W with no extra plumbing. 0 == OFF (byte-identical).
+    clip_terminal_w: float = 0.0     # rw_clip_terminal; flat extra frame-strike terminal when parabola on; 0 == OFF
+    # --- ONCE-PER-GATE parabola latch (audit red-flag re-payment farm; from_cfg key ``rw_parabola_latch``).
+    # The parabola fires on ``crossed``==fwd_t, which -- UNLIKE the idempotent passage -- is NOT once-per-gate: if
+    # miss_terminates=false is ever combined with parabola_crossing, a wide forward crossing neither advances the
+    # target nor terminates, so an oscillating drone re-crosses the SAME target plane and FARMS the parabola every
+    # step. True gates crossing_parabola_reward on a caller-maintained per-env ``parabola_paid`` latch so each gate
+    # pays at most once per episode (the caller clears it on a target ADVANCE and on episode RESET, mirroring the
+    # passage's strictly-incrementing-target idempotency). False (default) == byte-identical (no current stage sets
+    # miss_terminates=false + parabola, so this is a defensive knob).
+    parabola_latch_once: bool = False  # rw_parabola_latch; once-per-gate parabola payment; False == OFF (legacy)
 
     # --- TERMINAL (kill-on-contact). Two modes; ``terminal_progress_scaled`` picks. ---
     # FIXED mode: penalty = terminal_base (large, dominates the banked progress return).
@@ -303,6 +322,12 @@ class EgoRewardWeights:
             else:
                 kw[f.name] = float(getattr(cfg, f"rw_{f.name}",
                                            getattr(cfg, f.name, f.default)))
+        # SHORT-KEY ALIASES: these two knobs use a terser cfg key than the generic ``rw_<field>`` (so the CLI
+        # override string stays short): ``rw_clip_terminal`` -> clip_terminal_w, ``rw_parabola_latch`` ->
+        # parabola_latch_once. Fall back to the value the generic loop already resolved (== the default when the
+        # key is absent) so a cfg mentioning NEITHER key is byte-identical to the pre-audit behaviour.
+        kw["clip_terminal_w"] = float(getattr(cfg, "rw_clip_terminal", kw["clip_terminal_w"]))
+        kw["parabola_latch_once"] = bool(getattr(cfg, "rw_parabola_latch", kw["parabola_latch_once"]))
         return cls(**kw)
 
 
@@ -490,7 +515,9 @@ def alignment_reward(vel_world: Tensor, tangent: Tensor, inward_unit: Tensor, pe
 
 
 def crossing_parabola_reward(cross_offset: Tensor, crossed: Tensor, cross_center: float,
-                             cross_zero_m: float, cross_neg_cap: float) -> Tensor:
+                             cross_zero_m: float, cross_neg_cap: float,
+                             latch_once: bool = False,
+                             paid_latch: "Tensor | None" = None) -> Tensor:
     """Smooth PARABOLIC crossing reward (Fengyou 2026-07-08): fires ONCE on a forward gate-plane crossing.
         r = clamp(cross_center * (1 - (e/R)^2), -cross_neg_cap, cross_center)
     where e = ``cross_offset`` (L-inf in-plane offset at the crossing) and R = ``cross_zero_m`` (the aperture
@@ -498,14 +525,27 @@ def crossing_parabola_reward(cross_offset: Tensor, crossed: Tensor, cross_center
     outside, floored at -cross_neg_cap. SMOOTH + MONOTONIC in the offset: no thread/clip/miss cliff and NO
     MOAT (getting closer is ALWAYS better). REPLACES the passage reward + the frame-clip/miss terminal
     penalties (the env drops those when parabola_crossing is on; floor + oob keep theirs). ``crossed`` (N,)
-    bool = the forward target-plane crossing this step. cross_center==0 -> OFF (zeros). Returns (N,)."""
+    bool = the forward target-plane crossing this step. cross_center==0 -> OFF (zeros). Returns (N,).
+
+    ONCE-PER-GATE LATCH (audit red-flag; ``latch_once`` + ``paid_latch``): ``crossed``==fwd_t is NOT idempotent
+    per gate the way the passage's gate_passed is -- with miss_terminates=false a wide forward crossing neither
+    advances the target nor terminates, so an oscillating drone re-crosses the SAME target plane and the parabola
+    is paid every step (a re-payment FARM). When ``latch_once`` and a per-env bool ``paid_latch`` (N,) are given,
+    a gate already marked in ``paid_latch`` pays 0 and the latch is set IN PLACE for every env that crossed (so
+    the caller retains the state); the caller clears ``paid_latch`` on a target ADVANCE and on episode RESET.
+    latch_once=False (default) -> byte-identical (no latch, no mutation)."""
     assert torch is not None
     if cross_center == 0.0:
         return torch.zeros_like(cross_offset)
     R = max(cross_zero_m, 1e-6)
     para = cross_center * (1.0 - (cross_offset / R) ** 2)
     para = para.clamp(min=-cross_neg_cap, max=cross_center)
-    return para * crossed.to(cross_offset.dtype)
+    fire = crossed.to(torch.bool)
+    if latch_once and paid_latch is not None:
+        newly = fire & ~paid_latch                # suppress a gate already paid this episode
+        paid_latch |= fire                        # in-place mark so the caller keeps the latch
+        fire = newly
+    return para * fire.to(cross_offset.dtype)
 
 
 # ================================================================================================
@@ -732,6 +772,7 @@ def compute_ego_reward(
     line_inward: "Tensor | None" = None,
     cross_offset: "Tensor | None" = None,
     crossed: "Tensor | None" = None,
+    parabola_paid: "Tensor | None" = None,
     floor_contact: "Tensor | None" = None,
     cos_view: "Tensor | None" = None,
 ):
@@ -760,7 +801,8 @@ def compute_ego_reward(
     # frame-clip/miss terminal penalties (floor+oob keep theirs, below). One smooth downward parabola of the
     # crossing offset -> no cliff, no moat.
     parabola_on = (w.parabola_crossing and cross_offset is not None and crossed is not None)
-    r_cross = (crossing_parabola_reward(cross_offset, crossed, w.cross_center, w.cross_zero_m, w.cross_neg_cap)
+    r_cross = (crossing_parabola_reward(cross_offset, crossed, w.cross_center, w.cross_zero_m, w.cross_neg_cap,
+                                        latch_once=w.parabola_latch_once, paid_latch=parabola_paid)
                if parabola_on else torch.zeros_like(r_prog))
     r_pass = (torch.zeros_like(r_prog) if parabola_on else
               centering_passage_reward(gate_passed, pass_linf, w_g_half, w.passage,
@@ -799,6 +841,15 @@ def compute_ego_reward(
         # (floor forfeits banked; oob keeps the strong wall). Frame-clip/miss pay ONLY the parabola.
         term = terminal_penalty(floor_contact, torch.zeros_like(gate_miss), oob,
                                 banked_progress_return, w, forfeit_mask=floor_contact)
+        # AUDIT-C5 GRADED ANTI-CLIP RESTORE: with the parabola on, a sub-aperture FRAME STRIKE (a DQ) pays
+        # only the ~+19 parabola, ~indistinguishable from a clean thread -> no pressure against the 35% clip
+        # rate. clip_terminal_w>0 ADDS a flat -clip_terminal_w on the frame strike the parabola DROPPED, i.e.
+        # the collision that is NOT the floor dive (floor already pays its terminal above; miss stays a pure
+        # parabola outcome). Read fresh from the plain-float attr each step so the train-loop 0->W anneal needs
+        # no extra plumbing. w.clip_terminal_w==0 -> byte-identical (no extra penalty).
+        if w.clip_terminal_w > 0.0:
+            frame_strike = gate_collision.to(torch.bool) & ~floor_contact.to(torch.bool)
+            term = term + w.clip_terminal_w * frame_strike.to(term.dtype)
     else:
         term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w,
                                 forfeit_mask=forfeit_mask)
