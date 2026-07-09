@@ -13,18 +13,21 @@ On a **single** gate (depth 8–15 m, height ±6 m, tail-first spawn), the champ
 - **reaches the gate plane ~100%** of the time (oob≈0, floor≈0 — the reach-rate "problem" was a
   broken-harness artifact, [00](00-CORRECTION-eval-harness.md));
 - **crosses at ~0.88 m L-inf offset** from center (deterministic 22.6% thread; **no determinism gap**);
-- is **control-limited at that 0.88 m**: more training (`vglpan6`), a tighter reward zero (`vglp05`→
-  *worse*), and a sharper noise floor (`vglpshp`→collapse) all fail ([06](06-empirical-laws.md) L14).
-  **Decisive detail:** at the working reward zero of 0.75 m, a 0.88 m crossing already earns a
-  *negative* parabola — the reward is *already* pushing tighter and the policy **cannot comply**.
+- was thought **control-limited** (more training, tighter reward zero, sharper *actor* noise all failed)
+  — **but that is now REFUTED** (see next bullet). Those pushes never touched the *estimator* noise.
 - The **speed lever is refuted**: capping the rewarded closing rate (`rw_vmax_mps` 39→5→3) made
   centering *monotonically worse* (0.88→1.57→3.29 m), because it flattens the far-field progress
   gradient rather than forcing a slower crossing ([04](04-experiment-log.md) Era 6).
-- **Perception noise is bounded ≤ ~0.3 m** of the offset (realized per-gate error ~0.28 m + a ≤0.19 m
-  per-episode bias). The decisive ablation (`vglpns0/5`, `ego_noise_scale` 0.0/0.5) is **running**.
+- **PERCEPTION is the cap (the ablation resolved it, 2026-07-09).** `vglpns0` (`ego_noise_scale=0`, a
+  *perfect estimator*, else the champion recipe) drove the crossing **0.88 → 0.52 m and still falling,
+  thread 0.20 → 0.32 rising**. So the floor is **perception-limited, not control-limited** — my ≤0.3 m
+  prior was too low because the **closed loop amplifies** ~0.28 m of measurement noise into ~0.4 m+ of
+  crossing offset (noisy `rel_pos` every step → hedged control). *Preliminary — runs still converging;
+  `vglpns0` is a ceiling, not a deployable number.*
 
-So: the drone arrives at the plane but crosses ~0.9 m off-center and *nothing we do to the reward or
-the noise tightens it*. That is the puzzle.
+So: the drone arrives at the plane, but **noisy perception drives it ~0.9 m off-center** — and cleaning
+the perception (not the reward) is what tightens it. That resolves the puzzle in favor of Fengyou's
+idea (a).
 
 ---
 
@@ -140,12 +143,16 @@ target is the wrong target.**
 
 | # | Hypothesis | Prediction if true | Discriminator | Status |
 |---|---|---|---|---|
-| H1 | **Perception-noise magnitude** caps centering | `vglpns0` tightens toward ~0.28 m | `ego_noise_scale` 0.0/0.5 dose-response | **running** |
-| H2 | **Observation representation** (noised center-vector + area ≪ 4 corners) caps precision even at equal noise | corner-obs tightens; `vglpns0` alone does *not* | add gate-corner/normal obs channel | untested |
-| H3 | **Control** (plant+CTBR+net can't null the last ~0.9 m at approach speed/latency) | `vglpns0` still floors ~0.88 m | `vglpns0` result + a slow-lap-via-latency probe | pending vglpns |
-| H4 | **Missing perception objective** (no Swift `r_perc` keeping us square-on / gate-centered in FOV) | adding `r_perc` tightens | enable a camera-on-gate reward | untested |
-| H5 | **Task underspecification** — lone-gate crossing point is not well-defined (idea b2) | gate-1 offset is *tighter* with a 2nd gate present | dual-gate: measure gate-1 cross_offset | untested |
-| H6 | **Input regime** — the permanently-empty 2nd slot degrades single-gate (idea b1) | dual-gate tightens gate-1 even at equal richness | dual-gate vs single-gate gate-1 offset | untested |
+| H1 | **Perception-noise magnitude** caps centering | `vglpns0` tightens | `ego_noise_scale` 0.0/0.5 dose-response | ✅ **CONFIRMED** (0.88→0.52 m, falling) |
+| H3 | **Control** (plant+CTBR+net can't null the last ~0.9 m) | `vglpns0` still floors ~0.88 m | `vglpns0` result | ❌ **REFUTED** (perfect estimator tightens) |
+| H4 | **Missing perception objective** (`r_perc`) — the *deployable* form of H1 | adding `r_perc` tightens with real noise | `single_gate_varied_gvf_lpara_perc` | **BUILT + deployed; launch next** |
+| H2 | **Observation representation** (noised center-vector + area ≪ 4 corners) | corner-obs tightens beyond `r_perc` | add gate-corner/normal obs channel | untested (fallback if `r_perc` under-delivers) |
+| H5 | **Task underspecification** — lone-gate crossing point not well-defined (idea b2) | gate-1 offset *tighter* with a 2nd gate | dual-gate: measure gate-1 cross_offset | untested |
+| H6 | **Input regime** — permanently-empty 2nd slot degrades single-gate (idea b1) | dual-gate tightens gate-1 | dual-gate vs single-gate gate-1 offset | untested |
+
+**H1 confirmed → the fix is perception, not reward-shaping.** The clean deployable move is H4 (`r_perc`,
+built) — it works *with* the real noise by keeping the gate detectable near the plane. H2 (richer obs)
+and the estimator itself (vision-commander domain) are the deeper perception levers if `r_perc` caps out.
 
 H5 and H6 are both tested by the **same** dual-gate experiment (measure the *gate-1* crossing offset
 when a second gate is present and co-observed). H2 and H4 are the Swift-alignment fixes.

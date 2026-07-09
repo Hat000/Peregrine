@@ -86,7 +86,23 @@ render was the source of the ~"successes" that were actually noise.
 non-arrival, not a blind classifier. (We *did* have a reconstruction bug in the *offline* hit-map — we
 sliced off the crossing step and had to extrapolate — but the *in-training* counting is verified.)
 
-### L14. The ~0.88 m crossing is a CONTROL-precision floor, not a reward/noise/convergence limit.
+### L14. ⚠️ CORRECTED — the ~0.88 m crossing is PERCEPTION-limited, not control-limited.
+
+**2026-07-09 correction (supersedes the "control-limited" claim below).** The `vglpns0` ablation
+(`ego_noise_scale=0`, a *perfect estimator*, else the vglpan recipe) drove the crossing **0.88 → 0.52 m
+and still falling, thread 0.20 → 0.32 rising** — so removing the *estimator* noise substantially
+tightens the floor. The original "control-limited" reading was wrong because all three of its failing
+pushes (more training, tighter reward zero, sharper *actor-exploration* noise) left the **estimator
+(observation) noise untouched** — the one thing that actually mattered. The effect (~0.4 m+) exceeds the
+raw ~0.28 m measurement error because the **closed loop amplifies** it: the policy acts on a noisy
+`rel_pos` every step → hedged/jittery control → a systematic offset larger than the instantaneous noise.
+**Implication:** centering is gated by *perception*, so the deployable levers are (a) a perception reward
+`r_perc` that keeps the gate detectable/observed near the plane (Swift/Geles; built 2026-07-09), (b) a
+better estimator/detector (vision-commander domain), or (c) a policy more robust to the noise — **not**
+further crossing-reward shaping. `vglpns0` is a *ceiling* (we lack a perfect estimator at deploy), not a
+deployable number. The pre-correction reasoning is kept below for the record.
+
+**[SUPERSEDED] Original L14 claim: "a CONTROL-precision floor, not a reward/noise/convergence limit."**
 
 Three independent pushes all fail to tighten it: more training (`vglpan6` == `vglpan`), a tighter
 reward zero (`vglp05` 4→0.5 → **worse**, 1.7 m), a sharper noise floor (`vglpshp` → **collapse**).
