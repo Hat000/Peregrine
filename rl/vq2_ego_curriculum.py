@@ -816,6 +816,37 @@ STAGES: dict[str, dict] = {
                  "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
                  "++algo.noise_std_hold": 0.06, "++algo.noise_std_floor": 0.02, "++algo.noise_hold_frac": 0.3},
     },
+    # BLACKOUT-COAST CALIBRATION (2026-07-09 audit wave-2). The vczns0 pair (noise 0 + REAL 4->0.75 anneal,
+    # seeds 0/1, the first runs with the anneal verifiably ON) landed DET thread 0.574/0.403 with collision
+    # 0.42/0.57 -- a genuine non-reward residual under PERFECT perception. The offline characterization
+    # (handoff/audit-ego-inc9-2026-07-09/estimator-characterization/) showed why: the terminal 0.7-2.2 m is
+    # geometrically BLIND under the +20deg mount in ALL geometries, the obs builder zeroes rel_pos the
+    # instant detectability drops, and the 0.5 s stale horizon expires before the crossing at slow-lap
+    # speeds -- so every run (incl. noise-0) flies the endgame on ZEROS, while the estimator's coasted
+    # estimate is nearly free (~0.01 m error over 1.5 s). This stage = the vczns0 recipe + the COAST
+    # PACKAGE (ego_obs_coast + horizon 1.2 s), ONE package vs vczns0 as the exact control: if the
+    # 0.42-0.57 collision residual converts to threads, endgame blindness was the layer under perception.
+    # Run via STAGES=single_gate_varied_gvf_lpara_coast0, UPD_single_gate_varied_gvf_lpara_coast0=4000.
+    "single_gate_varied_gvf_lpara_coast0": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # initial (anneal overrides live)
+        "cross_zero_anneal": True, "cross_zero_start": 4.0, "cross_zero_end": 0.75, "cross_zero_hold_frac": 0.1,
+        "ego_noise_scale": 0.0,       # perfect estimator == the vczns0 calibration regime
+        "ego_obs_coast": True,        # feed coasted rel_pos + decaying conf through the blackout
+        "ego_stale_horizon_s": 1.2,   # blind onset 0.7-2.2 m: the 0.5 s horizon zeroes conf pre-crossing at slow-lap
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
     # 2. HANDOFF_DRILL (DESIGN.md §D): 2 gates, focus the FIRST gate handoff. Spacing 10-20 m (the VQ2
     #    co-visibility regime where the next gate is trackable through the current one). Still the EASY
     #    reward (no rw_passage bump, exit OFF) -- drill the handoff MECHANICS (window promotion, no
