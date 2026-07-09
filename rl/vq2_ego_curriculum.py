@@ -887,6 +887,31 @@ STAGES: dict[str, dict] = {
         "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
         "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA},
     },
+    # MULTI-GATE BASELINE PAIR (2026-07-09 audit wave-4). The noise-0 single-gate calibration EXHAUSTED the
+    # reward/obs lever set (fixed-4 0.641 · anneal 0.574/0.403 · +coast 0.522 · +clip-pen 0.478/0.322 — every
+    # config in the 0.32-0.64 band, collisions ~0.5 immune to a -20 clip penalty): the binding layer at
+    # ~13 m/s is CONTROL PRECISION, and the audit's pivot trigger (plateau) fired. Per CPC/TOGT the crossing
+    # point is defined by the gate SEQUENCE (approach geometry changes), per Song N=2 obs slashes crashes —
+    # so the next calibration regime is 2-gate. This pair = handoff_drill at noise 0, FRESH vs WARM-from-vglp4:
+    # the warm arm fills the previously-always-empty second obs slot (the audit's H6 OOD liability) — transfer
+    # vs detonation is itself a needed datum. EASY reward per the drill's design (mechanics, not thread-rate).
+    # Run via STAGES=handoff_drill0 / handoff_drill0w, UPD_<stage>=2000.
+    "handoff_drill0": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "ego_noise_scale": 0.0,       # isolate handoff mechanics from estimator corruption (calibration regime)
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA},
+    },
+    "handoff_drill0w": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "ego_noise_scale": 0.0,
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
     #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
     #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate
