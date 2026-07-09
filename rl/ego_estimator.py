@@ -103,6 +103,20 @@ class EgoEstimatorConfig:
     n_eff_hi: int = 9
     bias_mag_hi: float = 0.19            # per-episode small in-plane (lat+vert) bias magnitude upper bound
     inject_bias: bool = True
+    # ---- per-episode bias MODEL (audit handoff/audit-ego-inc9-2026-07-09/read_estimator-kf-audit.md [major]) ----
+    # 'legacy' (DEFAULT, byte-identical): ONE scalar magnitude ~U[0, bias_mag_hi] with a RANDOM sign,
+    #   applied to BOTH lat and vert (perfectly correlated), depth bias 0 -- inherited from inc8
+    #   sample_fix [b,b,0]. Contradicts the measurement three ways (audit red flag [major]): over-injects
+    #   lateral bias ~5x, fabricates a lat/vert correlation, and randomizes the sign of a measured
+    #   ONE-SIGNED (calibratable) vertical systematic.
+    # 'measured': INDEPENDENT per-axis magnitude ~U[0, |band_axis|] with the MEASURED (fixed) sign per
+    #   axis, from handoff/fix-surrogate-2026-06-14/models/sigma.json {lat -0.0338, vert +0.1949,
+    #   depth -0.3344}. Fixes all three defects and makes depth bias NON-zero (was 0 in legacy). Still
+    #   scaled by noise_scale (0 -> no bias). New path -> its own draw count; the legacy path is untouched.
+    bias_model: str = "legacy"
+    bias_band_lat: float = -0.033817701667839546    # sigma.json lateral.bias_band  (one-signed, negative)
+    bias_band_vert: float = 0.19488467958140898     # sigma.json vertical.bias_band (one-signed, positive)
+    bias_band_depth: float = -0.33441613167150736   # sigma.json depth.bias_band    (one-signed, negative)
     miss_prob: float = 0.10              # stochastic per-frame MISS even when the gate is visible
     teleport_prob: float = 0.002         # RANDOM-IN-FRAME teleport outlier probability (per visible gate)
     teleport_scale_m: float = 8.0        # magnitude of the wild wrong relative position on a teleport
@@ -364,13 +378,28 @@ class BatchedEgoEstimator:
             self._accel_bias[idx] = cfg.noise_scale * cfg.accel_bias_band * (2.0 * self._rand(m, 3) - 1.0)
         else:
             self._accel_bias[idx] = 0.0
-        # per-episode in-plane (lat, vert) bias, one-signed magnitude, depth bias = 0
+        # per-episode gate-frame bias [lat, depth, vert] (see EgoEstimatorConfig.bias_model). Applied in
+        # step() as noise_gate = self._bias + sigma*randn (gate frame), so the column order is [lat, depth,
+        # vert]. The 'measured' branch is a NEW code path (its own draw count); the 'legacy' else-branch
+        # executes the ORIGINAL draw sequence VERBATIM (mag rand THEN sign rand) so every existing config
+        # stays byte-identical -- do NOT add a draw before the else-branch or the whole stream shifts.
         if cfg.inject_bias:
-            mag = cfg.noise_scale * cfg.bias_mag_hi * self._rand(m, self.G)
-            sign = torch.where(self._rand(m, self.G) < 0.5, torch.ones(m, self.G, device=self.device, dtype=self.dtype),
-                               -torch.ones(m, self.G, device=self.device, dtype=self.dtype))
-            b = sign * mag                                                  # (m,G)
-            self._bias[idx] = torch.stack([b, torch.zeros_like(b), b], dim=-1)   # [lat, depth=0, vert]
+            if cfg.bias_model == "measured":
+                # MEASURED (sigma.json): INDEPENDENT per-axis magnitude ~U[0, |band|] with the measured
+                # sign. band_axis * U[0,1) already carries the correct sign AND magnitude band (band<0 ->
+                # values in (band,0]; band>0 -> [0,band)). 3 independent draws; scaled by noise_scale.
+                lat = cfg.bias_band_lat * self._rand(m, self.G)
+                vert = cfg.bias_band_vert * self._rand(m, self.G)
+                depth = cfg.bias_band_depth * self._rand(m, self.G)
+                self._bias[idx] = cfg.noise_scale * torch.stack([lat, depth, vert], dim=-1)  # [lat,depth,vert]
+            else:
+                # LEGACY (default, BYTE-IDENTICAL): ONE scalar mag ~U[0, bias_mag_hi], random sign, applied
+                # to BOTH lat and vert (perfectly correlated), depth 0. EXACT original draw order preserved.
+                mag = cfg.noise_scale * cfg.bias_mag_hi * self._rand(m, self.G)
+                sign = torch.where(self._rand(m, self.G) < 0.5, torch.ones(m, self.G, device=self.device, dtype=self.dtype),
+                                   -torch.ones(m, self.G, device=self.device, dtype=self.dtype))
+                b = sign * mag                                                  # (m,G)
+                self._bias[idx] = torch.stack([b, torch.zeros_like(b), b], dim=-1)   # [lat, depth=0, vert]
         else:
             self._bias[idx] = 0.0
 

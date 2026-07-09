@@ -257,7 +257,8 @@ def ego_window_indices(target_gates: Tensor, n_gates: int):
 # Actor obs assembly (26-dim, position-free) -- PURE, testable without diffaero.
 # ================================================================================================
 def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
-                  last_collective: Tensor, sector: Tensor, n_gates: int) -> Tensor:
+                  last_collective: Tensor, sector: Tensor, n_gates: int,
+                  obs_coast: bool = False) -> Tensor:
     """Assemble the 26-dim egocentric actor observation from the estimator outputs + visibility + the
     coarse map. POSITION-FREE (only body-frame velocity / attitude / rates / relative geometry + the
     heading-relative sector).
@@ -265,17 +266,26 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
     Inputs:
       est               EgoEstimate (component A): velocity(N,3) body, roll_pitch(N,2), body_rates(N,3),
                         rel_pos(N,G,3) body, confidence(N,G), visible_area(N,G).
-      detectable        (N,G) bool -- component B visibility (a masked slot needs BOTH detectable AND
-                        confidence>0; confidence already encodes staleness, but we AND with detectable
-                        so a currently-occluded gate is masked even if its stale prior has residual conf).
+      detectable        (N,G) bool -- component B visibility.
       target_gates      (N,) current target gate index.
       last_collective   (N,) or (N,1) last rescaled collective (thrust) command.
       sector            (N,G,2) coarse-map sector (from build_coarse_map or an override).
       n_gates           int.
+      obs_coast         OBS BLACKOUT COAST (Fengyou 2026-07-09, ``+env.ego_obs_coast``). Default False ==
+                        BYTE-IDENTICAL legacy: a slot is masked whenever the gate is NOT detectable THIS
+                        step (keep = valid & det & conf>0), so the estimator's coasted prior is ZEROED the
+                        instant the gate goes non-detectable and the crossing endgame is flown on zeros
+                        (audit read_estimator-kf-audit.md STALE-CLIFF). When True the instantaneous ``det``
+                        term is DROPPED (keep = valid & conf>0): the coasted rel_pos + LINEARLY-DECAYING
+                        confidence feed the obs THROUGH a blackout, hard-masking only past the estimator's
+                        stale horizon (conf==0) -- the DESIGN.md §5.A "brief ego-motion propagation through
+                        gaps; mask past ~0.5-1 s stale" intent. Confidence already encodes staleness
+                        (EgoEstimate masks it to 0 past the horizon), so conf>0 alone is the in-horizon
+                        test; det is AND'd in ONLY for the legacy hard-mask.
 
-    Slot k (k=0 current, 1 next, 2 next-next) reads gate g=clamp(tg+k). A slot is MASKED (rel_pos=0,
-    confidence=0, visible_area=0) when the slot is past the last gate OR the gate is not detectable OR
-    confidence==0 (stale). The coarse_sector fed is sector[tg] (the current target's).
+    Slot k (k=0 current, 1 next) reads gate g=clamp(tg+k). A slot is MASKED (rel_pos=0, confidence=0,
+    visible_area=0) when the slot is past the last gate OR confidence==0 (stale past horizon) OR --
+    UNLESS obs_coast -- the gate is not detectable this step. The coarse_sector fed is sector[tg].
 
     Returns (N, 26)."""
     assert torch is not None
@@ -297,7 +307,13 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
         conf = est.confidence[ar, g]                                    # (N,)
         area = est.visible_area[ar, g]                                  # (N,)
         det = detectable[ar, g]                                        # (N,)
-        keep = valid[:, k] & det & (conf > 0.0)                        # (N,) -> masked when False
+        # OBS BLACKOUT COAST: conf>0 is the in-horizon test (confidence is already masked to 0 past the
+        # stale horizon in EgoEstimate). Legacy (obs_coast=False) ALSO requires instantaneous detectability,
+        # zeroing the coasted prior during a blackout; coast keeps the coasted estimate flowing until the
+        # horizon. AND is commutative -> coast=False is bit-identical to the prior `valid & det & (conf>0)`.
+        keep = valid[:, k] & (conf > 0.0)                             # (N,) in-horizon test
+        if not obs_coast:
+            keep = keep & det                                          # legacy hard-mask on this-step visibility
         keep_f = keep.to(dt)
         rel = rel * keep_f.unsqueeze(-1)
         conf = conf * keep_f
@@ -439,6 +455,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # per-env PBRS contouring potential state: the previous-step perpendicular offset from the current
         # gate-centre segment (for the MPCC contouring term corridor*(perp_prev - perp_curr)).
         self._corr_perp_prev = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        # ONCE-PER-GATE parabola latch buffer (ego_reward.crossing_parabola_reward contract; the audit
+        # re-payment-farm fix): per-env bool, passed into compute_ego_reward EVERY step and mutated IN
+        # PLACE there (marked on a forward target-plane crossing) ONLY when rw_parabola_latch is on.
+        # The env owns the CLEARS: (1) on a target ADVANCE, AFTER the step's reward is computed (new
+        # gate -> new payment window), and (2) in reset_idx on EVERY episode reset path -- terminated
+        # AND truncated/timeout both funnel through step()'s reset_idx call, so a stale latch can never
+        # suppress the next episode's first crossing. With parabola_latch_once False (the default) the
+        # reward fn neither reads nor mutates the buffer -> byte-identical.
+        self._parabola_paid = torch.zeros(self.n_envs, dtype=torch.bool, device=dev)
         # VECTOR-FIELD racing line (Fengyou greenlight 2026-07-08). When ON, the progress potential s and
         # the contouring perp are read from the CURVED head-on racing line (arc length / cross-track)
         # instead of the straight current-gate segment. Built per-env at reset from GT spawn + gate
@@ -469,12 +494,26 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         _ap = getattr(cfg, "gate_inner_opening_m", None)
         if _ap is not None:
             self.gate_half_opening_m = float(_ap) / 2.0
+        # OBS BLACKOUT COAST (Fengyou 2026-07-09; audit read_estimator-kf-audit.md STALE-CLIFF). Default
+        # False == byte-identical (the obs builder hard-masks each gate slot on INSTANTANEOUS detectability,
+        # so the estimator's coast-through-gaps never reaches the policy and the crossing endgame is flown
+        # on zeros -- even with a perfect estimator). +env.ego_obs_coast=true drops the instantaneous `det`
+        # term in ego_actor_obs so the coasted rel_pos + linearly-decaying confidence feed the obs during a
+        # blackout, masking only past the estimator's stale horizon (conf==0) -- the DESIGN.md §5.A intent.
+        self._ego_obs_coast = bool(getattr(cfg, "ego_obs_coast", False))
         # estimator config (all knobs Fengyou-pinnable via +env.*)
         ecfg = EgoEstimatorConfig(
             visible_area_sigma=float(getattr(cfg, "ego_visible_area_sigma",
                                              EgoEstimatorConfig.visible_area_sigma)),
             far_cap_m=float(getattr(cfg, "ego_far_cap_m", EgoEstimatorConfig.far_cap_m)),
             noise_scale=float(getattr(cfg, "ego_noise_scale", EgoEstimatorConfig.noise_scale)),
+            # STALE HORIZON (Fengyou 2026-07-09, +env.ego_stale_horizon_s; default 0.5 = byte-identical).
+            # Measured terminal blind onset is 0.7-2.2 m in ALL geometries, so at slow-lap speeds the
+            # 0.5 s horizon zeroes confidence BEFORE the crossing even with ego_obs_coast on (the coast
+            # can only feed the obs while conf>0). The upcoming flight sets ~1.2 s so the coasted prior
+            # survives the endgame blackout to the gate plane.
+            stale_horizon_s=float(getattr(cfg, "ego_stale_horizon_s",
+                                          EgoEstimatorConfig.stale_horizon_s)),
         )
         self._ego_cfg = ecfg
         # the estimator holds per-env course geometry (Z-up, matching gate_visibility/ego_estimator)
@@ -596,6 +635,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         if getattr(self, "_ego_on", False) and hasattr(self, "_estimator"):
             self._reset_estimator(env_idx)
             self._prev_q[env_idx] = self._q[env_idx]
+            # clear the ONCE-PER-GATE parabola latch for EVERY reset path: step() funnels BOTH
+            # terminated and truncated (timeout) envs through reset_idx, so this is the single choke
+            # point -- a latch surviving a truncation would silently suppress the NEXT episode's first
+            # crossing payment (the stale-latch bug the latch contract calls out).
+            self._parabola_paid[env_idx] = False
             if getattr(self, "_use_refined_b", False):
                 # rebuild the racing line for the reset envs on their FRESH geometry, THEN re-seed the
                 # progress potential on the (post-reset) current segment / line so the first step's
@@ -711,7 +755,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         detectable = self._current_detectable()
         est = self._estimator.estimate()
         obs = ego_actor_obs(est, detectable, self.target_gates, self.last_action[..., 0],
-                            self._coarse_map, self.n_gates)
+                            self._coarse_map, self.n_gates, obs_coast=self._ego_obs_coast)
         finite = torch.isfinite(obs)
         if not bool(finite.all()):
             obs = torch.where(finite, obs, torch.zeros_like(obs))
@@ -897,6 +941,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # crossing offset + the forward target-plane crossing mask + the floor mask (so the terminal
                 # penalty fires on floor+oob only, frame-clip/miss paying the smooth parabola instead).
                 cross_offset=pass_linf, crossed=fwd_t, floor_contact=below_floor.to(self._ego_dtype),
+                # ONCE-PER-GATE parabola latch: the env-owned per-env bool buffer, mutated IN PLACE by
+                # crossing_parabola_reward (marked where crossed) ONLY when rw_parabola_latch is on --
+                # with the flag off (default) the reward fn neither reads nor writes it (byte-identical).
+                # Cleared below on a target ADVANCE and in reset_idx on every episode reset/truncation.
+                parabola_paid=self._parabola_paid,
                 # PERCEPTION reward (None unless rw_perception>0): cos(optical-axis, drone->gate-centre).
                 cos_view=cos_view)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
@@ -904,6 +953,12 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious
             # burst; otherwise carry s_curr as the next step's s_prev (telescoping potential).
             self._banked_prog = self._banked_prog + r_prog.detach()
+            # ADVANCE-clear of the parabola latch, AFTER the reward computed on the PRE-advance target:
+            # the crossing that advanced the target was latched inside compute_ego_reward this step; the
+            # NEW target gate opens a fresh payment window. A wide miss (no advance, miss_terminates=false)
+            # deliberately KEEPS the latch -- that is the re-payment-farm defense. Terminating envs
+            # (contact/miss/oob/finish + truncation) are cleared in reset_idx instead.
+            self._parabola_paid[advance] = False
             new_s_prev = s_curr.detach().clone()
             adv_idx = advance.nonzero().view(-1)
             new_perp_prev = perp_dist.detach().clone()                     # roll the contouring potential
