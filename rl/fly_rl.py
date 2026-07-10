@@ -628,6 +628,114 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     return rate_frd, collective, normed_thrust
 
 
+def _clip01(x: float) -> float:
+    """Clip to the wire collective range [0,1] — the SAME clip policy_step applies to its
+    own collective, so an inactive assist recomputes a bit-identical value."""
+    return float(np.clip(x, 0.0, 1.0))
+
+
+class EgoTakeoffAssist:
+    """Autonomous ground-unstick assist for the ego deploy opener (A2 unblocker).
+
+    THE FREEZE [ego-flight A1, 2026-07-10]: the trained ego opener is a ~133 ms airborne,
+    low-thrust (~0.22-0.25 g of hover) attitude re-orient — it yaws/pitches to point at the
+    active gate BEFORE it punches thrust, and its exit is gated on the body ACTUALLY rotating
+    (the policy sensing roll/pitch + the slot0 bearing evolve, its MEASURED body rate building
+    0 -> ~3.8 rad/s). Training spawns airborne-at-rest so the re-orient freely rotates the body;
+    on the VQ2 pad the ~6 % collective can't unload the drone, it can't rotate, the obs (attitude
+    + bearing + rates) is frozen, and the opener idles at ~0.25 g forever (A1: both flights pinned,
+    never lifted).
+
+    THE FIX: clamp the EMITTED collective to a small OVER-hover floor (default 1.10 g) while
+    passing the policy's rate commands through UNCHANGED. The floor unloads the pad; the opener's
+    railed rate command then rotates the (now airborne) body; the measured rate builds, the
+    re-orient completes, and the trained punch engages on its own (offline mini-sim: policy thrust
+    0.22 -> 3.7 g within a few ticks of lift-off). The assist DISARMS PERMANENTLY the instant the
+    drone is demonstrably airborne (measured rate OR climb) or a hard time cap elapses, handing
+    full thrust authority back to the policy — which by then is already punching.
+
+    Fully automatic, no human input -> VADR-TS-003 §7 compliant.
+
+    HANDOVER KEYS OFF THE MEASURED BODY RATE (DroneState.gyro_body), NOT the commanded rate: the
+    opener RAILS its yaw command at ±3.14 rad/s from tick 0 (A1 trace), so a commanded-rate trigger
+    would fire before the drone ever moved and defeat the assist entirely. The measured gyro is
+    frozen at ~0 on the pad and rises only once the body physically rotates — exactly the airborne
+    signal we want.
+
+    Units: normed_thrust is g-units with hover == 1.0 g; the wire collective is
+    normed_thrust * hover_collective (=_HOVER_THRUST) clipped to [0,1]. The floor is applied in
+    g-units so the obs[8] thrust feedback (itself in g-units) reflects the ACTUALLY emitted value —
+    thrust_prev self-feeds the freeze, and feeding the assisted value is also what training's own
+    punch phase looks like (thrust_prev rises)."""
+
+    def __init__(self, *, assist_g: float, hover_collective: float, max_s: float,
+                 rate_thresh: float = 1.0, climb_thresh: float = 0.5, enabled: bool = True):
+        self.assist_g = float(assist_g)                 # emitted-thrust FLOOR, g-units (hover = 1.0 g)
+        self.hover_collective = float(hover_collective)  # _HOVER_THRUST: g-units -> [0,1] collective
+        self.max_s = float(max_s)                       # hard time cap (s) since GO
+        self.rate_thresh = float(rate_thresh)           # |gyro_body| handover (rad/s, any axis)
+        self.climb_thresh = float(climb_thresh)         # climb-since-GO handover (m)
+        self._enabled = bool(enabled)                   # master switch (--no-ego-takeoff-assist)
+        self._done = False                              # PERMANENT handover latch (never re-arms)
+        self._t0: float | None = None                   # GO wallclock (first active tick)
+        self._z0: float | None = None                   # NED z at GO (climb reference)
+        self.last_trigger: str | None = None            # 'rates' | 'climb' | 'timeout'
+
+    @property
+    def active(self) -> bool:
+        """True iff the assist is enabled and has not yet handed over."""
+        return self._enabled and not self._done
+
+    def apply(self, policy_normed: float, *, now: float,
+              gyro_frd, nav_z, log=None) -> tuple[float, float, bool]:
+        """One command tick. Returns (emitted_normed_g, emitted_collective_01, assist_on).
+
+          emitted_normed_g       -> feed back as obs[8] next tick (the ACTUALLY emitted g-units value)
+          emitted_collective_01  -> ControlCommand.thrust (the [0,1] wire collective)
+          assist_on              -> forensics 'assist' field (did the assist override this tick)
+
+        Pass-through (policy owns thrust) when disabled or after handover; the recomputed collective
+        is bit-identical to policy_step's own, so --no-ego-takeoff-assist is a no-op. Handover is
+        evaluated on THIS tick's feedback: the tick the drone crosses a threshold is already handed
+        back to the policy."""
+        policy_normed = float(policy_normed)
+        if not self.active:
+            return policy_normed, _clip01(policy_normed * self.hover_collective), False
+
+        if self._t0 is None:                            # GO: first active command tick
+            self._t0 = now
+            self._z0 = float(nav_z) if (nav_z is not None and np.isfinite(nav_z)) else None
+            if log is not None:
+                log(f"[ego-assist] ACTIVE (thrust floor {self.assist_g:.3f} g)")
+
+        trigger = self._handover_trigger(now=now, gyro_frd=gyro_frd, nav_z=nav_z)
+        if trigger is not None:
+            self._done = True
+            self.last_trigger = trigger
+            if log is not None:
+                log(f"[ego-assist] HANDOVER at t={now - self._t0:.3f}s trigger={trigger}")
+            return policy_normed, _clip01(policy_normed * self.hover_collective), False
+
+        emitted = max(policy_normed, self.assist_g)     # OVER-hover floor; policy above it passes through
+        return emitted, _clip01(emitted * self.hover_collective), True
+
+    def _handover_trigger(self, *, now: float, gyro_frd, nav_z) -> str | None:
+        """The first satisfied handover condition, or None. Rate is PRIMARY (spec); climb is the
+        secondary (nav z is dead-reckoned/unreliable); timeout is the hard backstop. Non-finite /
+        missing signals are simply not-yet-triggering — never a false handover."""
+        if gyro_frd is not None:
+            g = np.asarray(gyro_frd, dtype=np.float64).ravel()
+            if g.size == 3 and np.all(np.isfinite(g)) and float(np.max(np.abs(g))) > self.rate_thresh:
+                return "rates"
+        if self._z0 is not None and nav_z is not None:
+            z = float(nav_z)
+            if np.isfinite(z) and (self._z0 - z) > self.climb_thresh:   # NED z down+ -> climb = z0 - z
+                return "climb"
+        if self._t0 is not None and (now - self._t0) >= self.max_s:
+            return "timeout"
+        return None
+
+
 # ---------------------------------------------------------------------------
 # PATH B: CTBR bridge — the flight-proven model-based launcher (fly_vq1 faithful
 # stack: Navigator + ReactivePlanner + Mission + launch ramp) flies takeoff ->
@@ -1558,6 +1666,22 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
           f"virtual_flip={args.virtual_flip} rate={args.rate:g}Hz max={args.max_seconds:g}s ...")
 
+    # --- autonomous takeoff assist (A2 ground-unstick; see EgoTakeoffAssist) ---
+    takeoff_assist = EgoTakeoffAssist(
+        assist_g=args.ego_assist_thrust,
+        hover_collective=_HOVER_THRUST,
+        max_s=args.ego_assist_max_s,
+        enabled=args.ego_takeoff_assist,
+    )
+    if args.ego_takeoff_assist:
+        print(f"[ego] takeoff-assist ON: thrust floor {args.ego_assist_thrust:g} g "
+              f"(collective {_clip01(args.ego_assist_thrust * _HOVER_THRUST):.3f}); rate commands "
+              f"pass through untouched; disarms PERMANENTLY on |gyro_body|>1.0 rad/s OR climb>0.5 m "
+              f"OR {args.ego_assist_max_s:g}s (whichever first). Fully automatic (§7-compliant).")
+    else:
+        print("[ego] takeoff-assist OFF (--no-ego-takeoff-assist): raw policy thrust from tick 0 "
+              "(A1 ground-freeze risk).", file=sys.stderr)
+
     tick        = 1.0 / args.rate
     deadline    = time.monotonic() + args.max_seconds
     next_t      = time.monotonic()
@@ -1681,6 +1805,14 @@ def _fly_ego(client, actor, args, flight_idx: int,
         rate_frd, collective, last_normed = policy_step(
             actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
             yaw_scale=args.yaw_scale)
+        # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
+        # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
+        # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
+        last_normed, collective, assist_on = takeoff_assist.apply(
+            last_normed, now=now, gyro_frd=s.gyro_body,
+            nav_z=(float(nav_state.position_ned[2])
+                   if nav_state.position_ned is not None else None),
+            log=lambda m: print("\n  " + m, flush=True))
         client.send_command(ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=st,
@@ -1702,6 +1834,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     "rate_frd": rate_frd.round(4).tolist(),
                     "collective": round(collective, 5),
                     "normed_thrust": round(last_normed, 5),
+                    "assist": bool(assist_on),
                     "kf_pos_ned": np.asarray(nav_state.position_ned).round(3).tolist(),
                     "tsv": (None if not np.isfinite(nav_state.time_since_vision_update_s)
                             else round(nav_state.time_since_vision_update_s, 3)),
@@ -2144,7 +2277,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "case-C self-localizing perception stack (_fly_ego). Action bounds are "
                          "HARDCODED to the ego training values (thrust [0,3.765], rates +-3.14 -- "
                          "the ego launcher writes no sidecar and the legacy [0,5] fallback would "
-                         "overdrive thrust ~33%). Needs --seeker-weights (the gate detector). "
+                         "overdrive thrust ~33%%). Needs --seeker-weights (the gate detector). "
                          "DEFAULT OFF: every existing path is byte-identical without it.")
     ap.add_argument("--ego-det-hold", type=float, default=0.2,
                     help="EGO det-proxy hold (s): the slot0 gate is treated as 'detected' while "
@@ -2179,6 +2312,25 @@ def build_parser() -> argparse.ArgumentParser:
                          "future multi-gate-trained policy. The current champions are single-"
                          "gate-trained -- slot1 was zero their whole training life; filling it "
                          "is OOD (audit H6). Kept as the CLI seam for the multi-gate generation.")
+    ap.add_argument("--ego-takeoff-assist", action=argparse.BooleanOptionalAction, default=True,
+                    help="EGO autonomous ground-unstick assist (A2). The trained ego opener is a "
+                         "low-thrust (~0.25 g) airborne re-orient; on the VQ2 pad the roughly "
+                         "6-percent collective never unloads the drone, so it cannot rotate and the "
+                         "opener idles forever (A1 ground-freeze). This floors the EMITTED collective "
+                         "to a small over-hover value (--ego-assist-thrust) -- rate commands pass "
+                         "through untouched -- until the drone is airborne (|gyro_body|>1 rad/s OR "
+                         "climb>0.5 m OR --ego-assist-max-s), then disarms PERMANENTLY. Fully "
+                         "automatic (VADR-TS-003 §7-compliant). DEFAULT ON for the ego path (itself "
+                         "opt-in via --ego-ckpt); --no-ego-takeoff-assist restores raw-policy thrust.")
+    ap.add_argument("--ego-assist-thrust", type=float, default=1.10,
+                    help="EGO takeoff-assist thrust FLOOR in g-units (hover = 1.0). Default 1.10 = "
+                         "slightly above hover so the drone unloads the pad and lifts. Only ever "
+                         "RAISES the emitted collective (max with the policy's own output); the "
+                         "policy's raw thrust resumes at handover.")
+    ap.add_argument("--ego-assist-max-s", type=float, default=1.5,
+                    help="EGO takeoff-assist HARD time cap (s) since the first armed control tick: "
+                         "the assist disarms unconditionally after this even if neither the rate "
+                         "nor the climb handover fired. Default 1.5.")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "
