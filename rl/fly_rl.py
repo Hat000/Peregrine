@@ -525,6 +525,60 @@ def load_actor(path: str) -> nn.Module:
     return d
 
 
+# ---------------------------------------------------------------------------
+# EGO (21-dim egocentric) actor loading — HARDCODED action bounds.
+# ---------------------------------------------------------------------------
+# The ego generation trains with the sbatch override dynamics.controller.max_normed_thrust=3.765
+# (peregrine_vq2_ego.sbatch:80 on the cluster; the quad.yaml default 5.0 is OVERRIDDEN) and the
+# quad.yaml body-rate bound ±3.14 rad/s. The ego launcher (peregrine_train_ego.py) calls plain
+# agent.save — NO inc8-style JSON sidecar carrying these — so the generic sidecar path would fall
+# through to the LEGACY [0,5] thrust bounds and OVERDRIVE every thrust command by ~33% AND corrupt
+# the obs[8] collective feedback. The ego path therefore HARDCODES the trained bounds and never
+# consults a sidecar. [ego-deploy 2026-07-09; verified against the cluster config + launch echoes]
+_EGO_ACT_MAX_THRUST = 3.765   # g-units; sbatch dynamics.controller.max_normed_thrust
+_EGO_ACT_MAX_RATE = 3.14      # rad/s per axis, FLU; cluster cfg/dynamics/quad.yaml
+_EGO_OBS_DIM = 21             # racer.ego_obs.EGO_OBS_DIM (WINDOW=2 egocentric contract)
+
+
+def _apply_ego_action_bounds() -> None:
+    """Mutate the module action bounds to the EGO trained values (in place, like the sidecar
+    path, so policy_step and every importer see them). Factored out for the unit tests."""
+    _ACT_MIN[0] = 0.0
+    _ACT_MAX[0] = _EGO_ACT_MAX_THRUST
+    _ACT_MAX[1:4] = _EGO_ACT_MAX_RATE
+    _ACT_MIN[1:4] = -_EGO_ACT_MAX_RATE
+    print(f"[load_ego_actor] EGO action bounds HARDCODED: thrust [0,{_EGO_ACT_MAX_THRUST}] "
+          f"rates +-{_EGO_ACT_MAX_RATE} rad/s (no sidecar consulted; the ego launcher writes "
+          f"none and the legacy [0,5] fallback would overdrive thrust ~33%).")
+
+
+def load_ego_actor(path: str) -> nn.Module:
+    """Load a 21-dim egocentric actor.pth ({'actor_mean': state_dict, ...} DiffAero format).
+
+    Unlike ``load_actor`` this NEVER reads a JSON sidecar and NEVER falls back to the legacy
+    [0,5] thrust bounds — the ego bounds are hardcoded (see _EGO_ACT_MAX_THRUST above). The obs
+    width is asserted == 21 (the WINDOW=2 egocentric contract this deploy adapter builds); a
+    mismatched checkpoint fails LOUD at startup instead of flying a garbled obs."""
+    d = torch.load(path, map_location="cpu", weights_only=False)
+    if not (isinstance(d, dict) and "actor_mean" in d):
+        raise SystemExit(f"--ego-ckpt {path!r} is not a DiffAero actor checkpoint "
+                         f"({{'actor_mean': ...}} dict expected).")
+    w0 = d["actor_mean"].get("head.0.linear.weight")
+    obs_dim = int(w0.shape[1]) if w0 is not None else -1
+    if obs_dim != _EGO_OBS_DIM:
+        raise SystemExit(
+            f"--ego-ckpt obs width {obs_dim} != the {_EGO_OBS_DIM}-dim egocentric contract this "
+            f"adapter builds (racer.ego_obs). Wrong checkpoint generation? (inc7=17, inc8=20.)")
+    actor = _ActorMean(obs_dim)
+    miss = actor.load_state_dict(d["actor_mean"], strict=True)
+    if miss.missing_keys or miss.unexpected_keys:
+        raise RuntimeError(f"ego state_dict mismatch: missing={miss.missing_keys} "
+                           f"unexpected={miss.unexpected_keys}")
+    actor.eval()
+    _apply_ego_action_bounds()
+    return actor
+
+
 @torch.no_grad()
 def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
                 virtual_flip: bool = False, max_thrust: float = 0.0,
@@ -973,13 +1027,17 @@ def _validate_seeker_detector(args) -> None:
     net to ``YOLO(...)`` as if it were detector weights. Guard: on the gate-seeker + yolo path, require
     a spec that looks like detector weights (``--seeker-weights <model.pt>``, or an ``a.pt++b.pt``
     ensemble); raise ``SystemExit`` with a clear message otherwise. No-op for non-gate-seeker runs and
-    for the explicit ``red_glow`` / ``none`` opt-ins (which need no weights)."""
-    if not getattr(args, "gate_seeker", False) or args.seeker_detector != "yolo":
+    for the explicit ``red_glow`` / ``none`` opt-ins (which need no weights).
+
+    The EGO path (--ego-ckpt) flies on the SAME case-C perception stack (detector + PnP + temporal
+    track) so it is validated identically — its actor .pth lives in --ego-ckpt, never here."""
+    if (not (getattr(args, "gate_seeker", False) or getattr(args, "ego_ckpt", None))
+            or args.seeker_detector != "yolo"):
         return
     spec = _resolve_seeker_weights(args)
     if not _looks_like_detector_weights(spec):
         raise SystemExit(
-            "gate-seeker YOLO needs --seeker-weights <model.pt> (a trained gate detector). "
+            "gate-seeker/ego YOLO needs --seeker-weights <model.pt> (a trained gate detector). "
             f"Got seeker_weights={args.seeker_weights!r}, and the --checkpoint fallback "
             f"({args.checkpoint!r}) is the RL-actor .pth, NOT detector weights -- loading it as "
             "YOLO weights would silently fly a broken detector. Pass --seeker-weights explicitly, "
@@ -1002,8 +1060,10 @@ def _prewarm_detector(args) -> None:
     Only the ``yolo`` path warms (red_glow is pure OpenCV -> no warmup cost). Any failure (no
     ultralytics / no GPU / bad weights) is logged and swallowed: the real load in _build_casec_seeker
     surfaces a hard error later, and a warmup miss must never abort the run. Idempotent + additive:
-    non-yolo / non-gate-seeker runs are byte-identical (nothing is built, nothing stashed)."""
-    if not getattr(args, "gate_seeker", False) or args.seeker_detector != "yolo":
+    non-yolo / non-gate-seeker runs are byte-identical (nothing is built, nothing stashed).
+    The EGO path (--ego-ckpt) shares the case-C perception stack, so it pre-warms identically."""
+    if (not (getattr(args, "gate_seeker", False) or getattr(args, "ego_ckpt", None))
+            or args.seeker_detector != "yolo"):
         return
     try:
         import numpy as np
@@ -1431,6 +1491,282 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     return result
 
 
+def _fly_ego(client, actor, args, flight_idx: int,
+             session_dir: Path | None, result: dict) -> dict:
+    """EGO (21-dim egocentric) RL deploy loop on the case-C self-localizing stack (--ego-ckpt).
+
+    A HYBRID of the two existing loops [ego-deploy 2026-07-09]:
+      * the gate-seeker's SCAFFOLDING: case-C Navigator (deploy profile, AHRS + vision yaw/z,
+        map-free), the shared pre-warmed detector + the seeker's temporal-tracked
+        ``detect_gate_lever`` (used ONLY as the perception source -- the seeker's controller is
+        never called), non-blocking ``client._latest_frame``, the epoch/reset/collision guards,
+        and IMU/AHRS-liveness gating (NOT the RL loop's ODOMETRY-staleness gate -- ODOMETRY is
+        blocked on the VQ2 wire, so telemetry_health would read no_fix forever);
+      * the RL loop's ACTION pipeline: ``policy_step`` (tanh -> rescale -> virtual flip ->
+        FLU->FRD -> hover-scale) reused UNCHANGED, with the obs[8] normed-thrust feedback.
+
+    The 21-dim obs itself is built by ``racer.ego_obs.EgoObsBuilder`` (see its module docstring
+    for the full frame/masking contract). Per-tick products are buffered in memory and written
+    ONCE at loop exit (<session>/ego_obs.jsonl) -- no per-tick blocking I/O in the control loop.
+    ADDITIVE + OPT-IN: nothing on the default RL / gate-seeker paths changes."""
+    from scipy.spatial.transform import Rotation as _Rot
+
+    from racer.contracts import Frame
+    from racer.deploy_profile import get_profile
+    from racer.ego_obs import EgoObsBuilder, EgoObsBuilderConfig
+    from racer.navigator import gates_from_track_records, load_track_map
+
+    profile = get_profile(args.deploy_profile)
+
+    # --- gate map: mirrors _fly_gate_seeker (live TRACK_INFO > map-free for self-localizing) ---
+    if client.track_gates:
+        gates = gates_from_track_records(client.track_gates, corner_to_center=True)
+        print(f"  [ego] gate map from live TRACK_INFO ({len(gates)} gates).")
+    elif profile.self_localizing:
+        gates = []
+        print("  [ego] no live TRACK_INFO + self-localizing profile -> MAP-FREE flight "
+              "(vision yaw/z + the tracked gate lever; NO absolute map).", file=sys.stderr)
+    elif args.map and Path(args.map).exists():
+        gates = load_track_map(args.map, corner_to_center=True)
+        print(f"  [ego] gate map from --map {args.map} ({len(gates)} gates).")
+    else:
+        print("  [ego] no gate map (no TRACK_INFO, no --map) -> cannot fly. abort.",
+              file=sys.stderr)
+        result["final_state"] = "NO_MAP"
+        return result
+
+    # The seeker is built ONLY for its perception half (detect_gate_lever: detector + PnP +
+    # quality gates + the temporal track); its pursuit controller is never invoked.
+    nav, seeker, _ = _build_casec_seeker(args, gates)
+
+    builder = EgoObsBuilder(EgoObsBuilderConfig(
+        stale_horizon_s=args.ego_stale_horizon,
+        det_hold_s=args.ego_det_hold,
+        obs_coast=args.ego_obs_coast,
+        virtual_flip=args.virtual_flip,
+        slot1_enabled=False,               # --ego-slot1 is rejected at startup (stub)
+        sector_mode=args.ego_sector_mode,
+    ))
+
+    print(f"\n[ego] ckpt={args.ego_ckpt}  profile={profile.name} "
+          f"self_localizing={profile.self_localizing}")
+    print(f"[ego] act bounds thrust [{_ACT_MIN[0]:g},{_ACT_MAX[0]:g}] rates +-{_ACT_MAX[1]:g} "
+          f"| cmd_rate_scale={client.cmd_rate_scale:g} (ego FORCES wire scale via "
+          f"--ego-rate-scale; the seeker profile's 0.4 is NOT applied -- the RL plant was "
+          f"sysid'd at wire scale 1.0)")
+    print(f"[ego] det_hold={args.ego_det_hold:g}s stale_horizon={args.ego_stale_horizon:g}s "
+          f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
+          f"virtual_flip={args.virtual_flip} rate={args.rate:g}Hz max={args.max_seconds:g}s ...")
+
+    tick        = 1.0 / args.rate
+    deadline    = time.monotonic() + args.max_seconds
+    next_t      = time.monotonic()
+    last_sim_t  = int(client.state.sim_time_ns)
+    last_adv_w  = time.monotonic()
+    last_p      = 0.0
+    last_normed = 0.0          # training: last_action zeroed at reset -> obs[8]=0
+    n_coll0     = result["collisions_at_start"]
+    gate_index  = 0
+    final_state = "IDLE"
+
+    loop_t0       = time.monotonic()
+    n_ticks       = 0
+    worst_work_ms = 0.0
+    n_over_budget = 0
+    n_pose_ticks  = 0          # ticks with a fresh accepted gate lever
+    n_masked      = 0          # ticks flown with slot0 masked (the blackout regime)
+
+    reset_counter0 = int(client.state.reset_counter)
+    race_start0    = (int(client.race_status["race_start_boot_time_ms"])
+                      if client.race_status else None)
+    prev_pos = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
+                if client.state.position_ned is not None else None)
+    last_lever_fid: int | None = None   # feed each frame_id to the lever ONCE (fresh-fix gating)
+
+    _ego_log: list = []        # in-memory; single write at exit (no per-tick I/O)
+    _ego_log_errors = 0
+
+    while time.monotonic() < deadline:
+        while time.monotonic() < next_t:
+            client.pump()
+            time.sleep(0.001)
+        client.pump()
+        next_t = time.monotonic() + tick
+        now = time.monotonic()
+        s  = client.state
+        rs = client.race_status
+
+        # --- stop conditions (mirror the RL + seeker loops) ---
+        st = int(s.sim_time_ns)
+        if st > last_sim_t:
+            last_sim_t, last_adv_w = st, now
+        elif now - last_adv_w > 1.5:
+            print("\n  [ego] sim_time stalled (race ended) -> stopping.")
+            break
+        if rs and rs.get("finished"):
+            print("\n  [ego] RACE_STATUS finished -> stopping.")
+            final_state = "FINISHED"
+            break
+        if any(c["threat_level"] >= 2 for c in client.collisions[n_coll0:]):
+            print("\n  [ego] HARD COLLISION -> abort.")
+            final_state = "CRASH"
+            break
+
+        # --- sim-reset guard: epoch discontinuity -> CUT commands NOW (RL-loop parity) ---
+        gi_now = (int(rs["active_gate_index"])
+                  if rs and rs.get("active_gate_index") is not None else None)
+        jump = (float(np.linalg.norm(np.asarray(s.position_ned) - prev_pos))
+                if (s.position_ned is not None and prev_pos is not None) else 0.0)
+        reset_why = None
+        if int(s.reset_counter) != reset_counter0:
+            reset_why = f"reset_counter {reset_counter0}->{s.reset_counter}"
+        elif (rs and race_start0 is not None
+                and int(rs["race_start_boot_time_ms"]) != race_start0):
+            reset_why = "RACE_STATUS race_start changed (new race)"
+        elif gi_now is not None and gi_now < gate_index:
+            reset_why = f"active_gate_index dropped {gate_index}->{gi_now}"
+        elif jump > 10.0:
+            reset_why = f"position teleport ({jump:.1f} m in one tick)"
+        if reset_why is not None:
+            print(f"\n  [ego] SIM RESET DETECTED ({reset_why}) -> cutting commands.")
+            final_state = "SIM_RESET"
+            break
+        if s.position_ned is not None:
+            prev_pos = np.asarray(s.position_ned, dtype=np.float64).copy()
+
+        # --- active gate from RACE_STATUS; on an advance drop the perception track + slot state
+        # (the new slot0 starts cold/masked until first acquisition -- window-promotion analog) ---
+        if gi_now is not None and gi_now > gate_index:
+            print(f"\n  [ego] gate {gate_index} PASSED -> targeting {gi_now}", flush=True)
+            gate_index = gi_now
+            seeker.reset()            # drop the temporal track -> re-acquire the NEW gate
+            last_lever_fid = None
+        elif gi_now is not None:
+            gate_index = max(gi_now, 0)
+
+        # --- perception + estimation (case-C, all self-localized) ---
+        frame: Frame | None = getattr(client, "_latest_frame", None)
+        nav_state = nav.update(s, frame)
+        ods = nav.obs_drone_state(s)
+
+        # --- IMU/AHRS-liveness gate (NOT the RL loop's odo-staleness gate: ODOMETRY is blocked
+        # on this wire, so odo_recv_ns never fires; the AHRS is alive once HIGHRES_IMU flows) ---
+        if ods.orientation_ned_wxyz is None:
+            continue                   # pre-first-IMU warmup: no attitude -> no command
+        q_raw = np.asarray(ods.orientation_ned_wxyz, dtype=np.float64)
+        if not (np.all(np.isfinite(q_raw)) and float(q_raw @ q_raw) > 1e-12):
+            continue                   # degenerate quat -> skip the tick (never NaN the wire)
+
+        # TRUE physical attitude: the AHRS cache is re-encoded in the ODOMETRY-wire convention,
+        # so RE-apply the same conjugation build_obs uses (fly_rl frame contract).
+        q_true = q_raw * _ODO_QUAT_TRUE_CONJ
+        R_frd2ned = _Rot.from_quat([q_true[1], q_true[2], q_true[3], q_true[0]]).as_matrix()
+
+        # --- gate lever: feed each frame_id ONCE (a repeated pose is NOT a fresh fix; the
+        # builder ego-propagates through the gap between real detections) ---
+        pose = None
+        if frame is not None and frame.frame_id != last_lever_fid:
+            pose = seeker.detect_gate_lever(frame)   # detect_cached: shared + frame_id-idempotent
+            last_lever_fid = frame.frame_id
+        if pose is not None:
+            n_pose_ticks += 1
+
+        # --- 21-dim obs + policy + command ---
+        obs = builder.update(
+            sim_time_ns=st, gate_index=gate_index, R_frd2ned=R_frd2ned,
+            vel_ned=nav_state.velocity_ned, gyro_frd=s.gyro_body,
+            pose=pose, last_normed_thrust=last_normed)
+        if not builder.last_diag.get("det_proxy", False):
+            n_masked += 1
+        rate_frd, collective, last_normed = policy_step(
+            actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
+            yaw_scale=args.yaw_scale)
+        client.send_command(ControlCommand(
+            mode=ControlMode.BODY_RATE,
+            sim_time_ns=st,
+            body_rate=rate_frd,
+            thrust=collective,
+        ))
+
+        # --- in-memory forensics record (single write at exit) ---
+        if session_dir is not None:
+            try:
+                d = builder.last_diag
+                _ego_log.append({
+                    "k": n_ticks, "sim_time_ns": st, "gate_index": gate_index,
+                    "obs": np.asarray(obs, dtype=np.float64).round(5).tolist(),
+                    "pose_seen": d.get("pose_seen"), "age_s": d.get("age_s"),
+                    "conf": round(float(d.get("conf", 0.0)), 4),
+                    "area": round(float(d.get("area", 0.0)), 4),
+                    "sector": d.get("sector"),
+                    "rate_frd": rate_frd.round(4).tolist(),
+                    "collective": round(collective, 5),
+                    "normed_thrust": round(last_normed, 5),
+                    "kf_pos_ned": np.asarray(nav_state.position_ned).round(3).tolist(),
+                    "tsv": (None if not np.isfinite(nav_state.time_since_vision_update_s)
+                            else round(nav_state.time_since_vision_update_s, 3)),
+                })
+            except Exception:
+                _ego_log_errors += 1
+
+        work_ms = (time.monotonic() - now) * 1e3
+        n_ticks += 1
+        if work_ms > worst_work_ms:
+            worst_work_ms = work_ms
+        if work_ms > tick * 1e3:
+            n_over_budget += 1
+
+        if now - last_p >= 1.0:
+            d = builder.last_diag
+            print(f"  t={st/1e9:7.2f}s gi={gate_index} "
+                  f"conf={d.get('conf', 0.0):.2f} area={d.get('area', 0.0):.2f} "
+                  f"thr={collective:.3f} rate=[{rate_frd[0]:+.2f},{rate_frd[1]:+.2f},"
+                  f"{rate_frd[2]:+.2f}]   ", end="\r", flush=True)
+            last_p = now
+
+    if final_state == "IDLE":
+        final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
+        print(f"\n  ({final_state.lower()})")
+
+    # --- ego forensics log: single write covering every exit path ---
+    if session_dir is not None and _ego_log:
+        out = Path(session_dir) / "ego_obs.jsonl"
+        try:
+            out.write_text("\n".join(json.dumps(r) for r in _ego_log) + "\n", encoding="utf-8")
+            print(f"  [ego-log] wrote {len(_ego_log)} ticks -> {out}")
+        except Exception as exc:
+            print(f"  [ego-log] WARNING: failed to write ego_obs.jsonl: {exc}")
+    if _ego_log_errors:
+        print(f"  [ego-log] WARNING: {_ego_log_errors} per-tick record errors "
+              f"(logging bug, not flight bug)")
+
+    # --- loop-rate + perception-supply verdicts (A19 health-check parity) ---
+    elapsed = max(time.monotonic() - loop_t0, 1e-6)
+    achieved_hz = n_ticks / elapsed
+    over_pct = 100.0 * n_over_budget / max(n_ticks, 1)
+    rate_ok = achieved_hz >= 0.9 * args.rate and over_pct < 5.0
+    print(f"  [loop-rate] {achieved_hz:5.1f} Hz over {n_ticks} ticks (target {args.rate:g}); "
+          f"worst work {worst_work_ms:.0f} ms; {over_pct:.1f}% ticks over budget "
+          f"-> {'OK' if rate_ok else 'CHOKED'}")
+    print(f"  [ego-diag] fresh gate levers={n_pose_ticks}  masked-slot0 ticks={n_masked}/{n_ticks} "
+          f"({100.0 * n_masked / max(n_ticks, 1):.0f}% blackout duty)")
+    dc = getattr(seeker, "diag_counts", None)
+    if isinstance(dc, dict) and dc:
+        result["seeker_diag"] = dict(dc)
+    step_ms = getattr(nav, "vision_step_ms", None)
+    if isinstance(step_ms, dict) and any(v.get("count", 0) for v in step_ms.values()):
+        result["vision_step_ms"] = {k: dict(v) for k, v in step_ms.items()}
+    result["achieved_hz"] = round(achieved_hz, 2)
+    result["worst_work_ms"] = round(worst_work_ms, 1)
+    result["loop_over_budget_pct"] = round(over_pct, 1)
+    result["ego_fresh_levers"] = n_pose_ticks
+    result["ego_masked_ticks"] = n_masked
+    result["final_state"] = final_state
+    result["gate_index"] = gate_index
+    result["collisions"] = len(client.collisions) - n_coll0
+    return result
+
+
 def _fly_armed(client, actor, args, flight_idx: int,
                session_dir: Path | None, result: dict) -> dict:
     """The armed-flight body of ``fly_once`` (PATH B bridge -> RL control loop ->
@@ -1445,6 +1781,15 @@ def _fly_armed(client, actor, args, flight_idx: int,
     # ------------------------------------------------------------------
     if getattr(args, "gate_seeker", False):
         return _fly_gate_seeker(client, args, flight_idx, session_dir, result)
+
+    # ------------------------------------------------------------------
+    # OPT-IN: EGO (21-dim egocentric) RL policy on the case-C self-localizing
+    # stack. --ego-ckpt swaps the inc7 given-pose RL loop for _fly_ego (the
+    # gate-seeker scaffolding + the RL action pipeline). DEFAULT OFF: without
+    # --ego-ckpt every existing path below is untouched. [ego-deploy 2026-07-09]
+    # ------------------------------------------------------------------
+    if getattr(args, "ego_ckpt", None):
+        return _fly_ego(client, actor, args, flight_idx, session_dir, result)
 
     # ------------------------------------------------------------------
     # PATH B bridge: CTBR launcher to the handoff seam
@@ -1793,6 +2138,47 @@ def build_parser() -> argparse.ArgumentParser:
                          "On the live VQ2 wire the navigator is map-free so nav.time_since_vision_"
                          "update_s never goes finite -- the seeker releases on its OWN detections "
                          "instead (the 2026-06-29 attempt-2 BUG A fix).")
+    # --- EGO (21-dim egocentric) RL policy on the case-C stack (opt-in; ego-deploy 2026-07-09) ---
+    ap.add_argument("--ego-ckpt", default=None,
+                    help="OPT-IN: fly a 21-dim EGOCENTRIC RL actor (.pth, DiffAero format) on the "
+                         "case-C self-localizing perception stack (_fly_ego). Action bounds are "
+                         "HARDCODED to the ego training values (thrust [0,3.765], rates +-3.14 -- "
+                         "the ego launcher writes no sidecar and the legacy [0,5] fallback would "
+                         "overdrive thrust ~33%). Needs --seeker-weights (the gate detector). "
+                         "DEFAULT OFF: every existing path is byte-identical without it.")
+    ap.add_argument("--ego-det-hold", type=float, default=0.2,
+                    help="EGO det-proxy hold (s): the slot0 gate is treated as 'detected' while "
+                         "the last accepted PnP fix is younger than this, then MASKED TO ZEROS "
+                         "(the champion trained obs_coast=OFF -- it EXPECTS the blackout cliff at "
+                         "loss-of-lock). Deploy analog of training's per-33ms geometric det: "
+                         "detections arrive ~7-15 Hz on the wire, so literal this-tick masking "
+                         "would flicker at a duty cycle training never saw. Default 0.2.")
+    ap.add_argument("--ego-stale-horizon", type=float, default=0.5,
+                    help="EGO confidence staleness horizon (s): conf = clamp(1-age/horizon,0,1), "
+                         "hard-masked at 0. Default 0.5 = the champion's EgoEstimatorConfig "
+                         "default (the deployed stage overrides nothing). Match the TRAINED "
+                         "value of the checkpoint being flown.")
+    ap.add_argument("--ego-obs-coast", action=argparse.BooleanOptionalAction, default=False,
+                    help="EGO obs blackout-coast (matches training +env.ego_obs_coast): when ON "
+                         "the det-proxy hard-mask is dropped and the coasted rel_pos + decaying "
+                         "confidence feed the obs until the stale horizon. DEFAULT OFF -- the "
+                         "champion candidates trained coast-OFF; only flip for a coast-trained "
+                         "checkpoint.")
+    ap.add_argument("--ego-rate-scale", type=float, default=1.0,
+                    help="EGO uplink cmd_rate_scale. The ego path FORCES this (default 1.0) "
+                         "instead of the vq2_case_c profile's 0.4: the RL plant was sysid'd at "
+                         "wire scale 1.0, so the policy expects the raw command->realized gain. "
+                         "Override only for a deliberate gain experiment.")
+    ap.add_argument("--ego-sector-mode", default="auto", choices=["auto", "zero"],
+                    help="EGO coarse-sector (obs[9:11]) source: 'auto' = static per-gate bucket "
+                         "computed at first acquisition (horiz=0, vert=leveled elevation bucket "
+                         "-- the wire analog of training's build_coarse_map); 'zero' = pin (0,0) "
+                         "(flat-course / diagnostic fallback).")
+    ap.add_argument("--ego-slot1", action="store_true",
+                    help="STUB (rejected at startup): fill obs slot1 with the NEXT gate for a "
+                         "future multi-gate-trained policy. The current champions are single-"
+                         "gate-trained -- slot1 was zero their whole training life; filling it "
+                         "is OOD (audit H6). Kept as the CLI seam for the multi-gate generation.")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "
@@ -1882,6 +2268,13 @@ def main() -> int:
     # fall back to the RL-actor --checkpoint .pth as if it were YOLO weights).
     _validate_seeker_detector(args)
 
+    # --ego-slot1 is a STUB seam for future multi-gate policies: reject LOUD at startup rather
+    # than silently flying a single-gate champion with an OOD-filled slot1 (audit H6).
+    if getattr(args, "ego_slot1", False):
+        raise SystemExit("--ego-slot1 is a STUB: slot1 filling is not implemented (the deployed "
+                         "champions are single-gate-trained; filling slot1 is OOD -- audit H6). "
+                         "Remove the flag.")
+
     # -- load checkpoint (RL actor) --
     # Under --gate-seeker the RL actor is UNUSED: fly_once passes it straight through to the
     # gate-seeker early-return in _fly_armed without ever calling it. --checkpoint's default is the
@@ -1891,6 +2284,18 @@ def main() -> int:
     if getattr(args, "gate_seeker", False):
         actor = None
         print("gate-seeker: skipping RL actor load (unused on this path)")
+    elif getattr(args, "ego_ckpt", None):
+        # EGO path: hardcoded action bounds (no sidecar exists for ego checkpoints; the legacy
+        # [0,5] fallback would overdrive thrust ~33%), obs width pinned to 21 at load.
+        print(f"loading EGO actor: {args.ego_ckpt}")
+        actor = load_ego_actor(args.ego_ckpt)
+        print(f"  type: {type(actor).__name__}")
+        _out = actor(torch.zeros(1, _EGO_OBS_DIM))
+        _act = (_out[0] if isinstance(_out, (tuple, list)) else _out)[0]
+        print(f"  obs_dim={_EGO_OBS_DIM} -> action shape={tuple(_act.shape)}  (expected (4,))")
+        if _act.shape != (4,):
+            print(f"  WARNING: unexpected action shape {tuple(_act.shape)}; "
+                  "check DiffAero actor architecture.", file=sys.stderr)
     else:
         print(f"loading actor: {args.checkpoint}")
         actor = load_actor(args.checkpoint)
@@ -1918,6 +2323,18 @@ def main() -> int:
         gyro_sign = _profile.gyro_sign
         print(f"  [gate-seeker] deploy profile {args.deploy_profile!r} -> "
               f"cmd_rate_scale={cmd_rate_scale:g} gyro_sign={tuple(gyro_sign)}")
+    elif getattr(args, "ego_ckpt", None):
+        # EGO path: the profile supplies ONLY the gyro sign (the wire convention the AHRS needs);
+        # cmd_rate_scale is FORCED to --ego-rate-scale (default 1.0 -- the RL plant was sysid'd
+        # at wire scale 1.0; the seeker profile's 0.4 belongs to the classical pursuit gains, NOT
+        # to the trained policy). LOUD by design: this is the knob that silently detunes a policy.
+        from racer.deploy_profile import get_profile
+        _profile = get_profile(args.deploy_profile)
+        gyro_sign = _profile.gyro_sign
+        cmd_rate_scale = float(args.ego_rate_scale)
+        print(f"  [ego] FORCING cmd_rate_scale={cmd_rate_scale:g} (--ego-rate-scale; profile "
+              f"{args.deploy_profile!r} value {_profile.cmd_rate_scale:g} NOT applied) "
+              f"gyro_sign={tuple(gyro_sign)}")
     client = MavlinkClient(args.endpoint, cmd_rate_scale=cmd_rate_scale, gyro_sign=gyro_sign)
     if args.cmd_rate_scale != 1.0:
         print(f"  [vq2] cmd_rate_scale={args.cmd_rate_scale:g} -> BODY_RATE commands scaled at the "
@@ -2085,6 +2502,14 @@ def main() -> int:
                 handoff_dist=args.handoff_dist,
                 handoff_speed_min=args.handoff_speed_min,
                 checkpoint=str(args.checkpoint), max_seconds=args.max_seconds,
+                # ego meta ONLY on the ego path (VQ1/gate-seeker meta.json byte-identical)
+                **({"ego_ckpt": str(args.ego_ckpt),
+                    "ego_det_hold": args.ego_det_hold,
+                    "ego_stale_horizon": args.ego_stale_horizon,
+                    "ego_obs_coast": args.ego_obs_coast,
+                    "ego_rate_scale": args.ego_rate_scale,
+                    "ego_sector_mode": args.ego_sector_mode}
+                   if getattr(args, "ego_ckpt", None) else {}),
             )
             holder["rec"] = recorder
             print(f"recording -> {session}")
