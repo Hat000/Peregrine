@@ -307,6 +307,10 @@ class EgoObsBuilder:
                  else np.asarray(vel_ned, dtype=np.float64).reshape(3))
         w_frd = (np.zeros(3) if gyro_frd is None
                  else np.asarray(gyro_frd, dtype=np.float64).reshape(3))
+        # a transient non-finite KF velocity/rate must not latch NaN into the held rel_pos
+        # via the gap propagation below (it would stay poisoned until the next accepted fix)
+        v_ned = np.where(np.isfinite(v_ned), v_ned, 0.0)
+        w_frd = np.where(np.isfinite(w_frd), w_frd, 0.0)
         v_flu = _FLIP_FRD_FLU * (R.T @ v_ned)      # true body FLU velocity (= R_zup^T v_zup)
         w_flu = _FLIP_FRD_FLU * w_frd              # true body FLU rates
         roll_true, pitch_true = roll_pitch_zup(R_b2w_zup)
