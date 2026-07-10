@@ -26,6 +26,7 @@ from racer.vision.synthetic import _bbox, _corner_visibility, _in_ring
 from racer.contracts import Gate
 
 from .contract import (
+    CAMERA_INTRINSICS_K,
     GATE_INNER_SIZE_M,
     GATE_OUTER_SIZE_M,
     IMAGE_HEIGHT,
@@ -37,6 +38,10 @@ from .contract import (
     V_VIS,
     project_gate_corners,
 )
+
+# half field-of-view (rad) from the canonical intrinsics -- how far to push the boresight to crop.
+_HALF_HFOV = float(np.arctan((IMAGE_WIDTH / 2) / CAMERA_INTRINSICS_K[0, 0]))
+_HALF_VFOV = float(np.arctan((IMAGE_HEIGHT / 2) / CAMERA_INTRINSICS_K[1, 1]))
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,21 @@ class ViewpointConfig:
     speed_max_mps: float = 30.0
     range_skew: float = 2.0               # >1 biases CLOSE (d = min + (max-min)*u**skew)
     multi_gate: bool = True               # label every gate in view, not just the target
+
+    # --- CROPPED / PARTIAL-gate arm (additive; default OFF preserves the frozen path) ----------
+    # When ``partial_gates`` is set, sample_partial_frames replaces the normal sampler: it places
+    # the camera CLOSE and pushes the boresight ~half-FOV off the target so the gate spills over a
+    # frame edge (an "upper-right-quadrant" crop). The label keeps the IN-frame corners (v=2) and
+    # the OFF-frame corners clamped v=0 (framework-consistent -- ultralytics zeroes them anyway);
+    # the bbox is CLIPPED to the visible extent. Teaches the detector to FIRE on partial gates so
+    # the existing >=3-corner P3P path recovers the (off-frame) centre; the 2-corner case is a
+    # downstream geometric solve. See vq2-cropped-gate-offframe-keypoint-limit memory.
+    partial_gates: bool = False           # route to the crop sampler
+    partial_min_corners: int = 3          # accept ONLY if >= this many INNER (PnP) corners are in-frame
+    #                                       (>=3 => every crop is directly P3P/IPPE-solvable; RL 2026-07-06)
+    partial_min_area_frac: float = 0.03   # ... AND the clipped outer-bbox covers >= this of the frame
+    crop_range_min_m: float = 1.2         # crops happen CLOSE (bigger gate -> more of it spills off-frame)
+    crop_range_max_m: float = 6.0
 
 
 @dataclass
@@ -258,6 +278,103 @@ def sample_frames(
         guard += 1
         fs = sample_frame(rng, gates, cfg)
         if require_label and not fs.labeled_gates:
+            continue
+        made += 1
+        yield fs
+
+
+# --------------------------------------------------------------------------------------
+# CROPPED / PARTIAL-gate arm (additive; routed only when cfg.partial_gates)
+# --------------------------------------------------------------------------------------
+# Boresight push, as a fraction of half-FOV -- enough to spill the gate WELL over a frame edge
+# (>=1.0 puts the gate CENTRE past the edge). Paired with the >=3-inner accept, this keeps crops
+# aggressive (much of the gate off-frame) yet always PnP-solvable.
+_CROP_YAW_FRAC = (0.7, 1.35)
+_CROP_PITCH_FRAC = (0.6, 1.25)
+
+
+def _in_frame_mask(px: np.ndarray) -> np.ndarray:
+    return ((px[:, 0] >= 0) & (px[:, 0] <= IMAGE_WIDTH - 1)
+            & (px[:, 1] >= 0) & (px[:, 1] <= IMAGE_HEIGHT - 1))
+
+
+def _clip_bbox_to_frame(pts: np.ndarray) -> np.ndarray:
+    """Axis-aligned bbox of ``pts`` CLIPPED to the frame -> [x, y, w, h] (the VISIBLE extent)."""
+    x0 = max(0.0, float(pts[:, 0].min())); y0 = max(0.0, float(pts[:, 1].min()))
+    x1 = min(IMAGE_WIDTH - 1.0, float(pts[:, 0].max()))
+    y1 = min(IMAGE_HEIGHT - 1.0, float(pts[:, 1].max()))
+    return np.array([x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0)])
+
+
+def sample_partial_frame(rng: np.random.Generator, gates: list[Gate], cfg: ViewpointConfig) -> FrameSpec | None:
+    """Rejection-sample ONE viewpoint where the target gate is PARTIALLY out of frame (a crop):
+    camera placed CLOSE, boresight pushed ~half-FOV off the gate so it spills over a frame edge.
+    Accepts when ``partial_min_corners <= (in-frame of the 8 corners) < 8`` AND the clipped
+    outer-bbox covers ``partial_min_area_frac`` of the frame. Returns None if no crop was found."""
+    for _ in range(400):
+        ti = int(rng.integers(0, len(gates)))
+        target = gates[ti]
+        heading = _course_heading(gates, ti)
+        horiz = np.array([heading[0], heading[1], 0.0])
+        hn = float(np.linalg.norm(horiz))
+        horiz = horiz / hn if hn > 1e-6 else np.array([-1.0, 0.0, 0.0])
+        left = np.array([-horiz[1], horiz[0], 0.0])
+        d = float(rng.uniform(cfg.crop_range_min_m, cfg.crop_range_max_m))
+        body_pos = (target.position_ned - d * horiz
+                    + rng.normal(0.0, 0.6) * left
+                    + np.array([0.0, 0.0, rng.normal(0.0, 0.5)]))
+        to_gate = target.position_ned - body_pos
+        yaw0 = float(np.arctan2(to_gate[1], to_gate[0]))
+        pitch0 = float(np.arctan2(-to_gate[2], float(np.linalg.norm(to_gate[:2]))))
+        # BIG boresight offset -> push the gate toward/over a random frame edge.
+        yaw = yaw0 + float(rng.uniform(*_CROP_YAW_FRAC)) * _HALF_HFOV * float(rng.choice([-1.0, 1.0]))
+        pitch = (0.4 * pitch0
+                 + float(rng.uniform(*_CROP_PITCH_FRAC)) * _HALF_VFOV * float(rng.choice([-1.0, 1.0])))
+        roll = float(rng.normal(0.0, cfg.roll_jitter_rad))
+        R_wb = R_world_from_body(roll, pitch, yaw)
+        R_cg, t_cg = optical_pose(target, body_pos, R_wb)
+        if t_cg[2] <= 0.2:                                    # gate centre at/behind the camera
+            continue
+        try:
+            inner = project_gate_corners(R_cg, t_cg, GATE_INNER_SIZE_M)
+            outer = project_gate_corners(R_cg, t_cg, GATE_OUTER_SIZE_M)
+        except ValueError:                                    # a corner projects behind the camera
+            continue
+        n_inner_in = int(_in_frame_mask(inner).sum())
+        n_all_in = int(_in_frame_mask(np.vstack([inner, outer])).sum())
+        if n_inner_in < cfg.partial_min_corners or n_all_in >= 8:
+            continue          # need >= min INNER corners (PnP-solvable) AND genuinely cropped (some off)
+        bbox = _clip_bbox_to_frame(outer)
+        if bbox[2] * bbox[3] < cfg.partial_min_area_frac * IMAGE_WIDTH * IMAGE_HEIGHT:
+            continue                                          # too little gate actually visible
+        vis_inner = np.where(_in_frame_mask(inner), V_VIS, V_OFF)
+        vis_outer = np.where(_in_frame_mask(outer), V_VIS, V_OFF)
+        speed = float(rng.uniform(cfg.speed_min_mps, cfg.speed_max_mps))
+        gr = GateRender(
+            gate_id=int(target.gate_id), R_cam_gate=R_cg, t_cam_gate=t_cg,
+            keypoints_px=inner, outer_px=outer, bbox_xywh=bbox,
+            visibility=vis_inner, visible=True, outer_visibility=vis_outer,
+        )
+        return FrameSpec(
+            body_pos_ned=body_pos, roll=roll, pitch=pitch, yaw=yaw,
+            body_vel_ned=speed * (to_gate / (np.linalg.norm(to_gate) + 1e-9)),
+            gates=[gr],
+        )
+    return None
+
+
+def sample_partial_frames(
+    n_frames: int, cfg: ViewpointConfig, *, seed: int = 0, track_path: str | None = None,
+):
+    """Yield ``n_frames`` FrameSpecs, each holding ONE partial (cropped) gate."""
+    rng = np.random.default_rng(seed)
+    gates = load_course_gates(track_path)
+    made = 0
+    guard = 0
+    while made < n_frames and guard < 200 * n_frames + 100:
+        guard += 1
+        fs = sample_partial_frame(rng, gates, cfg)
+        if fs is None:
             continue
         made += 1
         yield fs

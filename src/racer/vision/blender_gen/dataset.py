@@ -31,7 +31,10 @@ from .contract import (
     VQ1_GATE_RED_RGB,
 )
 from .augment import augment_frame
-from .geometry import FrameSpec, GateRender, ViewpointConfig, sample_frames, sample_negative_frames
+from .geometry import (
+    FrameSpec, GateRender, ViewpointConfig,
+    sample_frames, sample_negative_frames, sample_partial_frames,
+)
 from .labels import frame_label_rows
 from .masks import gate_ring_mask
 
@@ -124,12 +127,17 @@ def _write_split(
     n_pos = n - n_neg
     made = n_labels = n_gates = n_negatives = 0
 
-    # positives: oversample geometry so post-augment label drops don't starve the split
-    for fs in sample_frames(int(n_pos * 3 + 8), preset.viewpoint, seed=seed, track_path=track_path):
+    # positives: oversample geometry so post-augment label drops don't starve the split. The crop
+    # arm (cfg.partial_gates) swaps in the partial-gate sampler -- same signature, same writer --
+    # and routes the relaxed positive rule through augment_frame so _recompute keeps the partials.
+    vp = preset.viewpoint
+    partial = (vp.partial_min_corners, vp.partial_min_area_frac) if vp.partial_gates else None
+    pos_sampler = sample_partial_frames if vp.partial_gates else sample_frames
+    for fs in pos_sampler(int(n_pos * 3 + 8), vp, seed=seed, track_path=track_path):
         if made >= n_pos:
             break
         image = backend.render(fs, preset, rng)
-        image, gates = augment_frame(image, fs.gates, preset.augment, rng)
+        image, gates = augment_frame(image, fs.gates, preset.augment, rng, partial=partial)
         labeled = [g for g in gates if g.visible]
         rows = frame_label_rows(labeled)
         if not rows:

@@ -1,0 +1,47 @@
+{
+  "name": "vq1_partial",
+  "description": "CROPPED/PARTIAL gate arm: camera CLOSE (1.5-7 m) with the boresight pushed ~half-FOV off the target so the gate spills over a frame edge -- only a quadrant/half in view, the gate CENTRE often OFF-frame. Goes past terminal_approach (which keeps >=3 inner + centre in-frame): here the inner corners themselves leave frame. Teaches the detector to FIRE on partial gates so the existing >=3-corner P3P recovers the off-frame centre; the 2-corner case is a downstream geometric solve. Additive arm -- blend into the merged dataset. See vq2-cropped-gate-offframe-keypoint-limit.",
+  "negative_fraction": 0.0,
+  "viewpoint": {
+    "partial_gates": true,
+    "crop_range_min_m": 1.2,
+    "crop_range_max_m": 6.0,
+    "partial_min_corners": 3,
+    "partial_min_area_frac": 0.03,
+    "roll_jitter_rad": 0.35,
+    "speed_min_mps": 6.0,
+    "speed_max_mps": 35.0
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.8,
+    "lighting_p": 0.15,
+    "brightness_p": 0.5,
+    "geometric_p": 0.0
+  },
+  "appearance": {
+    "use_vq1_red": true,
+    "gate_hue_jitter": 0.1,
+    "gate_sat_range": [0.8, 1.0],
+    "gate_val_range": [0.7, 1.0],
+    "gate_metallic_range": [0.0, 0.2],
+    "gate_roughness_range": [0.3, 0.6],
+    "use_hdri": true,
+    "photoreal": true,
+    "gate_emission_range": [0.25, 0.5],
+    "prop_count_range": [8, 14],
+    "people_count_range": [2, 5],
+    "lighting_mode": "auto",
+    "background_mode": "mixed",
+    "exposure_range": [-0.4, 0.5]
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 128,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": true,
+    "motion_blur_shutter": 0.6,
+    "use_glare": true
+  }
+}

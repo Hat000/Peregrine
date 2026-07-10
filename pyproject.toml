@@ -21,6 +21,11 @@ dev = ["pytest>=8.0"]
 # boxes: `pip install -e ".[detector]"`. CUDA torch wheels (cp313, cu12x) are installed
 # out-of-band per platform; ultralytics will otherwise pull a CPU torch.
 detector = ["ultralytics>=8.3.0", "albumentations>=1.4"]  # albumentations = L3 "chaos" dataset aug
+# TensorRT gate-detector engine export + runtime (scripts/export_trt_engine.py; OPT-IN via a
+# `*.engine` weights path). <11 pin: TRT 11 removed BuilderFlag.FP16 and breaks the ultralytics
+# 8.4.x exporter. x86 CUDA boxes only -- Jetson (Orin) gets TensorRT from JetPack, NEVER pip.
+# Live-verified on ShadowPC: tensorrt-cu12 10.16.1.11 + torch 2.12.0+cu126.
+tensorrt = ["tensorrt-cu12>=10.0,<11; platform_machine == 'AMD64' or platform_machine == 'x86_64'"]
 # Time-optimal speed profiling. The pure-numpy `racer.speed_profile` is the Windows-friendly
 # DEFAULT; `toppra` is a Cython/C++ lib needing the Windows SDK to build (same pain class as
 # acados), so it installs only off-Windows (Linux sim box / Adroit) as a drop-in robustness

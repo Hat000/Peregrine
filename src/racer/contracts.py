@@ -120,8 +120,15 @@ class GateObservation:
     still visible: 3 corners are enough for a (P3P) pose. When fewer than 4 are given,
     ``corner_ids`` MUST say which canonical corners they are (0=LL, 1=LR, 2=UR, 3=UL) so
     the PnP can pick the matching object points — order alone is ambiguous. With all 4,
-    ``corner_ids`` may be omitted (assumed canonical [0,1,2,3]). 8-corner (inner+outer) is
-    a later upgrade that would widen the cap, not replace this contract.
+    ``corner_ids`` may be omitted (assumed canonical [0,1,2,3]).
+
+    OUTER-corner augmentation (2026-07-05): an 8-keypoint model also localises the 4 OUTER
+    frame corners (the 2.72 m square, concentric + coplanar with the inner opening — see
+    blender_gen/contract.py). When present they ride along as ``outer_corners_px`` /
+    ``outer_corner_confidence`` (canonical LL,LR,UR,UL order, ALWAYS all 4 rows) and
+    ``gate_pose`` fuses them into the same 6-DOF pose. ``corners_px`` REMAINS the inner
+    square — association, ensemble dedup and every downstream consumer are unchanged; the
+    outer fields are optional metadata a 4-keypoint model simply never fills (None).
     """
 
     frame_id: int
@@ -132,6 +139,8 @@ class GateObservation:
     score: float = 1.0                           # object detection confidence
     bbox_xywh: np.ndarray | None = None          # (4,) optional, for ROI / debug
     gate_id: int | None = None                   # filled by data-association; None from raw detector
+    outer_corners_px: np.ndarray | None = None   # (4,2) OUTER-square corners px (8-kpt models), or None
+    outer_corner_confidence: np.ndarray | None = None  # (4,) per-outer-keypoint confidence, or None
 
     def __post_init__(self) -> None:
         c = self.corners_px
@@ -148,6 +157,40 @@ class GateObservation:
         if self.corner_confidence is not None:
             assert self.corner_confidence.shape == (n,), \
                 f"corner_confidence must be ({n},), got {self.corner_confidence.shape}"
+        if self.outer_corners_px is not None:
+            o = self.outer_corners_px
+            assert o.shape == (4, 2), f"outer_corners_px must be (4,2) when present, got {o.shape}"
+        if self.outer_corner_confidence is not None:
+            assert self.outer_corners_px is not None, "outer confidence requires outer_corners_px"
+            assert self.outer_corner_confidence.shape == (4,), \
+                f"outer_corner_confidence must be (4,), got {self.outer_corner_confidence.shape}"
+
+    # --- egocentric alignment byproduct (RL deploy obs contract, 2026-07-06) --------------------
+    # DERIVED from the inner-4 corners (no PnP, no flip), so a property not a field. None when <4
+    # corners (a partial/P3P view can't define the quad area).
+    @property
+    def inner_area_px(self) -> float | None:
+        """Apparent inner-opening quad area (px^2, shoelace), or None if <4 corners. The raw
+        byproduct RL emits alongside the ratio (cheap insurance for deriving other cues)."""
+        c = np.asarray(self.corners_px, dtype=float)
+        if c.shape != (4, 2):
+            return None
+        x, y = c[:, 0], c[:, 1]
+        return float(0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))))
+
+    @property
+    def visible_area_ratio(self) -> float | None:
+        """Range-FREE foreshortening ratio = inner-quad area / max-edge^2, ~[0,1] (1 = head-on,
+        smaller = sharper approach; ~|cos(approach angle)|). None if <4 corners. The CANONICAL
+        egocentric alignment field the policy consumes (RL 2026-07-06): no range/PnP coupling,
+        robust to the corner noise that wrecked the PnP normal. Measured sigma ~0.05 -> a COARSE
+        >=20-25 deg misalignment cue (see rl-egocentric-obs-contract / foreshorten_analysis.py)."""
+        area = self.inner_area_px
+        if area is None:
+            return None
+        c = np.asarray(self.corners_px, dtype=float)
+        e2 = max(float((c[i] - c[(i + 1) % 4]) @ (c[i] - c[(i + 1) % 4])) for i in range(4))
+        return float(area / e2) if e2 > 1e-9 else None
 
 
 @dataclass(frozen=True, eq=False)

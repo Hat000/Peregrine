@@ -106,11 +106,25 @@ def main() -> int:
                          "pixels/confidences, the analytic world-frame PnP translation cov) so "
                          "attitude-error / calibration analyses can run offline without "
                          "re-running the detector.")
+    ap.add_argument("--no-prior", action="store_true",
+                    help="solve the pose with prior=None -- removes the map/GT tie-break on the "
+                         "IPPE 2-fold, so near-frontal gates fall to reproj/most-frontal heuristic. "
+                         "This is the EGOCENTRIC map-free flip regime (RL yaw/normal ask 2026-07-06).")
     ap.add_argument("--naive-assoc", action="store_true",
                     help="use the retired nearest-centre/150px association with NO depth sanity "
                          "(the pre-2026-06-09 baseline that measured the 46%% catastrophic tail) "
                          "instead of the navigator's robust shape-consistency association.")
+    ap.add_argument("--vert-offset", type=float, default=None,
+                    help="override frames.BORESIGHT.vert_offset_m (the -0.25 m gate-DOWN metric "
+                         "bake) for a boresight A/B: --vert-offset 0.0 = RAW (no calibration), "
+                         "-0.25 = the deployed bake. gate_pose_to_world_position reads BORESIGHT "
+                         "live, so this cleanly re-measures the vertical residual with/without the "
+                         "correction (VQ2 vert-bias transfer check, RL ask P2 2026-07-09).")
     args = ap.parse_args()
+
+    if args.vert_offset is not None:
+        F.BORESIGHT = F.BoresightCorrection(vert_offset_m=float(args.vert_offset))
+        print(f"[boresight] OVERRIDE frames.BORESIGHT.vert_offset_m = {args.vert_offset:+.3f} m")
 
     bundle = Path(args.bundle)
     d = json.loads((bundle / "frames.json").read_text())
@@ -171,7 +185,8 @@ def main() -> int:
             pg = predicted[gid]
             t_pred = pg.t_cam_gate
             prior = GatePose(o.frame_id, o.sim_time_ns, pg.R_cam_gate, t_pred, 0.0, gate_id=gid)
-            pose = estimate_gate_pose(o, prior=prior, compute_covariance=True)
+            pose = estimate_gate_pose(o, prior=(None if args.no_prior else prior),
+                                      compute_covariance=True)
             if pose is not None:
                 # range to the associated gate from the given pos = the true depth
                 true_rng = float(np.linalg.norm(gate.position_ned - drone))

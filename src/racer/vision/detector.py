@@ -44,6 +44,34 @@ from racer.contracts import Frame, GateObservation
 
 N_CORNERS = 4
 
+# Derived-corner confidence for the outer->inner rescue: BELOW gate_pose's CONF_FLOOR (0.1) on
+# purpose, so the derived inners only SEED the IPPE init while the joint refinement stays anchored
+# on the 4 MEASURED outer corners (the derived points are linear functions of those same outers —
+# weighting them fully would double-count the measurement).
+_RESCUE_INNER_CONF = 0.10
+
+
+def _derive_inner_from_outer(outer_px: np.ndarray) -> np.ndarray | None:
+    """Inner corners from the 4 OUTER corners via the exact gate-plane homography (concentric
+    coplanar squares, spec 3.7) — the single implementation lives in ``gate_pose``; imported lazily
+    so this module's pure-numpy core stays importable without opencv."""
+    from racer.vision.gate_pose import inner_from_outer_homography
+
+    return inner_from_outer_homography(outer_px)
+
+
+def _load_yolo_model(weights):
+    """ultralytics ``YOLO`` loader with the exported-graph task hint (TRT engine pipeline).
+    ``.engine`` (TensorRT) / ``.onnx`` files carry no pickled task, so ``YOLO()`` falls back to
+    ``guess_model_task() -> "detect"`` and the detect post-process silently drops every keypoint
+    (zero gate observations, no error). Pin ``task="pose"`` for those extensions; a ``.pt`` spec
+    takes exactly the legacy ``YOLO(weights)`` call so the proven flight path is byte-identical."""
+    from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
+
+    if str(weights).lower().endswith((".engine", ".onnx")):
+        return YOLO(str(weights), task="pose")
+    return YOLO(str(weights))
+
 
 def observations_from_keypoints(
     frame: Frame,
@@ -54,6 +82,8 @@ def observations_from_keypoints(
     score_thresh: float = 0.25,
     kpt_conf_thresh: float = 0.5,
     bboxes_xywh: np.ndarray | None = None,
+    outer_xy: np.ndarray | None = None,
+    outer_conf: np.ndarray | None = None,
 ) -> list[GateObservation]:
     """Turn raw YOLO-pose output arrays into GateObservations (the pure, model-free core).
 
@@ -62,12 +92,24 @@ def observations_from_keypoints(
     A detection is kept only if its score clears ``score_thresh``; within it, keypoints clear
     ``kpt_conf_thresh`` to be used. 4 visible -> full (IPPE) observation; exactly 3 -> a
     subset observation with ``corner_ids`` (P3P); fewer than 3 -> dropped.
+
+    OUTER corners (8-keypoint models; 2026-07-05): optional ``outer_xy`` (n_det,4,2) +
+    ``outer_conf`` (n_det,4) ride along on every emitted observation (gate_pose fuses them into
+    the pose). They also enable the OUTER RESCUE: a detection whose inner corners are washed out
+    (<3 clearing the threshold — e.g. glare across the opening) but whose 4 outer corners are ALL
+    confident is no longer dropped; the inner corners are derived through the exact gate-plane
+    homography (concentric coplanar squares) and the observation is emitted with LOW derived-inner
+    confidence (see _RESCUE_INNER_CONF) so the pose leans on the measured outer corners.
     """
     keypoints_xy = np.asarray(keypoints_xy, dtype=np.float64)
     keypoints_conf = np.asarray(keypoints_conf, dtype=np.float64)
     det_scores = np.asarray(det_scores, dtype=np.float64)
     if keypoints_xy.ndim != 3 or keypoints_xy.shape[1:] != (N_CORNERS, 2):
         raise ValueError(f"keypoints_xy must be (n_det,{N_CORNERS},2), got {keypoints_xy.shape}")
+    if outer_xy is not None:
+        outer_xy = np.asarray(outer_xy, dtype=np.float64)
+        outer_conf = (np.ones(outer_xy.shape[:2]) if outer_conf is None
+                      else np.asarray(outer_conf, dtype=np.float64))
 
     out: list[GateObservation] = []
     for i in range(keypoints_xy.shape[0]):
@@ -75,13 +117,23 @@ def observations_from_keypoints(
             continue
         kxy = keypoints_xy[i]
         kconf = keypoints_conf[i]
+        o_xy = None if outer_xy is None else outer_xy[i].copy()
+        o_conf = None if outer_xy is None else outer_conf[i].copy()
         visible = np.where(kconf >= kpt_conf_thresh)[0]
         if visible.size >= N_CORNERS:
             corners, corner_ids, conf = kxy.copy(), None, kconf.copy()
         elif visible.size == 3:
             corners, corner_ids, conf = kxy[visible].copy(), visible.astype(int), kconf[visible].copy()
+        elif (o_xy is not None and o_conf is not None
+              and bool((o_conf >= kpt_conf_thresh).all())):
+            # OUTER RESCUE: derive the washed-out inner corners from the 4 confident outer corners.
+            derived = _derive_inner_from_outer(o_xy)
+            if derived is None:
+                continue
+            corners, corner_ids = derived, None
+            conf = np.full(N_CORNERS, _RESCUE_INNER_CONF)
         else:
-            continue  # < 3 corners: pose is unrecoverable, drop the detection
+            continue  # < 3 usable corners and no confident outer square: pose is unrecoverable
         bbox = None if bboxes_xywh is None else np.asarray(bboxes_xywh[i], dtype=np.float64)
         out.append(
             GateObservation(
@@ -92,6 +144,8 @@ def observations_from_keypoints(
                 corner_confidence=conf,
                 score=float(det_scores[i]),
                 bbox_xywh=bbox,
+                outer_corners_px=o_xy,
+                outer_corner_confidence=o_conf,
             )
         )
     return out
@@ -114,6 +168,7 @@ def observations_from_results(
     *,
     score_thresh: float = 0.25,
     kpt_conf_thresh: float = 0.5,
+    use_outer: bool = True,
 ) -> list[GateObservation]:
     """Extract the arrays from one ultralytics ``Results`` (duck-typed) and adapt them."""
     boxes = getattr(results, "boxes", None)
@@ -127,11 +182,16 @@ def observations_from_results(
     if conf is None:
         conf = np.ones(xy.shape[:2])  # pose model without per-keypoint conf: treat all visible
     # 8-keypoint models emit 4 INNER corners (0..3) then 4 OUTER corners (4..7) -- see
-    # blender_gen/contract.py N_KEYPOINTS scheme. PnP (gate_pose / task2_gate_pnp) is built on the
-    # 4 INNER corners (the gate opening, gate_object_points(1.5)), so subset to the inner-4 here at
-    # the model boundary. The pure 4-corner core + deployed inner-1.5 m PnP stay in lockstep; the
-    # native 4-keypoint path is unchanged (this branch is a no-op when xy already has 4 keypoints).
+    # blender_gen/contract.py N_KEYPOINTS scheme. PnP is anchored on the 4 INNER corners (the gate
+    # opening, gate_object_points(1.5)), so corners_px stays the inner-4 here at the model
+    # boundary — but the OUTER 4 now RIDE ALONG (outer_corners_px) and gate_pose fuses them into
+    # the same pose fit (use_outer=False restores the discard, the pre-2026-07-05 behaviour).
+    # The native 4-keypoint path is unchanged (this branch is a no-op when xy has 4 keypoints).
+    outer_xy = outer_conf = None
     if xy.shape[1] == 8:
+        if use_outer:
+            outer_xy = xy[:, N_CORNERS:, :]
+            outer_conf = conf[:, N_CORNERS:]
         xy = xy[:, :N_CORNERS, :]
         conf = conf[:, :N_CORNERS]
     scores = _to_numpy(getattr(boxes, "conf", None))
@@ -141,6 +201,7 @@ def observations_from_results(
     return observations_from_keypoints(
         frame, xy, conf, scores,
         score_thresh=score_thresh, kpt_conf_thresh=kpt_conf_thresh, bboxes_xywh=bboxes,
+        outer_xy=outer_xy, outer_conf=outer_conf,
     )
 
 
@@ -150,11 +211,14 @@ class GateDetector:
     frame. The model is injectable, so ``detect`` is testable with a fake (no ultralytics)."""
 
     def __init__(self, model, *, score_thresh: float = 0.25, kpt_conf_thresh: float = 0.5,
-                 device: str | None = None):
+                 device: str | None = None, use_outer: bool = True):
         self.model = model
         self.score_thresh = score_thresh
         self.kpt_conf_thresh = kpt_conf_thresh
         self.device = device
+        # Outer-corner fusion kill-switch (2026-07-05): False restores the exact pre-fusion
+        # behaviour (outer keypoints of an 8-kpt model discarded at the model boundary).
+        self.use_outer = use_outer
 
     @classmethod
     def load(cls, weights, **kwargs):
@@ -164,16 +228,15 @@ class GateDetector:
         # legacy behaviour, so the VQ1-proven single-model flight stack is untouched.
         if "++" in str(weights):
             return EnsembleGateDetector.load(str(weights).split("++"), **kwargs)
-        from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
-
-        return cls(YOLO(str(weights)), **kwargs)
+        return cls(_load_yolo_model(weights), **kwargs)
 
     def detect(self, frame: Frame) -> list[GateObservation]:
         results = self.model.predict(frame.image_bgr, verbose=False, device=self.device)
         if not results:
             return []
         return observations_from_results(
-            frame, results[0], score_thresh=self.score_thresh, kpt_conf_thresh=self.kpt_conf_thresh
+            frame, results[0], score_thresh=self.score_thresh, kpt_conf_thresh=self.kpt_conf_thresh,
+            use_outer=self.use_outer,
         )
 
 
@@ -205,19 +268,18 @@ class EnsembleGateDetector:
     deploy config (validated: union 6.5 -> 3.6 obs/frame, accuracy preserved)."""
 
     def __init__(self, models, *, score_thresh: float = 0.25, kpt_conf_thresh: float = 0.5,
-                 device: str | None = None, dedup_px: float = 12.0):
+                 device: str | None = None, dedup_px: float = 12.0, use_outer: bool = True):
         self.models = list(models)
         self.score_thresh = score_thresh
         self.kpt_conf_thresh = kpt_conf_thresh
         self.device = device
         self.dedup_px = float(dedup_px)
+        self.use_outer = use_outer
         self.model = self.models[0] if self.models else None  # compat shim if a caller reads .model
 
     @classmethod
     def load(cls, weights_list, **kwargs) -> "EnsembleGateDetector":
-        from ultralytics import YOLO  # lazy: the heavy, GPU-only [detector] dependency
-
-        models = [YOLO(str(w).strip()) for w in weights_list if str(w).strip()]
+        models = [_load_yolo_model(str(w).strip()) for w in weights_list if str(w).strip()]
         return cls(models, **kwargs)
 
     def detect(self, frame: Frame) -> list[GateObservation]:
@@ -227,7 +289,7 @@ class EnsembleGateDetector:
             if results:
                 obs.extend(observations_from_results(
                     frame, results[0], score_thresh=self.score_thresh,
-                    kpt_conf_thresh=self.kpt_conf_thresh))
+                    kpt_conf_thresh=self.kpt_conf_thresh, use_outer=self.use_outer))
         return self._dedup(obs)
 
     def _dedup(self, obs: list[GateObservation]) -> list[GateObservation]:
@@ -271,4 +333,16 @@ class EnsembleGateDetector:
         corners = sum(wi * np.asarray(o.corners_px, dtype=np.float64) for wi, o in zip(w, full))
         conf = np.max([np.asarray(o.corner_confidence, dtype=np.float64) for o in full], axis=0)
         top = max(full, key=lambda o: float(o.score))
-        return replace(top, corners_px=corners, corner_confidence=conf)
+        # OUTER corners fuse the same way (score-weighted mean over the members that carry them,
+        # conf = element-max) so the fused observation stays internally consistent; members without
+        # outer (4-kpt models in a mixed ensemble) simply don't contribute.
+        wo = [(wi, o) for wi, o in zip(w, full) if o.outer_corners_px is not None]
+        outer = outer_conf = None
+        if wo:
+            ws = sum(wi for wi, _ in wo)
+            outer = sum(wi * np.asarray(o.outer_corners_px, dtype=np.float64) for wi, o in wo) / ws
+            outer_conf = np.max([np.asarray(o.outer_corner_confidence, dtype=np.float64)
+                                 if o.outer_corner_confidence is not None else np.ones(4)
+                                 for _, o in wo], axis=0)
+        return replace(top, corners_px=corners, corner_confidence=conf,
+                       outer_corners_px=outer, outer_corner_confidence=outer_conf)

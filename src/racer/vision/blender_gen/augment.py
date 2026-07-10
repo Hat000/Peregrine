@@ -101,8 +101,13 @@ def _build_pipeline(cfg: AugmentConfig):
     return compose
 
 
-def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray) -> GateRender:
-    """Rebuild a GateRender from warped inner/outer corners: new bbox + visibility + visible."""
+def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray,
+               partial: tuple[int, float] | None = None) -> GateRender:
+    """Rebuild a GateRender from warped inner/outer corners: new bbox + visibility + visible.
+
+    ``partial`` = (min_corners, min_area_frac) routes the CROP arm's relaxed positive rule
+    (>= min_corners of the 8 corners in-frame AND clipped-bbox area >= min_area_frac); None keeps
+    the frozen full-gate rule (>= 3 inner in-frame AND centre in-frame)."""
     vis = gr.visibility.copy()
     for c in range(4):
         x, y = float(inner[c, 0]), float(inner[c, 1])
@@ -121,9 +126,15 @@ def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray) -> GateRend
     x0, y0 = max(0.0, float(x0)), max(0.0, float(y0))
     x1, y1 = min(float(IMAGE_WIDTH), float(x1)), min(float(IMAGE_HEIGHT), float(y1))
     bbox = np.array([x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0)])
-    centre = inner.mean(axis=0)
-    centre_in = 0.0 <= centre[0] <= IMAGE_WIDTH and 0.0 <= centre[1] <= IMAGE_HEIGHT
-    visible = bool(int((vis == V_VIS).sum()) >= 3 and centre_in)
+    if partial is not None:
+        min_corners, min_area_frac = partial
+        n_inner_in = int((vis == V_VIS).sum())          # INNER (PnP) corners in-frame -- the accept floor
+        visible = bool(n_inner_in >= min_corners
+                       and bbox[2] * bbox[3] >= min_area_frac * IMAGE_WIDTH * IMAGE_HEIGHT)
+    else:
+        centre = inner.mean(axis=0)
+        centre_in = 0.0 <= centre[0] <= IMAGE_WIDTH and 0.0 <= centre[1] <= IMAGE_HEIGHT
+        visible = bool(int((vis == V_VIS).sum()) >= 3 and centre_in)
     return GateRender(
         gate_id=gr.gate_id, R_cam_gate=gr.R_cam_gate, t_cam_gate=gr.t_cam_gate,
         keypoints_px=np.asarray(inner, dtype=float), outer_px=np.asarray(outer, dtype=float),
@@ -133,11 +144,13 @@ def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray) -> GateRend
 
 def augment_frame(
     image_bgr: np.ndarray, gates: list[GateRender], cfg: AugmentConfig,
-    rng: np.random.Generator | None = None,
+    rng: np.random.Generator | None = None, *, partial: tuple[int, float] | None = None,
 ) -> tuple[np.ndarray, list[GateRender]]:
     """Apply the keypoint-aware pipeline. Returns (augmented image, updated GateRenders).
 
     Only the labelled gates' corners are tracked; non-labelled gates pass through unchanged.
+    ``partial`` routes the crop arm's relaxed positive rule through :func:`_recompute` (None =
+    the frozen full-gate rule).
     """
     if not cfg.enable:
         return image_bgr, gates
@@ -161,5 +174,5 @@ def augment_frame(
     new_labeled: list[GateRender] = []
     for i, g in enumerate(labeled):
         block = warped[8 * i: 8 * i + 8]
-        new_labeled.append(_recompute(g, block[0:4], block[4:8]))
+        new_labeled.append(_recompute(g, block[0:4], block[4:8], partial=partial))
     return img, new_labeled + others

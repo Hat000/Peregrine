@@ -50,7 +50,12 @@ import numpy as np
 from racer.contracts import GateObservation, GatePose
 from racer.frames import CAMERA_INTRINSICS_K
 
-GATE_INNER_SIZE_M = 1.5  # spec sec 3.7: inner square 1500 mm
+GATE_INNER_SIZE_M = 1.5   # spec sec 3.7: inner square 1500 mm
+# spec sec 3.7: OUTER structural square 2720 mm, CONCENTRIC + COPLANAR with the inner opening (the
+# 8-keypoint training labels project both squares at the gate mid-plane z=0 — blender_gen/contract.py
+# + geometry.py keep this in lockstep). Outer corners are ~1.81x the inner square: bigger apparent
+# size + red-frame-on-dark-background contrast makes them the better-localised keypoints at range.
+GATE_OUTER_SIZE_M = 2.72
 _NO_DISTORTION = np.zeros((4, 1), dtype=np.float64)
 _GATE_NORMAL = np.array([0.0, 0.0, 1.0])  # gate +Z (downrange) in the gate frame
 
@@ -184,6 +189,83 @@ def _ordered_corners(obs: GateObservation) -> tuple[np.ndarray, np.ndarray, np.n
     return corners[order], ids[order], conf
 
 
+_PLANE_INNER_32 = np.array([[-0.75, 0.75], [0.75, 0.75], [0.75, -0.75], [-0.75, -0.75]],
+                           dtype=np.float32)          # gate-plane inner corners, LL,LR,UR,UL (y DOWN)
+_PLANE_OUTER_32 = np.array([[-1.36, 1.36], [1.36, 1.36], [1.36, -1.36], [-1.36, -1.36]],
+                           dtype=np.float32)          # gate-plane outer corners (GATE_OUTER_SIZE_M/2)
+
+
+def inner_from_outer_homography(outer_px: np.ndarray) -> np.ndarray | None:
+    """Inner-square pixel corners implied by the 4 OUTER corners via the exact gate-plane homography.
+
+    Inner and outer squares are concentric + coplanar (spec 3.7), so ONE homography maps the gate
+    plane to the image; the 4 outer correspondences determine it fully, and the inner corners are its
+    image of the inner plane square (float32 exact to ~1e-4 px). Returns (4,2) float64, or None for a
+    degenerate outer quad (near-collinear / sub-pixel — where the exactly-determined H explodes)."""
+    o = np.ascontiguousarray(outer_px, dtype=np.float32)
+    if o.shape != (4, 2) or not np.isfinite(o).all():
+        return None
+    x, y = o[:, 0], o[:, 1]
+    area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))   # shoelace
+    if area < 50.0:
+        return None
+    try:
+        H = cv2.getPerspectiveTransform(_PLANE_OUTER_32, o)
+        inner = cv2.perspectiveTransform(_PLANE_INNER_32.reshape(-1, 1, 2), H).reshape(4, 2)
+    except cv2.error:
+        return None
+    inner = np.asarray(inner, dtype=np.float64)
+    return inner if np.isfinite(inner).all() else None
+
+
+# Soft consistency weighting scale + hard drop floor (see _valid_outer). w = exp(-d_norm^2) with
+# d_norm = median disagreement / max(2.5 px, 5% span): ~1.0 for a corroborating outer square,
+# 0.37 at the nominal tolerance, and effectively 0 for a contradicting one (a decoy at ~4x the
+# tolerance -> w ~ 1e-7, dropped by the floor). SOFT (not a hard accept/reject) on purpose: a
+# binary gate on a noisy statistic TOGGLES across consecutive frames, flip-flopping the estimator
+# between two slightly different poses — itself a jitter source (measured on the 2026-07-05 real
+# flight-clip bench: hard gate raised p90 range-step +34%). The continuous fade keeps frame-to-
+# frame behaviour smooth while preserving the decoy safety via the hard floor.
+_OUTER_W_FLOOR = 0.05
+
+
+def _valid_outer(obs: GateObservation, corners: np.ndarray, ids: np.ndarray,
+                 ) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """The obs's OUTER-square corners as (px (4,2), consistency-WEIGHTED conf (4,)) — or (None, None).
+
+    Outer corners are optional metadata (8-keypoint models only; see contracts.GateObservation),
+    stored in canonical LL,LR,UR,UL order matching ``gate_object_points(GATE_OUTER_SIZE_M)``.
+
+    CONSISTENCY WEIGHTING (the fusion's safety): the outer square only carries weight in the fit to
+    the degree it geometrically CORROBORATES the measured inner corners — the inner corners implied
+    by the outer square through the exact plane homography are compared to the measured ones, and
+    the outer confidences are scaled by ``w = exp(-(median_disagreement / tol)^2)`` with
+    ``tol = max(2.5 px, 5% of the inner apparent span)``. A 4-vs-4 inner/outer contradiction is
+    unresolvable by robust weighting alone (no majority), so an outer set that tells a different
+    story — decoy branding, a degraded outer head, mis-associated structure — fades to w~0 and is
+    hard-DROPPED below ``_OUTER_W_FLOOR`` (the pose falls back to the proven inner-only fit,
+    bit-exactly). Rescue observations (derived inners) score w~1 by construction. [outer-fusion
+    2026-07-05; soft weighting after the hard-gate toggling measurement, same date]"""
+    o = obs.outer_corners_px
+    if o is None:
+        return None, None
+    o = np.ascontiguousarray(o, dtype=np.float64)
+    if o.shape != (4, 2) or not np.isfinite(o).all():
+        return None, None
+    derived = inner_from_outer_homography(o)
+    if derived is None:
+        return None, None
+    d = np.linalg.norm(derived[ids] - corners, axis=1)
+    span = float(np.linalg.norm(corners.max(axis=0) - corners.min(axis=0)))
+    tol = max(2.5, 0.05 * span)
+    w = float(np.exp(-((float(np.median(d)) / tol) ** 2)))
+    if w < _OUTER_W_FLOOR:
+        return None, None
+    conf = (np.ones(4) if obs.outer_corner_confidence is None
+            else np.asarray(obs.outer_corner_confidence, dtype=np.float64))
+    return o, w * conf
+
+
 def _estimate_ippe(obj: np.ndarray, img: np.ndarray, K: np.ndarray, prior: GatePose | None):
     """Full 4-corner pose via IPPE_SQUARE. Returns (R, t, reproj, ambiguity_ratio) or None."""
     cands = _solve(obj, img, K)
@@ -310,6 +392,7 @@ def estimate_gate_pose(
     n_samples: int = 24,
     rng: np.random.Generator | None = None,
     weighted_refine: bool = True,
+    use_outer: bool = True,
 ) -> GatePose | None:
     """Estimate the gate pose from an observation. Returns ``None`` if PnP fails.
 
@@ -318,14 +401,28 @@ def estimate_gate_pose(
     (IPPE, only when the geometry is near-frontal) and the P3P solutions (always, since
     they are otherwise indistinguishable).
 
-    With ``weighted_refine`` (default; 4-corner, requires ``obs.corner_confidence``), the
+    OUTER-corner fusion (2026-07-05, ``use_outer``): when the obs carries the 4 OUTER-square
+    corners (8-keypoint models; concentric + coplanar 2.72 m square, see GATE_OUTER_SIZE_M),
+    they join the SAME single pose fit:
+      - the robust refinement runs over ALL available points (up to 8) — the statistically
+        correct inner+outer fusion (confidence-whitened + Tukey), halving keypoint-noise-driven
+        pose jitter vs inner-only and anchoring the fit on the high-contrast outer corners;
+      - 3 inner + 4 confident outer: the OUTER square (a full IPPE_SQUARE problem) replaces the
+        weakly-constrained P3P init, and the fix reports ``n_corners=4`` (a 7-point fit is
+        better-constrained than plain inner-4, so the localization P3P inflation must not fire);
+      - inner-4 IPPE failure falls back to an outer-square IPPE init.
+    The emitted :class:`GatePose` contract is UNCHANGED (same fields, same meaning — centre
+    translation + rotation of the SAME gate frame); ``reproj_error_px`` stays the INNER-corner
+    RMS so its diagnostic scale is comparable across 4- and 8-keypoint models.
+
+    With ``weighted_refine`` (default; requires ``obs.corner_confidence``), the
     IPPE pose is refined by a robust confidence-weighted Gauss-Newton over all corners: each
     corner is weighted by its confidence and Huber-reweighted by its residual, so a weak or
     mislocalised corner is downweighted instead of trusted equally -- and the per-corner weights
-    give the pose covariance directly. With ``compute_covariance`` (4-corner only), that analytic
+    give the pose covariance directly. With ``compute_covariance``, that analytic
     covariance over ``[t(3), rvec(3)]`` is returned (falling back to Monte-Carlo corner perturbation
-    -- ``n_samples`` x, std ``corner_sigma_px`` -- when no confidences are present); 3-corner fixes
-    return ``None`` covariance and ``n_corners=3`` so callers inflate their measurement noise.
+    -- ``n_samples`` x, std ``corner_sigma_px`` -- when no confidences are present); plain 3-corner
+    P3P fixes return ``None`` covariance and ``n_corners=3`` so callers inflate their measurement noise.
     """
     if not np.isfinite(obs.corners_px).all():
         return None
@@ -333,34 +430,58 @@ def estimate_gate_pose(
     corners, ids, conf = _ordered_corners(obs)
     obj_full = gate_object_points(inner_size_m)
     n = corners.shape[0]
+    outer_px, outer_conf = _valid_outer(obs, corners, ids) if use_outer else (None, None)
+    # Outer corners join the INIT only when all 4 are confidently localised (the square solver
+    # needs a trustworthy full square); the REFINEMENT below still weights each one individually.
+    outer_init_ok = outer_px is not None and outer_conf is not None and bool((outer_conf >= 0.5).all())
+    obj_outer = gate_object_points(GATE_OUTER_SIZE_M)
 
     if n == 4:
         result = _estimate_ippe(obj_full, corners, K, prior)
+        if result is None and outer_init_ok:
+            result = _estimate_ippe(obj_outer, outer_px, K, prior)   # outer-square fallback init
         n_corners, obj = 4, obj_full
     elif n == 3:
         obj = obj_full[ids]
-        result = _estimate_p3p(obj, corners, K, prior)
-        n_corners = 3
+        if outer_init_ok:
+            # OUTER-ASSISTED 3-inner path: the outer square is a FULL IPPE_SQUARE problem — a
+            # strictly better-constrained init than 3-point P3P (which cannot self-disambiguate).
+            # The 3 inner corners join the joint refinement; report n_corners=4 (a 7-point fit),
+            # so localization's x9 P3P covariance inflation does not fire on a strong fix.
+            result = _estimate_ippe(obj_outer, outer_px, K, prior)
+            n_corners = 4 if result is not None else 3
+            if result is None:
+                result = _estimate_p3p(obj, corners, K, prior)
+        else:
+            result = _estimate_p3p(obj, corners, K, prior)
+            n_corners = 3
     else:
         return None
     if result is None:
         return None
     R, t, reproj, ambiguity_ratio = result
+    reproj = _reproj_rms(obj, corners, R, t, K)   # INNER-corner RMS (diagnostic scale invariant)
 
-    # Robust confidence-weighted refinement over all 4 corners: downweights a weak/wrong corner
-    # instead of trusting it equally (or hard-dropping it), and yields the pose covariance. Only
-    # when the detector supplied per-corner confidences; guarded against a diverged GN step.
+    # Robust confidence-weighted refinement over ALL available corners (inner + outer): downweights
+    # a weak/wrong corner instead of trusting it equally (or hard-dropping it), and yields the pose
+    # covariance. Only when the detector supplied per-corner confidences; guarded against a diverged
+    # GN step. This joint fit IS the inner/outer fusion — one pose explains both squares.
     analytic_cov = None
     if weighted_refine and conf is not None and n_corners == 4:
-        R_r, t_r, cov_r = _refine_pose(obj_full, corners, K, R, t, conf, corner_sigma_px)
-        if _refine_ok(R_r, t_r, R, t, obj_full):
+        obj_r, img_r, conf_r = obj, corners, conf
+        if outer_px is not None and outer_conf is not None:
+            obj_r = np.vstack([obj_r, obj_outer])
+            img_r = np.vstack([img_r, outer_px])
+            conf_r = np.concatenate([conf_r, outer_conf])
+        R_r, t_r, cov_r = _refine_pose(obj_r, img_r, K, R, t, conf_r, corner_sigma_px)
+        if _refine_ok(R_r, t_r, R, t, obj_r):
             R, t, analytic_cov = R_r, t_r, cov_r
-            reproj = _reproj_rms(obj_full, corners, R, t, K)
+            reproj = _reproj_rms(obj, corners, R, t, K)
 
     covariance = None
     if compute_covariance and n_corners == 4:
         covariance = analytic_cov if analytic_cov is not None else _corner_perturbation_covariance(
-            obj_full, corners, K, R, corner_sigma_px, n_samples, rng
+            obj_full if n == 4 else obj, corners, K, R, corner_sigma_px, n_samples, rng
         )
 
     return GatePose(
