@@ -174,12 +174,14 @@ def test_render_overrides_unknown_stage_raises():
 
 def test_course_sampler_keys_documented():
     # the sampler-key contract (matches the inc8 curriculum convention; + the spawn-distance pair, the
-    # fixed spawn-heading scalar, and the gate-0 HEIGHT band added 2026-07-08 for the varied-gate stage).
+    # fixed spawn-heading scalar, the gate-0 HEIGHT band added 2026-07-08 for the varied-gate stage, and
+    # the gates-above-spawn floor clearance added 2026-07-10 for the floor_at_spawn stages).
     assert C.COURSE_SAMPLER_KEYS == ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi",
                                      "course_drop_lo", "course_drop_hi",
                                      "course_spawn_dist_lo", "course_spawn_dist_hi",
                                      "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
-                                     "course_spawn_heading", "course_spawn_yaw_jitter")
+                                     "course_spawn_heading", "course_spawn_yaw_jitter",
+                                     "course_gates_above_spawn")
 
 
 def test_single_gate_varied_varies_position_and_height_offladder():

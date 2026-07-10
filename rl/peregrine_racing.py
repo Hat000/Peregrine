@@ -446,6 +446,37 @@ def quat_xyzw_from_axis_angle(rotvec: Tensor) -> Tensor:
 
 
 # ================================================================================================
+# FLOOR-AT-SPAWN knob resolution (A1 fix 2026-07-10) -- PURE (getattr-only), laptop-testable.
+# ================================================================================================
+def resolve_floor_at_spawn(cfg):
+    """Resolve ``+env.floor_at_spawn`` / ``+env.floor_clearance_m`` -> (on: bool, clearance_m: float).
+
+    A1 ROOT CAUSE (2026-07-10): the deployed ego policy's trained OPENER is a gravity dive because
+    training's lethal floor is the OOB bbox bottom at spawn_z - 12 m (the _update_boxes z margin) --
+    12 m of free fall is reward-cheap altitude to bleed, but the REAL VQ2 warehouse floor is AT spawn
+    (pad) height. When ON, _update_boxes raises box_min z to spawn_z - clearance (default 0.25 m, so
+    RESTING on the pad stays legal -- the drone spawns AT pad z), and the ego env's existing
+    below-floor => gate_collision fold (peregrine_racing_ego.step) makes diving below it a CRASH.
+
+    GUARD: the floor is defined relative to the STANDING-START pad. With standing_start_frac < 1.0
+    some episodes spawn near a random gate instead -- the pad-based floor is then only meaningful if
+    every gate is above the pad, which this resolver cannot verify (courses are sampled per reset).
+    Rather than be silently wrong (or silently inert -- the L16 lesson), REFUSE the combination: the
+    floor stages all run standing_start_frac=1.0. Default OFF == byte-identical legacy boxes."""
+    on = bool(getattr(cfg, "floor_at_spawn", False))
+    clearance = float(getattr(cfg, "floor_clearance_m", 0.25))
+    if on:
+        if clearance < 0.0:
+            raise ValueError(f"floor_clearance_m must be >= 0, got {clearance}")
+        ssf = float(getattr(cfg, "standing_start_frac", 0.0))
+        if ssf < 1.0:
+            raise ValueError(
+                f"floor_at_spawn=true requires standing_start_frac=1.0 (the floor is defined "
+                f"relative to the standing-start pad); got standing_start_frac={ssf}")
+    return on, clearance
+
+
+# ================================================================================================
 # The environment (requires diffaero -- training/eval cluster only).
 # ================================================================================================
 class PeregrineRacing(Racing):
@@ -454,6 +485,10 @@ class PeregrineRacing(Racing):
 
         n = self.n_envs
         self._arange = torch.arange(n, device=device)
+
+        # --- FLOOR-AT-SPAWN (A1 fix 2026-07-10; default OFF = byte-identical). Parsed BEFORE the
+        # course section because _update_boxes (end of that section) consumes the flag. ---
+        self._floor_at_spawn, self._floor_clearance_m = resolve_floor_at_spawn(cfg)
 
         # --- course source: fixed VQ1 (held-out eval / legacy) or per-env procedural sampling ---
         self.course_mode = str(getattr(cfg, "course_mode", "vq1"))
@@ -550,7 +585,16 @@ class PeregrineRacing(Racing):
 
     def _update_boxes(self, env_idx: Tensor) -> None:
         """Per-env OOB box: course bbox INCLUDING the spawn pad, +-15 m xy / +-12 m z margins
-        (the S1.3 lesson: exclude the spawn corridor and every standing start truncates on step 1)."""
+        (the S1.3 lesson: exclude the spawn corridor and every standing start truncates on step 1).
+
+        FLOOR-AT-SPAWN (A1 fix 2026-07-10, flag-gated, default OFF): raise box_min z to
+        spawn_z - clearance (0.25 m) so the arena floor sits AT the pad instead of 12 m below it --
+        the 12 m z margin below the course is exactly the free-fall budget the dive opener exploited,
+        and the real VQ2 warehouse floor is at spawn height. The ego env's below-floor =>
+        gate_collision fold (peregrine_racing_ego.step reads box_min[:, 2] LIVE every step) then makes
+        a dive below the pad a terminal crash for free. Requires every gate ABOVE the pad (the floor
+        stages pin course_spawn_below_g0 >= 0.5 and course_gates_above_spawn) or the course is
+        undivable-to. box_max / the xy margins are untouched."""
         if not hasattr(self, "box_min"):
             self.box_min = torch.zeros(self.n_envs, 3, device=self.device)
             self.box_max = torch.zeros(self.n_envs, 3, device=self.device)
@@ -558,6 +602,9 @@ class PeregrineRacing(Racing):
         pts = torch.cat([self.gate_pos[env_idx], self.spawn_pos[env_idx].unsqueeze(1)], dim=1)
         self.box_min[env_idx] = pts.amin(dim=1) - margin
         self.box_max[env_idx] = pts.amax(dim=1) + margin
+        if self._floor_at_spawn:
+            floor_z = self.spawn_pos[env_idx, 2] - self._floor_clearance_m
+            self.box_min[env_idx, 2] = torch.maximum(self.box_min[env_idx, 2], floor_z)
 
     # ---- observation: parent's gate-relative obs + body rates + last collective (FROZEN) ------
     def get_observations(self, with_grad=False):

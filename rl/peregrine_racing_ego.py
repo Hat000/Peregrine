@@ -124,6 +124,12 @@ def resolve_course_overrides(cfg) -> dict:
                                                     non-trivial from the start (the flat same-height gate is
                                                     the degenerate worst case for the floor-dive).]
       course_spawn_heading                        -> spawn_heading (scalar)  [pins segment-0 heading]
+      course_gates_above_spawn                    -> gates_above_spawn_m (scalar) [A1 floor fix
+                                                    2026-07-10: keep EVERY gate centre z >= pad z +
+                                                    this clearance. spawn_below_g0 only constrains
+                                                    gate 0; with the default drop band a LATER gate
+                                                    can sink below the pad -- undivable-to once
+                                                    floor_at_spawn is on.]
 
     ``spawn_dist_m`` is the standing-start pad -> gate-0 horizontal distance (Fengyou 2026-07-07: keep
     the FIRST gate 10-20 m out, not the sampler's default 18-28 m -- a shorter first approach is easier
@@ -156,6 +162,14 @@ def resolve_course_overrides(cfg) -> dict:
     spawn_yaw_jitter = getattr(cfg, "course_spawn_yaw_jitter", None)
     if spawn_yaw_jitter is not None:
         out["spawn_yaw_jitter_rad"] = float(spawn_yaw_jitter)
+    # course_gates_above_spawn (scalar, A1 floor fix 2026-07-10): sampler-side floor -- every gate
+    # centre z >= pad z + clearance (see peregrine_course.gates_above_spawn_m). Unset -> OFF (legacy).
+    gates_above = getattr(cfg, "course_gates_above_spawn", None)
+    if gates_above is not None:
+        ga = float(gates_above)
+        if ga < 0.0:
+            raise ValueError(f"course_gates_above_spawn must be >= 0, got {ga}")
+        out["gates_above_spawn_m"] = ga
     return out
 
 

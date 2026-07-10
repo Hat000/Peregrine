@@ -653,6 +653,39 @@ STAGES: dict[str, dict] = {
                  "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
     },
+    # FLOOR-MATCHED OPENER RELEARN (A1 root cause, 2026-07-10). The deployed vn16 policy never left the
+    # VQ2 start pad: its trained OPENER is a gravity dive (0.25 g + hard tilt) because training's lethal
+    # floor is the OOB bbox bottom at spawn_z - 12 m (peregrine_racing._update_boxes z margin; the
+    # below-floor => collision fold only fires THERE), while the REAL warehouse floor is AT spawn (pad)
+    # height. Adapter + obs contract verified CORRECT -- the fix is training-side. This stage = the
+    # champion single_gate_varied_gvf_lpara_anneal copied EXACTLY, plus:
+    #   * floor_at_spawn=true: per-env floor z = spawn_z - 0.25 m (resting ON the pad stays legal; the
+    #     existing below-floor => gate_collision fold makes any dive below it a terminal crash).
+    #   * course_spawn_below_g0 0.5..6.0: ALL gates ABOVE the pad (the old +-6 band puts half the gates
+    #     below the floor = undivable-to). VQ2 floor-matched standing start.
+    #   * warm +init_from = the vn16 run (the REAL-noise champion whose opener we are relearning), with
+    #     the champion warm noise trio 0.12/0.03/0.5. REAL noise (NO ego_noise_scale override) -- same
+    #     regime as vn16 so the ONLY change is the floor + gate-height geometry.
+    # ~6000 upd (opener relearn on a warm base, not a fresh train). OFF-LADDER; run via
+    # STAGES=single_gate_varied_gvf_lpara_floor, UPD_single_gate_varied_gvf_lpara_floor=6000.
+    "single_gate_varied_gvf_lpara_floor": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,  # ALL gates ABOVE the pad
+        "course_spawn_yaw_jitter": 0.25,
+        "floor_at_spawn": True,                       # lethal floor at spawn_z - 0.25 m (A1 fix)
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # initial (anneal overrides live)
+        "cross_zero_anneal": True, "cross_zero_start": 4.0, "cross_zero_end": 0.75, "cross_zero_hold_frac": 0.1,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_anneal_seed0_vn16/checkpoints",
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
     # ENDGAME FINE-TUNE (Fengyou 2026-07-08): vglpan/vglpan6 (the 4->0.75 anneal) BOTH plateau at xoff ~0.9m /
     # thread ~20% (the 6000-upd run == the 4000 -> NOT convergence-limited). The last 0.9->~0.4m to reach the
     # 0.75m aperture is an ENDGAME precision gap. Two levers, each warm-started from vglpan (the 20% policy),
@@ -996,6 +1029,68 @@ STAGES: dict[str, dict] = {
                  # NO +init_from: fresh random init (H6 fix -- warm transfer into 2 gates is dead).
                  "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
     },
+    # ================================================================================================
+    # DUAL-GATE FLOOR CHAIN (A1 floor fix, 2026-07-10) -- the 2-gate arm of the floor-matched relearn,
+    # run as a TWO-STAGE LADDER in ONE sbatch job (STAGES="dual_gate_boot_floor dual_gate_fullstack_floor"):
+    # the sbatch loop auto-wires stage 2's +init_from to stage 1's checkpoints, so NEITHER stage hardcodes
+    # a chain path. Both stages carry the FULL floor package (vs the single-gate floor stage, dual courses
+    # additionally need course_gates_above_spawn: spawn_below_g0 only constrains gate 0 -- the default
+    # drop band can sink gate 1 below the pad = undivable-to with the floor on):
+    #   floor_at_spawn=true + course_spawn_below_g0 0.5..6.0 + course_gates_above_spawn=0.5.
+    # Env content = dual_gate_fullstack0f's champion stack VERBATIM (racing line + corridor 4 +
+    # centering 0.4 + parabola, STATIC zero=4). Per H6 (slot-fill kills single->dual warm transfer,
+    # CONFIRMED 2/2) the chain trains 2-gate FROM SCRATCH:
+    #   * dual_gate_boot_floor  = FRESH boot at ego_noise_scale=0 (calibration regime: discover the
+    #     floor-constrained 2-gate behaviour on a clean signal), fresh exploration trio 0.30/0.03/0.5.
+    #     ~4000 upd.
+    #   * dual_gate_fullstack_floor = REAL noise (NO ego_noise_scale override -- the deploy regime),
+    #     warm from the boot via the sbatch chain, warm trio 0.12/0.03/0.5. ~12000 upd (the 16k finals
+    #     proved budget was the binder).
+    # Run via: STAGES="dual_gate_boot_floor dual_gate_fullstack_floor",
+    #          UPD_dual_gate_boot_floor=4000, UPD_dual_gate_fullstack_floor=12000.
+    "dual_gate_boot_floor": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # first leg == the sg champion
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,   # gate 0 ABOVE the pad (floor)
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,              # gate0->gate1 (VQ2 co-visibility)
+        "course_gates_above_spawn": 0.5,              # gate 1 too: every gate >= pad + 0.5 m (sampler clamp)
+        "floor_at_spawn": True,                       # lethal floor at spawn_z - 0.25 m (A1 fix)
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # STATIC zero=4
+        "ego_noise_scale": 0.0,       # calibration boot: clean signal for the fresh discovery phase
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from: fresh init (H6 -- single->dual warm transfer is dead); the fullstack
+                 # stage warm-starts from THIS stage via the sbatch ladder's auto +init_from.
+                 "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
+    "dual_gate_fullstack_floor": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime, same as vn16.
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here: the sbatch ladder wires +init_from=<boot checkpoints> when this
+                 # runs as stage 2 of STAGES="dual_gate_boot_floor dual_gate_fullstack_floor" (a
+                 # hardcoded path here would COLLIDE with the ladder's append -> hydra error).
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
     #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
     #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate
@@ -1029,7 +1124,8 @@ COURSE_SAMPLER_KEYS = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi
                        "course_drop_lo", "course_drop_hi",
                        "course_spawn_dist_lo", "course_spawn_dist_hi",
                        "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
-                       "course_spawn_heading", "course_spawn_yaw_jitter")
+                       "course_spawn_heading", "course_spawn_yaw_jitter",
+                       "course_gates_above_spawn")
 
 # The reward knobs that are HARD-STAGE-ONLY (must NEVER appear in _COMMON / never hit single_gate or
 # handoff_drill). Named so the test can assert the B2b scoping discipline structurally.

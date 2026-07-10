@@ -151,6 +151,15 @@ DEFAULT_COURSE_RANGES = dict(
                                   # it (ego sets 0.0) leaves the egocentric distribution IDENTICAL while
                                   # placing every course ahead of the pad. The relative gate placement
                                   # still varies via the spawn attitude jitter + the turn/drop walk.)
+    gates_above_spawn_m=None,     # (A1 floor fix, 2026-07-10) when set, EVERY gate centre z is kept
+                                  # >= spawn_z + this clearance (the pad is z=0 in the sampler frame).
+                                  # Enforced SEQUENTIALLY along the walk (z[g] = max(z[g-1]+dz[g], min_z))
+                                  # so a leg that would dive below the floor lands ON it and later climbs
+                                  # resume from there (walk shape preserved; a descent's |dz| only ever
+                                  # SHRINKS, so max_grade still holds). Needed with the floor_at_spawn
+                                  # training floor: spawn_below_g0_m only constrains gate 0 -- with the
+                                  # default drop_m a LATER gate can sink below the pad, which would be
+                                  # undivable-to with the floor on. None == OFF (byte-identical legacy).
 )
 
 # VQ1 standing-start pad (Z-up), from the S1.2 live recordings (see peregrine_racing.py).
@@ -215,6 +224,15 @@ def sample_courses(n, device="cpu", generator=None, **overrides):
         seg = torch.stack([seg_len * torch.cos(headings),
                            seg_len * torch.sin(headings), dz], dim=-1)              # (m, G, 3)
         gate_pos = torch.cumsum(seg, dim=1)                                         # pad at origin
+        # GATES-ABOVE-SPAWN floor clamp (A1 floor fix, 2026-07-10; OFF when None == legacy). Sequential
+        # so the walk continues from the clamped height (a post-dip climb actually climbs) instead of a
+        # naive cumulative clamp that would pin every later gate to the floor. G <= ~8 -> loop is trivial.
+        if R["gates_above_spawn_m"] is not None:
+            min_z = float(R["gates_above_spawn_m"])
+            z_prev = torch.zeros(m, device=device)                                   # pad z = 0
+            for g in range(G):
+                z_prev = torch.clamp(z_prev + dz[:, g], min=min_z)
+                gate_pos[:, g, 2] = z_prev
         # gate yaw: bisector of incoming/outgoing headings; last gate = incoming heading
         yaw = torch.empty(m, G, device=device)
         yaw[:, :-1] = _circ_mean(headings[:, :-1], headings[:, 1:])
