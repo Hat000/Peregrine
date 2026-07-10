@@ -960,6 +960,42 @@ STAGES: dict[str, dict] = {
                  "+init_from": "/scratch/network/fl3689/diffaero/outputs/train/ego_single_gate_varied_gvf_lpara_seed0_vglp4/checkpoints",
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
     },
+    # dual_gate_fullstack0f: the FRESH long-budget arm = the 2026-07-09 audit's H6 FIX. The warm pair
+    # dgfs0/dgfs0s1 (dual_gate_fullstack0, warm from vglp4) came back DET 0.000 2/2 -- warm transfer into
+    # the 2-gate stage is DEAD (the always-empty 2nd obs slot the single-gate base never saw poisons the
+    # transfer; slot-fill kills warm transfer, H6 CONFIRMED 2/2). This arm trains the SAME 2-gate content
+    # FROM SCRATCH on a fresh long (16k) budget. IDENTICAL to dual_gate_fullstack0 EXCEPT: (a) NO +init_from
+    # (fresh random init, not warm from vglp4); (b) the fresh-init exploration trio 0.30/0.03/0.5 -- start
+    # at the BASE 0.30 noise-std ceiling (do NOT copy the warm pair's 0.12 ceiling, which UNDER-explores a
+    # fresh init) and anneal to the champion 0.03 floor over the back half (hold_frac 0.5). ONE lever vs
+    # vcz16: fresh init + 2 gates (vcz16 = warm single-gate at noise 0). ego_noise_scale=0.0 (calibration
+    # regime), cross-zero held STATIC at 4.0. OFF-LADDER; run standalone via STAGES=dual_gate_fullstack0f,
+    # UPD_dual_gate_fullstack0f=16000.
+    # LAUNCHER NOTE (peregrine_train_ego.py, verified 2026-07-09): the sbatch BOUNDARY_OV
+    # +warmstart_reset_logstd=true is a HARMLESS NO-OP on a fresh run -- the logstd reset is gated on
+    # `warmstart_from is not None` (train ego L457-466), so with NO +init_from maybe_warmstart returns None
+    # and the initial std stays at the 0.30 ceiling (the fresh-exploration intent holds; no override off
+    # needed). +critic_warmup_updates=100 DOES apply on fresh (documented, train ego L468-472): the actor
+    # is frozen for the first 100 updates while the random critic calibrates to the return scale -- intended
+    # and cheap (100/16000).
+    "dual_gate_fullstack0f": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # first leg == vglp4 (same geometry)
+        "course_spawn_below_g0_lo": -6.0, "course_spawn_below_g0_hi": 6.0,  # gate-0 height band == vglp4
+        "course_spawn_yaw_jitter": 0.25,                                    # lateral FOV == vglp4
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,              # gate0->gate1 spacing (VQ2 co-visibility)
+        "use_racing_line": True,
+        "rw_progress_to_center": False,                  # progress from the GLOBAL line arc-length (pure GVF)
+        "rw_corridor": 4.0,                              # PBRS cross-track contouring onto the line (champion)
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,  # per-step magnitude centering nag (champion)
+        "rw_parabola_crossing": True,                    # per-crossing smooth parabola (champion)
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # STATIC zero=4 (NO anneal)
+        "ego_noise_scale": 0.0,       # calibration regime (perfect estimator -- isolate the 2-gate control question)
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from: fresh random init (H6 fix -- warm transfer into 2 gates is dead).
+                 "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
     #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
     #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate
