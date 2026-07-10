@@ -249,7 +249,14 @@ class GateDetector:
         # resolved device is stored on the instance and threaded into every predict(); it is LOGGED
         # once so the flight console / pre-warm shows GPU-vs-CPU (the #1 frame-starvation diagnostic).
         device = _resolve_device(kwargs.pop("device", None))
-        model = YOLO(str(weights))
+        # task=pose hint for exported graphs (ported from main detector._load_yolo_model): .engine /
+        # .onnx carry NO pickled task, so YOLO() guesses 'detect' and the detect post-process SILENTLY
+        # drops every keypoint -> 0 gate observations, no error. Pin task='pose' for those extensions;
+        # a .pt spec takes the legacy YOLO(weights) call unchanged (byte-identical flight path).
+        if str(weights).lower().endswith((".engine", ".onnx")):
+            model = YOLO(str(weights), task="pose")
+        else:
+            model = YOLO(str(weights))
         _move_model_to_device(model, device)
         print(f"  [detector] GateDetector on device={device!r} (weights={str(weights)!r})")
         return cls(model, device=device, **kwargs)

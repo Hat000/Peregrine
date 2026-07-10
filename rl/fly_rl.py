@@ -1125,7 +1125,10 @@ def _looks_like_detector_weights(spec) -> bool:
     if not spec:
         return False
     members = [s.strip().lower() for s in str(spec).split("++") if s.strip()]
-    return bool(members) and all(m.endswith(".pt") for m in members)
+    # accept exported detector graphs too (.engine TRT / .onnx), not just .pt -- the detector
+    # loader (detector._load_yolo_model) task=pose-loads them; the RL actor is .pth so it still
+    # fails this guard. [vision-stack unblock, contract-neutral: gates weights, not obs/action.]
+    return bool(members) and all(m.endswith((".pt", ".engine", ".onnx")) for m in members)
 
 
 def _validate_seeker_detector(args) -> None:
@@ -1709,6 +1712,9 @@ def _fly_ego(client, actor, args, flight_idx: int,
 
     _ego_log: list = []        # in-memory; single write at exit (no per-tick I/O)
     _ego_log_errors = 0
+    # [DIAG timing — ADDITIVE, contract-neutral, LOCAL-ONLY (do NOT push): per-tick phase
+    # wall-times to localize the loop-choke floor. Changes no obs/command/control value.]
+    _timing_log: list = []
 
     while time.monotonic() < deadline:
         while time.monotonic() < next_t:
@@ -1770,7 +1776,9 @@ def _fly_ego(client, actor, args, flight_idx: int,
 
         # --- perception + estimation (case-C, all self-localized) ---
         frame: Frame | None = getattr(client, "_latest_frame", None)
+        _t_nav = time.perf_counter()                             # [DIAG]
         nav_state = nav.update(s, frame)
+        _nav_ms = (time.perf_counter() - _t_nav) * 1e3           # [DIAG] AHRS/ESKF + nav-vision
         ods = nav.obs_drone_state(s)
 
         # --- IMU/AHRS-liveness gate (NOT the RL loop's odo-staleness gate: ODOMETRY is blocked
@@ -1789,9 +1797,12 @@ def _fly_ego(client, actor, args, flight_idx: int,
         # --- gate lever: feed each frame_id ONCE (a repeated pose is NOT a fresh fix; the
         # builder ego-propagates through the gap between real detections) ---
         pose = None
-        if frame is not None and frame.frame_id != last_lever_fid:
+        _t_det = time.perf_counter()                             # [DIAG]
+        _fresh_frame = frame is not None and frame.frame_id != last_lever_fid
+        if _fresh_frame:
             pose = seeker.detect_gate_lever(frame)   # detect_cached: shared + frame_id-idempotent
             last_lever_fid = frame.frame_id
+        _detect_ms = (time.perf_counter() - _t_det) * 1e3        # [DIAG] YOLO+PnP (only on fresh frame)
         if pose is not None:
             n_pose_ticks += 1
 
@@ -1848,6 +1859,10 @@ def _fly_ego(client, actor, args, flight_idx: int,
             worst_work_ms = work_ms
         if work_ms > tick * 1e3:
             n_over_budget += 1
+        if session_dir is not None:                              # [DIAG] additive per-phase timing
+            _timing_log.append({"k": n_ticks - 1, "work_ms": round(work_ms, 2),
+                                "nav_ms": round(_nav_ms, 2), "detect_ms": round(_detect_ms, 2),
+                                "fresh_detect": bool(_fresh_frame)})
 
         if now - last_p >= 1.0:
             d = builder.last_diag
@@ -1883,6 +1898,35 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"-> {'OK' if rate_ok else 'CHOKED'}")
     print(f"  [ego-diag] fresh gate levers={n_pose_ticks}  masked-slot0 ticks={n_masked}/{n_ticks} "
           f"({100.0 * n_masked / max(n_ticks, 1):.0f}% blackout duty)")
+    # [DIAG] per-phase timing dump + summary (additive; localizes which phase eats the choke floor).
+    if session_dir is not None and _timing_log:
+        try:
+            import statistics as _st
+            _med = lambda key, rows: (_st.median([r[key] for r in rows]) if rows else 0.0)
+            tp = Path(session_dir) / "ego_timing.jsonl"
+            tp.write_text("\n".join(json.dumps(r) for r in _timing_log) + "\n", encoding="utf-8")
+            _fresh = [r for r in _timing_log if r["fresh_detect"]]
+            _stale = [r for r in _timing_log if not r["fresh_detect"]]
+            print(f"  [ego-timing] wrote {len(_timing_log)} ticks -> {tp.name}")
+            print(f"  [ego-timing] median ms/tick: work={_med('work_ms', _timing_log):.0f} "
+                  f"nav_update={_med('nav_ms', _timing_log):.0f} "
+                  f"detect_lever={_med('detect_ms', _timing_log):.0f}")
+            if _stale:
+                print(f"  [ego-timing]   NO-detect ticks (n={len(_stale)}): "
+                      f"work={_med('work_ms', _stale):.0f} nav_update={_med('nav_ms', _stale):.0f} "
+                      f"(nav is the non-vision floor -> AHRS/ESKF + estimator)")
+            if _fresh:
+                print(f"  [ego-timing]   detect ticks (n={len(_fresh)}): "
+                      f"work={_med('work_ms', _fresh):.0f} nav_update={_med('nav_ms', _fresh):.0f} "
+                      f"detect_lever={_med('detect_ms', _fresh):.0f}")
+            _vsm = getattr(nav, "vision_step_ms", None)
+            if isinstance(_vsm, dict):
+                for _k, _v in _vsm.items():
+                    if _v.get("count", 0):
+                        print(f"  [ego-timing]   nav.{_k}: n={_v['count']} "
+                              f"avg={_v['total_ms'] / max(_v['count'], 1):.1f}ms max={_v['max_ms']:.1f}ms")
+        except Exception as _exc:
+            print(f"  [ego-timing] WARNING: timing dump failed ({_exc}) -- flight unaffected.")
     dc = getattr(seeker, "diag_counts", None)
     if isinstance(dc, dict) and dc:
         result["seeker_diag"] = dict(dc)
