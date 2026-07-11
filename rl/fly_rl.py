@@ -751,6 +751,51 @@ class EgoTakeoffAssist:
         return None
 
 
+def _kp_persist_step(streak: int, pose, n_required: int):
+    """KEYPOINT-PERSISTENCE debounce -- deploy twin of training ego_kp_persist_frames
+    (Fengyou 2026-07-11: gate info transmits only after the detectability condition
+    held N CONSECUTIVE frames).
+
+    Called ONLY on fresh-frame events (frame_id changed): non-fresh ticks are not
+    detection opportunities and must not touch the streak. n_required <= 1 == OFF
+    (pure passthrough == today's behavior: one frame suffices). A fresh-frame miss
+    (detect_gate_lever None for ANY reason: valid_poses_empty / continuity_reject /
+    coast) RESETS the streak -- matching training, where any non-detectable tick
+    resets. Seeker-internal track self-clear after coast needs no extra wiring: the
+    consecutive fresh-frame Nones that cause it have already zeroed the streak.
+    The streak saturates at n_required (never grows unbounded).
+
+    SEMANTIC GAPS vs the training twin (documented loudly, matched-pair doctrine):
+      1. Opportunity unit: train = every 33 ms estimator tick; deploy = every fresh
+         frame_id. Nominal 30 Hz JPEG -> N=2 ~ 66 ms both sides; under sim frame
+         starvation (7-15 Hz observed) deploy N=2 stretches to ~130-280 ms, i.e.
+         STRICTER in wall-time on a starved wire. (Train's choked-loop knob
+         ego_est_dt_ticks_hi does NOT interact: it holds only the INS/KF
+         channels; the gate-fix path runs every tick, so train opportunities
+         are always per-tick -- parity audit 2026-07-11.) Neither side changes
+         the qualitative contract: no first-flicker fix ever transmits.
+      2. Detectability proxy: train raycast ">=4/8 keypoints in FOV + occlusion +
+         far-cap + blur"; deploy "quality-gated PnP pose on a fresh frame".
+         Keypoint counts are unobservable on the wire; both sides debounce the
+         gate-level condition.
+      3. Miss taxonomy: deploy resets on ANY fresh-frame None, including
+         continuity_reject (a real detection of the wrong-continuity gate).
+      4. Gate advance: BOTH sides reset the streak (deploy: kp_streak = 0 beside
+         seeker.reset(); train: self._kp_persist_count[advance] = 0).
+      5. Association: the seeker track may be a non-active gate; the debounce
+         debounces whatever the track is -- unchanged from today, no new gap.
+
+    Returns (new_streak, pose_out, suppressed)."""
+    if int(n_required) <= 1:
+        return streak, pose, False
+    if pose is None:
+        return 0, None, False
+    streak = min(streak + 1, int(n_required))
+    if streak < int(n_required):
+        return streak, None, True
+    return streak, pose, False
+
+
 # ---------------------------------------------------------------------------
 # PATH B: CTBR bridge — the flight-proven model-based launcher (fly_vq1 faithful
 # stack: Navigator + ReactivePlanner + Mission + launch ramp) flies takeoff ->
@@ -1717,6 +1762,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
     n_over_budget = 0
     n_pose_ticks  = 0          # ticks with a fresh accepted gate lever
     n_masked      = 0          # ticks flown with slot0 masked (the blackout regime)
+    kp_n = max(0, int(getattr(args, "ego_kp_persist", 0)))   # <=1 == OFF (kp-persist debounce)
+    kp_streak = 0              # consecutive fresh-frame accepted poses (debounce)
+    n_kp_suppressed = 0        # accepted poses withheld by the debounce
+    if kp_n >= 2:
+        print(f"[ego] kp-persist debounce ON: gate lever transmits only after {kp_n} CONSECUTIVE "
+              f"fresh-frame accepted poses; one miss resets. Training twin "
+              f"+env.ego_kp_persist_frames={kp_n} (fly a debounce-trained ckpt with the SAME N).")
 
     reset_counter0 = int(client.state.reset_counter)
     race_start0    = (int(client.race_status["race_start_boot_time_ms"])
@@ -1786,6 +1838,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
             gate_index = gi_now
             seeker.reset()            # drop the temporal track -> re-acquire the NEW gate
             last_lever_fid = None
+            kp_streak = 0             # kp-persist MATCHED-PAIR rule: the new gate's streak
+                                      # restarts from 0 (train: _kp_persist_count[advance] = 0)
         elif gi_now is not None:
             gate_index = max(gi_now, 0)
 
@@ -1817,6 +1871,15 @@ def _fly_ego(client, actor, args, flight_idx: int,
         if _fresh_frame:
             pose = seeker.detect_gate_lever(frame)   # detect_cached: shared + frame_id-idempotent
             last_lever_fid = frame.frame_id
+            # kp-persist debounce (default OFF == byte-identical passthrough): advance the
+            # streak ONLY on fresh-frame events; suppressed poses become None here, so
+            # builder.update's existing pose=None path (ego-propagation / staleness / det_hold
+            # masking) handles them with zero builder edits -- the K=1 snap + static-sector
+            # latch are simply delayed to the N-th frame, like training's delayed first fix.
+            # Semantic gaps vs training: see _kp_persist_step's docstring.
+            kp_streak, pose, _kp_sup = _kp_persist_step(kp_streak, pose, kp_n)
+            if _kp_sup:
+                n_kp_suppressed += 1
         _detect_ms = (time.perf_counter() - _t_det) * 1e3        # [DIAG] YOLO+PnP (only on fresh frame)
         if pose is not None:
             n_pose_ticks += 1
@@ -1912,7 +1975,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"worst work {worst_work_ms:.0f} ms; {over_pct:.1f}% ticks over budget "
           f"-> {'OK' if rate_ok else 'CHOKED'}")
     print(f"  [ego-diag] fresh gate levers={n_pose_ticks}  masked-slot0 ticks={n_masked}/{n_ticks} "
-          f"({100.0 * n_masked / max(n_ticks, 1):.0f}% blackout duty)")
+          f"({100.0 * n_masked / max(n_ticks, 1):.0f}% blackout duty)"
+          + (f"  kp-suppressed={n_kp_suppressed}" if kp_n >= 2 else ""))
     # [DIAG] per-phase timing dump + summary (additive; localizes which phase eats the choke floor).
     if session_dir is not None and _timing_log:
         try:
@@ -1953,6 +2017,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
     result["loop_over_budget_pct"] = round(over_pct, 1)
     result["ego_fresh_levers"] = n_pose_ticks
     result["ego_masked_ticks"] = n_masked
+    if kp_n >= 2:                       # armed-only key: OFF-path result dict byte-identical
+        result["ego_kp_suppressed"] = n_kp_suppressed
     result["final_state"] = final_state
     result["gate_index"] = gate_index
     result["collisions"] = len(client.collisions) - n_coll0
@@ -2397,6 +2463,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "re-opens the spin door. NOT --max-rate (clips all 3 axes, ~9x roll/pitch "
                          "OOD) and NOT --yaw-scale (multiplicative, mis-scales the transfer function). "
                          "Leave 0 for pre-despin checkpoints (vn16/vcz16) -- they trained unclamped.")
+    ap.add_argument("--ego-kp-persist", type=int, default=0,
+                    help="EGO keypoint-persistence debounce: the gate lever transmits to the "
+                         "obs builder only after N CONSECUTIVE fresh camera frames returned an "
+                         "accepted pose; one fresh-frame miss resets the streak. 0 or 1 = OFF "
+                         "(today's behavior: one frame suffices). Training twin: "
+                         "+env.ego_kp_persist_frames (same N; train counts 33 ms ticks, deploy "
+                         "counts fresh frames -- near-matched at 30 Hz, slower under frame "
+                         "starvation). Fly a debounce-trained ckpt with the SAME N or the wire "
+                         "sees earlier/flickerier first fixes than training did.")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "
@@ -2727,7 +2802,8 @@ def main() -> int:
                     "ego_obs_coast": args.ego_obs_coast,
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,
-                    "ego_yaw_clamp": args.ego_yaw_clamp}
+                    "ego_yaw_clamp": args.ego_yaw_clamp,
+                    "ego_kp_persist": args.ego_kp_persist}
                    if getattr(args, "ego_ckpt", None) else {}),
             )
             holder["rec"] = recorder
