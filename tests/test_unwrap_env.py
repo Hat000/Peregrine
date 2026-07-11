@@ -362,3 +362,26 @@ def test_yaw_clamp_anneal_lifeline_wiring_source_pins():
     assert 'yc_sched["base"] = float(yc_env._yaw_cmd_clamp)' in src
     assert 'raise RuntimeError' in src.split('yc_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
     assert 'yc_env._yaw_cmd_clamp = yc_sched["base"] * ycv' in src
+
+
+def test_resolve_perception_anneal_off_by_default_and_parses_knobs():
+    """Unset / falsy gate -> None (byte-identical OFF); armed -> defaults start_scale=25.0 (base
+    0.02 -> 0.5/tick at birth: the farm-then-wean carrot), hold_frac=0.3 (farm dissolved to the
+    farm-neutral base by 70% of budget; racing rewards own the last 30%)."""
+    assert ego_launcher._resolve_perception_anneal(_Cfg(env=None)) is None
+    assert ego_launcher._resolve_perception_anneal(_Cfg(env=_Cfg())) is None
+    s = ego_launcher._resolve_perception_anneal(
+        _Cfg(env=_Cfg(perception_anneal=True), n_updates=4000))
+    assert s == {"start_scale": 25.0, "hold_frac": 0.3, "n_updates": 4000}
+
+
+def test_perception_anneal_lifeline_wiring_source_pins():
+    """Source pins: holder = '_egorw' (the exact object ego_reward reads); base captured
+    pre-mutation and r_perc-OFF base RAISES (scale*0 stuck at OFF == L16 silent no-op); per-update
+    mutation of _egorw.perception via the shared END-HOLD schedule."""
+    import inspect
+    src = inspect.getsource(ego_launcher._run_with_ego_lifelines)
+    assert '_require_anneal_holder(env, "_egorw", pc_sched' in src
+    assert 'pc_sched["base"] = float(getattr(pc_env._egorw, "perception", 0.0))' in src
+    assert 'raise RuntimeError' in src.split('pc_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
+    assert 'pc_env._egorw.perception = pc_sched["base"] * pcv' in src

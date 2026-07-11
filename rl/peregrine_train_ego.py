@@ -341,6 +341,29 @@ def _resolve_yaw_clamp_anneal(cfg):
     )
 
 
+def _resolve_perception_anneal(cfg):
+    """Parse the PERCEPTION-reward (r_perc pointing carrot) anneal from cfg.env, or None when OFF
+    (byte-identical default). Gated by ``+env.perception_anneal`` (truthy);
+    ``+env.perception_scale_start/hold_frac`` optional. FARM-THEN-WEAN (Fengyou 2026-07-11): the
+    boot crisis showed plain exploration's only discoverable flying gait is the SPIN gait, while
+    r_perc's known 'failure' at meaningful weight -- the airborne gate-STARING farm -- is precisely
+    a fence-legal, clamp-compatible, non-spinning attractor exploration CAN find (pointing pays for
+    attitude control from tick 0, long before gate passage pays anything). So: start the carrot BIG
+    (scale_start*base, default 25*0.02 = 0.5/tick), let the farm teach liftoff + pointing, then
+    anneal DOWN to the configured farm-neutral base (END-HOLD via _spin_abort_schedule) so racing
+    rewards take over and the farm dissolves before graduation. Mutates env._egorw.perception (the
+    exact object ego_reward reads). Base MUST be armed (>0): annealing scale*0 is stuck OFF (L16).
+    PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "perception_anneal", False)):
+        return None
+    return dict(
+        start_scale=float(getattr(env, "perception_scale_start", 25.0)),
+        hold_frac=float(getattr(env, "perception_hold_frac", 0.3)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
 def _run_det_eval(self, env, agent, cfg):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
@@ -503,6 +526,25 @@ def _run_with_ego_lifelines(self):
         else:
             yc_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # PERCEPTION-CARROT anneal (farm-then-wean; see _resolve_perception_anneal's rationale).
+    # Mutates env._egorw.perception -- the same holder as the cross-zero/clip-terminal hooks.
+    # Base captured pre-mutation and MUST be armed (>0): scale*0 is stuck OFF forever (L16).
+    pc_sched = _resolve_perception_anneal(cfg)
+    pc_env = _require_anneal_holder(env, "_egorw", pc_sched, "perception-anneal", cfg)
+    if pc_sched is not None:
+        if pc_env is not None:
+            pc_sched["base"] = float(getattr(pc_env._egorw, "perception", 0.0))
+            if pc_sched["base"] <= 0.0:
+                raise RuntimeError(
+                    "[perception-anneal] requested but r_perc is OFF (base rw_perception="
+                    f"{pc_sched['base']:.4f}) -- annealing scale*0 is stuck at OFF forever (silent "
+                    "no-op under an annealed run name, footgun L16); arm rw_perception (the END "
+                    "farm-neutral value, e.g. 0.02) or drop +env.perception_anneal.")
+            print(f"[perception-anneal] ON: {pc_sched} (farm-then-wean: END-HOLD at the "
+                  f"farm-neutral base for the last {pc_sched['hold_frac']:.0%} of updates)")
+        else:
+            pc_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -550,6 +592,13 @@ def _run_with_ego_lifelines(self):
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[yaw-clamp-anneal] update {counter['i']}: scale={ycv:.3f} "
                       f"yaw_cmd_clamp={yc_env._yaw_cmd_clamp:.2f}")
+        if pc_sched is not None:
+            pcv = _spin_abort_schedule(counter["i"], pc_sched["n_updates"],
+                                       pc_sched["start_scale"], pc_sched["hold_frac"])
+            pc_env._egorw.perception = pc_sched["base"] * pcv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[perception-anneal] update {counter['i']}: scale={pcv:.3f} "
+                      f"rw_perception={pc_env._egorw.perception:.4f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
