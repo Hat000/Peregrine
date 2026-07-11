@@ -119,8 +119,14 @@ progress).
 
 ### P.2 Owner directive → guarantee-by-construction
 Fengyou: *"I don't want the system to be spinning at all. Even if it works in sim, it's not good...
-REGARDLESS of how the vision system behaves in the simulator."* So the PRIMARY mechanisms GUARANTEE
-non-spin (they do not merely dis-incentivize):
+REGARDLESS of how the vision system behaves in the simulator."* The PRIMARY mechanisms are FATAL
+constructions, not dis-incentives — but the guarantee has an honest CEILING, stated here so nobody
+reads "non-spin by construction" as absolute: **at the stage defaults the construction guarantees no
+SUSTAINED rotation above ~2.36 rad/s** (= 2π·rev_abort/window_s, the leaky-integral fixed point);
+constant rotation at ~1.8–2.35 rad/s (a slow roll/pitch corkscrew, one rev every ~2.7–3.5 s, ~82%
+detection duty) survives BOTH triggers forever, is blur-free below lo=2.0, and is priced only by the
+r_perc opportunity cost (~0.02/tick vs ~2.0/m progress). See the exploit ledger (P.8) and the
+first-run trace check (P.6). The mechanisms:
 1. **FATAL SPIN ABORT** (all-axis, realized ||ω||): sustained-rate clock (reused inc8 `bsr3_update`;
    3.5 rad/s for 0.4 s) **OR** leaky accumulated-rotation trigger (1.5 rev-equivalent over a 4.0 s
    window; steady-state ≈ ||ω||·window ⇒ sustained >~2.36 rad/s eventually fatal, a single ~130° bank
@@ -139,8 +145,9 @@ NO energy penalty and NO rw_rate retune (owner's no-energy-penalty directive; fa
 dis-incentive; the <1% smoothness pin stays green).
 
 ### P.3 Blur model (SECONDARY: honesty/alignment)
-`rate_eff = ||ω − (ω·r̂)r̂||` — the LOS-perpendicular angular rate, computed in the UNFLIPPED Z-up/FLU
-body frame (magnitude invariant under the rigid π-about-body-z camera flip; no new frame math).
+`rate_eff = ||ω − (ω·r̂)r̂||` — the ROTATION-induced LOS-perpendicular angular rate, computed in the
+UNFLIPPED Z-up/FLU body frame (magnitude invariant under the rigid π-about-body-z camera flip; no new
+frame math).
 Two-part gate, env-side (`gate_detectable` itself untouched — the estimator's standalone fallback is
 unaffected):
 - **HARD deterministic cutoff:** `detectable &= rate_eff < hi`, applied at BOTH env call sites
@@ -156,23 +163,35 @@ unaffected):
   degrading; hi := rate where detection ~0; non-linear shape = swap that one function body). If the
   curve is measured vs plain |ω| instead of LOS-perp rate, swap the abscissa (one line in
   `_blur_los_rate`); if it shows roll-vs-sweep anisotropy, add a roll weight there. **Ask the
-  calibration owner which abscissa the measurement uses.**
+  calibration owner which abscissa the measurement uses — AND whether the measured curve conflates
+  TRANSLATION-induced sweep (the model is rotation-only, so lo/hi must not be fit to data the model
+  cannot reproduce).**
 - **NOISE-SCALE INDEPENDENCE RULE (load-bearing):** blur is CAMERA PHYSICS, not estimator corruption
   — it is NOT multiplied by ego_noise_scale, so the noise-0 calibration boot still sees blur (a
   blur-free boot would re-discover spin-scan and the fullstack would inherit it). Pinned by
   `test_perception_honesty.py::test_blur_survives_noise_scale_zero_the_boot_stage_property`.
-- **KNOWN DIVERGENCE from wire semantics:** in the soft band the obs det flag can read 1 while fixes
-  rarely arrive (on the wire the det flag comes from real detections). Kept acceptable by
+- **KNOWN DIVERGENCE from wire semantics:** (i) in the soft band the obs det flag can read 1 while
+  fixes rarely arrive (on the wire the det flag comes from real detections). Kept acceptable by
   miss_max=1.0 + a tight band; if A2 shows a WIDE soft region, the future fix is a unified
-  per-keypoint gate — not this package.
+  per-keypoint gate — not this package. (ii) **ROTATION-ONLY abscissa:** the model omits the
+  TRANSLATION-induced LOS rate (||v_perp||/range — no velocity input), so a fast close flyby (e.g.
+  8 m/s at 3 m lateral offset ≈ 2.7 rad/s true sweep) blurs the real detector but never the sim one
+  — residual sim-optimism in exactly the near-gate final approach, and the A2 detect-vs-ANGULAR-rate
+  curve cannot capture it either. Accepted for the anti-spin purpose (spin is the target gait; the
+  spin triggers are rate-based); sits next to the roll-about-LOS first-order-blur-free limitation.
 
 ### P.4 Threshold ordering (blind-policy defense)
 `clamped realized yaw (~1.2) < blur-free lo (2.0) < rate abort (3.5) [< hi 4.0]` — a full-authority
 pointing sweep is never blur-punished and never fatal, so "point the camera at the gate" remains the
 constructive information strategy (gate-ward spawn + camera flip give detectability at birth; r_perc
 supplies the gradient; 10–20 m spacing covers the handoff). hi=4.0 sits ABOVE the 3.5 abort:
-harmless — the [3.5,4.0) band is fatal anyway, so the hard blur cut only ever bites in
-already-lethal territory; kept to preserve the A2 calibration structure. Pinned by
+harmless, but NOT because the [3.5,4.0) band is "fatal anyway" — the two thresholds live on
+DIFFERENT abscissas (blur cut: instantaneous per-gate LOS-PERP rate; abort: all-axis ||ω|| SUSTAINED
+>0.4 s), so a 0.3 s transient at ||ω||=3.8 is blur-cut but never fatal (clock resets), while a
+sustained roll-about-LOS at 3.7 is fatal but never blur-cut (LOS-perp ≈ 0). Keeping hi=4.0 is
+correct anyway: blur-blinding brief aggressive transients is desirable honesty, sustained rotation
+in the band is priced by the abort, and the value preserves the A2 calibration structure — but
+[rate_abort, hi) is NOT a dead band for the recalibration owner to ignore. Pinned by
 `test_vq2_ego_curriculum.py::test_percept_threshold_ordering_blind_policy_defense`. If
 target_detectable_duty collapses on the first run, the FIRST lever is raising
 ego_yaw_cmd_clamp_rad_s (config), NOT softening the abort.
@@ -204,16 +223,28 @@ Optional cheap rung (Fengyou's call given the July clock): a ~2k-upd single-gate
 **Success reads (training metrics, never renders):** DET completion vs the vdflr0 twin ·
 spin_abort_rate/exit_spin → ~0 by convergence (early nonzero = the gate is teaching) ·
 `target_detectable_duty` **≫ 40.8%** (vn16's spin-scan duty) · realized |w_z| from the trace ≤ ~1.5
-(verifies the 3.5× gain estimate) · exit_timeout/exit_front flat (r_perc not farmed). **STATS
+(verifies the 3.5× gain estimate) · **SUB-ABORT CONSTANT-ROTATION check (the P.8 unpriced band):
+the realized-rate trace's sustained ||ω|| distribution must NOT plateau in ~1.8–2.35 rad/s — a slow
+corkscrew there is a spinner by the owner's standard while spin_abort_rate reads 0; corroborate with
+spin_rot_accum_mean sitting near its fixed point (~||ω||·window ≈ 7–9.4 rad) rather than decaying
+between banks** · exit_timeout/exit_front flat (r_perc not farmed). **STATS
 CAVEAT:** ego_collision_rate/collision_rate INCLUDE spin aborts on _percept stages — subtract
 spin_abort_rate (logged separately; exit_spin is its own box-exit class) before comparing gate
 contact vs non-percept twins.
 
-### P.7 DEPLOY-PARITY FLAGS (🚩 both are launch-procedure footguns, not code changes here)
-1. **Yaw cap at flight time:** the training-side clamp does NOT bind the deployed network
-   (`load_ego_actor` hardcodes ±3.14). Any flight of a _percept checkpoint MUST pass the matching
-   deploy-side yaw cap (`fly_rl.policy_step` max_rate / yaw_scale == ego_yaw_cmd_clamp_rad_s
-   = 0.35). Forgetting it re-opens the spin door on the wire.
+### P.7 DEPLOY-PARITY FLAGS (🚩 no code changes in THIS repo; #1 requires a DEPLOY-REPO code change at flight time)
+1. **Yaw cap at flight time — a deploy-repo CODE CHANGE, not a launch argument:** the training-side
+   clamp does NOT bind the deployed network (`load_ego_actor` hardcodes ±3.14). Any flight of a
+   _percept checkpoint requires a **yaw-only clamp option added to `fly_rl.policy_step`**
+   (`clip(rate_flu[2], ±ego_yaw_cmd_clamp)` = ±0.35 after the rescale, roll/pitch untouched).
+   **NO existing fly_rl argument implements this.** Do NOT reach for the existing knobs:
+   `max_rate` clips ALL THREE axes (`np.clip(rate_flu, ±max_rate)`, fly_rl.py:615-616) — roll/pitch
+   trained at full ±3.14 authority, so max_rate=0.35 cuts them ~9× = catastrophically OOD;
+   `yaw_scale` is MULTIPLICATIVE (`rate_flu[2] *= yaw_scale`, :617-619), not a clamp — it mis-scales
+   the whole yaw transfer function (a railed 3.14 command → 1.1 rad/s commanded ≈ 3.8 rad/s realized
+   at the ~3.5× gain — 3× the trained 1.2 and ABOVE the 3.5 rad/s abort the policy trained under,
+   while a legal sub-clamp 0.30 command, passed through unchanged in training, is under-realized ~3×).
+   Forgetting the mirror re-opens the spin door on the wire.
 2. **Blur needs NO deploy mirror** — the real camera blurs physically. This package touches neither
    `ego_actor_obs`'s body nor EgoEstimatorConfig behavioral defaults nor area normalization, so no
    deploy obs drift is possible by construction (the deploy parity pin `test_ego_deploy_obs.py`
@@ -228,10 +259,26 @@ contact vs non-percept twins.
   ALL-AXIS spin abort (||ω||, never w_z alone; `test_spin_abort_is_all_axis_not_yaw_only`).
 - **Rate abort → sub-threshold slow scan** (rotate at 3.4 rad/s forever): priced by the leaky
   accumulated-rotation trigger (sustained >~2.36 rad/s eventually fatal).
+- **BOTH spin triggers → constant sub-ceiling corkscrew (UNPRICED — the honest residual):** constant
+  rotation at ≤ 2π·rev_abort/window_s (~2.36 rad/s at defaults) has its leaky fixed point exactly at
+  the bar and NEVER triggers; the yaw clamp binds only channel 3, so a 1.8–2.35 rad/s roll/pitch
+  tumble-scan (one rev every ~2.7–3.5 s, ~82% detection duty) is reachable, blur-free below lo=2.0
+  (only ~17% extra miss at 2.35), and priced ONLY by r_perc's ~0.02/tick opportunity cost vs ~2.0/m
+  progress. spin_abort_rate reads 0 while this gait lives entirely inside the legal band — the
+  first-run trace check (P.6) is the detector. Knob mitigation if it appears: rev_abort~0.75 or
+  window 8 s binds at ~0.6–1.2 rad/s sustained, but re-check the P.4 ordering first (those values
+  sit near the clamped realized yaw ~1.2).
 - **Spin abort → spin-as-FREE-EXIT** (the losing design's defect): priced by the CRASH-FOLD — the
   lethal mask rides `floor_contact=`/`forfeit_mask=` on the parabola path, so a spin abort costs
   terminal_base + full banked-progress forfeit (collision-class), never a free bail. THE single most
   important wiring in the package; pinned in test + here.
+- **Spin abort → spin-as-CHEAPER-exit vs OOB (uncovered by the crash-fold entry above):** the spin
+  terminal pays terminal_base (100) + banked forfeit while OOB pays 200, and unlike the floor dive a
+  spin burst is reachable from ANY state in ~0.4 s via full-authority roll/pitch — a failing env with
+  banked < 100 about to exit a wall prefers the brief >3.5 rad/s burst over the 200 wall. Would keep
+  exit_spin nonzero at convergence and re-teach spinning exactly in failure states; diagnosable via
+  the mandated exit_spin/exit_side reads (a converged exit_spin plateau correlated with wall
+  proximity = this exploit, not a teaching phase).
 - **Leaky-window residual hole:** a pathological on-off duty-cycled rotation can sit under both
   triggers (exponential leak ≠ sliding sum) — both thresholds are knobs; the first run's realized-
   rate trace is the check.

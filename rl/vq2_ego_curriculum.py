@@ -1115,15 +1115,22 @@ STAGES: dict[str, dict] = {
     #     COLLISION-CLASS (terminal_base + banked forfeit) on the parabola path via the lethal mask.
     #   * YAW-COMMAND CLAMP 0.35 rad/s at the point of application (realized ~3.5x -> ~1.2 rad/s,
     #     inside the owner's 1-1.5 target). Action space stays +/-3.14 (deploy contract untouched).
-    #     🚩 DEPLOY-SIDE: any FLIGHT of a _percept checkpoint MUST pass the matching fly_rl yaw cap
-    #     (policy_step max_rate / yaw_scale == 0.35) -- a training-side clamp does NOT bind the wire.
+    #     🚩 DEPLOY-SIDE: any FLIGHT of a _percept checkpoint requires a YAW-ONLY clamp ADDED to
+    #     fly_rl.policy_step (a CODE CHANGE in the deploy repo at flight time: clip(rate_flu[2],
+    #     +/-0.35) after the rescale) -- a training-side clamp does NOT bind the wire, and NO existing
+    #     fly_rl argument implements it: max_rate clips ALL THREE axes (roll/pitch trained at full
+    #     +/-3.14 -> ~9x authority cut, catastrophically OOD) and yaw_scale is MULTIPLICATIVE (mis-
+    #     scales the yaw transfer function: railed 3.14 -> ~3.8 rad/s realized; legal 0.30 -> ~3x under).
     #   * MOTION-BLUR gate: ego_blur_rate_lo/hi = 2.0/4.0 rad/s -- PLACEHOLDERS pending the measured
     #     A2 detect-vs-angular-rate curve (recalibrate before any flight ckpt; the slot-in point is
     #     gate_visibility.blur_extra_miss_prob ONLY). Blur is ON in the noise-0 boot too: it is
     #     camera physics, INDEPENDENT of ego_noise_scale -- a blur-free boot would re-discover
     #     spin-scan and the fullstack would inherit it. (hi=4.0 sits ABOVE the 3.5 rate abort:
-    #     harmless -- the [3.5,4.0) band is fatal anyway, so the hard blur cut only ever bites in
-    #     already-lethal territory; kept at 4.0 to preserve the A2 calibration structure.)
+    #     harmless, but NOT because [3.5,4.0) is "fatal anyway" -- the blur cut is instantaneous
+    #     per-gate LOS-PERP rate while the abort is all-axis ||omega|| SUSTAINED >0.4 s, so a brief
+    #     3.8 transient is blur-cut-not-fatal and a sustained 3.7 roll-about-LOS is fatal-not-blur-
+    #     cut. Kept at 4.0: blinding brief transients is desirable honesty, sustained band rotation
+    #     is priced by the abort, and the A2 calibration structure is preserved.)
     #   * r_perc (framing preference) rw_perception=0.02 = rw_time -- the FARM-NEUTRALITY BOUND
     #     (rw_perception <= rw_time, pinned by tests): hover-and-stare nets <= 0/tick, so the one
     #     prior detonation mode (0.05 warm-start farmable fly-away) is priced out; introduced at the
@@ -1135,8 +1142,13 @@ STAGES: dict[str, dict] = {
     # SUCCESS READS (training metrics, never renders): DET completion vs the vdflr0 twin;
     # spin_abort_rate/exit_spin -> ~0 by convergence (early nonzero = the gate is teaching);
     # target_detectable_duty >> vn16's 40.8% spin-scan duty; realized |w_z| from the trace <= ~1.5;
-    # exit_timeout/exit_front flat (r_perc not being farmed). NOTE ego_collision_rate INCLUDES spin
-    # aborts here -- subtract spin_abort_rate before comparing collision vs non-percept twins.
+    # SUB-ABORT CONSTANT-ROTATION check (the honest guarantee ceiling is ~2.36 rad/s SUSTAINED =
+    # 2*pi*rev/window; see DESIGN.md P.8): the trace's sustained ||omega|| distribution must NOT
+    # plateau at ~1.8-2.35 rad/s -- a slow roll/pitch corkscrew there is a spinner while
+    # spin_abort_rate reads 0 (corroborate: spin_rot_accum_mean near its fixed point ~7-9.4 rad
+    # instead of decaying between banks); exit_timeout/exit_front flat (r_perc not being farmed).
+    # NOTE ego_collision_rate INCLUDES spin aborts here -- subtract spin_abort_rate before comparing
+    # collision vs non-percept twins.
     # OPTIONAL CHEAP RUNG (B2b validate-small-first; Fengyou's call given the July clock): a ~2-4k-upd
     # single-gate smoke first = STAGES="dual_gate_boot_floor_percept" alone at UPD=2000 with
     # EXTRA="++env.course_n_gates=1" -- skippable; the boot stage itself is already the cheap arm.

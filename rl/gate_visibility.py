@@ -381,8 +381,16 @@ def gate_center_view_cos(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: T
 # ================================================================================================
 def gate_los_perp_rate(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: Tensor,
                        body_rates: Tensor, *, is_quat: bool | None = None) -> Tensor:
-    """LOS-PERPENDICULAR angular rate (rad/s) per (env, gate) -> (N,G): how fast each gate's line of
-    sight sweeps across the image, to first order -- the motion-blur driver.
+    """LOS-PERPENDICULAR angular rate (rad/s) per (env, gate) -> (N,G): the ROTATION-induced sweep of
+    each gate's line of sight across the image, to first order -- the motion-blur driver.
+
+    ROTATION-ONLY (documented scope limit): the TRANSLATION-induced LOS rate (||v_perp|| / range) is
+    NOT modeled -- no velocity input exists. A drone translating 5 m/s past a gate 2 m abeam has a
+    real LOS sweep ~2.5 rad/s (inside the [2,4) placeholder band) yet gets zero sim blur while holding
+    attitude. Defensible for the anti-spin purpose (spin is the target gait; near-passage detection
+    matters least), but it is an honesty gap the shipped structure cannot express even after A2
+    calibration -- see DESIGN.md P.3's KNOWN-DIVERGENCE list, and ask whether the measured A2 curve
+    conflates translational sweep before fitting lo/hi to it.
 
         r_body   = R_wb^T @ (gate_pos - drone_pos)      (drone->gate in the body frame)
         r_hat    = r_body / ||r_body||

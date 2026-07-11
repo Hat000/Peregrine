@@ -410,10 +410,19 @@ def true_rel_pos_body(gate_pos_zup: Tensor, drone_pos_zup: Tensor, R_wb_zup: Ten
 # functions + the imported sustained_spin_update; the class only wires them).
 #
 # OWNER DIRECTIVE (Fengyou): "I don't want the system to be spinning at all... REGARDLESS of how the
-# vision system behaves in the simulator." Non-spin is GUARANTEED by construction: (1) a FATAL
-# all-axis spin abort (sustained-rate clock OR'd with the leaky accumulated-rotation trigger below),
-# terminating collision-class (terminal_base + banked-progress forfeit) so no reward stream can pay
-# for living in a spin; (2) a hard yaw-COMMAND clamp at the point of application (clamp_yaw_command).
+# vision system behaves in the simulator." Mechanisms: (1) a FATAL all-axis spin abort (sustained-rate
+# clock OR'd with the leaky accumulated-rotation trigger below), terminating collision-class
+# (terminal_base + banked-progress forfeit) so no reward stream can pay for living in a spin; (2) a
+# hard yaw-COMMAND clamp at the point of application (clamp_yaw_command).
+# GUARANTEE CEILING (honest, at the stage defaults rev=1.5/window=4.0): the construction guarantees
+# no SUSTAINED rotation above ~2.36 rad/s (= 2*pi*rev_abort / window_s, the leaky fixed point) -- it
+# does NOT guarantee absolute non-spin. A constant ~1.8-2.35 rad/s roll/pitch corkscrew (one rev every
+# ~2.7-3.5 s) survives BOTH triggers forever, is fully blur-free below lo=2.0 and only softly priced
+# to hi, and is dis-incentivized ONLY by the r_perc opportunity cost (~0.02/tick vs ~2.0/m progress).
+# The first _percept run's realized-rate trace MUST therefore check for sub-abort CONSTANT rotation
+# (||omega|| distribution / spin_rot_accum_mean near its fixed point), not just abort counts. Knob
+# mitigation if that gait appears: rev_abort~0.75 or window 8 s binds at ~0.6-1.2 rad/s sustained --
+# but re-check the ordering invariant below first (those values sit near the clamped realized yaw).
 # THRESHOLD-ORDERING INVARIANT (must hold in any stage that arms the package; pinned by
 # tests/test_vq2_ego_curriculum.py):
 #     realized yaw under the clamp (~3.5x the command)  <  ego_blur_rate_lo (blur-free band)
@@ -436,9 +445,13 @@ def leaky_rotation_update(rot_accum: Tensor, omega: Tensor, dt: float, window_s:
     triggers, while a single ~130-deg gate bank (~2.27 rad impulse) decays harmlessly -- the
     brief-aggressive-banking legality property. All-axis (||omega||, NOT yaw-only): A2 showed the
     corkscrew cones through +/-130 deg of ROLL, so a yaw-only rule would invite roll/pitch
-    tumble-scan. NOTE the exponential leak approximates 'revolutions within a window', not a sliding
-    sum -- a pathological on-off duty cycle can sit under both triggers; both thresholds are knobs and
-    the first _percept run's realized-rate trace is the verification.
+    tumble-scan. TWO documented residual holes (both thresholds are knobs; the first _percept run's
+    realized-rate trace is the verification for BOTH): (a) the exponential leak approximates
+    'revolutions within a window', not a sliding sum -- a pathological on-off duty cycle can sit under
+    both triggers; (b) CONSTANT rotation at any ||omega|| <= 2*pi*rev_abort/window_s (~2.36 rad/s at
+    the stage defaults) NEVER triggers -- the fixed point sits exactly at the bar -- so a slow
+    roll/pitch corkscrew in that band remains legal (see the GUARANTEE CEILING note above). The trace
+    check must look at the sustained ||omega|| distribution, not just abort counts.
 
     rot_accum (N,) rad; omega (N,3) realized FLU body rates; returns (new_accum, abort_mask)."""
     assert torch is not None
@@ -462,9 +475,14 @@ def clamp_yaw_command(action: Tensor, clamp_rad_s: float) -> Tensor:
 
     DEPLOY-PARITY FOOTGUN (loud, also in DESIGN.md §P + the launch box): a training-side clamp shapes
     what the policy LEARNS but does NOT bind the deployed network -- fly_rl still rescales to +/-3.14.
-    Any flight of a clamp-trained checkpoint MUST pass the matching deploy-side yaw cap
-    (fly_rl.policy_step max_rate / yaw_scale) == ego_yaw_cmd_clamp_rad_s, or the spin door re-opens
-    on the wire."""
+    Any flight of a clamp-trained checkpoint requires a YAW-ONLY clamp ADDED to fly_rl.policy_step
+    (a small CODE CHANGE in the deploy repo at flight time: clip(rate_flu[2], +/-ego_yaw_cmd_clamp)
+    after the rescale) -- NO existing fly_rl argument reproduces this clamp. Specifically NOT
+    max_rate (it clips ALL THREE axes -- roll/pitch trained at full +/-3.14 authority, so max_rate=0.35
+    cuts them ~9x = catastrophically OOD) and NOT yaw_scale (MULTIPLICATIVE, not a clamp: it mis-scales
+    the whole yaw transfer function -- a railed 3.14 maps to 1.1 rad/s commanded ~3.8 realized, while a
+    legal sub-clamp 0.30 command, passed through unchanged in training, is under-realized ~3x).
+    Forgetting the mirror re-opens the spin door on the wire."""
     assert torch is not None
     if clamp_rad_s <= 0.0:
         return action
