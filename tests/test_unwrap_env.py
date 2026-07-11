@@ -275,3 +275,66 @@ def test_mock_record_episode_statistics_getattr_raises_attributeerror_directly()
     outer, _raw = _build_chain()
     with pytest.raises(AttributeError, match="private attribute"):
         outer._egorw
+
+
+# ================================================================================================
+# (d) SPIN-ABORT THRESHOLD anneal (2026-07-11, the boot-learnability rung): resolver gating,
+#     END-HOLD schedule math, and the lifeline-source wiring pins (both triggers + the armed-bases
+#     L16 guard). Pure-Python; nothing here trains.
+# ================================================================================================
+def test_resolve_spin_abort_anneal_off_by_default_and_parses_knobs():
+    """Unset / falsy gate -> None (byte-identical OFF); armed gate -> defaults start_scale=2.6,
+    hold_frac=0.25; explicit knobs win."""
+    assert ego_launcher._resolve_spin_abort_anneal(_Cfg(env=None)) is None
+    assert ego_launcher._resolve_spin_abort_anneal(_Cfg(env=_Cfg())) is None
+    assert ego_launcher._resolve_spin_abort_anneal(
+        _Cfg(env=_Cfg(spin_abort_anneal=False))) is None
+
+    s = ego_launcher._resolve_spin_abort_anneal(
+        _Cfg(env=_Cfg(spin_abort_anneal=True), n_updates=4000))
+    assert s == {"start_scale": 2.6, "hold_frac": 0.25, "n_updates": 4000}
+
+    s = ego_launcher._resolve_spin_abort_anneal(
+        _Cfg(env=_Cfg(spin_abort_anneal=True, spin_abort_scale_start=3.0,
+                      spin_abort_hold_frac=0.5), n_updates=100))
+    assert s == {"start_scale": 3.0, "hold_frac": 0.5, "n_updates": 100}
+
+
+def test_spin_abort_schedule_is_end_hold():
+    """END-HOLD shape (the guarantee direction): scale starts at start_scale, decays LINEARLY to 1.0
+    by update (1-hold_frac)*N, then HOLDS 1.0 through the end -- the final hold_frac of training runs
+    at the EXACT configured fence. This is deliberately the reverse of _cross_zero_schedule /
+    _noise_scale_schedule (which hold START first); a start-hold shape here would reach the real fence
+    only at the very last update and the saved ckpt would barely train under it."""
+    f = ego_launcher._spin_abort_schedule
+    N, start, hold = 4000, 2.6, 0.25
+    ramp_end = int((1.0 - hold) * N)                          # update 3000
+    assert f(0, N, start, hold) == pytest.approx(start)
+    mid = f(ramp_end // 2, N, start, hold)
+    assert 1.0 < mid < start                                  # strictly inside the ramp
+    assert f(ramp_end, N, start, hold) == pytest.approx(1.0)
+    # END-HOLD: every update after the ramp trains at the exact fence (scale 1.0).
+    for i in (ramp_end + 1, ramp_end + 500, N - 1, N):
+        assert f(i, N, start, hold) == pytest.approx(1.0)
+    # monotone non-increasing over the whole run (never re-loosens).
+    vals = [f(i, N, start, hold) for i in range(0, N + 1, 100)]
+    assert all(a >= b for a, b in zip(vals, vals[1:]))
+    # degenerate budgets never divide by zero.
+    assert f(0, 0, start, hold) in (pytest.approx(start), pytest.approx(1.0))
+
+
+def test_spin_abort_lifeline_wiring_source_pins():
+    """The lifeline (cluster-only execution) is pinned at the SOURCE, the repo convention for
+    laptop-unexecutable wiring: the hook must (a) resolve via _require_anneal_holder on the
+    '_spin_rate_abort' holder, (b) capture BOTH armed bases and RAISE on a disabled trigger (the L16
+    silent-no-op-under-an-annealed-name guard), and (c) mutate BOTH _spin_rate_abort AND
+    _spin_rev_abort per update -- vhov4's wobble measured rot_accum ~20.7 >> the 9.42 rev threshold,
+    so a rate-only anneal would leave the rev trigger executing the early phase alone."""
+    import inspect
+    src = inspect.getsource(ego_launcher._run_with_ego_lifelines)
+    assert '_require_anneal_holder(env, "_spin_rate_abort", sa_sched' in src
+    assert 'sa_sched["base_rate"] = float(sa_env._spin_rate_abort)' in src
+    assert 'sa_sched["base_rev"] = float(sa_env._spin_rev_abort)' in src
+    assert 'raise RuntimeError' in src.split('sa_sched["base_rev"]', 1)[1].split("agent.step", 1)[0]
+    assert 'sa_env._spin_rate_abort = sa_sched["base_rate"] * sav' in src
+    assert 'sa_env._spin_rev_abort = sa_sched["base_rev"] * sav' in src

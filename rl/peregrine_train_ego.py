@@ -281,6 +281,41 @@ def _resolve_clip_terminal_anneal(cfg):
     )
 
 
+def _spin_abort_schedule(update_idx: int, n_updates: int, start_scale: float,
+                         hold_frac: float) -> float:
+    """LINEAR decay of the fatal-spin-abort threshold SCALE from ``start_scale`` -> 1.0 over the FRONT
+    ``1-hold_frac`` of training, then HOLD 1.0 for the LAST ``hold_frac`` -- END-HOLD, deliberately the
+    REVERSE of the start-hold anneals above, because the no-spin GUARANTEE lives at the END: the final
+    ``hold_frac`` of training runs at the EXACT configured fence, so the saved checkpoint's converged
+    regime IS the flown fence (a start-hold shape would reach scale 1.0 only at the last update and the
+    ckpt would barely train under the real fence). The END-state fence is NEVER loosened (no-spin
+    directive, Fengyou 2026-07-10); only the PATH to it is -- the boot-learnability fix: the full fence
+    executes the incompetent EARLY phase (vperc0/2, vdclamp0, vhov0-4 all dead at the 0.4 s clock;
+    dgbf0f = the same boot with no fence was flying by 15% of budget)."""
+    N = max(int(n_updates), 1)
+    span = max((1.0 - hold_frac) * N, 1.0)
+    p = min(max(update_idx / span, 0.0), 1.0)
+    return float(start_scale) + (1.0 - float(start_scale)) * p
+
+
+def _resolve_spin_abort_anneal(cfg):
+    """Parse the fatal-spin-abort threshold anneal from cfg.env, or None when OFF (byte-identical
+    default). Gated by ``+env.spin_abort_anneal`` (truthy); ``+env.spin_abort_scale_start/hold_frac``
+    optional. ONE scale factor multiplies BOTH triggers (rate clock ``_spin_rate_abort`` AND leaky rev
+    threshold ``_spin_rev_abort``) -- vhov4's wobble-hover measured rot_accum ~20.7 rad (>> the 9.42
+    rev threshold), so annealing only the rate clock would leave the rev trigger executing the early
+    phase alone. start default 2.6: rate 3.5->9.1 / rev 1.5->3.9 at birth, above the measured wobble
+    ~5.2 rad/s mean so the early learnable regime is genuinely fence-free. PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "spin_abort_anneal", False)):
+        return None
+    return dict(
+        start_scale=float(getattr(env, "spin_abort_scale_start", 2.6)),
+        hold_frac=float(getattr(env, "spin_abort_hold_frac", 0.25)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
 def _run_det_eval(self, env, agent, cfg):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
@@ -400,6 +435,29 @@ def _run_with_ego_lifelines(self):
         else:
             ct_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # SPIN-ABORT THRESHOLD anneal (boot-learnability crisis, 2026-07-11): scale BOTH fence triggers
+    # loose at birth and anneal to the EXACT configured fence (END-HOLD -- see _spin_abort_schedule's
+    # docstring for why the guarantee direction is reversed vs the other anneals). Mutates the raw
+    # env's _spin_rate_abort / _spin_rev_abort, which step() reads per tick. Bases are captured HERE
+    # (before the first mutation) and MUST be armed (>0): a requested anneal on a fence-off stage
+    # would be a silent no-op running under an annealed name -- exactly footgun L16 -- so it RAISES.
+    sa_sched = _resolve_spin_abort_anneal(cfg)
+    sa_env = _require_anneal_holder(env, "_spin_rate_abort", sa_sched, "spin-abort-anneal", cfg)
+    if sa_sched is not None:
+        if sa_env is not None:
+            sa_sched["base_rate"] = float(sa_env._spin_rate_abort)
+            sa_sched["base_rev"] = float(sa_env._spin_rev_abort)
+            if sa_sched["base_rate"] <= 0.0 or sa_sched["base_rev"] <= 0.0:
+                raise RuntimeError(
+                    "[spin-abort-anneal] requested but the fence is (partly) OFF (base rate_abort="
+                    f"{sa_sched['base_rate']:.3f}, rev_abort={sa_sched['base_rev']:.3f}) -- annealing a "
+                    "disabled trigger is a silent no-op under an annealed run name (footgun L16); arm "
+                    "ego_spin_rate_abort AND ego_spin_rev_abort, or drop +env.spin_abort_anneal.")
+            print(f"[spin-abort-anneal] ON: {sa_sched} (END-HOLD: exact fence for the last "
+                  f"{sa_sched['hold_frac']:.0%} of updates)")
+        else:
+            sa_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -432,6 +490,14 @@ def _run_with_ego_lifelines(self):
             ct_env._egorw.clip_terminal_w = ctv
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[clip-terminal-anneal] update {counter['i']}: clip_terminal_w={ctv:.3f}")
+        if sa_sched is not None:
+            sav = _spin_abort_schedule(counter["i"], sa_sched["n_updates"],
+                                       sa_sched["start_scale"], sa_sched["hold_frac"])
+            sa_env._spin_rate_abort = sa_sched["base_rate"] * sav
+            sa_env._spin_rev_abort = sa_sched["base_rev"] * sav
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[spin-abort-anneal] update {counter['i']}: scale={sav:.3f} "
+                      f"rate_abort={sa_env._spin_rate_abort:.2f} rev_abort={sa_env._spin_rev_abort:.2f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
