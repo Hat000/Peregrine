@@ -49,7 +49,7 @@ import gate_visibility as GV                                             # noqa:
 import peregrine_racing_ego as PRE                                       # noqa: E402
 from ego_estimator import BatchedEgoEstimator, EgoEstimatorConfig        # noqa: E402
 from peregrine_racing_ego import (leaky_rotation_update, clamp_yaw_command,   # noqa: E402
-                                  sustained_spin_update)
+                                  sustained_spin_update, ceiling_contact)
 
 DT = torch.float64
 
@@ -341,6 +341,21 @@ def test_clamp_yaw_command_zero_is_identity_no_copy():
     assert out is act                                            # 0 == OFF == the exact input tensor
 
 
+def test_ceiling_contact_default_off_and_plane_semantics():
+    """A2 ceiling patch: lethal plane at spawn_z + above_m, PER-ENV datum; <=0 == permanently
+    False (the byte-identical default). Strictly-above semantics: AT the plane is not a strike."""
+    spawn_z = torch.tensor([2.0, 2.0, 10.0], dtype=DT)
+    curr_z = torch.tensor([8.1, 8.0, 15.9], dtype=DT)
+    # OFF at 0.0 and negative -- all-False regardless of altitude
+    for off in (0.0, -1.0):
+        m = ceiling_contact(curr_z, spawn_z, off)
+        assert m.dtype == torch.bool and not m.any()
+    # armed at 6.0: env0 above its plane (8.1 > 8.0) strikes; env1 exactly AT it does not;
+    # env2's datum is its OWN spawn (15.9 < 16.0 -> safe even though it is far above env0's plane)
+    m = ceiling_contact(curr_z, spawn_z, 6.0)
+    assert m.tolist() == [True, False, False]
+
+
 # ================================================================================================
 # (7) ENV WIRING -- the composition inside PeregrineRacingEgo itself. The class body imports fine on
 # the laptop (PeregrineRacing base + inc8_estimator_emul); only construction/step need diffaero's
@@ -443,7 +458,12 @@ def test_step_source_pins_yaw_clamp_and_lethal_mask_plumbing():
     plus the blur AND at BOTH detectable call sites (dropping either is the silent honesty rollback)."""
     src_step = inspect.getsource(PRE.PeregrineRacingEgo.step)
     assert "clamp_yaw_command(action" in src_step
-    assert "lethal = below_floor | spin_abort" in src_step
+    assert "lethal = below_floor | above_ceiling | spin_abort" in src_step
+    assert "above_ceiling = ceiling_contact(" in src_step
+    # the ceiling class must be taken BEFORE c_frame (it is folded into gate_collision,
+    # so frame-priority would silently swallow every ceiling strike)
+    assert (src_step.index("c_hceil = _take(above_ceiling)")
+            < src_step.index("c_frame = _take(gate_collision)"))
     assert "floor_contact=lethal.to(" in src_step
     assert "forfeit_mask=(lethal.to(" in src_step
     assert "gate_collision = gate_collision | lethal" in src_step

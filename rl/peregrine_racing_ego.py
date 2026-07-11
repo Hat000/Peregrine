@@ -493,6 +493,25 @@ def clamp_yaw_command(action: Tensor, clamp_rad_s: float) -> Tensor:
     return out
 
 
+def ceiling_contact(curr_z: Tensor, spawn_z: Tensor, above_m: float) -> Tensor:
+    """LETHAL CEILING PLANE at spawn_z + above_m (A2 ceiling-strike patch). The real VQ2 warehouse
+    ceiling is a HARD SURFACE the wire kills you on (A2: ballistic climb -> env collision t=4.3 s),
+    but the training box top was only ever a soft OOB arena exit -- a policy could price a ballistic
+    climb as a mere out-of-bounds and learn nothing about the crash. When armed, a ceiling strike is
+    CRASH-CLASS: it rides the same ``lethal`` wiring as the floor dive / spin abort (gate_collision
+    fold + forfeit_mask/floor_contact kwargs), so it pays terminal_base + banked-progress forfeit
+    under BOTH reward regimes and is excluded from ``oob``.
+
+    Datum = the per-env SPAWN altitude (VQ2 gates sit near spawn height; ~spawn+6 m is the
+    conservative recommendation -- a knob, not a survey: ++env.ego_ceiling_above_spawn_m=6.0).
+    above_m <= 0 -> permanently False (byte-identical default-off; fresh knob name per the
+    stale-sbatch-arming defense). curr_z/spawn_z (N,) Z-up metres; returns bool (N,)."""
+    assert torch is not None
+    if above_m <= 0.0:
+        return torch.zeros_like(curr_z, dtype=torch.bool)
+    return curr_z > (spawn_z + float(above_m))
+
+
 # ================================================================================================
 # The environment (requires diffaero -- training/eval cluster only).
 # ================================================================================================
@@ -635,6 +654,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # clamp_yaw_command's deploy-parity footgun). Realized yaw ~ 3.5x the command (empirical, A2):
         # 0.35 commanded ~ 1.2 rad/s realized. 0.0 == OFF (default).
         self._yaw_cmd_clamp = float(getattr(cfg, "ego_yaw_cmd_clamp_rad_s", 0.0))
+        # LETHAL CEILING plane at spawn_z + this (m): crash-class like the floor (see
+        # ceiling_contact's docstring; A2 ceiling-strike patch). 0.0 == OFF (default).
+        self._ceiling_above_spawn = float(getattr(cfg, "ego_ceiling_above_spawn_m", 0.0))
         self._spin_clock = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         self._rot_accum = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         # last detectable mask from _step_estimator (diagnostics: target_detectable_duty).
@@ -1082,15 +1104,19 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # in collision_rate (honest: a floor dive IS a crash). ``oob`` then means a LATERAL/CEILING arena
         # exit only (kept distinct so it can later be tuned independently of the lethal floor).
         below_floor = curr_pos[:, 2] < self.box_min[:, 2]
-        # LETHAL mask = the crash-class terminals: floor contact + the FATAL SPIN ABORT. The spin abort
-        # rides the SAME wiring as the floor dive everywhere downstream (gate_collision fold here; the
-        # parabola path's floor_contact= / forfeit_mask= kwargs below) so it pays the COLLISION-CLASS
+        # LETHAL CEILING (A2 patch): hard plane at spawn_z + knob; crash-class exactly like the floor.
+        # all-False at the 0.0 default -> byte-identical (see ceiling_contact).
+        above_ceiling = ceiling_contact(curr_pos[:, 2], self.spawn_pos[:, 2],
+                                        self._ceiling_above_spawn)
+        # LETHAL mask = the crash-class terminals: floor contact + ceiling strike + the FATAL SPIN
+        # ABORT. All three ride the SAME wiring everywhere downstream (gate_collision fold here; the
+        # parabola path's floor_contact= / forfeit_mask= kwargs below) so they pay the COLLISION-CLASS
         # terminal (terminal_base + banked-progress forfeit) under BOTH reward regimes -- under the
         # champion parabola regime the terminal fires on floor+oob ONLY (ego_reward.py:839-843), so a
         # spin abort routed solely through gate_collision would terminate PENALTY-FREE with banked
         # progress kept (spin-to-exit strictly cheaper than a miss -- the exact degenerate optimum the
-        # owner directive forbids). spin_abort == all-False at defaults -> byte-identical.
-        lethal = below_floor | spin_abort
+        # owner directive forbids). spin_abort/above_ceiling == all-False at defaults -> byte-identical.
+        lethal = below_floor | above_ceiling | spin_abort
         gate_collision = gate_collision | lethal
         oob = oob_full & ~lethal
 
@@ -1305,6 +1331,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # comparisons vs non-percept twins stay interpretable -- ego_collision_rate INCLUDES spin
             # aborts on _percept stages; subtract exit_spin / spin_abort_rate to read gate contact.
             c_spin = _take(spin_abort)                                      # fatal spin abort (crash-class)
+            # LETHAL CEILING strike: folded into gate_collision, so it must be taken BEFORE c_frame
+            # or the frame class swallows it. all-False at the 0.0 default -> byte-identical priority.
+            c_hceil = _take(above_ceiling)                                  # hit the CEILING plane (crash-class)
             c_frame = _take(gate_collision)                                 # hit the gate FRAME (contact, non-floor)
             c_pmiss = _take(gate_miss)                                      # crossed the gate PLANE wide (in-bounds)
             c_ceil = _take(oob & (cp[:, 2] > bx_hi[:, 2]))                 # climbed out the CEILING
@@ -1336,7 +1365,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 "spin_abort_rate": spin_abort[reset].float(),
                 "exit_frame": c_frame[reset].float(),
                 "exit_plane_miss": c_pmiss[reset].float(),
-                "exit_ceiling": c_ceil[reset].float(),
+                # exit_ceiling = lethal ceiling STRIKE (knob armed) | soft OOB climb-out (legacy top
+                # exit); one key so dashboards read continuously across the knob flip.
+                "exit_ceiling": (c_ceil | c_hceil)[reset].float(),
                 "exit_side": c_side[reset].float(),
                 "exit_back": c_back[reset].float(),
                 "exit_front": c_front[reset].float(),
