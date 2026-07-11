@@ -253,3 +253,94 @@ def test_apparent_area_gate_behind_camera_is_zero():
     gate_yaw = torch.full((1, 1), math.pi, dtype=DT)
     a = GV.gate_apparent_area(drone_pos, _level_pose(), gate_pos, gate_yaw, is_quat=False)[0, 0].item()
     assert a == 0.0, a
+
+
+# ================================================================================================
+# (i) MOTION-BLUR helpers (PERCEPTION-HONESTY package, 2026-07-10): gate_los_perp_rate = the
+#     LOS-perpendicular angular rate driving image sweep; blur_extra_miss_prob = the soft-band ramp.
+#     gate_detectable itself is UNTOUCHED by the package (pinned in tests/test_perception_honesty.py).
+# ================================================================================================
+def test_los_perp_rate_zero_omega_is_zero():
+    p = torch.zeros(1, 3, dtype=DT)
+    g = torch.tensor([[[12.0, 3.0, -2.0]]], dtype=DT)
+    w = torch.zeros(1, 3, dtype=DT)
+    r = GV.gate_los_perp_rate(p, _level_pose(), g, w, is_quat=False)
+    assert r.shape == (1, 1)
+    assert r[0, 0].item() == pytest.approx(0.0, abs=1e-12)
+
+
+def test_los_perp_rate_roll_about_los_is_blur_free():
+    """omega PARALLEL to the LOS (pure roll with the gate dead on the roll axis) sweeps the gate's
+    line of sight by ~0 -- roll-about-LOS is first-order blur-free (documented limitation; the A2
+    curve may later swap the abscissa for plain ||omega||)."""
+    p = torch.zeros(1, 3, dtype=DT)
+    g = torch.tensor([[[10.0, 0.0, 0.0]]], dtype=DT)          # gate dead ahead on body +x
+    w = torch.tensor([[5.0, 0.0, 0.0]], dtype=DT)             # pure roll about +x == the LOS
+    r = GV.gate_los_perp_rate(p, _level_pose(), g, w, is_quat=False)
+    assert r[0, 0].item() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_los_perp_rate_pure_yaw_geometry():
+    """Pure yaw w_z: a gate dead ahead OR abeam (both LOS in the horizontal plane, ⟂ z) sweeps at the
+    full |w_z|; a gate elevated 45 deg sweeps at |w_z|·sin(angle(omega, LOS)) = |w_z|·sin(45)."""
+    p = torch.zeros(3, 3, dtype=DT)
+    g = torch.tensor([[[10.0, 0.0, 0.0]],
+                      [[0.0, 10.0, 0.0]],
+                      [[10.0, 0.0, 10.0]]], dtype=DT)
+    w = torch.tensor([[0.0, 0.0, 2.0]] * 3, dtype=DT)
+    R = torch.eye(3, dtype=DT).unsqueeze(0).expand(3, 3, 3)
+    r = GV.gate_los_perp_rate(p, R, g, w, is_quat=False)
+    assert r[0, 0].item() == pytest.approx(2.0, abs=1e-9)              # dead ahead
+    assert r[1, 0].item() == pytest.approx(2.0, abs=1e-9)              # abeam
+    import math as _m
+    assert r[2, 0].item() == pytest.approx(2.0 * _m.sin(_m.pi / 4), abs=1e-9)  # elevated 45 deg
+
+
+def test_los_perp_rate_quat_matrix_parity_and_batched_shape():
+    q = torch.tensor([[0.0, 0.0, 0.0, 1.0]] * 2, dtype=DT)
+    R = torch.eye(3, dtype=DT).unsqueeze(0).expand(2, 3, 3)
+    p = torch.zeros(2, 3, dtype=DT)
+    g = torch.tensor([[[10.0, 2.0, 1.0], [15.0, -3.0, 0.5]],
+                      [[8.0, 0.0, -1.0], [20.0, 5.0, 2.0]]], dtype=DT)
+    w = torch.tensor([[0.5, -1.0, 2.0], [3.0, 0.0, -0.5]], dtype=DT)
+    rq = GV.gate_los_perp_rate(p, q, g, w, is_quat=True)
+    rR = GV.gate_los_perp_rate(p, R, g, w, is_quat=False)
+    assert rq.shape == (2, 2) and rR.shape == (2, 2)
+    assert torch.allclose(rq, rR, atol=1e-9)
+
+
+def test_los_perp_rate_invariant_under_rigid_camera_flip():
+    """The pi-about-body-z camera virtual flip is a RIGID rotation of the mount: expressing the same
+    physical state in the flipped frame (R_wb @ Rz(pi), rates rotated accordingly) leaves the
+    LOS-perpendicular rate magnitude IDENTICAL -- why the env can (and does) pass the UNFLIPPED
+    self._q here even though detection itself uses the flipped camera."""
+    import math as _m
+    Rz = torch.tensor([[_m.cos(_m.pi), -_m.sin(_m.pi), 0.0],
+                       [_m.sin(_m.pi), _m.cos(_m.pi), 0.0],
+                       [0.0, 0.0, 1.0]], dtype=DT)
+    R_wb = _level_pose()[0]                                            # (3,3)
+    p = torch.zeros(1, 3, dtype=DT)
+    g = torch.tensor([[[10.0, 4.0, -2.0]]], dtype=DT)
+    w = torch.tensor([[0.7, -1.3, 2.1]], dtype=DT)
+    r_unflipped = GV.gate_los_perp_rate(p, R_wb.unsqueeze(0), g, w, is_quat=False)
+    # flipped frame: body axes rotated by Rz -> same physical rates are Rz^T @ w in the new frame.
+    r_flipped = GV.gate_los_perp_rate(p, (R_wb @ Rz).unsqueeze(0), g,
+                                      (Rz.T @ w[0]).unsqueeze(0), is_quat=False)
+    assert torch.allclose(r_unflipped, r_flipped, atol=1e-9)
+
+
+def test_blur_extra_miss_prob_ramp():
+    """The PLACEHOLDER soft-band ramp: 0 below lo (blur-free band), miss_max at/above hi, monotone
+    non-decreasing, clamped to [0, miss_max]. This ONE function is the A2-curve slot-in point."""
+    rates = torch.tensor([[0.0, 1.99, 2.0, 3.0, 4.0, 9.0]], dtype=DT)
+    m = GV.blur_extra_miss_prob(rates, 2.0, 4.0, 1.0)
+    assert m[0, 0].item() == 0.0 and m[0, 1].item() == 0.0             # free below lo
+    assert m[0, 2].item() == pytest.approx(0.0, abs=1e-9)              # ramp starts at lo
+    assert m[0, 3].item() == pytest.approx(0.5, abs=1e-9)              # midpoint
+    assert m[0, 4].item() == pytest.approx(1.0, abs=1e-9)              # miss_max at hi
+    assert m[0, 5].item() == pytest.approx(1.0, abs=1e-9)              # clamped above hi
+    diffs = m[0, 1:] - m[0, :-1]
+    assert bool((diffs >= -1e-12).all())                               # monotone non-decreasing
+    # miss_max scales the plateau.
+    m2 = GV.blur_extra_miss_prob(rates, 2.0, 4.0, 0.4)
+    assert m2[0, 5].item() == pytest.approx(0.4, abs=1e-9)

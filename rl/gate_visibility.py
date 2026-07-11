@@ -43,6 +43,9 @@ PUBLIC API:
     project_points_camera(pts_world_ned, drone_pos_ned, R_wb_ned) -> (u, v, tz, in_image)
     gate_detectable(drone_pos, drone_quat_or_R, gate_pos, gate_yaw, *, far_cap_m=30.0,
                     is_quat=None) -> (detectable BoolTensor[N,G], n_visible_corners IntTensor[N,G])
+    gate_los_perp_rate(drone_pos, drone_quat_or_R, gate_pos, body_rates, *, is_quat=None)
+                    -> (N,G) LOS-perpendicular angular rate (rad/s) -- the motion-blur driver
+    blur_extra_miss_prob(rate, lo, hi, miss_max) -> (N,G) soft-band extra miss probability
 """
 from __future__ import annotations
 
@@ -160,6 +163,11 @@ def _point_in_quad(px: Tensor, py: Tensor, quad: Tensor) -> Tensor:
 def _occluder_projected_quads(gate_pos_ned: Tensor, R_world_gate: Tensor,
                               drone_pos_ned: Tensor, R_wb_ned: Tensor):
     """For each (env, gate) build the projected INNER and OUTER image quads + a validity mask.
+
+    NOTE (2026-07-10 cleanup pass, note-only): this re-projects the 8 corners that gate_detectable
+    already projected at its own call site (plus a third projection pass for the centre depth) --
+    duplicated WORK, but harmless (pure, stateless). Do NOT refactor the duplication away without
+    re-running the full visibility test battery: the geometry here is verified as-is.
 
     Returns:
       inner_quad (N,G,4,2), outer_quad (N,G,4,2): image (u,v) of the 4 inner / 4 outer corners.
@@ -359,3 +367,64 @@ def gate_center_view_cos(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: T
     _, _, tz, _ = project_points_camera(gate_pos_ned, drone_pos_ned, R_wb_ned)   # (N,G) centre depth
     rng = torch.linalg.norm(gate_pos_ned - drone_pos_ned.unsqueeze(-2), dim=-1).clamp(min=1e-6)  # (N,G)
     return (tz / rng).clamp(-1.0, 1.0)
+
+
+# ================================================================================================
+# MOTION-BLUR gating helpers (PERCEPTION-HONESTY package, 2026-07-10; DESIGN.md §P).
+#
+# The detectability rule above is a PERFECT SHUTTER: a camera sweeping at 500 deg/s detects exactly
+# as well as one holding steady, so the spin-scan gait is free in sim while the real detector starves
+# under that motion blur (the vn16 corkscrew-spinner root gap (a)). These two PURE helpers supply the
+# missing motion term. They are consumed by the ENV (peregrine_racing_ego), behind the default-OFF
+# ``+env.ego_blur_gate`` knob -- ``gate_detectable`` itself is deliberately UNTOUCHED (the estimator's
+# standalone fallback path and every existing caller stay byte-identical).
+# ================================================================================================
+def gate_los_perp_rate(drone_pos: Tensor, drone_quat_or_R: Tensor, gate_pos: Tensor,
+                       body_rates: Tensor, *, is_quat: bool | None = None) -> Tensor:
+    """LOS-PERPENDICULAR angular rate (rad/s) per (env, gate) -> (N,G): how fast each gate's line of
+    sight sweeps across the image, to first order -- the motion-blur driver.
+
+        r_body   = R_wb^T @ (gate_pos - drone_pos)      (drone->gate in the body frame)
+        r_hat    = r_body / ||r_body||
+        rate_eff = || omega - (omega . r_hat) r_hat ||   (the component of omega perpendicular to LOS)
+
+    Computed in the UNFLIPPED Z-up/FLU body frame (NO new frame math -- invariant-4 safe): the
+    magnitude of the LOS-perpendicular rate is invariant under the rigid pi-about-body-z camera
+    virtual flip, so the caller never needs to pass the flipped camera here. A rotation ABOUT the
+    LOS (e.g. pure roll with the gate dead on the optical axis) contributes ~0 -- roll-about-LOS is
+    first-order blur-free for a point target (a documented limitation; if the A2 measured curve shows
+    roll anisotropy, swap this abscissa for plain ||omega|| or add a roll weight -- one-line change).
+
+    drone_pos (N,3) Z-up; drone_quat_or_R (N,4) XYZW quat OR (N,3,3) body->world matrix, Z-up
+    (auto-detected; override with is_quat=); gate_pos (N,G,3) Z-up; body_rates (N,3) FLU truth
+    body rates (rad/s). Pure, stateless, deterministic -- the two env detectable call sites stay
+    automatically consistent."""
+    assert torch is not None, "gate_los_perp_rate requires torch"
+    if is_quat is None:
+        is_quat = drone_quat_or_R.shape[-1] == 4 and drone_quat_or_R.dim() == 2
+    R_wb = quat_xyzw_to_matrix_torch(drone_quat_or_R) if is_quat else drone_quat_or_R   # (N,3,3)
+    lever = gate_pos - drone_pos.unsqueeze(1)                       # (N,G,3) world Z-up
+    r_body = torch.einsum("nji,ngj->ngi", R_wb, lever)              # R_wb^T @ lever -> body frame
+    r_hat = r_body / torch.linalg.norm(r_body, dim=-1, keepdim=True).clamp(min=1e-6)
+    omega = body_rates.unsqueeze(1)                                 # (N,1,3) broadcast over gates
+    para = (omega * r_hat).sum(dim=-1, keepdim=True) * r_hat        # (N,G,3) LOS-parallel component
+    return torch.linalg.norm(omega - para, dim=-1)                  # (N,G) rad/s
+
+
+def blur_extra_miss_prob(rate: Tensor, lo: float, hi: float, miss_max: float) -> Tensor:
+    """SOFT-BAND extra miss probability from the LOS-perpendicular rate: a linear ramp
+
+        extra_miss = miss_max * clamp((rate - lo) / (hi - lo), 0, 1)
+
+    0 below ``lo`` (blur-free band), ``miss_max`` at/above ``hi`` (where the env's hard deterministic
+    cutoff also kills detectability, so miss_max=1.0 makes the soft band CONTINUOUS with the hard
+    gate). Folded into the estimator's EXISTING stochastic miss draw only (BatchedEgoEstimator.step
+    ``blur_extra_miss=``) so stochasticity stays where stochasticity already lives.
+
+    # PLACEHOLDER RAMP pending the A2 measured detect-vs-angular-rate curve (invariant 6): this ONE
+    # small pure function is the calibration slot-in point -- when the measured curve lands, replace
+    # only this ramp (lo := rate where detection starts degrading, hi := rate where detection ~ 0;
+    # non-linear shapes swap the body of this function and NOTHING else moves)."""
+    assert torch is not None, "blur_extra_miss_prob requires torch"
+    denom = max(hi - lo, 1e-9)
+    return miss_max * ((rate - lo) / denom).clamp(0.0, 1.0)

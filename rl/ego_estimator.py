@@ -120,7 +120,11 @@ class EgoEstimatorConfig:
     miss_prob: float = 0.10              # stochastic per-frame MISS even when the gate is visible
     teleport_prob: float = 0.002         # RANDOM-IN-FRAME teleport outlier probability (per visible gate)
     teleport_scale_m: float = 8.0        # magnitude of the wild wrong relative position on a teleport
-    latency_cov_inflate: float = 1.5     # FIX-B: covariance inflation factor on a fresh fix (latency)
+    # INERT (2026-07-10 cleanup): this knob fed ONLY the dead ``_rel_var`` buffer (written, never read --
+    # confidence comes solely from t_since_fix); the dead writes are now deleted, so setting this changes
+    # NOTHING. The field is KEPT so a cfg that sets it does not crash. Wiring it into confidence would be
+    # a BEHAVIOR change (a default-off future item, not the perception-honesty package).
+    latency_cov_inflate: float = 1.5     # INERT -- see above (was: FIX-B covariance inflation on a fix)
     stale_horizon_s: float = 0.5         # propagate-through-gap horizon; past this -> MASK (confidence 0)
 
     # ---- gate normal/yaw (weakest monocular DOF) ----
@@ -154,7 +158,8 @@ class EgoEstimatorConfig:
     visible_area_sigma: float = 0.05     # placeholder additive-noise std on the ratio (config knob)
 
     # ---- init uncertainty (feeds the KF gain shape only; no world state) ----
-    rel_pos_std_init: float = 5.0        # cold per-gate relative-position std (m) before the first fix
+    rel_pos_std_init: float = 5.0        # INERT (2026-07-10): only seeded the deleted _rel_var buffer;
+    #                                      kept so a cfg that sets it does not crash (see latency_cov_inflate)
     far_cap_m: float = 30.0              # visibility far cap (passed to gate_detectable)
 
     # ---- GLOBAL noise scale (DIAGNOSTIC lever, Fengyou 2026-07-09; the perception-vs-control ablation) ----
@@ -242,7 +247,6 @@ def _euler_roll_pitch_from_R(R_wb: Tensor) -> Tensor:
 class BatchedEgoEstimator:
     """Stateful per-env relative-state estimator. Holds ONLY body-frame / relative quantities:
       * ``_rel_pos``   (N,G,3) smoothed per-gate drone->gate vector in the drone body frame
-      * ``_rel_var``   (N,G)   scalar per-gate relative-position variance proxy (KF gain shape)
       * ``_rel_normal``(N,G,3) smoothed per-gate facing unit vector in the drone body frame
       * ``_t_since_fix``(N,G)  per-gate staleness clock (s) -> confidence + MASK
       * ``_vel_body``  (N,3)   body-frame velocity (IMU-primary)
@@ -284,8 +288,8 @@ class BatchedEgoEstimator:
         N, G = self.n, self.G
         # ---- state ----
         self._rel_pos = torch.zeros(N, G, 3, device=device, dtype=dtype)
-        self._rel_var = torch.full((N, G), float(self.cfg.rel_pos_std_init ** 2),
-                                   device=device, dtype=dtype)
+        # (2026-07-10 cleanup) the old ``_rel_var`` variance-proxy buffer was written here + in
+        # reset_idx/step but NEVER READ (confidence is purely t_since_fix-driven) -- deleted.
         self._rel_normal = torch.zeros(N, G, 3, device=device, dtype=dtype)
         self._rel_normal[..., 0] = 1.0                             # placeholder facing (body +x)
         self._normal_sig = torch.full((N, G), float(self.cfg.normal_sigma_floor_rad),
@@ -357,7 +361,6 @@ class BatchedEgoEstimator:
         lever = self.gate_pos[idx] - drone_pos.unsqueeze(1)                 # (m,G,3)
         rel_body = torch.einsum("mji,mgj->mgi", R_wb, lever)               # (m,G,3)
         self._rel_pos[idx] = rel_body
-        self._rel_var[idx] = float(self.cfg.rel_pos_std_init ** 2)
         # facing (gate normal) in body frame = R_wb^T @ (gate downrange column, world)
         normal_world = self.R_world_gate[idx][..., :, 1]                    # (m,G,3) downrange col
         self._rel_normal[idx] = torch.einsum("mji,mgj->mgi", R_wb, normal_world)
@@ -406,7 +409,8 @@ class BatchedEgoEstimator:
     # -------------------------------------------------------------------- the step
     def step(self, drone_pos: Tensor, drone_vel: Tensor, drone_quat: Tensor,
              body_rates: Tensor, dt: float, detectable: Tensor | None = None,
-             prev_quat: Tensor | None = None, apparent_area: Tensor | None = None) -> EgoEstimate:
+             prev_quat: Tensor | None = None, apparent_area: Tensor | None = None,
+             *, blur_extra_miss: Tensor | None = None) -> EgoEstimate:
         """Advance ALL envs one control step and return the current estimate.
 
         Inputs (Z-up / FLU truth, available in training):
@@ -422,6 +426,13 @@ class BatchedEgoEstimator:
                              square-on==1) for the visible_area channel -- the env passes it computed with
                              the EMULATED (flipped) camera so the obs matches what the detector sees; if
                              None it is computed here from the raw drone attitude (gate_apparent_area).
+          blur_extra_miss (N,G) optional MOTION-BLUR soft-band extra miss probability (PERCEPTION-HONESTY
+                             package, 2026-07-10; from gate_visibility.blur_extra_miss_prob). Folded into
+                             the EXISTING stochastic miss draw so stochasticity stays where it already
+                             lives (fix acceptance); None (default) == byte-identical legacy behaviour.
+                             DELIBERATELY NOT multiplied by noise_scale: blur is CAMERA PHYSICS, not
+                             estimator corruption -- the noise-0 calibration boot stage MUST still see
+                             blur, or the boot re-learns the spin-scan gait the package exists to kill.
 
         Returns an ``EgoEstimate``. NO world position / heading anywhere in the returned tensors or state.
         """
@@ -462,6 +473,10 @@ class BatchedEgoEstimator:
         if detectable is None:
             if _gate_detectable is None:                                    # pragma: no cover
                 raise RuntimeError("gate_visibility unavailable; pass detectable= to step()")
+            # STANDALONE-ONLY fallback (no camera flip): this internal path uses the RAW drone attitude,
+            # while the env path passes ``detectable`` computed with the EMULATED (pi-flipped) camera
+            # (peregrine_racing_ego._cam_R_wb). Deliberate but subtle -- tests/standalone drivers only;
+            # the env NEVER exercises this branch. (It also applies NO motion-blur gate.)
             detectable, _ = _gate_detectable(drone_pos, drone_quat, self.gate_pos, self.gate_yaw,
                                              far_cap_m=self.cfg.far_cap_m, is_quat=True)
         detectable = detectable.to(torch.bool)
@@ -482,7 +497,15 @@ class BatchedEgoEstimator:
 
         # stochastic per-frame MISS even when visible, and the visibility gate: accept iff visible,
         # not missed. A non-detectable gate gets NO fresh fix (propagate-then-mask).
-        missed = self._rand(N, G) < self.cfg.miss_prob * self.cfg.noise_scale
+        # MOTION-BLUR soft band (perception-honesty package): ``blur_extra_miss`` raises the miss
+        # probability inside the [lo, hi) rate band. NOT scaled by noise_scale (camera physics, must
+        # survive the noise-0 calibration boot -- see the step() docstring). None -> byte-identical.
+        if blur_extra_miss is not None:
+            miss_thresh = (self.cfg.miss_prob * self.cfg.noise_scale
+                           + blur_extra_miss).clamp(0.0, 1.0)              # (N,G)
+        else:
+            miss_thresh = self.cfg.miss_prob * self.cfg.noise_scale        # scalar (legacy expression)
+        missed = self._rand(N, G) < miss_thresh
         accepted = detectable & (~missed)                                  # (N,G) bool
 
         # ---- KF-style smoothing update per accepted gate (scalar-gain, matched to N_eff) ----
@@ -498,12 +521,10 @@ class BatchedEgoEstimator:
         K = torch.where(reacq, torch.ones_like(K), K)
         Kf = torch.where(accepted, K, torch.zeros_like(K)).unsqueeze(-1)   # (N,G,1)
         self._rel_pos = self._rel_pos + Kf * (fix_body - self._rel_pos)
-        # variance proxy: shrink toward per-fix_var/N_eff on a fix (with FIX-B latency inflation on the
-        # freshest fix); a re-acquired gate is a single fresh sample (N_eff -> 1). Confidence uses it.
-        per_fix_var = (sigma_gate ** 2).mean(dim=-1)                       # (N,G) scalar per-fix var
-        n_eff_eff = torch.where(reacq, torch.ones_like(self._n_eff), self._n_eff).clamp(min=1.0)
-        realised_var = self.cfg.latency_cov_inflate * per_fix_var / n_eff_eff
-        self._rel_var = torch.where(accepted, realised_var, self._rel_var)
+        # (2026-07-10 cleanup) the old variance-proxy update lived here: it wrote ``_rel_var`` from
+        # latency_cov_inflate * per_fix_var / n_eff -- but the buffer was NEVER READ (confidence is purely
+        # t_since_fix-driven, see estimate()), so the whole block (and the latency_cov_inflate knob it
+        # consumed) was INERT. Deleted; behavior-neutral by construction (no RNG draws were involved).
 
         # ---- gate normal/yaw: the weakest DOF -- own range-collapsing angular noise + flip ----
         cfg = self.cfg
