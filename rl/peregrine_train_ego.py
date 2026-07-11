@@ -316,6 +316,31 @@ def _resolve_spin_abort_anneal(cfg):
     )
 
 
+def _resolve_yaw_clamp_anneal(cfg):
+    """Parse the yaw-COMMAND-clamp anneal from cfg.env, or None when OFF (byte-identical default).
+    Gated by ``+env.yaw_clamp_anneal`` (truthy); ``+env.yaw_clamp_scale_start/hold_frac`` optional.
+    Scales the applied clamp (env._yaw_cmd_clamp) from start_scale*base DOWN to base (END-HOLD via
+    _spin_abort_schedule -- the guarantee lives at the END, same argument as the spin-abort anneal).
+    THE JOINT-ANNEAL RATIONALE (2026-07-11 matrix): the lineage's only discoverable flying gait is
+    the SPIN gait -- clamp 0.7 from birth blocks its discovery (vpaa0: no liftoff ever), while a
+    free-yaw policy that DOES lift off refuses to de-spin when only the fence tightens (vpaa1:
+    flew mid-run, then collapsed into 87% spin-deaths). This anneal squeezes the gait's yaw
+    AMPLITUDE gradually while it still has room to fly; run it FASTER than the fence anneal
+    (hold_frac default 0.4 > the fence's 0.25 means the clamp lands at base by 60% of budget,
+    the fence at 75%) so de-spinning stays ahead of the executioner. start default 4.57: base 0.7
+    -> ~3.2 rad/s at birth (>= the +/-3.14 rail == armed-but-effectively-free; NEVER start from
+    scale 0: clamp<=0 means OFF and small positive values mean nearly-FROZEN yaw -- bigger clamp
+    == looser is the sign convention). PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "yaw_clamp_anneal", False)):
+        return None
+    return dict(
+        start_scale=float(getattr(env, "yaw_clamp_scale_start", 4.57)),
+        hold_frac=float(getattr(env, "yaw_clamp_hold_frac", 0.4)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
 def _run_det_eval(self, env, agent, cfg):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
@@ -458,6 +483,26 @@ def _run_with_ego_lifelines(self):
         else:
             sa_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # YAW-CLAMP anneal (the joint-anneal cell; see _resolve_yaw_clamp_anneal's rationale). Mutates
+    # env._yaw_cmd_clamp (read per step at the clamp_yaw_command application site). Base captured
+    # pre-mutation and MUST be armed (>0): clamp<=0 means OFF, and an anneal toward OFF would pass
+    # through nearly-frozen yaw (the sign convention is bigger == looser) -- so it RAISES (L16).
+    yc_sched = _resolve_yaw_clamp_anneal(cfg)
+    yc_env = _require_anneal_holder(env, "_yaw_cmd_clamp", yc_sched, "yaw-clamp-anneal", cfg)
+    if yc_sched is not None:
+        if yc_env is not None:
+            yc_sched["base"] = float(yc_env._yaw_cmd_clamp)
+            if yc_sched["base"] <= 0.0:
+                raise RuntimeError(
+                    "[yaw-clamp-anneal] requested but the clamp is OFF (base ego_yaw_cmd_clamp_rad_s="
+                    f"{yc_sched['base']:.3f}) -- annealing scale*0 is stuck at OFF forever (silent no-op "
+                    "under an annealed run name, footgun L16); arm ego_yaw_cmd_clamp_rad_s (the END value, "
+                    "e.g. 0.7) or drop +env.yaw_clamp_anneal.")
+            print(f"[yaw-clamp-anneal] ON: {yc_sched} (END-HOLD: exact clamp for the last "
+                  f"{yc_sched['hold_frac']:.0%} of updates)")
+        else:
+            yc_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -498,6 +543,13 @@ def _run_with_ego_lifelines(self):
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[spin-abort-anneal] update {counter['i']}: scale={sav:.3f} "
                       f"rate_abort={sa_env._spin_rate_abort:.2f} rev_abort={sa_env._spin_rev_abort:.2f}")
+        if yc_sched is not None:
+            ycv = _spin_abort_schedule(counter["i"], yc_sched["n_updates"],
+                                       yc_sched["start_scale"], yc_sched["hold_frac"])
+            yc_env._yaw_cmd_clamp = yc_sched["base"] * ycv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[yaw-clamp-anneal] update {counter['i']}: scale={ycv:.3f} "
+                      f"yaw_cmd_clamp={yc_env._yaw_cmd_clamp:.2f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:

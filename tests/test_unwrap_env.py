@@ -338,3 +338,27 @@ def test_spin_abort_lifeline_wiring_source_pins():
     assert 'raise RuntimeError' in src.split('sa_sched["base_rev"]', 1)[1].split("agent.step", 1)[0]
     assert 'sa_env._spin_rate_abort = sa_sched["base_rate"] * sav' in src
     assert 'sa_env._spin_rev_abort = sa_sched["base_rev"] * sav' in src
+
+
+def test_resolve_yaw_clamp_anneal_off_by_default_and_parses_knobs():
+    """Unset / falsy gate -> None (byte-identical OFF); armed -> defaults start_scale=4.57 (base 0.7
+    -> ~3.2 rad/s ~ the rail == armed-but-free), hold_frac=0.4 (tightens FASTER than the fence's
+    0.25 so de-spinning stays ahead of the executioner)."""
+    assert ego_launcher._resolve_yaw_clamp_anneal(_Cfg(env=None)) is None
+    assert ego_launcher._resolve_yaw_clamp_anneal(_Cfg(env=_Cfg())) is None
+    s = ego_launcher._resolve_yaw_clamp_anneal(
+        _Cfg(env=_Cfg(yaw_clamp_anneal=True), n_updates=4000))
+    assert s == {"start_scale": 4.57, "hold_frac": 0.4, "n_updates": 4000}
+
+
+def test_yaw_clamp_anneal_lifeline_wiring_source_pins():
+    """Source pins (cluster-only wiring): holder = '_yaw_cmd_clamp'; base captured pre-mutation and
+    a clamp-OFF base RAISES (anneal of scale*0 is stuck at OFF forever == an L16 silent no-op --
+    and the sign convention means a small positive clamp is nearly-FROZEN yaw, so starting from 0
+    is doubly wrong); per-update mutation via the shared END-HOLD schedule."""
+    import inspect
+    src = inspect.getsource(ego_launcher._run_with_ego_lifelines)
+    assert '_require_anneal_holder(env, "_yaw_cmd_clamp", yc_sched' in src
+    assert 'yc_sched["base"] = float(yc_env._yaw_cmd_clamp)' in src
+    assert 'raise RuntimeError' in src.split('yc_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
+    assert 'yc_env._yaw_cmd_clamp = yc_sched["base"] * ycv' in src
