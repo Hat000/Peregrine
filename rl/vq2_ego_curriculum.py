@@ -1216,6 +1216,119 @@ STAGES: dict[str, dict] = {
                  # hardcoded path would COLLIDE with that append -> hydra error.
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
     },
+    # ================================================================================================
+    # ESTIMATOR-FAITHFUL chain (_pef, 2026-07-11) -- the _percept chain VERBATIM plus the
+    # ESTIMATOR-FAITHFUL ACTOR OBS package (owner directive: THE ACTOR NEVER SEES GROUND TRUTH),
+    # OFF-LADDER, run as the two-stage sbatch chain:
+    #   sbatch --export=ALL,SEED=<s>,RUNTAG=vpef<s>,\
+    #     STAGES="dual_gate_boot_floor_pef dual_gate_fullstack_floor_pef",\
+    #     UPD_dual_gate_boot_floor_pef=4000,UPD_dual_gate_fullstack_floor_pef=12000,PRECHECK=1 \
+    #     rl/peregrine_vq2_ego.sbatch
+    # PRECHECK=1 MANDATORY + the L16 guard: the precheck log must show the NEW loss_components keys
+    # emitting (eskf_tilt_err_deg_mean / eskf_tilt_err_deg_p90 / eskf_accel_update_duty /
+    # kf_vel_err_mean / sf_mag_g_mean) alongside the _percept keys (spin_abort_rate etc.) -- absent
+    # keys == the package did not arm. THE PACKAGE (all knobs NEW appends; existing stages
+    # byte-untouched -- live vperc0/vdflr0 safe):
+    #   * +env.ego_faithful=true: training obs[0:8] comes from the translated deploy vq2_ego_lean
+    #     chain (rl/ego_ins_emul.py): roll/pitch = the emulated ESKF leveler (full gate stack incl.
+    #     A8 motion-reject, stepped once per tick on the latest IMU sample -- the verified deploy
+    #     rate contract); velocity = the emulated LinearKF strapdown through the SAME lying attitude
+    #     + position-fix-only corrections, projected world->body through it; rates = the raw latest
+    #     gyro sample (measured-zero sensor noise). Per-channel ablation: +env.ego_att_model /
+    #     ego_vel_model / ego_rate_model.
+    #   * ++dynamics.n_substeps=5 (~150 Hz plant substeps ~ the measured 143.3 Hz wire IMU): the
+    #     load-bearing piece -- at n_substeps=1 plant truth is itself ZOH-at-tick-rate, a tick-rate
+    #     leveler would track truth EXACTLY, and the measured-fatal aliasing channel (a5: median
+    #     ~5 deg / p90 ~27 deg per ~57 ms tick at 3 g; 33 ms training band 1.5/4.6/8.4 deg,
+    #     rl/tools/leveler_bench.py) could not exist in-sim. n_substeps changes plant trajectories,
+    #     so it rides ONLY these new stages. 🚩 PRE-LAUNCH CHECK: params.transport_delay_steps
+    #     counts SUBSTEPS (diffaero_dynamics.py:88-93) -- if the resolved plant params ever set it
+    #     nonzero it must be scaled x5 here or the transport latency silently shrinks 5x (expected
+    #     0; the tick-level DR latency 1-3 steps ring buffer is separate and unaffected). Also read
+    #     resolved env.dt from a completed stage's .hydra (0.0333 s corroborated by two in-repo
+    #     fallbacks) before hardcoding any further substep-ratio claims.
+    #   * ++dynamics.capture_specific_force=true: the plant's last-substep body specific force =
+    #     the emulated IMU sample (observation-only, scalar parity branch untouched).
+    # BOOT SEMANTICS (deliberate, the blur precedent): ego_noise_scale=0.0 zeroes the VISION noise
+    # but the leveler/KF are ALGORITHM-STRUCTURAL and noise_scale-INDEPENDENT -- the noise-0 boot
+    # already flies the lying attitude (else the fullstack would inherit a boot trained on truth
+    # attitude = the exact fatal gap). If the boot fails to learn AT ALL, diagnose against the
+    # vperc0 twin's boot curve BEFORE touching the emulation (estimator-corruption-tax-at-boot vs
+    # package bug fork).
+    # ACCEPTANCE READ (training metrics): eskf_tilt_err_deg_* must sit INSIDE the leveler_bench
+    # 33 ms pass band (median ~1-5 / p90 ~4-15 deg) on high-|f| rollouts (sf_mag_g_mean >= ~2.5 --
+    # hover rollouts trivially read ~0 and prove nothing); ~0 deg under matched |f| at n_substeps=5
+    # is a STOP-SHIP signal (escalate n_substeps 5->8 once, then intra-tick rate-loop sysid realism
+    # -- NEVER an invented noise constant). eskf_accel_update_duty ~0 in aggressive flight /
+    # nonzero at spawn+coast (the A8 re-level moments) = the gate stack is alive.
+    # ================================================================================================
+    "dual_gate_boot_floor_pef": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_boot_floor
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # STATIC zero=4
+        "ego_noise_scale": 0.0,       # calibration boot -- vision noise 0, but the LEVELER STILL LIES
+        # ---- the perception-honesty package (== _percept verbatim) ----
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_blur_rate_hi_rad_s": 4.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_spin_rate_abort": 3.5,
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,
+        "rw_perception": 0.02,
+        "rw_perception_exponent": 4.0,
+        # ---- the estimator-faithful package (see the block comment above) ----
+        "ego_faithful": True,
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from: fresh boot (H6); the fullstack _pef stage chains from THIS stage.
+                 "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 # estimator-faithful plant knobs (++ = add-or-override; not sbatch-appended keys)
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
+    "dual_gate_fullstack_floor_pef": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_fullstack_floor
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime; the packages ride along.
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_blur_rate_hi_rad_s": 4.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_spin_rate_abort": 3.5,
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,
+        "rw_perception": 0.02,
+        "rw_perception_exponent": 4.0,
+        "ego_faithful": True,
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here (LOAD-BEARING): the sbatch ladder auto-appends it on stage 2.
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
     #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
     #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate

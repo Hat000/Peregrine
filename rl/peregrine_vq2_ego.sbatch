@@ -66,6 +66,9 @@ UPD_multi_gate=${UPD_multi_gate:-5500}
 # n_updates= when the *_percept stages are run without explicit --export UPD_ values).
 UPD_dual_gate_boot_floor_percept=${UPD_dual_gate_boot_floor_percept:-4000}
 UPD_dual_gate_fullstack_floor_percept=${UPD_dual_gate_fullstack_floor_percept:-12000}
+# ESTIMATOR-FAITHFUL (_pef) chain defaults (2026-07-11; same shape as the _percept chain)
+UPD_dual_gate_boot_floor_pef=${UPD_dual_gate_boot_floor_pef:-4000}
+UPD_dual_gate_fullstack_floor_pef=${UPD_dual_gate_fullstack_floor_pef:-12000}
 ENT_WEIGHT=${ENT_WEIGHT:-0.01}   # APPO entropy bonus coeff (diffaero default)
 
 TRAIN=/scratch/network/fl3689/peregrine_repo/rl/peregrine_train_ego.py

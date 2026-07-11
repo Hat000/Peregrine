@@ -528,6 +528,77 @@ def test_percept_rperc_farm_neutrality_bound():
         assert C.STAGES[s]["rw_perception"] == 0.02, s
 
 
+# ================================================================================================
+# ESTIMATOR-FAITHFUL chain (_pef, 2026-07-11): _percept VERBATIM + exactly the package knobs.
+# ================================================================================================
+_PEF_STAGES = ("dual_gate_boot_floor_pef", "dual_gate_fullstack_floor_pef")
+# the env-key additions (rendered as +env.*)
+_PEF_ENV_KEYS = {"ego_faithful": True}
+# the _raw additions (++ add-or-override form -- deliberately NOT '+', so they can never collide
+# with an existing config key NOR appear in _SBATCH_APPENDED_KEYS)
+_PEF_RAW_KEYS = {"++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True}
+
+
+def test_pef_stages_are_strict_supersets_of_percept():
+    """Each _pef variant = its _percept base VERBATIM + exactly the estimator-faithful knobs
+    (same values in both stages): +env.ego_faithful=true and the two ++dynamics plant knobs in
+    _raw. The boot keeps ego_noise_scale=0.0 -- and the leveler/KF are DELIBERATELY
+    noise_scale-independent (blur precedent), so the boot already flies the lying attitude."""
+    for name, base in (("dual_gate_boot_floor_pef", "dual_gate_boot_floor_percept"),
+                       ("dual_gate_fullstack_floor_pef", "dual_gate_fullstack_floor_percept")):
+        p, b = C.STAGES[name], C.STAGES[base]
+        for k, v in b.items():
+            if k == "_raw":
+                for rk, rv in v.items():
+                    assert p["_raw"][rk] == rv, (name, rk)     # base _raw verbatim
+                extra_raw = {rk: rv for rk, rv in p["_raw"].items() if rk not in v}
+                assert extra_raw == _PEF_RAW_KEYS, (name, extra_raw)
+            else:
+                assert p[k] == v, (name, k)
+        extra = {k: v for k, v in p.items() if k not in b}
+        assert extra == _PEF_ENV_KEYS, (name, extra)
+    boot = C.STAGES["dual_gate_boot_floor_pef"]
+    assert boot["ego_noise_scale"] == 0.0 and boot["ego_faithful"] is True
+    full = C.STAGES["dual_gate_fullstack_floor_pef"]
+    assert "ego_noise_scale" not in full and full["ego_faithful"] is True
+
+
+def test_pef_no_init_from_and_no_sbatch_collision():
+    """(a) chain stage 2 must NOT carry +init_from (the sbatch ladder appends it); (b) no _pef
+    token re-appends a key the sbatch BASE/BOUNDARY_OV plus-appends (the ++dynamics knobs are the
+    sanctioned force-override form and are skipped like the ++algo ones)."""
+    assert not any("init_from" in k for k in C.STAGES["dual_gate_fullstack_floor_pef"]["_raw"])
+    for s in _PEF_STAGES:
+        assert s not in C.STAGE_ORDER                      # off-ladder, chained only
+        for tok in C.render_overrides(s):
+            key = tok.split("=", 1)[0]
+            if key.startswith("++"):
+                continue
+            assert key not in _SBATCH_APPENDED_KEYS, (s, tok)
+
+
+def test_pef_renders_valid_tokens():
+    toks = C.render_overrides("dual_gate_boot_floor_pef")
+    assert "+env.ego_faithful=true" in toks
+    assert "++dynamics.n_substeps=5" in toks               # the aliasing channel (load-bearing)
+    assert "++dynamics.capture_specific_force=true" in toks
+    assert "+env.ego_noise_scale=0.0" in toks              # boot keeps the calibration regime
+    assert "+env.ego_blur_gate=true" in toks               # the _percept package rides along
+    assert "algo.gamma=0.9975" in toks
+    full_toks = C.render_overrides("dual_gate_fullstack_floor_pef")
+    assert "+env.ego_faithful=true" in full_toks
+    assert "++dynamics.n_substeps=5" in full_toks
+    assert not any(t.startswith("+env.ego_noise_scale") for t in full_toks)   # real noise
+
+
+def test_pef_does_not_set_per_channel_ablation_knobs():
+    """The _pef stages arm ONLY the master knob: ego_att_model/ego_vel_model/ego_rate_model stay
+    unset (they default from ego_faithful in the env) so an ablation run must set them explicitly."""
+    for s in _PEF_STAGES:
+        for k in ("ego_att_model", "ego_vel_model", "ego_rate_model"):
+            assert k not in C.STAGES[s], (s, k)
+
+
 def test_percept_renders_valid_tokens():
     toks = C.render_overrides("dual_gate_boot_floor_percept")
     assert "+env.ego_blur_gate=true" in toks
