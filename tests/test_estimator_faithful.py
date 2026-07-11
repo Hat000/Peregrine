@@ -653,6 +653,8 @@ def _mk_sf_stub(needs_sf, sf_tensor):
     stub._ego_cfg = SimpleNamespace(far_cap_m=30.0)
     stub._blur_gate = False
     stub._est_needs_sf = needs_sf
+    # kp-persist debounce (2026-07-11): default-off here (own executed tests in test_ego_kp_persist.py)
+    stub._kp_persist_n = 0
     stub.dynamics = SimpleNamespace(_sf_body_flu=sf_tensor)
     stub._estimator = _RecordingEstimatorSF()
     return stub

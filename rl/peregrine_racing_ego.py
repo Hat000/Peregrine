@@ -512,6 +512,27 @@ def ceiling_contact(curr_z: Tensor, spawn_z: Tensor, above_m: float) -> Tensor:
     return curr_z > (spawn_z + float(above_m))
 
 
+def kp_persist_update(count, detectable, n_required):
+    """KEYPOINT-PERSISTENCE debounce (pure; wired exactly ONCE per tick by _step_estimator).
+
+    count: (N,G) long consecutive-hit counter. detectable: (N,G) bool POST-AND
+    detectability (raycast & blur hard-cut -- the debounce sits after every per-tick
+    AND, so it never double-interacts with the blur gate). n_required: int >= 2.
+    Returns (new_count, transmit): counter +1 where detectable (saturating at
+    n_required so it never grows unbounded), 0 on any miss; transmit = new_count >=
+    n_required. transmit is True on the n-th consecutive hit and transmit <=
+    detectable always. RNG-NEUTRAL: no draws, no generator access.
+    HARDENED (audit 2026-07-11): n_required < 2 is a caller bug (with n <= 0,
+    ``new_count >= n`` would emit transmit=True on NON-detectable gates, violating
+    transmit <= detectable). OFF (<=1) is guarded at the call sites, never here."""
+    assert torch is not None
+    n = int(n_required)
+    assert n >= 2, "kp_persist_update requires n_required >= 2 (<=1 == OFF is guarded at the call site)"
+    new_count = torch.where(detectable, (count + 1).clamp(max=n),
+                            torch.zeros_like(count))
+    return new_count, new_count >= n
+
+
 # ================================================================================================
 # The environment (requires diffaero -- training/eval cluster only).
 # ================================================================================================
@@ -643,6 +664,13 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._blur_rate_lo = float(getattr(cfg, "ego_blur_rate_lo_rad_s", 2.0))   # PLACEHOLDER (A2 pending)
         self._blur_rate_hi = float(getattr(cfg, "ego_blur_rate_hi_rad_s", 4.0))   # PLACEHOLDER (A2 pending)
         self._blur_miss_max = float(getattr(cfg, "ego_blur_miss_max", 1.0))       # 1.0 -> continuous w/ hard cut
+        # KEYPOINT-PERSISTENCE debounce (Fengyou 2026-07-11): a gate transmits (estimator fix
+        # + obs slot) only after detectability held N CONSECUTIVE ticks; one miss resets.
+        # <=1 == OFF == byte-identical ("1 frame suffices" == today). Deploy twin:
+        # fly_rl.py --ego-kp-persist (fly a debounce-trained ckpt with the SAME N).
+        # NOTE ego_estimator.py's standalone detectable=None fallback bypasses this debounce
+        # exactly as it bypasses blur (env-only knob; the env never exercises that branch).
+        self._kp_persist_n = int(getattr(cfg, "ego_kp_persist_frames", 0))
         # FATAL SPIN ABORT (all-axis, realized ||omega||): sustained-rate clock OR leaky accumulated-
         # rotation trigger; a firing abort terminates COLLISION-CLASS (terminal_base + banked forfeit)
         # on BOTH reward paths (see step()). 0.0 == OFF (defaults).
@@ -661,6 +689,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._rot_accum = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         # last detectable mask from _step_estimator (diagnostics: target_detectable_duty).
         self._last_detectable = torch.zeros(self.n_envs, self.n_gates, dtype=torch.bool, device=dev)
+        # consecutive-detectable counter for the kp-persist debounce (advanced ONLY in
+        # _step_estimator; _current_detectable READS it). Allocated unconditionally (zeros,
+        # no RNG) so reset paths never need existence checks; inert unless _kp_persist_n>=2.
+        self._kp_persist_count = torch.zeros(self.n_envs, self.n_gates,
+                                             dtype=torch.long, device=dev)
         # ===== ESTIMATOR-FAITHFUL ACTOR OBS package (2026-07-11; owner directive: THE ACTOR NEVER
         # SEES GROUND TRUTH). +env.ego_faithful=true switches obs[0:8]'s production from the
         # effectively-GT channels to the translated deploy vq2_ego_lean estimation chain (emulated
@@ -821,6 +854,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # fatal-spin-abort state: fresh episode -> zero the sustained clock + rotation accumulator.
             self._spin_clock[env_idx] = 0.0
             self._rot_accum[env_idx] = 0.0
+            self._kp_persist_count[env_idx] = 0   # kp-persist: fresh episode -> streak restarts
             # clear the ONCE-PER-GATE parabola latch for EVERY reset path: step() funnels BOTH
             # terminated and truncated (timeout) envs through reset_idx, so this is the single choke
             # point -- a latch surviving a truncation would silently suppress the NEXT episode's first
@@ -944,6 +978,14 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 detectable = detectable & (los_rate < self._blur_rate_hi)
                 extra_miss = blur_extra_miss_prob(los_rate, self._blur_rate_lo,
                                                   self._blur_rate_hi, self._blur_miss_max)
+            # KP-PERSIST debounce (default OFF == byte-identical): transmit only after
+            # N consecutive detectable ticks; a miss resets. Applied AFTER every
+            # per-tick detectability AND (raycast + blur hard-cut). Counter state
+            # advances HERE exactly once per tick; _current_detectable only reads it.
+            # RNG-neutral: masking detectable shifts no estimator draw.
+            if self._kp_persist_n >= 2:
+                self._kp_persist_count, detectable = kp_persist_update(
+                    self._kp_persist_count, detectable, self._kp_persist_n)
             self._last_detectable = detectable          # diagnostics (target_detectable_duty)
             # APPARENT projected opening area (normalized, square-on==1), computed with the EMULATED
             # (flipped) camera so the obs matches what the detector sees. Stored (GT, noiseless) for the
@@ -973,6 +1015,12 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             los_rate = self._blur_los_rate()
             if los_rate is not None:
                 detectable = detectable & (los_rate < self._blur_rate_hi)
+            # kp-persist: read-only application of the counter advanced by
+            # _step_estimator this tick (this fn may run 0..N times per tick and
+            # must NEVER advance state). Within a tick transmit <= detectable, so
+            # the obs mask and the estimator fix mask still agree by construction.
+            if self._kp_persist_n >= 2:
+                detectable = detectable & (self._kp_persist_count >= self._kp_persist_n)
         return detectable
 
     # ---- observation (ego 21-dim; OFF -> byte-identical inc7) ----------------------------------
@@ -1091,6 +1139,13 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         newly_finished = gate_passed & is_last & ~self.finished
         advance = gate_passed & ~is_last
         self.target_gates[advance] = self.target_gates[advance] + 1
+        if getattr(self, "_ego_on", False) and self._kp_persist_n >= 2:
+            # kp-persist MATCHED-PAIR rule: deploy drops the seeker track on gate
+            # advance (fly_rl seeker.reset()), so the new gate's streak restarts
+            # from 0. This DELIBERATELY diverges from all other per-(env,gate)
+            # train state (estimator memory persists across advance); only the
+            # transmit debounce restarts for advancing envs.
+            self._kp_persist_count[advance] = 0
         self.n_passed_gates[gate_passed] += 1
         self.finished |= newly_finished
         tg_new = self.target_gates.long()
@@ -1272,7 +1327,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         loss_components["total_loss"] = float(-reward.mean().item())
         # ===== PERCEPTION-HONESTY diagnostics (free, both reward paths; adjudicate from TRAINING
         # METRICS, never renders). target_detectable_duty = fraction of envs whose CURRENT TARGET gate
-        # is detectable this step (blur-gated when the gate is on) -- vn16's spin-scan measured 40.8%;
+        # is detectable this step (blur-gated when the gate is on). DASHBOARD NOTE (audit 2026-07-11):
+        # when ego_kp_persist_frames>=2 is armed this reads the TRANSMITTED (post-debounce) duty -- it
+        # drops mechanically vs non-debounced runs at identical raw visibility; do NOT compare raw
+        # across the knob. vn16's spin-scan measured 40.8%;
         # a healthy _percept run should climb WELL ABOVE that (the blind-policy failure mode shows here
         # as a collapse). spin_* read the no-spin package's bite (early nonzero abort = the gate is
         # teaching; ~0 by convergence).

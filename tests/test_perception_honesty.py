@@ -403,6 +403,9 @@ def _mk_env_wiring_stub(w, blur_gate=True):
     # estimator-faithful package (2026-07-11): default-off in these wiring tests (the faithful
     # wiring has its own executed stub tests in test_estimator_faithful.py)
     stub._est_needs_sf = False
+    # kp-persist debounce (2026-07-11): default-off in these wiring tests (the debounce has its
+    # own executed stub tests in test_ego_kp_persist.py; OFF never touches _kp_persist_count)
+    stub._kp_persist_n = 0
     stub._estimator = _RecordingEstimator()
     return stub
 
@@ -475,3 +478,21 @@ def test_step_source_pins_yaw_clamp_and_lethal_mask_plumbing():
         assert "detectable & (los_rate < self._blur_rate_hi)" in src
     assert "self._last_detectable = detectable" in src_se        # the duty diagnostic's source
     assert "blur_extra_miss=extra_miss" in src_se                # the soft band reaches the estimator
+
+    # KP-PERSIST debounce (2026-07-11, test_ego_kp_persist.py has the executed semantics): the
+    # counter must advance in _step_estimator EXACTLY ONCE per tick and NEVER in the 0..N-times-
+    # per-tick _current_detectable (which only READS it); the debounce AND must sit AFTER the blur
+    # hard-cut (post-every-per-tick-AND input, so it never double-interacts with blur); and BOTH
+    # reset paths (episode reset + the deploy-matching gate-advance clear) must be present.
+    assert "kp_persist_update(" in src_se                        # the ONE advance site
+    assert src_se.index("detectable & (los_rate < self._blur_rate_hi)") \
+        < src_se.index("kp_persist_update(")                     # debounce AFTER the blur AND
+    assert src_se.index("kp_persist_update(") \
+        < src_se.index("self._last_detectable = detectable")     # duty diag sees the TRANSMITTED mask
+    assert "kp_persist_update(" not in src_cd                    # read-only call site
+    assert "self._kp_persist_count >= self._kp_persist_n" in src_cd
+    src_reset = inspect.getsource(PRE.PeregrineRacingEgo.reset_idx)
+    assert "self._kp_persist_count[env_idx] = 0" in src_reset    # terminated+truncated choke point
+    assert "self._kp_persist_count[advance] = 0" in src_step     # deploy seeker.reset() twin
+    src_init = inspect.getsource(PRE.PeregrineRacingEgo.__init__)
+    assert 'getattr(cfg, "ego_kp_persist_frames", 0)' in src_init  # knob ABSENT == 0 == OFF
