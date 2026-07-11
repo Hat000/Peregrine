@@ -385,3 +385,42 @@ def test_perception_anneal_lifeline_wiring_source_pins():
     assert 'pc_sched["base"] = float(getattr(pc_env._egorw, "perception", 0.0))' in src
     assert 'raise RuntimeError' in src.split('pc_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
     assert 'pc_env._egorw.perception = pc_sched["base"] * pcv' in src
+
+
+def test_resolve_progress_ramp_off_by_default_and_parses_knobs():
+    """Unset / falsy gate -> None (byte-identical OFF); armed -> defaults start_scale=0.0 (ramp IN
+    from zero forward-pull) hold_frac=0.3 (full progress reward for the last 30% so the graduate is
+    not reward-shifted)."""
+    assert ego_launcher._resolve_progress_ramp(_Cfg(env=None)) is None
+    assert ego_launcher._resolve_progress_ramp(_Cfg(env=_Cfg())) is None
+    s = ego_launcher._resolve_progress_ramp(
+        _Cfg(env=_Cfg(progress_ramp=True), n_updates=4000))
+    assert s == {"start_scale": 0.0, "hold_frac": 0.3, "n_updates": 4000}
+
+
+def test_progress_ramp_is_a_ramp_in_via_spin_abort_schedule():
+    """start_scale=0 through _spin_abort_schedule ramps 0->1 over the front (1-hold_frac) then
+    END-HOLDs at 1.0 -- so _egorw.progress goes 0 -> base and stays base for the last hold_frac.
+    (The re-dive fix: forward pull enters gently so the warmed altitude skill isn't overpowered.)"""
+    f = ego_launcher._spin_abort_schedule
+    N, hold = 4000, 0.3
+    ramp_end = int((1.0 - hold) * N)
+    assert f(0, N, 0.0, hold) == pytest.approx(0.0)              # no forward pull at birth
+    assert 0.0 < f(ramp_end // 2, N, 0.0, hold) < 1.0            # ramping
+    assert f(ramp_end, N, 0.0, hold) == pytest.approx(1.0)       # full by (1-hold)*N
+    for i in (ramp_end + 1, N - 1, N):
+        assert f(i, N, 0.0, hold) == pytest.approx(1.0)          # END-HOLD at full
+    vals = [f(i, N, 0.0, hold) for i in range(0, N + 1, 100)]
+    assert all(a <= b for a, b in zip(vals, vals[1:]))           # monotone non-decreasing (ramp IN)
+
+
+def test_progress_ramp_lifeline_wiring_source_pins():
+    """Source pins: holder = '_egorw'; base captured pre-mutation and a zero-progress base RAISES
+    (ramp 0->0 == L16 silent no-op); per-update mutation of _egorw.progress via the shared schedule
+    with start_scale=0 (ramp in, NOT the clamp/perception ramp-down)."""
+    import inspect
+    src = inspect.getsource(ego_launcher._run_with_ego_lifelines)
+    assert '_require_anneal_holder(env, "_egorw", pr_sched' in src
+    assert 'pr_sched["base"] = float(getattr(pr_env._egorw, "progress", 0.0))' in src
+    assert 'raise RuntimeError' in src.split('pr_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
+    assert 'pr_env._egorw.progress = pr_sched["base"] * prv' in src

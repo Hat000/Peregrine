@@ -364,6 +364,31 @@ def _resolve_perception_anneal(cfg):
     )
 
 
+def _resolve_progress_ramp(cfg):
+    """Parse the forward-PROGRESS-reward RAMP-IN from cfg.env, or None when OFF (byte-identical
+    default). Gated by ``+env.progress_ramp`` (truthy); ``+env.progress_ramp_start/hold_frac``
+    optional. THE RE-DIVE FIX (2026-07-11, warm-boot vwhb0): warming the boot from an airborne
+    hover ckpt buys a ~10x-longer opening (l_episode 0.33 -> 3.2) but the drone STILL slow-sinks to
+    the floor, because rw_progress (dense per-metre homing toward a gate spawned 0.5-6 m ABOVE) pays
+    for pitch-forward closure, which sheds vertical thrust -> the warmed altitude skill is gradually
+    overpowered. This ramps the progress WEIGHT in from progress_ramp_start*base (default 0) UP to
+    the configured base over the front, END-HOLD at base for the last hold_frac -- so the altitude
+    skill stays dominant while forward flight is introduced gently, and the last hold_frac trains at
+    the real (full) progress reward so the graduate is not reward-shifted. REUSES _spin_abort_schedule
+    (start_scale=0 -> ramps 0->1 over the front, holds 1.0). Mutates env._egorw.progress. Base MUST be
+    armed (>0): a zero-progress stage would ramp 0->0 (silent no-op, L16). start=0 is INTENDED here
+    (unlike the clamp/perception hooks whose START is the loose extreme), so ONLY the base is guarded.
+    PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "progress_ramp", False)):
+        return None
+    return dict(
+        start_scale=float(getattr(env, "progress_ramp_start", 0.0)),
+        hold_frac=float(getattr(env, "progress_ramp_hold_frac", 0.3)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
 def _run_det_eval(self, env, agent, cfg):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
@@ -545,6 +570,26 @@ def _run_with_ego_lifelines(self):
         else:
             pc_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # PROGRESS RAMP-IN (the re-dive fix; see _resolve_progress_ramp's rationale). Mutates
+    # env._egorw.progress from start_scale*base UP to base (END-HOLD). Base captured pre-mutation and
+    # MUST be armed (>0): a zero-progress stage would ramp 0->0 (L16 silent no-op). start_scale=0 is
+    # INTENDED (ramp in from no forward pull), so only the base is guarded.
+    pr_sched = _resolve_progress_ramp(cfg)
+    pr_env = _require_anneal_holder(env, "_egorw", pr_sched, "progress-ramp", cfg)
+    if pr_sched is not None:
+        if pr_env is not None:
+            pr_sched["base"] = float(getattr(pr_env._egorw, "progress", 0.0))
+            if pr_sched["base"] <= 0.0:
+                raise RuntimeError(
+                    "[progress-ramp] requested but rw_progress is OFF (base progress="
+                    f"{pr_sched['base']:.4f}) -- ramping 0->0 is a silent no-op under an annealed run "
+                    "name (footgun L16); arm rw_progress (the full forward-pull value) or drop "
+                    "+env.progress_ramp.")
+            print(f"[progress-ramp] ON: {pr_sched} (RAMP-IN {pr_sched['start_scale']:.2f}*base -> "
+                  f"base, END-HOLD at full for the last {pr_sched['hold_frac']:.0%} of updates)")
+        else:
+            pr_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -599,6 +644,13 @@ def _run_with_ego_lifelines(self):
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[perception-anneal] update {counter['i']}: scale={pcv:.3f} "
                       f"rw_perception={pc_env._egorw.perception:.4f}")
+        if pr_sched is not None:
+            prv = _spin_abort_schedule(counter["i"], pr_sched["n_updates"],
+                                       pr_sched["start_scale"], pr_sched["hold_frac"])
+            pr_env._egorw.progress = pr_sched["base"] * prv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[progress-ramp] update {counter['i']}: scale={prv:.3f} "
+                      f"rw_progress={pr_env._egorw.progress:.3f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
