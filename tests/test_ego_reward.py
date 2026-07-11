@@ -889,7 +889,9 @@ def test_spin_abort_through_gate_collision_alone_is_free_under_parabola_THE_TRAP
     through gate_collision (floor_contact stays bare below_floor == zeros) reaches NO terminal at all
     -- the episode ends penalty-free WITH banked progress kept, strictly cheaper than a miss (-100)
     -> spin-to-exit becomes an attractive learned bail-out. This pin documents WHY the env passes
-    lethal (not below_floor) as floor_contact; if someone 'simplifies' that wiring, this fails."""
+    lethal (not below_floor) as floor_contact -- it exercises the REWARD side only (the test builds
+    its own floor_contact arg); the ENV-side wiring itself is enforced by the source pin
+    test_perception_honesty.py::test_step_source_pins_yaw_clamp_and_lethal_mask_plumbing."""
     n = 1
     spin = torch.tensor([True])
     w = R.EgoRewardWeights(parabola_crossing=True, cross_center=20.0, cross_zero_m=4.0,

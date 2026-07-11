@@ -458,8 +458,9 @@ def test_percept_threshold_ordering_blind_policy_defense():
         assert realized_yaw <= 1.5, (s, realized_yaw)      # inside the owner 1-1.5 rad/s target
         assert realized_yaw < d["ego_blur_rate_lo_rad_s"], (s, realized_yaw)   # looking is blur-free
         assert d["ego_blur_rate_lo_rad_s"] < d["ego_spin_rate_abort"], s      # blur bites before fatal
-        # hi ABOVE the rate abort is deliberate (the [abort, hi) band is fatal anyway; hi=4.0 keeps
-        # the A2 calibration structure) -- but hi must never sit below lo.
+        # hi ABOVE the rate abort is deliberate (NOT because [abort, hi) is "fatal anyway" -- blur
+        # cuts on instantaneous LOS-perp rate, the abort on SUSTAINED all-axis ||omega||, different
+        # abscissas; hi=4.0 keeps the A2 calibration structure) -- but hi must never sit below lo.
         assert d["ego_blur_rate_hi_rad_s"] >= d["ego_blur_rate_lo_rad_s"], s
 
 
@@ -470,7 +471,10 @@ def test_percept_rperc_farm_neutrality_bound():
     single_gate_varied_gvf_lpara_perc (0.05) is the DOCUMENTED DETONATION precedent (farmable
     fly-away on a warm start) -- kept verbatim per the existing-stages-untouched invariant; it is
     exactly the failure this bound exists to prevent, so it stays exempt-and-frozen, never copied."""
-    DEFAULT_RW_TIME = 0.02                                 # EgoRewardWeights.time default
+    # LIVE default, not a mirrored constant: if EgoRewardWeights.time ever changes, the bound checked
+    # here moves with it (a hardcoded 0.02 would let real violations pass silently).
+    from ego_reward import EgoRewardWeights
+    DEFAULT_RW_TIME = EgoRewardWeights().time
     LEGACY_DETONATION_EXEMPT = ("single_gate_varied_gvf_lpara_perc",)
     for s, d in C.STAGES.items():
         if s in LEGACY_DETONATION_EXEMPT:

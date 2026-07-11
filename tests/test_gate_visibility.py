@@ -344,3 +344,33 @@ def test_blur_extra_miss_prob_ramp():
     # miss_max scales the plateau.
     m2 = GV.blur_extra_miss_prob(rates, 2.0, 4.0, 0.4)
     assert m2[0, 5].item() == pytest.approx(0.4, abs=1e-9)
+
+
+def test_blur_extra_miss_prob_degenerate_lo_equals_hi_is_a_step():
+    """lo == hi (a possible A2 recalibration outcome): the 1e-9 denom guard turns the ramp into a
+    STEP -- 0 at/below the threshold, miss_max above it. Pinned because the A2 recalibration touches
+    exactly these numbers; note the env's hard cut (rate < hi is strict) already kills detectability
+    AT rate == hi, so the 0-extra-miss AT the threshold is never load-bearing."""
+    rates = torch.tensor([[1.0, 2.0, 2.0 + 1e-6, 5.0]], dtype=DT)
+    m = GV.blur_extra_miss_prob(rates, 2.0, 2.0, 1.0)
+    assert m[0, 0].item() == 0.0
+    assert m[0, 1].item() == 0.0                                       # exactly AT lo==hi: still 0
+    assert m[0, 2].item() == pytest.approx(1.0)                        # any epsilon above: miss_max
+    assert m[0, 3].item() == pytest.approx(1.0)
+
+
+def test_hard_cut_boundary_rate_exactly_hi_is_undetectable():
+    """The env composes ``det & (rate < hi)`` -- STRICT '<', so rate exactly == hi is already
+    blur-cut. Continuity with the soft band holds because blur_extra_miss_prob(hi) == miss_max
+    (== 1.0 in the stages): the miss probability reaches 1 exactly where the hard cut takes over.
+    miss_max is a stage knob -- if it is ever set < 1.0 there is a discontinuity AT hi (soft band
+    tops out below certain-miss, then the hard cut kills it): pinned here so the boundary semantics
+    are explicit for the A2 recalibration owner."""
+    hi = 4.0
+    rate = torch.tensor([[hi]], dtype=DT)
+    det = torch.tensor([[True]])
+    assert not bool((det & (rate < hi))[0, 0])                         # == hi -> hard-cut
+    assert GV.blur_extra_miss_prob(rate, 2.0, hi, 1.0)[0, 0].item() == pytest.approx(1.0)
+    # a hair below hi survives the hard cut with near-saturated soft miss (continuous handover).
+    rate2 = torch.tensor([[hi - 1e-9]], dtype=DT)
+    assert bool((det & (rate2 < hi))[0, 0])
