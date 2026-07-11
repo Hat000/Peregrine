@@ -838,3 +838,90 @@ def test_crossing_parabola_reward():
     assert r[0].item() > r[1].item() > r[2].item() > r[3].item()  # MONOTONIC (no moat)
     r0 = crossing_parabola_reward(e, torch.zeros(4, dtype=torch.bool), 20.0, 0.75, 100.0)
     assert (r0 == 0).all()                                      # no crossing -> 0
+
+
+# ================================================================================================
+# FATAL SPIN ABORT terminal composition (PERCEPTION-HONESTY package 2026-07-10, DESIGN.md §P).
+# The env composes lethal = below_floor | spin_abort and rides it through the SAME wiring as the
+# floor dive: gate_collision fold (legacy/refined-B path) AND the parabola path's floor_contact= /
+# forfeit_mask= kwargs. These tests pin the COLLISION-CLASS magnitude on BOTH reward paths -- and
+# pin the trap the losing design fell into (spin routed ONLY through gate_collision pays ZERO under
+# the champion parabola regime == spin-to-exit becomes a FREE, banked-progress-keeping bail-out).
+# ================================================================================================
+def _spin_kw(n, banked):
+    return dict(
+        s_curr=torch.zeros(n, dtype=DT), s_prev=torch.zeros(n, dtype=DT),
+        gate_passed=torch.zeros(n, dtype=torch.bool), pass_linf=torch.zeros(n, dtype=DT),
+        w_g_half=0.375,
+        gate_miss=torch.zeros(n, dtype=torch.bool),
+        oob=torch.zeros(n, dtype=torch.bool),
+        banked_progress_return=_t(banked),
+        newly_finished=torch.zeros(n, dtype=torch.bool), time_left_s=torch.zeros(n, dtype=DT),
+        tilt_cos_r33=torch.ones(n, dtype=DT), omega=torch.zeros(n, 3, dtype=DT),
+        action_norm=torch.full((n, 4), 0.5, dtype=DT), last_action_norm=torch.full((n, 4), 0.5, dtype=DT),
+        vel_world=torch.zeros(n, 3, dtype=DT), curr_center=torch.zeros(n, 3, dtype=DT),
+        next_center=torch.zeros(n, 3, dtype=DT), dt=1 / 30,
+    )
+
+
+def test_spin_abort_pays_collision_class_on_the_parabola_path_via_lethal_mask():
+    """CHAMPION (parabola) regime: the terminal fires on the floor_contact kwarg ONLY. A spin abort
+    riding the lethal mask (env: floor_contact=lethal) pays terminal_base + the FULL banked-progress
+    forfeit -- collision-class, exactly the terminal-equalization doctrine."""
+    n = 2
+    spin = torch.tensor([True, False])
+    w = R.EgoRewardWeights(parabola_crossing=True, cross_center=20.0, cross_zero_m=4.0,
+                           cross_neg_cap=100.0, terminal_base=100.0, terminal_miss=100.0,
+                           terminal_oob=200.0, terminal_progress_scaled=True)
+    reward, comps, _ = R.compute_ego_reward(
+        w, gate_collision=spin,                                     # env folds spin into collision
+        cross_offset=torch.zeros(n, dtype=DT), crossed=torch.zeros(n, dtype=torch.bool),
+        floor_contact=spin.to(DT),                                  # the LETHAL mask (load-bearing)
+        **_spin_kw(n, [30.0, 30.0]))
+    # env0 (spin abort): -(base 100 + banked 30) + the -0.02 time tick; env1: just the time tick.
+    assert reward[0].item() == pytest.approx(-130.0 - w.time)
+    assert reward[1].item() == pytest.approx(-w.time)
+    assert comps["terminal_pen"] == pytest.approx(130.0 / n)
+
+
+def test_spin_abort_through_gate_collision_alone_is_free_under_parabola_THE_TRAP():
+    """The verified defect of the losing design: under the parabola regime, a spin abort routed ONLY
+    through gate_collision (floor_contact stays bare below_floor == zeros) reaches NO terminal at all
+    -- the episode ends penalty-free WITH banked progress kept, strictly cheaper than a miss (-100)
+    -> spin-to-exit becomes an attractive learned bail-out. This pin documents WHY the env passes
+    lethal (not below_floor) as floor_contact; if someone 'simplifies' that wiring, this fails."""
+    n = 1
+    spin = torch.tensor([True])
+    w = R.EgoRewardWeights(parabola_crossing=True, cross_center=20.0, cross_zero_m=4.0,
+                           cross_neg_cap=100.0, terminal_base=100.0, terminal_progress_scaled=True)
+    reward, comps, _ = R.compute_ego_reward(
+        w, gate_collision=spin,
+        cross_offset=torch.zeros(n, dtype=DT), crossed=torch.zeros(n, dtype=torch.bool),
+        floor_contact=torch.zeros(n, dtype=DT),                     # spin NOT in the lethal mask
+        **_spin_kw(n, [30.0]))
+    assert comps["terminal_pen"] == pytest.approx(0.0)              # the free-exit hole (documented)
+    assert reward[0].item() == pytest.approx(-w.time)               # cheaper than any miss/oob/crash
+
+
+def test_spin_abort_pays_collision_class_on_the_non_parabola_path():
+    """Legacy / non-parabola refined-B path: spin folded into gate_collision hits terminal_penalty
+    directly -- base + banked forfeit (default forfeit_mask == coll includes the spin abort)."""
+    spin = torch.tensor([True, False])
+    banked = _t([30.0, 30.0])
+    w = R.EgoRewardWeights(terminal_base=100.0, terminal_progress_scaled=True)
+    pen = R.terminal_penalty(spin, torch.zeros(2, dtype=torch.bool), torch.zeros(2, dtype=torch.bool),
+                             banked, w)
+    assert pen[0].item() == pytest.approx(130.0)                    # base + full banked forfeit
+    assert pen[1].item() == pytest.approx(0.0)
+
+
+def test_package_adds_no_per_step_penalty_at_defaults():
+    """At default weights (rw_perception 0, no new rate term -- fatality REPLACES dis-incentive per
+    the owner's no-energy-penalty directive) a quiet non-terminating step still pays exactly the time
+    tick: the package must add NO new per-step penalty at defaults."""
+    n = 1
+    w = R.EgoRewardWeights()
+    reward, comps, _ = R.compute_ego_reward(
+        w, gate_collision=torch.zeros(n, dtype=torch.bool), **_spin_kw(n, [0.0]))
+    assert reward[0].item() == pytest.approx(-w.time)
+    assert comps["perception_reward"] == pytest.approx(0.0)

@@ -62,7 +62,13 @@ except Exception:                       # pragma: no cover - torch absent in som
 
 # Component A (estimator) + B (visibility). Pure-torch, no diffaero.
 from ego_estimator import BatchedEgoEstimator, EgoEstimatorConfig, EgoEstimate
-from gate_visibility import gate_detectable, gate_apparent_area, gate_center_view_cos
+from gate_visibility import (gate_detectable, gate_apparent_area, gate_center_view_cos,
+                             gate_los_perp_rate, blur_extra_miss_prob)
+# SUSTAINED-SPIN clock (perception-honesty package, 2026-07-10): REUSE the battle-tested inc8 BSR3
+# update (rl/inc8_reward.py, exercised by the whole inc8 lineage) rather than re-implementing it --
+# same semantics (accumulate dt while ||omega|| > rate_abort, reset otherwise, abort past time_abort;
+# rate_abort <= 0 -> never). Pure torch, laptop-importable.
+from inc8_reward import bsr3_update as sustained_spin_update
 
 # The REFINED-B (champion-consensus) reward -- pure functions, laptop-testable. This is the reward
 # THIS GENERATION TRAINS ON (default ON when +env.ego=true); it REPLACES the inc7 option-B reward the
@@ -268,14 +274,14 @@ def ego_window_indices(target_gates: Tensor, n_gates: int):
 
 
 # ================================================================================================
-# Actor obs assembly (26-dim, position-free) -- PURE, testable without diffaero.
+# Actor obs assembly (21-dim, position-free) -- PURE, testable without diffaero.
 # ================================================================================================
 def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
                   last_collective: Tensor, sector: Tensor, n_gates: int,
                   obs_coast: bool = False) -> Tensor:
-    """Assemble the 26-dim egocentric actor observation from the estimator outputs + visibility + the
-    coarse map. POSITION-FREE (only body-frame velocity / attitude / rates / relative geometry + the
-    heading-relative sector).
+    """Assemble the 21-dim (EGO_OBS_DIM) egocentric actor observation from the estimator outputs +
+    visibility + the coarse map. POSITION-FREE (only body-frame velocity / attitude / rates / relative
+    geometry + the heading-relative sector).
 
     Inputs:
       est               EgoEstimate (component A): velocity(N,3) body, roll_pitch(N,2), body_rates(N,3),
@@ -301,7 +307,7 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
     visible_area=0) when the slot is past the last gate OR confidence==0 (stale past horizon) OR --
     UNLESS obs_coast -- the gate is not detectable this step. The coarse_sector fed is sector[tg].
 
-    Returns (N, 26)."""
+    Returns (N, 21)."""
     assert torch is not None
     N = est.rel_pos.shape[0]
     dev, dt = est.rel_pos.device, est.rel_pos.dtype
@@ -342,9 +348,9 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
         est.body_rates,                                              # (N,3)
         last_collective,                                            # (N,1)
         coarse_sector,                                              # (N,2)
-        *slots,                                                     # 3 x (N,5) = (N,15)
+        *slots,                                                     # 2 x (N,5) = (N,10)
     ], dim=-1)
-    return obs                                                        # (N,26)
+    return obs                                                        # (N,21)
 
 
 # ================================================================================================
@@ -355,14 +361,14 @@ def ego_critic_state(rel_pos_true_body: Tensor, vel_body_true: Tensor, roll_pitc
                      n_gates: int) -> Tensor:
     """Assemble the PRIVILEGED critic state (GROUND TRUTH god-view).
 
-    LAYOUT (EGO_CRITIC_DIM = 20), in order:
+    LAYOUT (EGO_CRITIC_DIM = 16), in order:
       [0:3]   true body-frame velocity
       [3:5]   true roll, pitch
       [5:8]   true body rates
-      then per window slot k in {0,1,2} (current, next, next-next), clamped at the last gate:
+      then per window slot k in {0,1} (current, next; WINDOW=2), clamped at the last gate:
         [8+4k : 8+4k+3]   TRUE body-frame rel_pos of gate clamp(tg+k)      (3)
         [8+4k+3]          per-gate confidence of gate clamp(tg+k)          (1)
-    -> 8 + 3*4 = 20.
+    -> 8 + 2*4 = 16.
 
     The critic sees the TRUE relative geometry (unmasked, un-noised) for all window gates + the true
     velocity/attitude/rates, plus the (noised-pipeline) per-gate confidence so it can attribute the
@@ -370,7 +376,7 @@ def ego_critic_state(rel_pos_true_body: Tensor, vel_body_true: Tensor, roll_pitc
     critic is privileged, so no masking is needed; the confidence still reflects visibility.
 
     rel_pos_true_body (N,G,3); vel_body_true (N,3); roll_pitch_true (N,2); body_rates_true (N,3);
-    confidence (N,G); target_gates (N,). Returns (N, 20)."""
+    confidence (N,G); target_gates (N,). Returns (N, 16)."""
     assert torch is not None
     N = rel_pos_true_body.shape[0]
     dev, dt = rel_pos_true_body.device, rel_pos_true_body.dtype
@@ -381,7 +387,7 @@ def ego_critic_state(rel_pos_true_body: Tensor, vel_body_true: Tensor, roll_pitc
         g = gidx[:, k]
         parts.append(rel_pos_true_body[ar, g])                         # (N,3) TRUE
         parts.append(confidence[ar, g].unsqueeze(-1))                  # (N,1)
-    return torch.cat(parts, dim=-1)                                    # (N,20)
+    return torch.cat(parts, dim=-1)                                    # (N,16)
 
 
 def apply_contact_kill(reward: Tensor, gate_collision: Tensor, penalty: float) -> Tensor:
@@ -396,6 +402,75 @@ def true_rel_pos_body(gate_pos_zup: Tensor, drone_pos_zup: Tensor, R_wb_zup: Ten
     A pure difference rotated into the body frame -> translation-invariant, holds no world coordinate."""
     lever = gate_pos_zup - drone_pos_zup.unsqueeze(1)                   # (N,G,3)
     return torch.einsum("nji,ngj->ngi", R_wb_zup, lever)
+
+
+# ================================================================================================
+# PERCEPTION-HONESTY / HARD NO-SPIN helpers (2026-07-10, DESIGN.md §P) -- PURE, testable without
+# diffaero (the env class body is cluster-only, so ALL new step() logic lives in these module-level
+# functions + the imported sustained_spin_update; the class only wires them).
+#
+# OWNER DIRECTIVE (Fengyou): "I don't want the system to be spinning at all... REGARDLESS of how the
+# vision system behaves in the simulator." Non-spin is GUARANTEED by construction: (1) a FATAL
+# all-axis spin abort (sustained-rate clock OR'd with the leaky accumulated-rotation trigger below),
+# terminating collision-class (terminal_base + banked-progress forfeit) so no reward stream can pay
+# for living in a spin; (2) a hard yaw-COMMAND clamp at the point of application (clamp_yaw_command).
+# THRESHOLD-ORDERING INVARIANT (must hold in any stage that arms the package; pinned by
+# tests/test_vq2_ego_curriculum.py):
+#     realized yaw under the clamp (~3.5x the command)  <  ego_blur_rate_lo (blur-free band)
+#         <  ego_spin_rate_abort
+# so a full-authority pointing sweep is never blur-punished and never fatal -- a policy that cannot
+# spin can still SEE the gate by pointing the camera at it. A recalibration from the A2 curve that
+# breaks this ordering would strand the clamped policy blind (or make looking lethal): re-check it.
+# ================================================================================================
+def leaky_rotation_update(rot_accum: Tensor, omega: Tensor, dt: float, window_s: float,
+                          rev_abort: float):
+    """LEAKY ACCUMULATED-ROTATION trigger: catches slow-but-CONTINUOUS rotation the sustained-rate
+    clock misses (a scan at just under the rate abort), while a brief aggressive bank through a gate
+    stays legal (its impulse decays).
+
+        rot_accum' = rot_accum * exp(-dt / window_s) + ||omega|| * dt        (rad, leaky integral)
+        abort      = rot_accum' > 2*pi*rev_abort                              (rev_abort <= 0 -> never)
+
+    Steady state for constant ||omega|| is ~ ||omega|| * window_s, so with window_s=4.0 and
+    rev_abort=1.5 (threshold 3*pi ~ 9.42 rad) any sustained rotation above ~2.36 rad/s eventually
+    triggers, while a single ~130-deg gate bank (~2.27 rad impulse) decays harmlessly -- the
+    brief-aggressive-banking legality property. All-axis (||omega||, NOT yaw-only): A2 showed the
+    corkscrew cones through +/-130 deg of ROLL, so a yaw-only rule would invite roll/pitch
+    tumble-scan. NOTE the exponential leak approximates 'revolutions within a window', not a sliding
+    sum -- a pathological on-off duty cycle can sit under both triggers; both thresholds are knobs and
+    the first _percept run's realized-rate trace is the verification.
+
+    rot_accum (N,) rad; omega (N,3) realized FLU body rates; returns (new_accum, abort_mask)."""
+    assert torch is not None
+    decay = math.exp(-float(dt) / max(float(window_s), 1e-6))
+    new_accum = rot_accum * decay + torch.linalg.norm(omega, dim=-1) * float(dt)
+    if rev_abort <= 0.0:
+        return new_accum, torch.zeros_like(new_accum, dtype=torch.bool)
+    return new_accum, new_accum > (2.0 * math.pi * float(rev_abort))
+
+
+def clamp_yaw_command(action: Tensor, clamp_rad_s: float) -> Tensor:
+    """Hard yaw-AUTHORITY clamp at the point of command APPLICATION (invariant 3: the ACTION SPACE
+    stays +/-3.14 -- deploy's load_ego_actor hardcodes the network rescale bounds, so the clamp must
+    NEVER route through cfg.dynamics.controller.max_yaw_rate / dynamics.min/max_action).
+
+    action (..., 4) PHYSICAL [normed_thrust, roll_rate, pitch_rate, yaw_rate]; yaw = channel 3.
+    clamp_rad_s <= 0 -> the INPUT tensor is returned unchanged (no clamp, byte-identical). Otherwise a
+    CLONE with only channel 3 clamped to [-clamp, +clamp] is returned -- the input is never mutated
+    (the caller may hold references). The env applies this ONCE at the very top of step() so a_norm
+    (smoothness reward), last_action (obs channel 8 feed) and the plant all see the APPLIED command.
+
+    DEPLOY-PARITY FOOTGUN (loud, also in DESIGN.md §P + the launch box): a training-side clamp shapes
+    what the policy LEARNS but does NOT bind the deployed network -- fly_rl still rescales to +/-3.14.
+    Any flight of a clamp-trained checkpoint MUST pass the matching deploy-side yaw cap
+    (fly_rl.policy_step max_rate / yaw_scale) == ego_yaw_cmd_clamp_rad_s, or the spin door re-opens
+    on the wire."""
+    assert torch is not None
+    if clamp_rad_s <= 0.0:
+        return action
+    out = action.clone()
+    out[..., 3] = out[..., 3].clamp(-clamp_rad_s, clamp_rad_s)
+    return out
 
 
 # ================================================================================================
@@ -515,6 +590,35 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # term in ego_actor_obs so the coasted rel_pos + linearly-decaying confidence feed the obs during a
         # blackout, masking only past the estimator's stale horizon (conf==0) -- the DESIGN.md §5.A intent.
         self._ego_obs_coast = bool(getattr(cfg, "ego_obs_coast", False))
+        # ===== PERCEPTION-HONESTY / HARD NO-SPIN package (2026-07-10, DESIGN.md §P). ALL knobs
+        # default-OFF == byte-identical (blur False, aborts 0.0, clamp 0.0). Armed only by the NEW
+        # *_percept curriculum stages. NOTE the knob names are deliberately ego_spin_* / ego_blur_* /
+        # ego_yaw_* -- NOT the inc8 spin_rate_abort/spin_time_abort names -- so a stale sbatch still
+        # passing the old (inc8-only, unread-here) keys can never silently arm this gate.
+        # MOTION-BLUR gate: gate_detectable is a PERFECT SHUTTER (no motion input); when ON, a hard
+        # deterministic LOS-perp-rate cutoff ANDs into detectable at BOTH call sites, and a stochastic
+        # soft band raises the estimator's existing miss draw. lo/hi are PLACEHOLDER numbers pending
+        # the measured A2 detect-vs-angular-rate curve (invariant 6) -- structure right, numbers later.
+        # Deliberately INDEPENDENT of ego_noise_scale (camera physics; the noise-0 boot must see blur).
+        self._blur_gate = bool(getattr(cfg, "ego_blur_gate", False))
+        self._blur_rate_lo = float(getattr(cfg, "ego_blur_rate_lo_rad_s", 2.0))   # PLACEHOLDER (A2 pending)
+        self._blur_rate_hi = float(getattr(cfg, "ego_blur_rate_hi_rad_s", 4.0))   # PLACEHOLDER (A2 pending)
+        self._blur_miss_max = float(getattr(cfg, "ego_blur_miss_max", 1.0))       # 1.0 -> continuous w/ hard cut
+        # FATAL SPIN ABORT (all-axis, realized ||omega||): sustained-rate clock OR leaky accumulated-
+        # rotation trigger; a firing abort terminates COLLISION-CLASS (terminal_base + banked forfeit)
+        # on BOTH reward paths (see step()). 0.0 == OFF (defaults).
+        self._spin_rate_abort = float(getattr(cfg, "ego_spin_rate_abort", 0.0))   # rad/s; 0 == OFF
+        self._spin_time_abort = float(getattr(cfg, "ego_spin_time_abort", 0.4))   # s sustained
+        self._spin_rev_abort = float(getattr(cfg, "ego_spin_rev_abort", 0.0))     # revolutions; 0 == OFF
+        self._spin_rev_window_s = float(getattr(cfg, "ego_spin_rev_window_s", 4.0))  # leaky window (s)
+        # YAW-COMMAND clamp at the point of APPLICATION (action space unchanged -- invariant 3; see
+        # clamp_yaw_command's deploy-parity footgun). Realized yaw ~ 3.5x the command (empirical, A2):
+        # 0.35 commanded ~ 1.2 rad/s realized. 0.0 == OFF (default).
+        self._yaw_cmd_clamp = float(getattr(cfg, "ego_yaw_cmd_clamp_rad_s", 0.0))
+        self._spin_clock = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        self._rot_accum = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        # last detectable mask from _step_estimator (diagnostics: target_detectable_duty).
+        self._last_detectable = torch.zeros(self.n_envs, self.n_gates, dtype=torch.bool, device=dev)
         # estimator config (all knobs Fengyou-pinnable via +env.*)
         ecfg = EgoEstimatorConfig(
             visible_area_sigma=float(getattr(cfg, "ego_visible_area_sigma",
@@ -649,6 +753,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         if getattr(self, "_ego_on", False) and hasattr(self, "_estimator"):
             self._reset_estimator(env_idx)
             self._prev_q[env_idx] = self._q[env_idx]
+            # fatal-spin-abort state: fresh episode -> zero the sustained clock + rotation accumulator.
+            self._spin_clock[env_idx] = 0.0
+            self._rot_accum[env_idx] = 0.0
             # clear the ONCE-PER-GATE parabola latch for EVERY reset path: step() funnels BOTH
             # terminated and truncated (timeout) envs through reset_idx, so this is the single choke
             # point -- a latch surviving a truncation would silently suppress the NEXT episode's first
@@ -732,12 +839,33 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         R_wb = quat_xyzw_to_matrix_torch(self._q)
         return R_wb @ self._Rz_cam if self._cam_flip else R_wb
 
+    # ---- MOTION-BLUR gate (perception-honesty package; DETERMINISTIC pure function of truth) -----
+    def _blur_los_rate(self):
+        """LOS-perpendicular angular rate (N,G) of every gate, or None when the blur gate is OFF.
+        Uses the UNFLIPPED self._q (the rate magnitude is invariant under the rigid camera z-flip)
+        and the TRUTH realized rates self._w. Pure + deterministic-per-state, so the two detectable
+        call sites (_step_estimator and _current_detectable) stay automatically consistent -- the
+        line-546 'detectable is a pure stateless function of the current truth' contract holds."""
+        if not self._blur_gate:
+            return None
+        return gate_los_perp_rate(self._p, self._q, self.gate_pos, self._w, is_quat=True)
+
     # ---- STEP the estimator one control step at the CURRENT truth (mutates estimator state) ----
     def _step_estimator(self, prev_q):
         with torch.no_grad():
             cam_R = self._cam_R_wb()
             detectable, _ = gate_detectable(self._p, cam_R, self.gate_pos, self.gate_yaw,
                                             far_cap_m=self._ego_cfg.far_cap_m, is_quat=False)
+            # MOTION-BLUR (default OFF == byte-identical): hard deterministic cutoff on detectable at
+            # rate >= hi; the [lo, hi) soft band goes to the estimator as extra miss probability (the
+            # stochastic part lives ONLY inside the estimator's existing miss draw).
+            extra_miss = None
+            los_rate = self._blur_los_rate()
+            if los_rate is not None:
+                detectable = detectable & (los_rate < self._blur_rate_hi)
+                extra_miss = blur_extra_miss_prob(los_rate, self._blur_rate_lo,
+                                                  self._blur_rate_hi, self._blur_miss_max)
+            self._last_detectable = detectable          # diagnostics (target_detectable_duty)
             # APPARENT projected opening area (normalized, square-on==1), computed with the EMULATED
             # (flipped) camera so the obs matches what the detector sees. Stored (GT, noiseless) for the
             # reward's area-distance coupling; passed to the estimator which noises it for the obs.
@@ -746,7 +874,8 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self._apparent_area_gt = apparent_area
             est = self._estimator.step(self._p, self._v, self._q, self._w, float(self.dt),
                                        detectable=detectable, prev_quat=prev_q,
-                                       apparent_area=apparent_area)
+                                       apparent_area=apparent_area,
+                                       blur_extra_miss=extra_miss)
         self._stepped = True
         return est, detectable
 
@@ -754,9 +883,14 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         with torch.no_grad():
             detectable, _ = gate_detectable(self._p, self._cam_R_wb(), self.gate_pos, self.gate_yaw,
                                             far_cap_m=self._ego_cfg.far_cap_m, is_quat=False)
+            # SAME deterministic blur hard-cut as _step_estimator (both read the same current truth
+            # state, so the obs mask and the estimator fix mask agree within a step by construction).
+            los_rate = self._blur_los_rate()
+            if los_rate is not None:
+                detectable = detectable & (los_rate < self._blur_rate_hi)
         return detectable
 
-    # ---- observation (ego 26-dim; OFF -> byte-identical inc7) ----------------------------------
+    # ---- observation (ego 21-dim; OFF -> byte-identical inc7) ----------------------------------
     def get_observations(self, with_grad=False):
         if not self._ego_on:
             return super().get_observations(with_grad)
@@ -793,6 +927,12 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         if not self._ego_on:
             return super().step(action, next_obs_before_reset, next_state_before_reset)
         ar, G = self._arange, self.n_gates
+        # PERCEPTION-HONESTY yaw clamp: applied ONCE at the very top (before the prev clones and
+        # dynamics.step) so a_norm (smoothness reward), last_action (obs feed) and the plant ALL see
+        # the APPLIED command -- reward/plant/obs stay mutually consistent. clone-semantics: the
+        # caller's action tensor is never mutated. OFF (clamp 0.0, default) -> byte-identical.
+        if self._yaw_cmd_clamp > 0.0:
+            action = clamp_yaw_command(action, self._yaw_cmd_clamp)
         prev_pos = self._p.clone()
         prev_q = self._q.clone()
         self.dynamics.step(action)
@@ -802,6 +942,16 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # ego-propagation rotation). The final get_observations() below reads this stepped state.
         self._step_estimator(prev_q)
         self._prev_q = self._q.clone()
+
+        # ===== FATAL SPIN ABORT (owner directive: non-spin GUARANTEED by construction). All-axis on
+        # the POST-step realized rates self._w: the sustained-rate clock (reused inc8 BSR3) OR'd with
+        # the leaky accumulated-rotation trigger (catches slow-continuous scan; a brief gate bank
+        # decays). Defaults (0.0/0.0) == both permanently False == byte-identical.
+        self._spin_clock, _spin_ab1 = sustained_spin_update(
+            self._spin_clock, self._w, float(self.dt), self._spin_rate_abort, self._spin_time_abort)
+        self._rot_accum, _spin_ab2 = leaky_rotation_update(
+            self._rot_accum, self._w, float(self.dt), self._spin_rev_window_s, self._spin_rev_abort)
+        spin_abort = _spin_ab1 | _spin_ab2
 
         # ===== crossings / terminations / advance: VERBATIM inc7 (frozen contact contract) =====
         rel_prev = world_to_gateframe(prev_pos[:, None, :] - self.gate_pos, self.gate_yaw)
@@ -860,8 +1010,17 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # in collision_rate (honest: a floor dive IS a crash). ``oob`` then means a LATERAL/CEILING arena
         # exit only (kept distinct so it can later be tuned independently of the lethal floor).
         below_floor = curr_pos[:, 2] < self.box_min[:, 2]
-        gate_collision = gate_collision | below_floor
-        oob = oob_full & ~below_floor
+        # LETHAL mask = the crash-class terminals: floor contact + the FATAL SPIN ABORT. The spin abort
+        # rides the SAME wiring as the floor dive everywhere downstream (gate_collision fold here; the
+        # parabola path's floor_contact= / forfeit_mask= kwargs below) so it pays the COLLISION-CLASS
+        # terminal (terminal_base + banked-progress forfeit) under BOTH reward regimes -- under the
+        # champion parabola regime the terminal fires on floor+oob ONLY (ego_reward.py:839-843), so a
+        # spin abort routed solely through gate_collision would terminate PENALTY-FREE with banked
+        # progress kept (spin-to-exit strictly cheaper than a miss -- the exact degenerate optimum the
+        # owner directive forbids). spin_abort == all-False at defaults -> byte-identical.
+        lethal = below_floor | spin_abort
+        gate_collision = gate_collision | lethal
+        oob = oob_full & ~lethal
 
         # ===== HARD KILL-ON-CONTACT: any gate contact -> done + large negative reward =====
         # A wide flyby (gate_miss) terminates ONLY when miss_terminates (default). When OFF it does not
@@ -944,17 +1103,22 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # MPCC CONTOURING: previous-step perp offset for the PBRS contouring potential (OFF unless
                 # rw_corridor>0). perp_dist above is the current-step offset from the same segment.
                 perp_prev=self._corr_perp_prev,
-                # FRAME-MOAT fix: when frame_clip_is_miss, ONLY the floor dive forfeits banked progress
-                # (a frame-clip then nets == a wide miss -> no moat around the aperture). Else None ->
-                # every contact forfeits (legacy). below_floor is the GT floor-contact mask this step.
-                forfeit_mask=(below_floor.to(self._ego_dtype) if self._frame_clip_is_miss else None),
+                # FRAME-MOAT fix: when frame_clip_is_miss, ONLY the crash-class LETHAL mask (floor dive
+                # + fatal spin abort) forfeits banked progress (a frame-clip then nets == a wide miss ->
+                # no moat around the aperture). Else None -> every contact forfeits (legacy). ``lethal``
+                # == below_floor at defaults (spin abort off) -> byte-identical.
+                forfeit_mask=(lethal.to(self._ego_dtype) if self._frame_clip_is_miss else None),
                 # GVF direction-alignment field (None unless rw_align>0): reward velocity-direction following
                 # the guiding field so a parallel-flying standing offset is still pressured onto the line.
                 line_tangent=line_tangent, line_inward=line_inward,
                 # SMOOTH PARABOLIC CROSSING (None-safe; active only when rw_parabola_crossing): the L-inf
-                # crossing offset + the forward target-plane crossing mask + the floor mask (so the terminal
-                # penalty fires on floor+oob only, frame-clip/miss paying the smooth parabola instead).
-                cross_offset=pass_linf, crossed=fwd_t, floor_contact=below_floor.to(self._ego_dtype),
+                # crossing offset + the forward target-plane crossing mask + the CRASH-CLASS mask (so the
+                # terminal penalty fires on floor+oob+SPIN only, frame-clip/miss paying the smooth parabola
+                # instead). ``lethal`` (NOT bare below_floor) is LOAD-BEARING for the no-spin guarantee:
+                # under the parabola regime this kwarg is the ONLY route to the contact terminal, so a spin
+                # abort must ride it or spinning becomes a penalty-free episode exit. == below_floor at
+                # defaults (spin abort off) -> byte-identical.
+                cross_offset=pass_linf, crossed=fwd_t, floor_contact=lethal.to(self._ego_dtype),
                 # ONCE-PER-GATE parabola latch: the env-owned per-env bool buffer, mutated IN PLACE by
                 # crossing_parabola_reward (marked where crossed) ONLY when rw_parabola_latch is on --
                 # with the flag off (default) the reward fn neither reads nor writes it (byte-identical).
@@ -1008,6 +1172,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # refined-B compute_ego_reward does not, so set it here for BOTH paths (base convention: the
         # negative mean reward). Idempotent on the legacy path (overwrites the same value).
         loss_components["total_loss"] = float(-reward.mean().item())
+        # ===== PERCEPTION-HONESTY diagnostics (free, both reward paths; adjudicate from TRAINING
+        # METRICS, never renders). target_detectable_duty = fraction of envs whose CURRENT TARGET gate
+        # is detectable this step (blur-gated when the gate is on) -- vn16's spin-scan measured 40.8%;
+        # a healthy _percept run should climb WELL ABOVE that (the blind-policy failure mode shows here
+        # as a collapse). spin_* read the no-spin package's bite (early nonzero abort = the gate is
+        # teaching; ~0 by convergence).
+        loss_components["target_detectable_duty"] = float(self._last_detectable[ar, tg].float().mean())
+        loss_components["spin_abort_rate"] = float(spin_abort.float().mean())
+        loss_components["spin_rot_accum_mean"] = float(self._rot_accum.mean())
 
         loss = (-reward).detach()
         reward = reward.detach()
@@ -1034,6 +1207,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 return m
             c_thread = _take(success)                                       # threaded the gate (WIN)
             c_floor = _take(below_floor)                                    # dived below the floor (contact)
+            # FATAL SPIN ABORT: its OWN exit class (after floor, before frame) so collision_rate
+            # comparisons vs non-percept twins stay interpretable -- ego_collision_rate INCLUDES spin
+            # aborts on _percept stages; subtract exit_spin / spin_abort_rate to read gate contact.
+            c_spin = _take(spin_abort)                                      # fatal spin abort (crash-class)
             c_frame = _take(gate_collision)                                 # hit the gate FRAME (contact, non-floor)
             c_pmiss = _take(gate_miss)                                      # crossed the gate PLANE wide (in-bounds)
             c_ceil = _take(oob & (cp[:, 2] > bx_hi[:, 2]))                 # climbed out the CEILING
@@ -1061,6 +1238,8 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # box-exit breakdown (mutually exclusive, sum ~1) -> metrics/exit_*
                 "exit_thread": c_thread[reset].float(),
                 "exit_floor": c_floor[reset].float(),
+                "exit_spin": c_spin[reset].float(),
+                "spin_abort_rate": spin_abort[reset].float(),
                 "exit_frame": c_frame[reset].float(),
                 "exit_plane_miss": c_pmiss[reset].float(),
                 "exit_ceiling": c_ceil[reset].float(),
