@@ -79,6 +79,14 @@ from inc8_estimator_emul import (
     GRAVITY_NED_NP,
     quat_xyzw_to_matrix_torch,
 )
+# ESTIMATOR-FAITHFUL package (2026-07-11): the batched deploy-filter translations. Default-OFF --
+# constructed only when the att/vel model knobs arm them (see EgoEstimatorConfig below).
+from ego_ins_emul import (
+    BatchedESKFLeveler,
+    BatchedNavKF,
+    KF_FIX_COV_FLOOR_STD,
+    quat_from_roll_pitch_yaw_zyx,
+)
 # The visibility gate (pure truth geometry) -- optional dependency: the env passes a precomputed
 # ``detectable`` mask into step(); we import gate_detectable so the estimator can compute it itself
 # when the caller does not (and so a test can drive it end-to-end).
@@ -161,6 +169,33 @@ class EgoEstimatorConfig:
     rel_pos_std_init: float = 5.0        # INERT (2026-07-10): only seeded the deleted _rel_var buffer;
     #                                      kept so a cfg that sets it does not crash (see latency_cov_inflate)
     far_cap_m: float = 30.0              # visibility far cap (passed to gate_detectable)
+
+    # ---- ESTIMATOR-FAITHFUL obs models (2026-07-11 package; owner directive: the actor NEVER sees
+    # GT). Defaults == current behaviour EXACTLY (byte-identical, zero new RNG draws on the legacy
+    # branches). Armed by +env.ego_faithful=true (all three) or per-channel for ablation. The
+    # emulated filters are ALGORITHM-STRUCTURAL and DELIBERATELY NOT scaled by noise_scale (blur
+    # precedent: the noise-0 calibration boot must still fly the lying leveler, or the fullstack
+    # inherits a boot trained on truth attitude -- the exact fatal gap this package closes); only
+    # the vision-fix noise feeding the KF scales with noise_scale (it already does). ----
+    # 'gt'  : roll/pitch = perfect extraction of the truth quat (LEGACY -- the measured-fatal lie).
+    # 'eskf': roll/pitch = the translated deploy ESKF leveler (ego_ins_emul.BatchedESKFLeveler,
+    #         full gate stack incl. A8 motion-reject), stepped ONCE per control tick on the LATEST
+    #         IMU sample (the verified deploy rate contract), seeded at truth roll/pitch + yaw
+    #         datum 0 with the PAD-CONVERGED launch covariance.
+    att_model: str = "gt"
+    # 'legacy': truth-seeded bias-drift + 0.15-gain pull toward truth at a fix (a hand-modeled
+    #           surrogate -- reproduces NEITHER deploy error injection).
+    # 'kf'    : the translated deploy LinearKF in the per-env yaw-DATUM world frame: strapdown
+    #           predict through the EMULATED attitude + position-fix-only corrections
+    #           (PnP-through-estimated-attitude measurement model), velocity projected world->body
+    #           through the SAME emulated attitude -- both deploy error injections reproduced.
+    vel_model: str = "legacy"
+    # 'ar1'    : truth + AR(1) noise (rho .75 / sigma 5e-5 -- provenance-free, retired on the
+    #            faithful path).
+    # 'sampled': the raw latest gyro sample with MEASURED-ZERO added noise (a5 pad-idle: the sim
+    #            IMU is noiseless -- rl/tools/imu_foundation.py; deploy obs[5:8] = s.gyro_body RAW,
+    #            fly_rl.py:1810). No RNG draw on this path.
+    rate_model: str = "ar1"
 
     # ---- GLOBAL noise scale (DIAGNOSTIC lever, Fengyou 2026-07-09; the perception-vs-control ablation) ----
     # A single multiplier on ALL injected estimator noise/corruption: the anisotropic vision fix sigma,
@@ -305,6 +340,27 @@ class BatchedEgoEstimator:
         self._n_eff = torch.full((N, G), self.cfg.n_eff_mean(), device=device, dtype=dtype)
         self._bias = torch.zeros(N, G, 3, device=device, dtype=dtype)   # per-episode gate-frame in-plane bias
 
+        # ---- ESTIMATOR-FAITHFUL sub-filters (2026-07-11; constructed ONLY when armed -- the
+        # default 'gt'/'legacy'/'ar1' path allocates nothing and draws nothing). Both cores run in
+        # the env Z-up/FLU frame with a per-env yaw-0 DATUM (the ESKF's own frame, exactly deploy):
+        # gravity VECTOR [0,0,-g]; at-rest specific force [0,0,+g]. The datum-frame course tensors
+        # below are estimator-INTERNAL only (deploy also holds a world-frame KF); the obs stays
+        # body-frame (contract intact). ----
+        self._att_emul = (self.cfg.att_model == "eskf")
+        self._vel_emul = (self.cfg.vel_model == "kf")
+        self._rate_sampled = (self.cfg.rate_model == "sampled")
+        _g_world_zup = [0.0, 0.0, -GRAVITY_MAG]
+        self._eskf = (BatchedESKFLeveler(N, _g_world_zup, device=device, dtype=dtype)
+                      if self._att_emul else None)
+        self._navkf = (BatchedNavKF(N, _g_world_zup, device=device, dtype=dtype)
+                       if self._vel_emul else None)
+        if self._vel_emul:
+            # per-env datum-frame course geometry + the Rz(-yaw0) map, built at reset_idx
+            self._gate_pos_datum = torch.zeros(N, G, 3, device=device, dtype=dtype)
+            self._R_datum_gate = torch.zeros(N, G, 3, 3, device=device, dtype=dtype)
+            self._Rz_neg_yaw0 = torch.eye(3, device=device, dtype=dtype) \
+                .unsqueeze(0).repeat(N, 1, 1)
+
     # -------------------------------------------------------------------- helpers
     def _randn(self, *shape):
         return torch.randn(*shape, device=self.device, dtype=self.dtype, generator=self.gen)
@@ -406,11 +462,44 @@ class BatchedEgoEstimator:
         else:
             self._bias[idx] = 0.0
 
+        # ---- ESTIMATOR-FAITHFUL cold-init (branch-gated; draws NOTHING -- RNG stream discipline
+        # trivially satisfied). Placed AFTER every legacy draw so the legacy sequence stays
+        # byte-verbatim. ----
+        if self._att_emul:
+            # deploy-faithful takeoff state: the wire level-seeds on the pad and converges over
+            # ~100 s idle, so at handover the leveler is ~truth roll/pitch with an arbitrary-0 yaw
+            # datum and the PAD-CONVERGED covariance (ego_ins_emul.eskf_p_launch, measured).
+            rp = _euler_roll_pitch_from_R(R_wb)                              # (m,2) truth roll/pitch
+            q0 = quat_from_roll_pitch_yaw_zyx(rp[:, 0], rp[:, 1], torch.zeros_like(rp[:, 0]))
+            self._eskf.reset_idx(idx, q0)
+        if self._vel_emul:
+            # yaw-datum world frame: rotate by Rz(-yaw0) (yaw0 = spawn true yaw -- exact under the
+            # measured-zero gyro noise/bias; if a future sim adds gyro noise the datum drifts and
+            # this construction needs the drifting q_emul yaw instead -- flagged risk), origin at
+            # the spawn (deploy: nav world origin = boot position; KF pos seeds 0 / std 5).
+            yaw0 = torch.atan2(R_wb[:, 1, 0], R_wb[:, 0, 0])                 # (m,)
+            c, s = torch.cos(yaw0), torch.sin(yaw0)
+            z, o = torch.zeros_like(c), torch.ones_like(c)
+            Rz = torch.stack([                                               # Rz(-yaw0)
+                torch.stack([c, s, z], dim=-1),
+                torch.stack([-s, c, z], dim=-1),
+                torch.stack([z, z, o], dim=-1),
+            ], dim=-2)                                                       # (m,3,3)
+            self._Rz_neg_yaw0[idx] = Rz
+            lever0 = self.gate_pos[idx] - drone_pos.unsqueeze(1)             # (m,G,3)
+            self._gate_pos_datum[idx] = torch.einsum("mij,mgj->mgi", Rz, lever0)
+            self._R_datum_gate[idx] = torch.einsum("mij,mgjk->mgik", Rz, self.R_world_gate[idx])
+            vel0 = torch.einsum("mij,mj->mi", Rz, drone_vel)                 # datum-frame spawn vel
+            # deploy seeds pos=origin / vel=0 with the drone PARKED (== exact truth); training
+            # spawns mid-takeoff, so the datum-frame truth IS the deploy-faithful takeoff seed.
+            self._navkf.reset_idx(idx, torch.zeros_like(vel0), vel0)
+
     # -------------------------------------------------------------------- the step
     def step(self, drone_pos: Tensor, drone_vel: Tensor, drone_quat: Tensor,
              body_rates: Tensor, dt: float, detectable: Tensor | None = None,
              prev_quat: Tensor | None = None, apparent_area: Tensor | None = None,
-             *, blur_extra_miss: Tensor | None = None) -> EgoEstimate:
+             *, blur_extra_miss: Tensor | None = None,
+             sf_body: Tensor | None = None, gyro_sample: Tensor | None = None) -> EgoEstimate:
         """Advance ALL envs one control step and return the current estimate.
 
         Inputs (Z-up / FLU truth, available in training):
@@ -433,6 +522,13 @@ class BatchedEgoEstimator:
                              DELIBERATELY NOT multiplied by noise_scale: blur is CAMERA PHYSICS, not
                              estimator corruption -- the noise-0 calibration boot stage MUST still see
                              blur, or the boot re-learns the spin-scan gait the package exists to kill.
+          sf_body    (N,3)   ESTIMATOR-FAITHFUL package: the LATEST-sample body specific force (FLU,
+                             m/s^2, from the plant's capture_specific_force hook -- the last substep's
+                             sample, exactly the wire's newest-IMU-sample semantics). REQUIRED when
+                             att_model=='eskf' or vel_model=='kf'; None (default) == legacy paths only.
+          gyro_sample (N,3)  the LATEST-sample body rates (FLU); defaults to ``body_rates`` (with
+                             n_substeps>1 the env passes truth self._w == the final substep's rate ==
+                             the wire's newest-sample gyro, so the default is already correct).
 
         Returns an ``EgoEstimate``. NO world position / heading anywhere in the returned tensors or state.
         """
@@ -440,20 +536,57 @@ class BatchedEgoEstimator:
         N, G = self.n, self.G
         R_wb = self._R_wb(drone_quat)                                       # (N,3,3)
 
-        # ---- attitude: gravity-leveled roll/pitch (accelerometer) + colored gyro rates ----
-        self._roll_pitch = _euler_roll_pitch_from_R(R_wb)
-        # AR(1) colored gyro noise: e_t = rho*e_{t-1} + sqrt(1-rho^2)*sigma*w_t (stationary marginal sigma)
-        rho = self.cfg.gyro_ar1_rho
-        innov = ((1.0 - rho * rho) ** 0.5) * self.cfg.gyro_sigma * self.cfg.noise_scale * self._randn(N, 3)
-        self._gyro_ar = rho * self._gyro_ar + innov
-        self._body_rates = body_rates + self._gyro_ar
+        # ---- rates: sampled raw gyro (faithful) OR legacy AR(1) colored noise ----
+        gyro_used = gyro_sample if gyro_sample is not None else body_rates
+        if self._rate_sampled:
+            # FAITHFUL path: deploy obs[5:8] = the RAW sign-corrected latest gyro sample
+            # (fly_rl.py:1810 s.gyro_body, NOT the AHRS bias-corrected rate). MEASURED-ZERO sensor
+            # noise (a5 pad-idle, imu_foundation.py) -> nothing added, NO RNG draw on this branch
+            # (the legacy _randn below is NOT executed -- new path owns its own draw count).
+            self._body_rates = gyro_used
+        else:
+            # LEGACY (default; BYTE-IDENTICAL draw sequence): AR(1) colored gyro noise
+            # e_t = rho*e_{t-1} + sqrt(1-rho^2)*sigma*w_t (stationary marginal sigma)
+            rho = self.cfg.gyro_ar1_rho
+            innov = ((1.0 - rho * rho) ** 0.5) * self.cfg.gyro_sigma * self.cfg.noise_scale * self._randn(N, 3)
+            self._gyro_ar = rho * self._gyro_ar + innov
+            self._body_rates = body_rates + self._gyro_ar
 
-        # ---- IMU velocity: bias-dominated drift + tiny uniform white accel noise ----
-        # Body-frame velocity integrates a residual accel bias (the drift lever) + white noise. We work
-        # directly in the BODY frame (no world). The bias is the per-episode residual; over Delta-t
-        # since the last fix this integrates to bias*Delta_t (the dominant error). White noise is tiny.
-        white = self.cfg.accel_white_sigma * self.cfg.noise_scale * self._randn(N, 3)
-        self._vel_body = self._vel_body + dt * (self._accel_bias + white)
+        # ---- attitude: emulated deploy ESKF leveler (faithful) OR perfect truth extraction ----
+        R_datum = None                       # body->datum rotation the KF/velocity path shares
+        if self._att_emul:
+            if sf_body is None:
+                raise RuntimeError("att_model='eskf' requires sf_body= (arm "
+                                   "++dynamics.capture_specific_force=true and wire the env)")
+            # ONE step per control tick on the LATEST sample -- the verified deploy rate contract
+            # (navigator.py:585-607; a 143 Hz substep loop would be LESS faithful AND ~5x the cost).
+            self._eskf.step(gyro_used, sf_body, dt)
+            R_datum = self._eskf.R_wb()                                     # body->datum-world
+            # THE obs-parity point: the SAME extraction the legacy path / deploy roll_pitch_zup
+            # uses, applied to the EMULATED (possibly lying) attitude. Yaw datum never reaches obs.
+            self._roll_pitch = _euler_roll_pitch_from_R(R_datum)
+        else:
+            self._roll_pitch = _euler_roll_pitch_from_R(R_wb)
+
+        # ---- velocity: emulated deploy KF strapdown (faithful) OR legacy bias-drift ----
+        if self._vel_emul:
+            if sf_body is None:
+                raise RuntimeError("vel_model='kf' requires sf_body= (arm "
+                                   "++dynamics.capture_specific_force=true and wire the env)")
+            if R_datum is None:
+                # ablation combo (vel='kf', att='gt'): project through the TRUTH attitude mapped
+                # into the datum frame (no attitude corruption -- that is the ablation's point).
+                R_datum = torch.einsum("nij,njk->nik", self._Rz_neg_yaw0, R_wb)
+            # strapdown predict through the EMULATED attitude -- the load-bearing error coupling
+            # (wrong gravity cancellation; deploy state_estimator.predict). Fix updates + the
+            # world->body projection happen below, after the fix stream is computed.
+            self._navkf.predict(sf_body, R_datum, dt)
+        else:
+            # LEGACY (default; BYTE-IDENTICAL): body-frame velocity integrates a residual accel
+            # bias (the drift lever) + tiny white noise (per-episode residual; over Delta-t since
+            # the last fix this integrates to bias*Delta_t -- the dominant error).
+            white = self.cfg.accel_white_sigma * self.cfg.noise_scale * self._randn(N, 3)
+            self._vel_body = self._vel_body + dt * (self._accel_bias + white)
 
         # ---- ego-propagate each gate's relative vector through the (possible) no-fix gap ----
         # rel_pos_body_new = R_prev_from_cur @ rel_pos_body_old  - v_body*dt.
@@ -563,17 +696,40 @@ class BatchedEgoEstimator:
         self._visible_area = torch.where(accepted, area_noisy, self._visible_area)
 
         # ---- velocity correction: INDIRECT only (NO direct vision-velocity observation) ----
-        # The VQ2 wire carries no velocity measurement; the deploy KF corrects velocity SOLELY through
-        # gate-relative POSITION fixes via the pos-vel cross-covariance (vision commander 2026-07-06).
-        # We model that as a small PARTIAL gain toward truth body velocity at an accepted fix -- NOT a
-        # snap. Velocity stays IMU-primary; the fix stream only weakly/gradually bounds the drift (and
-        # given the very quiet IMU the residual is small). Body-frame v only; NO world velocity.
-        any_fix = accepted.any(dim=1)                                      # (N,)
-        vel_body_true = torch.einsum("nji,nj->ni", R_wb, drone_vel)        # R_wb^T @ v_world (body)
-        gv = self.cfg.vel_correct_gain
-        self._vel_body = torch.where(any_fix.unsqueeze(-1),
-                                     self._vel_body + gv * (vel_body_true - self._vel_body),
-                                     self._vel_body)
+        if self._vel_emul:
+            # FAITHFUL path: position fixes into the translated KF -- velocity corrected ONLY via
+            # the pos/vel cross-covariance (the deploy mechanism, not a hand gain). Measurement
+            # model = PnP-through-estimated-attitude: z = gate_pos_datum - R_datum @ fix_body,
+            # exactly how deploy's gate_pose_to_world_position inherits the attitude error. The
+            # fix covariance is the training-measured per-fix gate-frame sigma (which IS the
+            # measured end-to-end fix-error contract) rotated to the datum frame, each axis floored
+            # at the deploy FIX_COV_FLOOR_STD=0.40 m -- an explicit SURROGATE for the deploy
+            # 3-channel chain (absolute + gate-rel in-plane + range); the full-chain translation is
+            # the priced upgrade if the velocity benchmark misses. Teleport-class outliers are
+            # rejected by the KF's chi2(3) fix gate (deploy md<=16.27), like the wire chain.
+            z_datum = self._gate_pos_datum - torch.einsum("nij,ngj->ngi", R_datum, fix_body)
+            sig = torch.clamp(sigma_gate, min=KF_FIX_COV_FLOOR_STD)         # (N,G,3) gate frame
+            cov = torch.einsum("ngij,ngj,ngkj->ngik", self._R_datum_gate, sig * sig,
+                               self._R_datum_gate)                          # R diag(sig^2) R^T
+            for gi in range(G):                                             # sequential channel
+                self._navkf.update_position(z_datum[:, gi], cov[:, gi], accepted[:, gi])
+            # obs velocity = KF world velocity projected world->body through the SAME (emulated)
+            # attitude (deploy ego_obs.py:305-321) -- the second attitude-error injection. The yaw
+            # datum cancels to first order (KF velocity and projection share it; ADJUDICATED).
+            self._vel_body = torch.einsum("nji,nj->ni", R_datum, self._navkf.velocity)
+        else:
+            # LEGACY (default; BYTE-IDENTICAL): the VQ2 wire carries no velocity measurement; the
+            # deploy KF corrects velocity SOLELY through gate-relative POSITION fixes via the
+            # pos-vel cross-covariance (vision commander 2026-07-06). Modeled as a small PARTIAL
+            # gain toward truth body velocity at an accepted fix -- NOT a snap. Velocity stays
+            # IMU-primary; the fix stream only weakly/gradually bounds the drift (and given the
+            # very quiet IMU the residual is small). Body-frame v only; NO world velocity.
+            any_fix = accepted.any(dim=1)                                      # (N,)
+            vel_body_true = torch.einsum("nji,nj->ni", R_wb, drone_vel)        # R_wb^T @ v (body)
+            gv = self.cfg.vel_correct_gain
+            self._vel_body = torch.where(any_fix.unsqueeze(-1),
+                                         self._vel_body + gv * (vel_body_true - self._vel_body),
+                                         self._vel_body)
 
         # ---- staleness clock reset on a fix ----
         self._t_since_fix = torch.where(accepted, torch.zeros_like(self._t_since_fix),

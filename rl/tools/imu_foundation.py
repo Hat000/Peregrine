@@ -42,7 +42,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from pymavlink import mavutil
 
 G = 9.80665
 
@@ -56,6 +55,7 @@ def load_highres_imu(tlog_path: str):
 
     FOOTGUN APPLIED: raw tlog gyro is all-axes negated vs true FRD -> negate.
     """
+    from pymavlink import mavutil     # lazy: fixture-mode consumers (pytest) don't need pymavlink
     m = mavutil.mavlink_connection(tlog_path, dialect="common", robust_parsing=True)
     t, acc, gyr = [], [], []
     while True:

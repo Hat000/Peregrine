@@ -61,7 +61,9 @@ except Exception:                       # pragma: no cover - torch absent in som
     Tensor = "Tensor"                   # type: ignore
 
 # Component A (estimator) + B (visibility). Pure-torch, no diffaero.
-from ego_estimator import BatchedEgoEstimator, EgoEstimatorConfig, EgoEstimate
+from ego_estimator import (BatchedEgoEstimator, EgoEstimatorConfig, EgoEstimate,
+                           _euler_roll_pitch_from_R)
+from ego_ins_emul import tilt_angle_rad
 from gate_visibility import (gate_detectable, gate_apparent_area, gate_center_view_cos,
                              gate_los_perp_rate, blur_extra_miss_prob)
 # SUSTAINED-SPIN clock (perception-honesty package, 2026-07-10): REUSE the battle-tested inc8 BSR3
@@ -637,6 +639,21 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._rot_accum = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         # last detectable mask from _step_estimator (diagnostics: target_detectable_duty).
         self._last_detectable = torch.zeros(self.n_envs, self.n_gates, dtype=torch.bool, device=dev)
+        # ===== ESTIMATOR-FAITHFUL ACTOR OBS package (2026-07-11; owner directive: THE ACTOR NEVER
+        # SEES GROUND TRUTH). +env.ego_faithful=true switches obs[0:8]'s production from the
+        # effectively-GT channels to the translated deploy vq2_ego_lean estimation chain (emulated
+        # ESKF leveler roll/pitch + KF strapdown velocity + sampled raw gyro rates -- see
+        # rl/ego_ins_emul.py + EgoEstimatorConfig). Default OFF == byte-identical (fresh knob names,
+        # the stale-sbatch-arming defense above). Per-channel ablation knobs override the master.
+        # Requires ++dynamics.capture_specific_force=true (the plant's last-substep IMU sample) and,
+        # for the aliasing channel to physically exist, dynamics.n_substeps>1 (the _pef stages set
+        # 5) -- at n_substeps=1 plant truth is itself ZOH-at-tick-rate and the tick-rate leveler
+        # tracks truth exactly (the fatal channel cannot exist in-sim).
+        _faithful = bool(getattr(cfg, "ego_faithful", False))
+        self._est_att_model = str(getattr(cfg, "ego_att_model", "eskf" if _faithful else "gt"))
+        self._est_vel_model = str(getattr(cfg, "ego_vel_model", "kf" if _faithful else "legacy"))
+        self._est_rate_model = str(getattr(cfg, "ego_rate_model", "sampled" if _faithful else "ar1"))
+        self._est_needs_sf = (self._est_att_model == "eskf") or (self._est_vel_model == "kf")
         # estimator config (all knobs Fengyou-pinnable via +env.*)
         ecfg = EgoEstimatorConfig(
             visible_area_sigma=float(getattr(cfg, "ego_visible_area_sigma",
@@ -650,6 +667,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # survives the endgame blackout to the gate plane.
             stale_horizon_s=float(getattr(cfg, "ego_stale_horizon_s",
                                           EgoEstimatorConfig.stale_horizon_s)),
+            att_model=self._est_att_model,
+            vel_model=self._est_vel_model,
+            rate_model=self._est_rate_model,
         )
         self._ego_cfg = ecfg
         # the estimator holds per-env course geometry (Z-up, matching gate_visibility/ego_estimator)
@@ -868,6 +888,20 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             return None
         return gate_los_perp_rate(self._p, self._q, self.gate_pos, self._w, is_quat=True)
 
+    # ---- ESTIMATOR-FAITHFUL: the plant's captured last-substep specific force (body FLU) --------
+    def _dyn_sf_body_flu(self):
+        """The latest-sample body specific force from the plant's capture_specific_force hook --
+        the emulated IMU accel feeding the ESKF/KF. Raises LOUDLY (L16 discipline: a silently-absent
+        input must never no-op) when the faithful knobs are armed without the plant capture
+        (++dynamics.capture_specific_force=true in the stage _raw)."""
+        sf = getattr(self.dynamics, "_sf_body_flu", None)
+        if sf is None:
+            raise RuntimeError(
+                "ego estimator-faithful models need the plant IMU capture: launch with "
+                "++dynamics.capture_specific_force=true (and dynamics.n_substeps>1 for the "
+                "aliasing channel; see the _pef stages in rl/vq2_ego_curriculum.py)")
+        return sf
+
     # ---- STEP the estimator one control step at the CURRENT truth (mutates estimator state) ----
     def _step_estimator(self, prev_q):
         with torch.no_grad():
@@ -890,10 +924,16 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             apparent_area = gate_apparent_area(self._p, cam_R, self.gate_pos, self.gate_yaw,
                                                is_quat=False)
             self._apparent_area_gt = apparent_area
+            # ESTIMATOR-FAITHFUL inputs (None on the default path == byte-identical legacy):
+            # sf_body = the plant's captured LAST-SUBSTEP specific force (the wire's newest-IMU-
+            # sample semantics); gyro_sample defaults to body_rates (self._w IS the last substep's
+            # rate) inside the estimator, so only sf needs threading.
+            sf_body = self._dyn_sf_body_flu() if self._est_needs_sf else None
             est = self._estimator.step(self._p, self._v, self._q, self._w, float(self.dt),
                                        detectable=detectable, prev_quat=prev_q,
                                        apparent_area=apparent_area,
-                                       blur_extra_miss=extra_miss)
+                                       blur_extra_miss=extra_miss,
+                                       sf_body=sf_body)
         self._stepped = True
         return est, detectable
 
@@ -936,7 +976,16 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             rel_true = true_rel_pos_body(self.gate_pos, self._p, R_wb)      # (N,G,3) body TRUTH
             vel_body_true = torch.einsum("nji,nj->ni", R_wb, self._v)       # (N,3) body TRUTH
             est = self._estimator.estimate()
-            state = ego_critic_state(rel_true, vel_body_true, est.roll_pitch, self._w,
+            # CRITIC TRUTH SOURCE (estimator-faithful package, KNOB-GATED -- graft: parity's form):
+            # ego_critic_state's roll_pitch_true slot historically reused est.roll_pitch, which
+            # equals truth ONLY while att_model=='gt'. Once the emulated leveler lies, that reuse
+            # silently corrupts the FROZEN privileged critic -- so on the emulated path the critic
+            # gets a DIRECT truth extraction from the current quat (same 16-dim layout, different
+            # source). Gated (not unconditional) so the default-off path stays byte-identical by
+            # construction (incl. the cold-reset-never-stepped ordering edge).
+            rp_critic = (est.roll_pitch if self._est_att_model == "gt"
+                         else _euler_roll_pitch_from_R(R_wb))
+            state = ego_critic_state(rel_true, vel_body_true, rp_critic, self._w,
                                      est.confidence, self.target_gates, self.n_gates)
         return state if with_grad else state.detach()
 
@@ -958,7 +1007,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
 
         # advance the estimator ONCE to the new truth (prev_q is the pre-step attitude for the
         # ego-propagation rotation). The final get_observations() below reads this stepped state.
-        self._step_estimator(prev_q)
+        est_now, _ = self._step_estimator(prev_q)
         self._prev_q = self._q.clone()
 
         # ===== FATAL SPIN ABORT (owner directive: non-spin GUARANTEED by construction). All-axis on
@@ -1199,6 +1248,28 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         loss_components["target_detectable_duty"] = float(self._last_detectable[ar, tg].float().mean())
         loss_components["spin_abort_rate"] = float(spin_abort.float().mean())
         loss_components["spin_rot_accum_mean"] = float(self._rot_accum.mean())
+
+        # ===== ESTIMATOR-FAITHFUL diagnostics (L16: these keys emitting in the PRECHECK log ==
+        # the package armed; absent keys == it did not). Scored per-step from the just-stepped
+        # estimator vs truth -- the in-env T3 acceptance read (rl/tools/leveler_bench.py pass band
+        # at 33 ms: median ~1.5 / p90 ~4.6 deg per tick on a5-matched |f|; ~0 here at n_substeps=1
+        # is EXPECTED, ~0 at n_substeps=5 under matched |f| is the stop-ship signal). =====
+        if self._est_att_model != "gt":
+            with torch.no_grad():
+                rp_true = _euler_roll_pitch_from_R(quat_xyzw_to_matrix_torch(self._q))
+                terr = torch.rad2deg(tilt_angle_rad(est_now.roll_pitch, rp_true))
+                loss_components["eskf_tilt_err_deg_mean"] = float(terr.mean())
+                loss_components["eskf_tilt_err_deg_p90"] = float(torch.quantile(terr, 0.9))
+                loss_components["eskf_accel_update_duty"] = float(
+                    self._estimator._eskf.last_update_mask.float().mean())
+                sf = self._dyn_sf_body_flu()
+                loss_components["sf_mag_g_mean"] = float(
+                    (torch.linalg.norm(sf, dim=-1) / 9.80665).mean())
+        if self._est_vel_model == "kf":
+            with torch.no_grad():
+                vb_true = torch.einsum("nji,nj->ni", quat_xyzw_to_matrix_torch(self._q), self._v)
+                loss_components["kf_vel_err_mean"] = float(
+                    torch.linalg.norm(est_now.velocity - vb_true, dim=-1).mean())
 
         loss = (-reward).detach()
         reward = reward.detach()

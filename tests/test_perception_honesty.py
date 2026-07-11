@@ -355,10 +355,11 @@ class _RecordingEstimator:
         self.calls = []
 
     def step(self, p, v, q, w, dt, detectable=None, prev_quat=None, apparent_area=None,
-             blur_extra_miss=None):
+             blur_extra_miss=None, sf_body=None, gyro_sample=None):
         self.calls.append({
             "detectable": detectable.clone(),
             "blur_extra_miss": None if blur_extra_miss is None else blur_extra_miss.clone(),
+            "sf_body": None if sf_body is None else sf_body.clone(),
         })
         return "EST-SENTINEL"
 
@@ -384,6 +385,9 @@ def _mk_env_wiring_stub(w, blur_gate=True):
     stub._blur_rate_lo = 2.0
     stub._blur_rate_hi = 4.0
     stub._blur_miss_max = 1.0
+    # estimator-faithful package (2026-07-11): default-off in these wiring tests (the faithful
+    # wiring has its own executed stub tests in test_estimator_faithful.py)
+    stub._est_needs_sf = False
     stub._estimator = _RecordingEstimator()
     return stub
 
