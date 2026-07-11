@@ -532,8 +532,10 @@ def test_percept_rperc_farm_neutrality_bound():
 # ESTIMATOR-FAITHFUL chain (_pef, 2026-07-11): _percept VERBATIM + exactly the package knobs.
 # ================================================================================================
 _PEF_STAGES = ("dual_gate_boot_floor_pef", "dual_gate_fullstack_floor_pef")
-# the env-key additions (rendered as +env.*)
-_PEF_ENV_KEYS = {"ego_faithful": True}
+# the env-key additions (rendered as +env.*). ego_est_dt_ticks_hi=4 = the CHOKED-LOOP dt
+# emulation over the MEASURED wire tick-gap band (reviewer-caught 2026-07-11: the wire never ran
+# at the 30 Hz training tick; see ego_ins_emul.MEASURED_TICK_GAP_PMF + the stage block comment).
+_PEF_ENV_KEYS = {"ego_faithful": True, "ego_est_dt_ticks_hi": 4}
 # the _raw additions (++ add-or-override form -- deliberately NOT '+', so they can never collide
 # with an existing config key NOR appear in _SBATCH_APPENDED_KEYS)
 _PEF_RAW_KEYS = {"++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True}
@@ -580,6 +582,7 @@ def test_pef_no_init_from_and_no_sbatch_collision():
 def test_pef_renders_valid_tokens():
     toks = C.render_overrides("dual_gate_boot_floor_pef")
     assert "+env.ego_faithful=true" in toks
+    assert "+env.ego_est_dt_ticks_hi=4" in toks            # measured choked-loop dt band
     assert "++dynamics.n_substeps=5" in toks               # the aliasing channel (load-bearing)
     assert "++dynamics.capture_specific_force=true" in toks
     assert "+env.ego_noise_scale=0.0" in toks              # boot keeps the calibration regime

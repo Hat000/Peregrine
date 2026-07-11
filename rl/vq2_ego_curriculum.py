@@ -1249,18 +1249,37 @@ STAGES: dict[str, dict] = {
     #     fallbacks) before hardcoding any further substep-ratio claims.
     #   * ++dynamics.capture_specific_force=true: the plant's last-substep body specific force =
     #     the emulated IMU sample (observation-only, scalar parity branch untouched).
+    #   * +env.ego_est_dt_ticks_hi=4 (CHOKED-LOOP dt emulation; reviewer-caught 2026-07-11): the
+    #     wire nav loop has NEVER run at the 30 Hz training tick (measured ego_obs tick gaps: a5
+    #     median 41.6 ms / max 139; a7 median 34.8 / max 83 -- leveler_bench tick_gap_report), and
+    #     per-tick leveler divergence SCALES WITH dt, so a fixed-33 ms emulation is ~3.5x CLEANER
+    #     than every measured wire operating point. The emulated ESKF/KF/rate channels advance on a
+    #     RENEWAL schedule over the MEASURED pooled tick-gap pmf (ego_ins_emul.MEASURED_TICK_GAP_PMF,
+    #     k in {1..4} -> dt in {33..133} ms), holding (frozen obs) in between -- the training-dt
+    #     mixture covers every wire operating point measured to date.
     # BOOT SEMANTICS (deliberate, the blur precedent): ego_noise_scale=0.0 zeroes the VISION noise
     # but the leveler/KF are ALGORITHM-STRUCTURAL and noise_scale-INDEPENDENT -- the noise-0 boot
     # already flies the lying attitude (else the fullstack would inherit a boot trained on truth
     # attitude = the exact fatal gap). If the boot fails to learn AT ALL, diagnose against the
     # vperc0 twin's boot curve BEFORE touching the emulation (estimator-corruption-tax-at-boot vs
     # package bug fork).
-    # ACCEPTANCE READ (training metrics): eskf_tilt_err_deg_* must sit INSIDE the leveler_bench
-    # 33 ms pass band (median ~1-5 / p90 ~4-15 deg) on high-|f| rollouts (sf_mag_g_mean >= ~2.5 --
-    # hover rollouts trivially read ~0 and prove nothing); ~0 deg under matched |f| at n_substeps=5
-    # is a STOP-SHIP signal (escalate n_substeps 5->8 once, then intra-tick rate-loop sysid realism
-    # -- NEVER an invented noise constant). eskf_accel_update_duty ~0 in aggressive flight /
-    # nonzero at spawn+coast (the A8 re-level moments) = the gate stack is alive.
+    # ACCEPTANCE READ (training metrics): eskf_tilt_err_deg_* must sit AT/ABOVE the leveler_bench
+    # MODE B(iii) renewal band on high-|f| rollouts (REAL a5 IMU, k_hi=4, seeds 0-2, run
+    # 2026-07-11: median 2.4-3.0 / p90 19.6-33.4 / max 35.8-64.2 deg per advance; a7 corroborates
+    # 2.1-2.9 / 6.9-30.3 / 39.5-48.8. The in-env key is an ABSOLUTE error incl. held-tick
+    # staleness, so it reads >= the per-advance band). The B(iii) median sits ~0.5x the recorded-
+    # grid band (5.2/26.8) from 33 ms grid quantization -- documented; the p90/max TAIL (the fatal
+    # 27-45 deg steering-on-lies regime that crashed a5) matches/exceeds the wire, and the tail is
+    # the crash mechanism. |f|-matching still required (sf_mag_g_mean >= ~2.5 -- hover rollouts
+    # trivially read ~0 and prove nothing); ~0 deg under matched |f| at n_substeps=5 is a STOP-SHIP
+    # signal (escalate n_substeps 5->8 once, then intra-tick rate-loop sysid realism -- NEVER an
+    # invented noise constant). eskf_accel_update_duty ~0 in aggressive flight / nonzero at
+    # spawn+coast (the A8 re-level moments) = the gate stack is alive.
+    # 🚩 dt LAUNCH GATE (pre-flight, MANDATORY): before ANY _pef ckpt flies, run leveler_bench's
+    # tick-gap report on the incoming flight's ego_obs.jsonl -- the deploy loop must sit INSIDE the
+    # trained k<=4 band (sustained gaps <= ~133 ms, i.e. loop >= ~7.5 Hz; a5/a7 both inside). A
+    # choked loop beyond that band = the ckpt is OOD on dt: fix the loop rate or re-measure the pmf
+    # + raise ego_est_dt_ticks_hi and retrain -- do NOT fly through it.
     # ================================================================================================
     "dual_gate_boot_floor_pef": {
         **_COMMON,
@@ -1291,6 +1310,7 @@ STAGES: dict[str, dict] = {
         "rw_perception_exponent": 4.0,
         # ---- the estimator-faithful package (see the block comment above) ----
         "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,          # measured choked-loop dt band (renewal over the pmf)
         "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
                  # NO +init_from: fresh boot (H6); the fullstack _pef stage chains from THIS stage.
                  "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
@@ -1324,6 +1344,7 @@ STAGES: dict[str, dict] = {
         "rw_perception": 0.02,
         "rw_perception_exponent": 4.0,
         "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,          # measured choked-loop dt band (renewal over the pmf)
         "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
                  # NO +init_from here (LOAD-BEARING): the sbatch ladder auto-appends it on stage 2.
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,

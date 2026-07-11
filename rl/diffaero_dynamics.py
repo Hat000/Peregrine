@@ -386,8 +386,10 @@ class PeregrinePlantDynamics(BaseDynamics):
         # the bias is a real force, an accelerometer SENSES it), rotated body-frame with the same
         # substep quat and FLU-flipped. Observation-only + detached: no math reorder, the scalar
         # parity branch (check_against_rl_plant) is untouched. Exposed as ``_sf_body_flu`` (N,3);
-        # hover-seeded (level hover -> [0,0,+9.80665] FLU, pinned by test) at init + reset so the
-        # env's reset-tick estimator step always has a valid sample. torch backend only. ----
+        # hover-seeded (level hover -> [0,0,+9.80665] FLU) at init + reset so the env's reset-tick
+        # estimator step always has a valid sample. torch backend only. Pinned by
+        # tests/test_estimator_faithful.py::test_plant_capture_* (hover seed/step, LAST-substep
+        # semantics via the closed-form recurrence, reset re-seed, numpy-backend raise). ----
         self.capture_specific_force = bool(getattr(cfg, "capture_specific_force", False))
         if torch is not None and self.capture_specific_force:
             sf = torch.zeros(*bshape, 3, device=device)

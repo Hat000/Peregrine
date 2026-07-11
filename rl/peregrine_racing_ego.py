@@ -670,6 +670,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             att_model=self._est_att_model,
             vel_model=self._est_vel_model,
             rate_model=self._est_rate_model,
+            # CHOKED-LOOP dt emulation (+env.ego_est_dt_ticks_hi; default 1 == byte-identical):
+            # the wire nav loop has never run at the 30 Hz training tick -- see
+            # EgoEstimatorConfig.est_dt_ticks_hi (the measured tick-gap band; _pef stages set 4).
+            est_dt_ticks_hi=int(getattr(cfg, "ego_est_dt_ticks_hi",
+                                        EgoEstimatorConfig.est_dt_ticks_hi)),
         )
         self._ego_cfg = ecfg
         # the estimator holds per-env course geometry (Z-up, matching gate_visibility/ego_estimator)

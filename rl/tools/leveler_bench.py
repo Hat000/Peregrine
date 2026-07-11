@@ -12,12 +12,19 @@
     the SAME emulated attitude and compare v_obs = diag(-1,1,-1) @ (R^T v_ned) vs recorded obs[0:3]
     and kf_pos vs recorded kf_pos_ned.
 
-  MODE B -- MATCHED-DT PASS BAND (the faithfulness benchmark, derived from REAL data, not vibes):
+  MODE B -- MATCHED-DT PASS BANDS (the faithfulness benchmark, derived from REAL data, not vibes):
     rerun the leveler over the same recorded 143 Hz IMU stream on (i) the recorded tick grid
     (~57 ms median -- directly comparable to the measured wire benchmark ~5-7 deg median / ~20-27
-    p90 / ~35 max per tick) and (ii) a SYNTHETIC 33.3 ms grid (the training tick), scoring per-tick
+    p90 / ~35 max per tick), (ii) a SYNTHETIC 33.3 ms grid (the raw training tick), and (iii) a
+    RENEWAL grid over the MEASURED tick-gap pmf (ego_ins_emul.MEASURED_TICK_GAP_PMF, k_hi=4) ==
+    the _pef training-dt mixture (EgoEstimatorConfig.est_dt_ticks_hi=4), scoring per-tick
     divergence of the tick-stepped leveler vs the DENSE trapezoid gyro integral (the truth proxy).
-    Band (ii) is the in-env T3 pass band the PRECHECK rollout is scored against.
+    Band (iii) is the in-env T3 pass band the PRECHECK rollout is scored against -- band (ii)
+    alone is ~3.5x cleaner than every measured wire operating point (reviewer-caught 2026-07-11;
+    the wire has NEVER run at 30 Hz), which is why the _pef stages randomize the effective
+    estimator dt over the measured band instead of assuming the 33 ms tick. PRE-FLIGHT dt LAUNCH
+    GATE: the tick-gap report on the incoming flight's ego_obs must sit INSIDE the trained k<=4
+    band (sustained gaps <= ~133 ms) or the ckpt is OOD on dt.
 
   MODE C -- DENSE-STEPPING CONTROL (the aliasing attribution): step the leveler at EVERY IMU
     sample and score the same per-tick divergence. Result (a5): ~0.36 deg median -- the residual
@@ -48,6 +55,7 @@ sys.path.insert(0, str(_HERE.parents[1]))
 sys.path.insert(0, str(_HERE.parent))
 
 from ego_ins_emul import (BatchedESKFLeveler, BatchedNavKF, GRAVITY,                 # noqa: E402
+                          MEASURED_TICK_GAP_PMF,
                           quat_from_roll_pitch_yaw_zyx, quat_to_R_wxyz)
 from imu_foundation import propagate_dir, g_hat_from_roll_pitch                     # noqa: E402
 
@@ -205,6 +213,40 @@ def divergence_band(t_us, acc, gyr, tick_times_us, seed_roll_obs, seed_pitch_obs
     return s
 
 
+# ------------------------------------------------------------------ tick-gap measurement + B(iii)
+def tick_gap_report(ticks, tick_s: float = 1.0 / 30.0):
+    """The MEASURED wire loop-tick gap distribution from a recorded ego_obs tick schedule -- the
+    extraction behind ego_ins_emul.MEASURED_TICK_GAP_PMF (2026-07-11: a5 hist {1:31, 2:4, 3:8,
+    4:4}, a7 {1:21, 2:4, 3:1}; pooled pmf (52, 8, 9, 4)/73). k = round(gap / tick_s), floored 1."""
+    t = np.array([tk["t_us"] for tk in ticks], dtype=np.float64)
+    gaps = np.diff(t) * 1e-6
+    k = np.clip(np.rint(gaps / tick_s).astype(int), 1, None)
+    hist = {int(v): int(c) for v, c in zip(*np.unique(k, return_counts=True))}
+    return {"n_gaps": int(gaps.size),
+            "gap_ms": {"median": float(np.median(gaps) * 1e3),
+                       "p90": float(np.percentile(gaps, 90) * 1e3),
+                       "max": float(gaps.max() * 1e3)},
+            "round_k_hist": hist, "k_max": int(k.max())}
+
+
+def renewal_grid(t0_us: float, t1_us: float, k_hi: int, seed: int = 0,
+                 tick_s: float = 1.0 / 30.0):
+    """MODE B(iii) grid: a RENEWAL schedule over the measured tick-gap pmf (truncated to k_hi,
+    renormalized) at 33.3 ms multiples -- exactly the training-side choked-loop dt emulation
+    (EgoEstimatorConfig.est_dt_ticks_hi). Grid quantization note: the wire's actual gaps are NOT
+    integer tick multiples (a5 median 41.6 ms rounds to k=1 = 33.3 ms), so the B(iii) MEDIAN reads
+    ~0.6x the recorded-grid band while p90/max match or exceed it -- the tail events (the fatal
+    steering-on-lies regime) are the reproduced quantity."""
+    pmf = np.asarray(MEASURED_TICK_GAP_PMF[:k_hi], dtype=np.float64)
+    pmf = pmf / pmf.sum()
+    rng = np.random.default_rng(seed)
+    t = [float(t0_us)]
+    while t[-1] < t1_us:
+        k = 1 + int(rng.choice(k_hi, p=pmf))
+        t.append(t[-1] + k * tick_s * 1e6)
+    return np.array(t[:-1]) if t[-1] > t1_us else np.array(t)
+
+
 def main():
     args = sys.argv[1:]
     if args and args[0] == "--fixture":
@@ -219,11 +261,19 @@ def main():
 
     tick_t = np.array([tk["t_us"] for tk in ticks])
     r0, p0 = ticks[0]["obs"][3], ticks[0]["obs"][4]
+    print("\n=== TICK-GAP REPORT (the measured wire loop-rate; MEASURED_TICK_GAP_PMF provenance +"
+          " the pre-flight dt LAUNCH GATE read) ===")
+    print(json.dumps(tick_gap_report(ticks), indent=2))
     print("\n=== MODE B(i): divergence band at the RECORDED tick grid (vs the wire benchmark) ===")
     print(json.dumps(divergence_band(t_us, acc, gyr, tick_t, r0, p0), indent=2))
     grid33 = np.arange(tick_t[0], tick_t[-1], 1e6 / 30.0)
-    print("\n=== MODE B(ii): divergence band at the 33.3 ms TRAINING tick grid (the T3 pass band) ===")
+    print("\n=== MODE B(ii): divergence band at the 33.3 ms TRAINING tick grid ===")
     print(json.dumps(divergence_band(t_us, acc, gyr, grid33, r0, p0), indent=2))
+    print("\n=== MODE B(iii): divergence band at the RENEWAL grid (measured pmf, k_hi=4) == the"
+          " _pef training-dt mixture (the T3 pass band; ego_est_dt_ticks_hi=4) ===")
+    for seed in (0, 1, 2):
+        g3 = renewal_grid(tick_t[0], tick_t[-1], k_hi=4, seed=seed)
+        print(f"seed {seed}:", json.dumps(divergence_band(t_us, acc, gyr, g3, r0, p0)))
     print("\n=== MODE C: ZOH negative control (dense stepping ~= n_substeps=1) -- must be ~0 ===")
     print(json.dumps(divergence_band(t_us, acc, gyr, grid33, r0, p0, dense=True), indent=2))
     if not full:
