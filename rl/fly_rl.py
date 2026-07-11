@@ -582,7 +582,8 @@ def load_ego_actor(path: str) -> nn.Module:
 @torch.no_grad()
 def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
                 virtual_flip: bool = False, max_thrust: float = 0.0,
-                debug: dict | None = None, yaw_scale: float = 1.0
+                debug: dict | None = None, yaw_scale: float = 1.0,
+                yaw_clamp: float = 0.0
                 ) -> tuple[np.ndarray, float, float]:
     """One forward pass, replicating the TRAINING action pipeline exactly:
     test-mode action = tanh(actor_mean(obs)), then env.rescale_action onto
@@ -602,6 +603,17 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     live the never-converging yaw demand is the largest motor-differential source,
     and at low collective the mixer's idle-floor clipping turns it into ~0.2-0.4 of
     PARASITIC collective (measured: mixer_probe 2026-06-11). 0 = drop yaw entirely.
+
+    ``yaw_clamp``: hard clip on the yaw-rate command (rad/s), 0 = off. The deploy
+    mirror of training's clamp_yaw_command (despin package): a clamp-trained
+    checkpoint learned with its yaw command clipped at the point of application, so
+    flying it WITHOUT this clamp re-opens the spin door (a railed tanh output maps
+    to +/-3.14 commanded instead of the trained bound). Pass the SAME value as the
+    checkpoint's ego_yaw_cmd_clamp_rad_s (0.7 for the current lineage). This is
+    deliberately NOT max_rate (which clips ALL three axes — roll/pitch trained at
+    full authority, so it cuts them ~9x OOD) and NOT yaw_scale (multiplicative —
+    it mis-scales the whole yaw transfer function instead of clipping its tail).
+    Applied after yaw_scale so the clamp is the final word on the wire.
     """
     obs_t = torch.as_tensor(obs_np[None], dtype=torch.float32)   # (1, 17)
     mean  = actor(obs_t)[0].cpu().numpy().astype(np.float64)     # (4,) raw mean
@@ -617,6 +629,9 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     if yaw_scale != 1.0:
         rate_flu = rate_flu.copy()
         rate_flu[2] *= yaw_scale       # body z is body z under both flip and FLU->FRD
+    if yaw_clamp > 0.0:
+        rate_flu = rate_flu.copy()
+        rate_flu[2] = np.clip(rate_flu[2], -yaw_clamp, yaw_clamp)   # training clamp_yaw_command mirror
     if virtual_flip:
         rate_flu = _RZ_PI_BODY @ rate_flu       # virtual body frame -> real body
     rate_frd = rate_flu * _ACT_FLU_TO_FRD
@@ -1815,7 +1830,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
             n_masked += 1
         rate_frd, collective, last_normed = policy_step(
             actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
-            yaw_scale=args.yaw_scale)
+            yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp)
         # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
         # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
         # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
@@ -2375,6 +2390,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="EGO takeoff-assist HARD time cap (s) since the first armed control tick: "
                          "the assist disarms unconditionally after this even if neither the rate "
                          "nor the climb handover fired. Default 1.5.")
+    ap.add_argument("--ego-yaw-clamp", type=float, default=0.0,
+                    help="EGO hard clip on the yaw-rate COMMAND (rad/s), 0 = off. MANDATORY for any "
+                         "clamp-trained (despin _percept/_pef) checkpoint: pass the SAME value as its "
+                         "training ego_yaw_cmd_clamp_rad_s (0.7 for the current lineage) or the wire "
+                         "re-opens the spin door. NOT --max-rate (clips all 3 axes, ~9x roll/pitch "
+                         "OOD) and NOT --yaw-scale (multiplicative, mis-scales the transfer function). "
+                         "Leave 0 for pre-despin checkpoints (vn16/vcz16) -- they trained unclamped.")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "
@@ -2704,7 +2726,8 @@ def main() -> int:
                     "ego_stale_horizon": args.ego_stale_horizon,
                     "ego_obs_coast": args.ego_obs_coast,
                     "ego_rate_scale": args.ego_rate_scale,
-                    "ego_sector_mode": args.ego_sector_mode}
+                    "ego_sector_mode": args.ego_sector_mode,
+                    "ego_yaw_clamp": args.ego_yaw_clamp}
                    if getattr(args, "ego_ckpt", None) else {}),
             )
             holder["rec"] = recorder

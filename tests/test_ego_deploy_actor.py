@@ -98,6 +98,39 @@ def test_virtual_flip_action_unflip(ego_bounds):
     np.testing.assert_allclose(r_flip, r_noflip * np.array([-1.0, -1.0, 1.0]), atol=1e-9)
 
 
+def test_ego_yaw_clamp_yaw_only(ego_bounds):
+    """--ego-yaw-clamp (despin mirror of training clamp_yaw_command): clips ONLY the yaw-rate
+    command, after yaw_scale, invariant under virtual_flip (yaw is body z under both the Rz(pi)
+    flip and FLU->FRD); 0.0 = bit-identical off. Roll/pitch keep full +/-3.14 authority — the
+    whole point vs --max-rate."""
+    obs = np.zeros(EGO_OBS_DIM, dtype=np.float32)
+    railed = _StubActor([0.0, 50.0, -50.0, 50.0])          # roll/pitch/yaw all at the rails
+    # off (default): yaw rails at 3.14
+    r_off, _, _ = fly_rl.policy_step(railed, obs, virtual_flip=False)
+    np.testing.assert_allclose(r_off, [3.14, 3.14, 3.14], atol=1e-4)
+    # clamp 0.7: yaw clipped, roll/pitch untouched at the rails
+    r_cl, _, _ = fly_rl.policy_step(railed, obs, virtual_flip=False, yaw_clamp=0.7)
+    np.testing.assert_allclose(r_cl, [3.14, 3.14, 0.7], atol=1e-4)
+    # negative rail clips to -0.7 (FLU z == FRD z: no sign surprise on the wire channel)
+    r_neg, _, _ = fly_rl.policy_step(_StubActor([0.0, 0.0, 0.0, -50.0]), obs,
+                                     virtual_flip=False, yaw_clamp=0.7)
+    assert r_neg[2] == pytest.approx(-0.7, abs=1e-4)
+    # applied AFTER yaw_scale: a sub-clamp command scaled past the clamp still clips
+    r_sc, _, _ = fly_rl.policy_step(_StubActor([0.0, 0.0, 0.0, 0.35]), obs,
+                                    virtual_flip=False, yaw_scale=3.0, yaw_clamp=0.7)
+    raw_yaw = 3.14 * np.tanh(0.35)                          # symmetric bounds: rescale == scale
+    assert raw_yaw * 3.0 > 0.7                              # scale alone would exceed the clamp
+    assert r_sc[2] == pytest.approx(0.7, abs=1e-4)
+    # virtual_flip flips x/y only — the clamped yaw channel rides through unchanged
+    r_fl, _, _ = fly_rl.policy_step(railed, obs, virtual_flip=True, yaw_clamp=0.7)
+    assert r_fl[2] == pytest.approx(0.7, abs=1e-4)
+    # sub-clamp commands pass through bit-identical to clamp-off
+    mild = _StubActor([0.0, 0.2, -0.1, 0.05])
+    r_a, _, _ = fly_rl.policy_step(mild, obs, virtual_flip=False)
+    r_b, _, _ = fly_rl.policy_step(mild, obs, virtual_flip=False, yaw_clamp=0.7)
+    np.testing.assert_allclose(r_b, r_a, atol=0.0)
+
+
 def _approach_obs_batch() -> np.ndarray:
     """Synthetic in-distribution approach obs (virtual-flipped tail-first frame): flying at the
     gate 6-14 m out, slight offsets, fresh confident slot0, slot1 zeros."""
