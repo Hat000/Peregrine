@@ -97,3 +97,158 @@ Misassociation/wrong-gate modeling (needs more thinking); gate-ID/ByteTrack; occ
 - Perceptual aliasing (mitigated by coarse-map designation).
 - Estimator rewrite is the heaviest single piece.
 - Deploy contract break needs vision-commander coordination (§9).
+
+## §P PERCEPTION-HONESTY PACKAGE + HARD NO-SPIN (2026-07-10)
+
+**Code:** `rl/gate_visibility.py` (gate_los_perp_rate, blur_extra_miss_prob) · `rl/ego_estimator.py`
+(step `blur_extra_miss=`) · `rl/peregrine_racing_ego.py` (yaw clamp, fatal spin abort, blur wiring,
+diagnostics) · `rl/vq2_ego_curriculum.py` (`dual_gate_boot_floor_percept` →
+`dual_gate_fullstack_floor_percept`) · `rl/peregrine_vq2_ego.sbatch` (dead-key removal, UPD defaults).
+**ALL default-off**: every knob's default reproduces prior behavior exactly (pinned by
+`tests/test_perception_honesty.py` + the stage snapshot pins in `tests/test_vq2_ego_curriculum.py`).
+
+### P.1 Motivation (measured, 2026-07-10)
+Champion vn16 (DET 0.545 @ real noise) is a **SPINNER**: 79% of training ticks yaw-railed at ±3.14,
+cruising |w_z|~9.3 rad/s with roll coning ±130° (a corkscrew), steering by phase-modulated roll/pitch,
+catching a visibility fix ~once per revolution (40.8% detectable duty in its own training trace); A2
+confirmed the gait executes on the wire. Two root gaps: **(a) PERFECT SHUTTER** — `gate_detectable`
+is instantaneous geometry, so a camera sweeping at 500°/s detects as well as one holding steady
+(spin-scan is free in sim; the real detector starves under that blur); **(b) NO FRAMING PREFERENCE** —
+vn16's config had rw_perception=0 and rw_rate=1e-3 is negligible (~0.009/tick at 9 rad/s vs ~2.0/m
+progress).
+
+### P.2 Owner directive → guarantee-by-construction
+Fengyou: *"I don't want the system to be spinning at all. Even if it works in sim, it's not good...
+REGARDLESS of how the vision system behaves in the simulator."* So the PRIMARY mechanisms GUARANTEE
+non-spin (they do not merely dis-incentivize):
+1. **FATAL SPIN ABORT** (all-axis, realized ||ω||): sustained-rate clock (reused inc8 `bsr3_update`;
+   3.5 rad/s for 0.4 s) **OR** leaky accumulated-rotation trigger (1.5 rev-equivalent over a 4.0 s
+   window; steady-state ≈ ||ω||·window ⇒ sustained >~2.36 rad/s eventually fatal, a single ~130° bank
+   impulse decays legally). Termination is **COLLISION-CLASS**: the env composes
+   `lethal = below_floor | spin_abort` and rides it through the parabola path's `floor_contact=` /
+   `forfeit_mask=` kwargs — **the non-obvious load-bearing wiring**: under the champion parabola
+   regime the terminal fires on floor+oob ONLY (`ego_reward.py:839-843`), so a spin abort routed only
+   through `gate_collision` would exit PENALTY-FREE with banked progress kept (spin-to-bail strictly
+   cheaper than a miss). Pinned by
+   `test_ego_reward.py::test_spin_abort_through_gate_collision_alone_is_free_under_parabola_THE_TRAP`.
+2. **YAW-COMMAND CLAMP** at the point of application (`clamp_yaw_command`, top of ego `step()` before
+   `dynamics.step`, so a_norm/last_action/plant all see the applied command). Action space stays
+   ±3.14 (invariant 3 — deploy's `load_ego_actor` hardcodes the rescale). 0.35 rad/s commanded ×
+   ~3.5 realized-gain (empirical, A2 — verify from the first _percept trace) ≈ 1.2 rad/s realized.
+NO energy penalty and NO rw_rate retune (owner's no-energy-penalty directive; fatality replaces
+dis-incentive; the <1% smoothness pin stays green).
+
+### P.3 Blur model (SECONDARY: honesty/alignment)
+`rate_eff = ||ω − (ω·r̂)r̂||` — the LOS-perpendicular angular rate, computed in the UNFLIPPED Z-up/FLU
+body frame (magnitude invariant under the rigid π-about-body-z camera flip; no new frame math).
+Two-part gate, env-side (`gate_detectable` itself untouched — the estimator's standalone fallback is
+unaffected):
+- **HARD deterministic cutoff:** `detectable &= rate_eff < hi`, applied at BOTH env call sites
+  (`_step_estimator` + `_current_detectable`). Deterministic-per-state ⇒ the obs mask and the
+  estimator fix stream agree within a step by construction (the `:546` pure-stateless contract).
+- **SOFT band [lo, hi), stochastic, ESTIMATOR-SIDE ONLY:** `blur_extra_miss_prob(rate, lo, hi,
+  miss_max)` → folded into the EXISTING miss draw (`miss_thresh = miss_prob·noise_scale +
+  blur_extra_miss`, clamped). Obs layout/semantics untouched (invariant 2): blur only changes WHEN
+  fixes arrive; missed fixes → confidence decays → the existing masking, exactly like miss_prob.
+- **PLACEHOLDER TABLE** (invariant 6, pending the A2 measured detect-vs-angular-rate curve):
+  lo=2.0 rad/s (free below), hi=4.0 rad/s (hard cut), miss_max=1.0 (continuous with the hard cut).
+  **A2 slot-in procedure:** replace ONLY `blur_extra_miss_prob` (lo := rate where detection starts
+  degrading; hi := rate where detection ~0; non-linear shape = swap that one function body). If the
+  curve is measured vs plain |ω| instead of LOS-perp rate, swap the abscissa (one line in
+  `_blur_los_rate`); if it shows roll-vs-sweep anisotropy, add a roll weight there. **Ask the
+  calibration owner which abscissa the measurement uses.**
+- **NOISE-SCALE INDEPENDENCE RULE (load-bearing):** blur is CAMERA PHYSICS, not estimator corruption
+  — it is NOT multiplied by ego_noise_scale, so the noise-0 calibration boot still sees blur (a
+  blur-free boot would re-discover spin-scan and the fullstack would inherit it). Pinned by
+  `test_perception_honesty.py::test_blur_survives_noise_scale_zero_the_boot_stage_property`.
+- **KNOWN DIVERGENCE from wire semantics:** in the soft band the obs det flag can read 1 while fixes
+  rarely arrive (on the wire the det flag comes from real detections). Kept acceptable by
+  miss_max=1.0 + a tight band; if A2 shows a WIDE soft region, the future fix is a unified
+  per-keypoint gate — not this package.
+
+### P.4 Threshold ordering (blind-policy defense)
+`clamped realized yaw (~1.2) < blur-free lo (2.0) < rate abort (3.5) [< hi 4.0]` — a full-authority
+pointing sweep is never blur-punished and never fatal, so "point the camera at the gate" remains the
+constructive information strategy (gate-ward spawn + camera flip give detectability at birth; r_perc
+supplies the gradient; 10–20 m spacing covers the handoff). hi=4.0 sits ABOVE the 3.5 abort:
+harmless — the [3.5,4.0) band is fatal anyway, so the hard blur cut only ever bites in
+already-lethal territory; kept to preserve the A2 calibration structure. Pinned by
+`test_vq2_ego_curriculum.py::test_percept_threshold_ordering_blind_policy_defense`. If
+target_detectable_duty collapses on the first run, the FIRST lever is raising
+ego_yaw_cmd_clamp_rad_s (config), NOT softening the abort.
+
+### P.5 r_perc (framing preference; config-only — the wiring existed end-to-end)
+`rw_perception=0.02, exponent 4` in the _percept stages. **FARM-NEUTRALITY BOUND (construction
+rule):** rw_perception ≤ rw_time (=0.02) ⇒ hover-and-stare nets ≤ 0/tick — the prior 0.05 warm-start
+enablement detonated as a farmable fly-away (curriculum `:829-830`), and Geles' field value is 0.025.
+Introduced at the FRESH boot (perception + progress learned jointly — the safer mode). Monitors:
+`perception_reward` component, exit_timeout / exit_front (farming shows there). **Pre-identified
+escalation path (NOT built):** a clip_pen_anneal-style plain-float mutation on
+`env._egorw.perception` (pattern at `ego_reward.py:231-240`) — if ever built, L16 applies: the hook
+MUST print `[perc-anneal] ON` and the print must be verified in a COMPLETED log or TB (stdout is
+SLURM-buffered on running jobs).
+
+### P.6 Stage variants + launch box
+`dual_gate_boot_floor_percept` → `dual_gate_fullstack_floor_percept` = the live floor chain VERBATIM
+(snapshot-pinned) + the package knobs; fullstack carries NO `+init_from` (the sbatch chain appends
+it). Launch:
+```
+sbatch --export=ALL,SEED=0,RUNTAG=vperc0,STAGES="dual_gate_boot_floor_percept dual_gate_fullstack_floor_percept",UPD_dual_gate_boot_floor_percept=4000,UPD_dual_gate_fullstack_floor_percept=12000,PRECHECK=1 rl/peregrine_vq2_ego.sbatch
+```
+**PRECHECK=1 is MANDATORY on the first launch** (512 envs × 3 updates — the env class is
+diffaero-gated cluster-only, so step()-wiring is exercised only there), **AND the precheck log must
+show the new loss_components keys emitting** (`spin_abort_rate`, `spin_rot_accum_mean`,
+`target_detectable_duty`) — the L16 silently-inert guard: absent keys == the package did not arm.
+Optional cheap rung (Fengyou's call given the July clock): a ~2k-upd single-gate smoke
+(`EXTRA="++env.course_n_gates=1"` on the boot stage alone) before the dual-gate spend.
+**Success reads (training metrics, never renders):** DET completion vs the vdflr0 twin ·
+spin_abort_rate/exit_spin → ~0 by convergence (early nonzero = the gate is teaching) ·
+`target_detectable_duty` **≫ 40.8%** (vn16's spin-scan duty) · realized |w_z| from the trace ≤ ~1.5
+(verifies the 3.5× gain estimate) · exit_timeout/exit_front flat (r_perc not farmed). **STATS
+CAVEAT:** ego_collision_rate/collision_rate INCLUDE spin aborts on _percept stages — subtract
+spin_abort_rate (logged separately; exit_spin is its own box-exit class) before comparing gate
+contact vs non-percept twins.
+
+### P.7 DEPLOY-PARITY FLAGS (🚩 both are launch-procedure footguns, not code changes here)
+1. **Yaw cap at flight time:** the training-side clamp does NOT bind the deployed network
+   (`load_ego_actor` hardcodes ±3.14). Any flight of a _percept checkpoint MUST pass the matching
+   deploy-side yaw cap (`fly_rl.policy_step` max_rate / yaw_scale == ego_yaw_cmd_clamp_rad_s
+   = 0.35). Forgetting it re-opens the spin door on the wire.
+2. **Blur needs NO deploy mirror** — the real camera blurs physically. This package touches neither
+   `ego_actor_obs`'s body nor EgoEstimatorConfig behavioral defaults nor area normalization, so no
+   deploy obs drift is possible by construction (the deploy parity pin `test_ego_deploy_obs.py`
+   lives in the Anduril-ego-deploy repo).
+
+### P.8 EXPLOIT LEDGER (one line per mechanism: its degenerate optimum → what prices it)
+- **Blur gate → freeze-and-drift** (hold perfectly still to keep fixes, never commit): priced by
+  rw_time (−0.02/tick), progress/parabola/finish dominating completion, exit_timeout monitoring.
+- **r_perc → hover-and-stare / fly-away farming**: priced by the farm-neutrality bound
+  (r_perc ≤ rw_time ⇒ net ≤ 0/tick) + completion terms ~5× larger; watched via exit_timeout/exit_front.
+- **Yaw clamp → roll/pitch tumble-scan** (scan with the axes the clamp doesn't touch): priced by the
+  ALL-AXIS spin abort (||ω||, never w_z alone; `test_spin_abort_is_all_axis_not_yaw_only`).
+- **Rate abort → sub-threshold slow scan** (rotate at 3.4 rad/s forever): priced by the leaky
+  accumulated-rotation trigger (sustained >~2.36 rad/s eventually fatal).
+- **Spin abort → spin-as-FREE-EXIT** (the losing design's defect): priced by the CRASH-FOLD — the
+  lethal mask rides `floor_contact=`/`forfeit_mask=` on the parabola path, so a spin abort costs
+  terminal_base + full banked-progress forfeit (collision-class), never a free bail. THE single most
+  important wiring in the package; pinned in test + here.
+- **Leaky-window residual hole:** a pathological on-off duty-cycled rotation can sit under both
+  triggers (exponential leak ≠ sliding sum) — both thresholds are knobs; the first run's realized-
+  rate trace is the check.
+
+### P.9 Cleanup ledger (2026-07-10)
+- sbatch BASE dead keys `+env.spin_rate_abort=10.0 +env.spin_time_abort=3.0` REMOVED (inc8-only,
+  unread by peregrine_racing_ego; 10 rad/s would not have caught the 9.3 corkscrew anyway). New ego
+  knobs use ego_spin_* names so stale sbatch copies can never silently arm the gate.
+- `max_w_xy`/`max_w_z`: ZERO occurrences in rl/, src/, tests/, sbatch — adjudicated NONEXISTENT
+  in-repo (only a cluster-side diffaero hydra yaml could define env.max_w_*; PeregrineRacing
+  implements its own step/reward and never reads them). The only real rate limits are the ±3.14
+  action bounds; realized rate exceeds the command via the plant super-rate map. The
+  "|w_z|~9.3 vs max_w_z=1.0" confusion is retired.
+- `BatchedEgoEstimator._rel_var` dead writes DELETED (written, never read); `latency_cov_inflate` +
+  `rel_pos_std_init` marked INERT (fields kept so cfgs don't crash; wiring variance into confidence
+  would be a behavior change = a future default-off item).
+- Stale docstrings corrected (comment-only): ego_actor_obs 26-dim → 21, slots 3× → 2×; ego_critic
+  20 → 16, slots {0,1,2} → {0,1}; the '(ego 26-dim...)' section comment.
+- `_occluder_projected_quads` double projection: NOTE-ONLY comment (verified geometry — do not
+  refactor without re-running the visibility battery).
