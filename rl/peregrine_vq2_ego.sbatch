@@ -62,6 +62,10 @@ UPD_single_gate=${UPD_single_gate:-1500}
 UPD_handoff_drill=${UPD_handoff_drill:-1500}
 UPD_dual_gate_full=${UPD_dual_gate_full:-5500}
 UPD_multi_gate=${UPD_multi_gate:-5500}
+# PERCEPTION-HONESTY chain defaults (2026-07-10; without these the eval NUPD lookup renders an empty
+# n_updates= when the *_percept stages are run without explicit --export UPD_ values).
+UPD_dual_gate_boot_floor_percept=${UPD_dual_gate_boot_floor_percept:-4000}
+UPD_dual_gate_fullstack_floor_percept=${UPD_dual_gate_fullstack_floor_percept:-12000}
 ENT_WEIGHT=${ENT_WEIGHT:-0.01}   # APPO entropy bonus coeff (diffaero default)
 
 TRAIN=/scratch/network/fl3689/peregrine_repo/rl/peregrine_train_ego.py
@@ -72,7 +76,13 @@ CURR=/scratch/network/fl3689/peregrine_repo/rl/vq2_ego_curriculum.py
 # assert refuses ppo. gamma is set PER STAGE by the curriculum _raw block (0.9975), NOT here.
 BASE=(
   env=racing env.name=peregrine_racing_ego
-  +env.spin_rate_abort=10.0 +env.spin_time_abort=3.0
+  # (removed 2026-07-10) +env.spin_rate_abort=10.0 +env.spin_time_abort=3.0 were INC8-ONLY keys,
+  # UNREAD by peregrine_racing_ego (consumed only by PeregrineRacingInc8) -- dead + misleading on
+  # every ego run (and 10 rad/s would never have caught the 9.3 rad/s vn16 corkscrew anyway). The
+  # ego spin gate is the +env.ego_spin_* family, set PER *_percept STAGE by the curriculum, never
+  # here in BASE (B2b discipline). max_w_xy/max_w_z do not exist anywhere in this repo either --
+  # the only real rate limits are the +/-3.14 action bounds (realized rate exceeds the command via
+  # the plant super-rate map).
   +env.body_radius_lo=0.28 +env.body_radius_hi=0.38 +env.frame_depth_m=0.30
   dynamics=quad dynamics.name=peregrine_plant dynamics.g=9.80665
   +dynamics.dr=true +dynamics.dr_aero=true +dynamics.dr_mixer=true

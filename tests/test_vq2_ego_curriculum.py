@@ -325,3 +325,173 @@ def test_single_gate_static_aniso_renders_valid_tokens():
     assert "+env.rw_progress_to_center=true" in toks
     assert "+env.course_spawn_dist_lo=15.0" in toks
     assert "algo.gamma=0.9975" in toks
+
+
+# ================================================================================================
+# PERCEPTION-HONESTY / HARD NO-SPIN chain (2026-07-10, DESIGN.md §P): the _percept stage pair.
+# ================================================================================================
+# The exact contents of the LIVE floor-chain stages (consumed by running SLURM jobs -- vdflr0/vdff1
+# lineage). SNAPSHOT-PINNED literally: the perception-honesty package must NEVER mutate them; new
+# behavior lives only in the *_percept variants. If a legitimate future edit changes these stages,
+# update this pin CONSCIOUSLY (and check no live run consumes them).
+_DUAL_GATE_BOOT_FLOOR_PIN = {
+    **C._COMMON,
+    "course_n_gates": 2,
+    "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+    "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+    "course_spawn_yaw_jitter": 0.25,
+    "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+    "course_gates_above_spawn": 0.5,
+    "floor_at_spawn": True,
+    "use_racing_line": True,
+    "rw_progress_to_center": False,
+    "rw_corridor": 4.0,
+    "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+    "rw_parabola_crossing": True,
+    "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+    "ego_noise_scale": 0.0,
+    "_raw": {"env.max_time": 60, "algo.gamma": 0.9975,
+             "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03,
+             "++algo.noise_hold_frac": 0.5},
+}
+_DUAL_GATE_FULLSTACK_FLOOR_PIN = {
+    **C._COMMON,
+    "course_n_gates": 2,
+    "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,
+    "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+    "course_spawn_yaw_jitter": 0.25,
+    "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+    "course_gates_above_spawn": 0.5,
+    "floor_at_spawn": True,
+    "use_racing_line": True,
+    "rw_progress_to_center": False,
+    "rw_corridor": 4.0,
+    "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+    "rw_parabola_crossing": True,
+    "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+    "_raw": {"env.max_time": 60, "algo.gamma": 0.9975,
+             "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03,
+             "++algo.noise_hold_frac": 0.5},
+}
+
+# The package knobs a _percept variant adds on top of its base stage -- EXACTLY these, nothing else.
+_PERCEPT_KEYS = {
+    "ego_blur_gate": True,
+    "ego_blur_rate_lo_rad_s": 2.0,       # PLACEHOLDER pending the A2 curve
+    "ego_blur_rate_hi_rad_s": 4.0,       # PLACEHOLDER pending the A2 curve
+    "ego_spin_rate_abort": 3.5,
+    "ego_spin_time_abort": 0.4,
+    "ego_spin_rev_abort": 1.5,
+    "ego_spin_rev_window_s": 4.0,
+    "ego_yaw_cmd_clamp_rad_s": 0.35,
+    "rw_perception": 0.02,
+    "rw_perception_exponent": 4.0,
+}
+
+# Keys the sbatch itself plus-appends (BASE + BOUNDARY_OV, rl/peregrine_vq2_ego.sbatch): a stage _raw
+# entry re-appending any of these is a hydra append-collision that kills the launch (curriculum
+# footgun :530-535). The dead inc8 spin keys were REMOVED from BASE 2026-07-10.
+_SBATCH_APPENDED_KEYS = (
+    "+env.body_radius_lo", "+env.body_radius_hi", "+env.frame_depth_m",
+    "+dynamics.dr", "+dynamics.dr_aero", "+dynamics.dr_mixer", "+dynamics.dr_force_bias",
+    "+dynamics.dr_latency_min_steps", "+dynamics.dr_latency_max_steps",
+    "+algo.noise_anneal", "+algo.noise_std_hold", "+algo.noise_std_floor",
+    "+algo.noise_hold_frac", "+algo.noise_entropy_floor",
+    "+warmstart_reset_logstd", "+warmstart_reset_logstd_std", "+critic_warmup_updates",
+    "+eval_det_steps",
+    "+init_from",                       # the ladder auto-appends this on chained stage 2
+)
+
+_PERCEPT_STAGES = ("dual_gate_boot_floor_percept", "dual_gate_fullstack_floor_percept")
+
+
+def test_live_floor_chain_stages_snapshot_pinned():
+    """LIVE-RUN GUARD: dual_gate_boot_floor / dual_gate_fullstack_floor byte-identical to the pinned
+    literals -- the perception-honesty package lands STRICTLY additively."""
+    assert C.STAGES["dual_gate_boot_floor"] == _DUAL_GATE_BOOT_FLOOR_PIN
+    assert C.STAGES["dual_gate_fullstack_floor"] == _DUAL_GATE_FULLSTACK_FLOOR_PIN
+
+
+def test_percept_stages_are_strict_supersets_of_their_bases():
+    """Each _percept variant = its base stage VERBATIM + exactly the package knobs (same values in
+    both stages). The boot keeps ego_noise_scale=0.0 AND blur ON (blur independent of noise_scale --
+    a blur-free boot re-learns spin-scan); the fullstack keeps real noise (no ego_noise_scale key)."""
+    for name, base in (("dual_gate_boot_floor_percept", "dual_gate_boot_floor"),
+                       ("dual_gate_fullstack_floor_percept", "dual_gate_fullstack_floor")):
+        p, b = C.STAGES[name], C.STAGES[base]
+        for k, v in b.items():
+            assert p[k] == v, (name, k)                    # base keys present, values equal
+        extra = {k: v for k, v in p.items() if k not in b}
+        assert extra == _PERCEPT_KEYS, (name, extra)
+    # boot: noise-0 calibration + blur ON (the load-bearing independence).
+    boot = C.STAGES["dual_gate_boot_floor_percept"]
+    assert boot["ego_noise_scale"] == 0.0 and boot["ego_blur_gate"] is True
+    # fullstack: REAL noise (no override), blur ON.
+    full = C.STAGES["dual_gate_fullstack_floor_percept"]
+    assert "ego_noise_scale" not in full and full["ego_blur_gate"] is True
+
+
+def test_percept_fullstack_has_no_init_from_and_no_sbatch_collision():
+    """(a) stage 2 of the chain must NOT carry +init_from (the sbatch ladder appends it -- a
+    hardcoded path hydra-collides); (b) no _percept token re-appends a key the sbatch BASE /
+    BOUNDARY_OV already plus-appends."""
+    assert not any("init_from" in k for k in C.STAGES["dual_gate_fullstack_floor_percept"]["_raw"])
+    for s in _PERCEPT_STAGES:
+        assert s not in C.STAGE_ORDER                      # off-ladder, standalone/chained only
+        for tok in C.render_overrides(s):
+            key = tok.split("=", 1)[0]
+            if key.startswith("++"):
+                continue                                   # ++ force-override is the sanctioned form
+            assert key not in _SBATCH_APPENDED_KEYS, (s, tok)
+
+
+def test_percept_threshold_ordering_blind_policy_defense():
+    """THE ORDERING INVARIANT (owner directive design consequence): clamped REALIZED yaw (~3.5x the
+    command) < blur-free band lo < the rate abort -- a full-authority pointing sweep is never
+    blur-punished and never fatal, so a non-spinning policy can still SEE the gate by pointing at
+    it. A future A2 recalibration that breaks this ordering strands the clamped policy blind: this
+    test fails first."""
+    REALIZED_YAW_GAIN = 3.5                                # empirical (A2); verify from the first trace
+    for s in _PERCEPT_STAGES:
+        d = C.STAGES[s]
+        realized_yaw = d["ego_yaw_cmd_clamp_rad_s"] * REALIZED_YAW_GAIN
+        assert realized_yaw <= 1.5, (s, realized_yaw)      # inside the owner 1-1.5 rad/s target
+        assert realized_yaw < d["ego_blur_rate_lo_rad_s"], (s, realized_yaw)   # looking is blur-free
+        assert d["ego_blur_rate_lo_rad_s"] < d["ego_spin_rate_abort"], s      # blur bites before fatal
+        # hi ABOVE the rate abort is deliberate (the [abort, hi) band is fatal anyway; hi=4.0 keeps
+        # the A2 calibration structure) -- but hi must never sit below lo.
+        assert d["ego_blur_rate_hi_rad_s"] >= d["ego_blur_rate_lo_rad_s"], s
+
+
+def test_percept_rperc_farm_neutrality_bound():
+    """FARM-NEUTRALITY construction rule (2026-07-10): in every stage that sets rw_perception,
+    rw_perception <= rw_time (effective; default 0.02) so hover-and-stare nets <= 0 per tick --
+    staring is never a positive-return strategy on its own. ONE historical exemption:
+    single_gate_varied_gvf_lpara_perc (0.05) is the DOCUMENTED DETONATION precedent (farmable
+    fly-away on a warm start) -- kept verbatim per the existing-stages-untouched invariant; it is
+    exactly the failure this bound exists to prevent, so it stays exempt-and-frozen, never copied."""
+    DEFAULT_RW_TIME = 0.02                                 # EgoRewardWeights.time default
+    LEGACY_DETONATION_EXEMPT = ("single_gate_varied_gvf_lpara_perc",)
+    for s, d in C.STAGES.items():
+        if s in LEGACY_DETONATION_EXEMPT:
+            assert d["rw_perception"] == 0.05, s           # frozen historical value
+            continue
+        if d.get("rw_perception", 0.0) > 0.0:
+            eff_time = d.get("rw_time", DEFAULT_RW_TIME)
+            assert d["rw_perception"] <= eff_time, (s, d["rw_perception"], eff_time)
+    # and the _percept pair actually sets it (the framing gradient is the constructive-path guide).
+    for s in _PERCEPT_STAGES:
+        assert C.STAGES[s]["rw_perception"] == 0.02, s
+
+
+def test_percept_renders_valid_tokens():
+    toks = C.render_overrides("dual_gate_boot_floor_percept")
+    assert "+env.ego_blur_gate=true" in toks
+    assert "+env.ego_spin_rate_abort=3.5" in toks
+    assert "+env.ego_yaw_cmd_clamp_rad_s=0.35" in toks
+    assert "+env.rw_perception=0.02" in toks
+    assert "+env.ego_noise_scale=0.0" in toks              # boot keeps the calibration regime
+    assert "algo.gamma=0.9975" in toks                     # _raw verbatim
+    full_toks = C.render_overrides("dual_gate_fullstack_floor_percept")
+    assert "+env.ego_blur_gate=true" in full_toks
+    assert not any(t.startswith("+env.ego_noise_scale") for t in full_toks)   # real noise

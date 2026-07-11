@@ -52,6 +52,11 @@ _COMMON is a footgun. So here:
 
 VALIDATE-ON-single_gate discipline (DESIGN.md §6.7): single_gate must reach ~0.8 before promoting; any
 NEW knob is validated on single_gate BEFORE it is allowed into _COMMON.
+
+OFF-LADDER STAGE INDEX (standalone via STAGES=<name>): single_gate_static / _varied / _varied_* levers,
+hover_hold probe, dual_gate_fullstack0/0f, dual_gate_boot_floor -> dual_gate_fullstack_floor (the live
+floor chain), and dual_gate_boot_floor_percept -> dual_gate_fullstack_floor_percept (the 2026-07-10
+PERCEPTION-HONESTY / HARD NO-SPIN chain: fatal spin abort + yaw clamp + blur gate + r_perc, DESIGN.md §P).
 """
 from __future__ import annotations
 
@@ -1089,6 +1094,114 @@ STAGES: dict[str, dict] = {
                  # NO +init_from here: the sbatch ladder wires +init_from=<boot checkpoints> when this
                  # runs as stage 2 of STAGES="dual_gate_boot_floor dual_gate_fullstack_floor" (a
                  # hardcoded path here would COLLIDE with the ladder's append -> hydra error).
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
+    # ================================================================================================
+    # PERCEPTION-HONESTY / HARD NO-SPIN chain (2026-07-10, DESIGN.md §P) -- the dual_gate floor chain
+    # VERBATIM plus the anti-spin-scan package, OFF-LADDER, run as the two-stage sbatch chain:
+    #   sbatch --export=ALL,SEED=0,RUNTAG=vperc0,\
+    #     STAGES="dual_gate_boot_floor_percept dual_gate_fullstack_floor_percept",\
+    #     UPD_dual_gate_boot_floor_percept=4000,UPD_dual_gate_fullstack_floor_percept=12000,PRECHECK=1 \
+    #     rl/peregrine_vq2_ego.sbatch
+    # PRECHECK=1 is MANDATORY on the first launch (512 envs x 3 updates catches the new env wiring
+    # before budget), AND the precheck log must show the new loss_components keys actually emitting
+    # (spin_abort_rate / spin_rot_accum_mean / target_detectable_duty) -- the L16 silently-inert-hook
+    # guard: absent keys == the package did not arm.
+    # THE PACKAGE (all knobs are NEW +env. appends; the existing floor stages above are byte-untouched
+    # -- live vdflr0/vdff1 safe; knob names deliberately ego_spin_*, NOT the inc8 spin_rate_abort
+    # names, so a stale sbatch passing the old keys can never silently arm this gate):
+    #   * FATAL SPIN ABORT (the owner's non-spin GUARANTEE): ego_spin_rate_abort=3.5 rad/s sustained
+    #     0.4 s, OR'd with the leaky accumulated-rotation trigger 1.5 rev over a 4.0 s window; fires
+    #     COLLISION-CLASS (terminal_base + banked forfeit) on the parabola path via the lethal mask.
+    #   * YAW-COMMAND CLAMP 0.35 rad/s at the point of application (realized ~3.5x -> ~1.2 rad/s,
+    #     inside the owner's 1-1.5 target). Action space stays +/-3.14 (deploy contract untouched).
+    #     🚩 DEPLOY-SIDE: any FLIGHT of a _percept checkpoint MUST pass the matching fly_rl yaw cap
+    #     (policy_step max_rate / yaw_scale == 0.35) -- a training-side clamp does NOT bind the wire.
+    #   * MOTION-BLUR gate: ego_blur_rate_lo/hi = 2.0/4.0 rad/s -- PLACEHOLDERS pending the measured
+    #     A2 detect-vs-angular-rate curve (recalibrate before any flight ckpt; the slot-in point is
+    #     gate_visibility.blur_extra_miss_prob ONLY). Blur is ON in the noise-0 boot too: it is
+    #     camera physics, INDEPENDENT of ego_noise_scale -- a blur-free boot would re-discover
+    #     spin-scan and the fullstack would inherit it. (hi=4.0 sits ABOVE the 3.5 rate abort:
+    #     harmless -- the [3.5,4.0) band is fatal anyway, so the hard blur cut only ever bites in
+    #     already-lethal territory; kept at 4.0 to preserve the A2 calibration structure.)
+    #   * r_perc (framing preference) rw_perception=0.02 = rw_time -- the FARM-NEUTRALITY BOUND
+    #     (rw_perception <= rw_time, pinned by tests): hover-and-stare nets <= 0/tick, so the one
+    #     prior detonation mode (0.05 warm-start farmable fly-away) is priced out; introduced at the
+    #     FRESH boot (perception + progress learned jointly). Escalation path if it destabilizes:
+    #     the clip_pen_anneal plain-float pattern (ego_reward.py:231-240) + the L16 '[hook] ON' print.
+    #   * THRESHOLD ORDERING (blind-policy defense, pinned by tests): clamped realized yaw ~1.2 <
+    #     blur-free lo 2.0 < rate abort 3.5 -- a full-authority pointing sweep is never blur-punished
+    #     and never fatal, so 'point the camera at the gate' stays the constructive strategy.
+    # SUCCESS READS (training metrics, never renders): DET completion vs the vdflr0 twin;
+    # spin_abort_rate/exit_spin -> ~0 by convergence (early nonzero = the gate is teaching);
+    # target_detectable_duty >> vn16's 40.8% spin-scan duty; realized |w_z| from the trace <= ~1.5;
+    # exit_timeout/exit_front flat (r_perc not being farmed). NOTE ego_collision_rate INCLUDES spin
+    # aborts here -- subtract spin_abort_rate before comparing collision vs non-percept twins.
+    # OPTIONAL CHEAP RUNG (B2b validate-small-first; Fengyou's call given the July clock): a ~2-4k-upd
+    # single-gate smoke first = STAGES="dual_gate_boot_floor_percept" alone at UPD=2000 with
+    # EXTRA="++env.course_n_gates=1" -- skippable; the boot stage itself is already the cheap arm.
+    # ================================================================================================
+    "dual_gate_boot_floor_percept": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_boot_floor
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,  # STATIC zero=4
+        "ego_noise_scale": 0.0,       # calibration boot -- but blur stays ON (independent of noise_scale)
+        # ---- the perception-honesty package (see the block comment above) ----
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_blur_rate_hi_rad_s": 4.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_spin_rate_abort": 3.5,        # rad/s sustained (fatal, collision-class)
+        "ego_spin_time_abort": 0.4,        # s
+        "ego_spin_rev_abort": 1.5,         # revolutions (leaky window trigger)
+        "ego_spin_rev_window_s": 4.0,      # s
+        "ego_yaw_cmd_clamp_rad_s": 0.35,   # commanded; realized ~3.5x -> ~1.2 rad/s
+        "rw_perception": 0.02,             # == rw_time (farm-neutrality bound; NOT the detonated 0.05)
+        "rw_perception_exponent": 4.0,     # Geles/Swift
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from: fresh boot (H6); the fullstack _percept stage chains from THIS stage.
+                 "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
+    },
+    "dual_gate_fullstack_floor_percept": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_fullstack_floor
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime; the package rides along.
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_blur_rate_hi_rad_s": 4.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_spin_rate_abort": 3.5,
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,
+        "rw_perception": 0.02,
+        "rw_perception_exponent": 4.0,
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here (LOAD-BEARING): the sbatch ladder auto-appends
+                 # +init_from=<boot _percept checkpoints> when run as stage 2 of the chain; a
+                 # hardcoded path would COLLIDE with that append -> hydra error.
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5},
     },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
