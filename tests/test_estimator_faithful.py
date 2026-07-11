@@ -3,9 +3,13 @@ NEVER SEES GROUND TRUTH). Layers:
 
   (T0) TRANSLATION PARITY: the batched-torch BatchedESKFLeveler / BatchedNavKF (float64) against
        VERBATIM-vendored numpy excerpts of the deploy code (tests/_deploy_ref_eskf.py @ ego-deploy
-       e1aa4d1), on randomized sequences engineered to hit EVERY gate branch (freefall skip,
-       high-band skip, gate<1e-4 skip, chi2 reject, motion-reject inflate + stateful re-anchor,
-       accepted update; KF dt-drop, Joseph update, in-plane eigen floor). Agreement <= 1e-9.
+       e1aa4d1). Branch coverage is ASSERTED per arm (reviewer-caught 2026-07-11: never claim a
+       branch fired without counting it): freefall skip, high-band skip, gate<1e-4 skip, accepted
+       update in BOTH arms; chi2 reject counted in the motion_reject=False arm of the randomized
+       sweep (under the DEPLOY motion_reject=True config the case-5 sideways-g sample gets R
+       inflated ~1e4 so md passes -- the reject branch under the deploy config is exercised by the
+       dedicated forced-R_ref test below); KF dt-drop, Joseph update, and the in-plane eigen floor
+       (tiny-cov phase) each asserted. Agreement <= 1e-9.
   (CONV) CONVENTION PINS: hover specific force holds level in the Z-up/FLU instantiation;
        roll/pitch seed round-trips through the extraction; tilt-vector formula == R row-2.
   (ZOH) THE ALIASING PREMISE (synthetic negative control, graft #5): with truth itself
@@ -101,7 +105,7 @@ def test_t0_eskf_translation_parity_all_branches(motion_reject):
     lev.reset_idx(torch.arange(N), torch.tensor([[1.0, 0, 0, 0]] * N, dtype=DT64),
                   P0=ESKF_P0_DIAG)                                # deploy cold boot for parity
     refs = [REF.ESKFAHRS(use_accel_motion_reject=motion_reject) for _ in range(N)]
-    saw_update = False
+    n_updates = n_rejects = 0
     for k in range(n_steps):
         gy = torch.tensor(np.stack([s[k][0] for s in seqs]), dtype=DT64)
         ac = torch.tensor(np.stack([s[k][1] for s in seqs]), dtype=DT64)
@@ -116,9 +120,16 @@ def test_t0_eskf_translation_parity_all_branches(motion_reject):
             assert np.allclose(lev.P[i].numpy(), r._P, atol=1e-9), (i, k)
             if motion_reject:
                 assert np.allclose(lev.R_ref[i].numpy(), r._R_ref, atol=1e-9), (i, k)
-        if bool(lev.last_update_mask.any()):
-            saw_update = True
-    assert saw_update                        # the accept branch actually exercised
+        n_updates += int(lev.last_update_mask.sum())
+        n_rejects += int(lev.last_reject_mask.sum())
+    assert n_updates > 0                     # the accept branch actually exercised (both arms)
+    # chi2-reject coverage (reviewer-caught 2026-07-11: the docstring claimed EVERY branch fired
+    # per arm, but under the DEPLOY motion_reject=True config the case-5 sideways-g sample gets
+    # R_meas inflated ~1e4 by the motion gate, so md passes and the reject branch never fires
+    # here). Assert it in the False arm; the True-arm reject is exercised deterministically by
+    # test_t0_eskf_chi2_reject_fires_under_deploy_config below.
+    if not motion_reject:
+        assert n_rejects > 0, "chi2-reject branch lost its randomized-sweep coverage"
 
 
 def test_t0_eskf_motion_reject_reanchor_branch_parity():
@@ -154,6 +165,79 @@ def test_t0_eskf_dt_nonpositive_is_noop():
     assert torch.equal(lev.q, q_before) and torch.equal(lev.P, P_before)
 
 
+def test_t0_eskf_chi2_reject_fires_under_deploy_config():
+    """The chi2-reject branch UNDER THE DEPLOY (motion_reject=True) config, deterministically
+    (reviewer-caught 2026-07-11: the randomized sweep never fires it there -- the motion gate
+    inflates R_meas ~1e4 for a sideways-g sample, so md passes). Construction: force R_ref to the
+    rotation that maps the sideways sample to gravity (Ry: x_hat -> z_hat), so a_lin = R_ref@a + g
+    == 0 -> factor 1 (NO inflation, and the <0.3 re-anchor fires) while the live q still says the
+    innovation is huge -> md >> 7.815 -> REJECT. Parity vs the vendored deploy reference on the
+    same forced state pins the whole interaction (reject + stateful re-anchor ordering)."""
+    lev = BatchedESKFLeveler(1, g_world=G_NED, dtype=DT64, use_accel_motion_reject=True)
+    lev.reset_idx(torch.tensor([0]), torch.tensor([[1.0, 0, 0, 0]], dtype=DT64), P0=ESKF_P0_DIAG)
+    ref = REF.ESKFAHRS(use_accel_motion_reject=True)
+    Rp = np.array([[0.0, 0.0, -1.0],
+                   [0.0, 1.0, 0.0],
+                   [1.0, 0.0, 0.0]])                     # x_hat -> z_hat (Ry(-pi/2))
+    lev.R_ref = torch.tensor(Rp, dtype=DT64).unsqueeze(0)
+    ref._R_ref = Rp.copy()
+    accel = np.array([-GRAVITY, 0.0, 0.0])               # |a| = g: in band, gate == 1
+    assert np.allclose(Rp @ accel + np.array([0.0, 0.0, GRAVITY]), 0.0)   # a_lin == 0 by design
+    q_before = lev.q.clone(); b_before = lev.b_g.clone()
+    lev.step(torch.zeros(1, 3, dtype=DT64), torch.tensor(accel, dtype=DT64).unsqueeze(0), 1 / 30.)
+    ref._predict(np.zeros(3), 1 / 30.)
+    ref._update_accel(accel)
+    # the reject branch FIRED (reached R_meas, failed chi2): state kept predict-only
+    assert bool(lev.last_reject_mask[0]) and not bool(lev.last_update_mask[0])
+    assert torch.equal(lev.q, q_before) and torch.equal(lev.b_g, b_before)
+    # parity incl. the re-anchored R_ref (the reference re-anchors INSIDE R_meas construction,
+    # BEFORE the chi2 gate -- order shared, so R_ref must equal the pre-update R(q) on both sides)
+    assert np.allclose(lev.q[0].numpy(), ref._q, atol=1e-12)
+    assert np.allclose(lev.P[0].numpy(), ref._P, atol=1e-12)
+    assert np.allclose(lev.R_ref[0].numpy(), ref._R_ref, atol=1e-12)
+    assert np.allclose(ref._R_ref, np.eye(3), atol=1e-12)                  # re-anchor DID fire
+
+
+def test_t0_eskf_negative_freefall_tol_disables_that_band_side():
+    """Deploy eskf.py:402/:406: a NEGATIVE freefall tolerance DISABLES that side of the magnitude
+    band (reviewer-caught 2026-07-11 -- the batched translation applied the band unconditionally,
+    so a negative tol would have REJECTED a huge swath instead of disabling the check; unreachable
+    under the inherited 0.75/9.0 constants, config-space parity only)."""
+    # LO side disabled: a 0.1 g free-fall-band sample must now REACH the gate stack (gate at
+    # 0.1 g = exp(-10 * 0.81) ~ 3e-4 >= 1e-4 -> passes (c); direction == gravity -> innov 0 ->
+    # ACCEPTED update). With the default tol_lo=0.75 the same sample is band-skipped.
+    accel_ff = np.array([0.0, 0.0, -0.1 * GRAVITY])
+    lev = BatchedESKFLeveler(1, g_world=G_NED, dtype=DT64, use_accel_motion_reject=False,
+                             freefall_tol_lo=-1.0)
+    lev.reset_idx(torch.tensor([0]), torch.tensor([[1.0, 0, 0, 0]], dtype=DT64), P0=ESKF_P0_DIAG)
+    ref = REF.ESKFAHRS(use_accel_motion_reject=False, accel_freefall_tol_lo=-1.0)
+    lev.step(torch.zeros(1, 3, dtype=DT64), torch.tensor(accel_ff, dtype=DT64).unsqueeze(0), 1 / 30.)
+    ref._predict(np.zeros(3), 1 / 30.)
+    ref._update_accel(accel_ff)
+    assert bool(lev.last_update_mask[0])                 # the disabled band let the sample THROUGH
+    assert np.allclose(lev.q[0].numpy(), ref._q, atol=1e-12)
+    assert np.allclose(lev.P[0].numpy(), ref._P, atol=1e-12)
+    # control: the default band DOES skip it (the branch is decision-relevant, not vacuous)
+    lev_d = BatchedESKFLeveler(1, g_world=G_NED, dtype=DT64, use_accel_motion_reject=False)
+    lev_d.reset_idx(torch.tensor([0]), torch.tensor([[1.0, 0, 0, 0]], dtype=DT64), P0=ESKF_P0_DIAG)
+    lev_d.step(torch.zeros(1, 3, dtype=DT64), torch.tensor(accel_ff, dtype=DT64).unsqueeze(0), 1 / 30.)
+    assert not bool(lev_d.last_update_mask[0])
+    # HI side disabled: an 11 g sample reaches the stack only with a softened smooth gate
+    # (alpha=0.05 -> gate ~ 6.7e-3), so the hi-branch decision is observable too.
+    accel_hi = np.array([0.0, 0.0, -11.0 * GRAVITY])
+    lev_h = BatchedESKFLeveler(1, g_world=G_NED, dtype=DT64, use_accel_motion_reject=False,
+                               freefall_tol_hi=-1.0, accel_gate_alpha=0.05)
+    lev_h.reset_idx(torch.tensor([0]), torch.tensor([[1.0, 0, 0, 0]], dtype=DT64), P0=ESKF_P0_DIAG)
+    ref_h = REF.ESKFAHRS(use_accel_motion_reject=False, accel_freefall_tol_hi=-1.0,
+                         accel_gate_alpha=0.05)
+    lev_h.step(torch.zeros(1, 3, dtype=DT64), torch.tensor(accel_hi, dtype=DT64).unsqueeze(0), 1 / 30.)
+    ref_h._predict(np.zeros(3), 1 / 30.)
+    ref_h._update_accel(accel_hi)
+    assert bool(lev_h.last_update_mask[0])
+    assert np.allclose(lev_h.q[0].numpy(), ref_h._q, atol=1e-12)
+    assert np.allclose(lev_h.P[0].numpy(), ref_h._P, atol=1e-12)
+
+
 def test_t0_navkf_translation_parity_predict_update_floor_dtdrop():
     N = 4
     rng = np.random.default_rng(7)
@@ -187,6 +271,29 @@ def test_t0_navkf_translation_parity_predict_update_floor_dtdrop():
             assert np.allclose(kf.x[i].numpy(), refs[i].x, atol=1e-9), (i, k)
             assert np.allclose(kf.P[i].numpy(), refs[i].P, atol=1e-9), (i, k)
     assert saw_drop
+    # PHASE 2 -- the in-plane eigen-floor branch (reviewer-caught coverage hole 2026-07-11: the
+    # (0.1-0.5 m)^2 fix covariances above never push the horizontal block below the 0.05 m floor,
+    # so _apply_inplane_floor's batched eigh/clamp/rebuild never fired and saw_floor was dead
+    # code). Dense tiny-cov (0.02 m) fixes drive P[:2,:2] below floor^2 within a few rounds; the
+    # parity asserts then cover the rebuild path itself, and saw_floor is finally ASSERTED.
+    for k in range(20):
+        sf = torch.tensor(rng.normal(0, 2, (N, 3)), dtype=DT64)
+        kf.predict(sf, R, torch.full((N,), 0.02, dtype=DT64))
+        z = torch.tensor(rng.normal(0, 0.05, (N, 3)), dtype=DT64)
+        cov = torch.eye(3, dtype=DT64).expand(N, 3, 3) * 0.02 ** 2
+        kf.update_position(z, cov, torch.ones(N, dtype=torch.bool))
+        for i in range(N):
+            refs[i].predict(sf[i].numpy(), R[i].numpy(), 0.02)
+            refs[i].update_position(z[i].numpy(), cov[i].numpy())
+            # POSITIVE proof the floor is ACTIVE: the tiny-cov stream drives the natural
+            # (unfloored) in-plane eigenvalue far below floor^2 (steady state ~ R/n ~ 2e-5), so a
+            # post-update min-eig sitting EXACTLY at floor^2 == the clamp/rebuild fired.
+            eig_min = np.linalg.eigvalsh(0.5 * (refs[i].P[:2, :2] + refs[i].P[:2, :2].T))[0]
+            if abs(eig_min - 0.05 ** 2) < 1e-10:
+                saw_floor = True
+            assert np.allclose(kf.x[i].numpy(), refs[i].x, atol=1e-9), (i, k)
+            assert np.allclose(kf.P[i].numpy(), refs[i].P, atol=1e-9), (i, k)
+    assert saw_floor                        # the eigen-floor branch PROVABLY exercised
 
 
 def test_t0_navkf_chi2_gate_rejects_teleport_class_fix():
@@ -392,12 +499,14 @@ def test_init_seed_is_truth_roll_pitch_with_pad_converged_P():
 # (OFF) DEFAULT-OFF byte-identity + RNG draw-count invariance (graft #5).
 # ================================================================================================
 def _twin_replay_legacy_draws(seed, N, G, n_steps, dtype, *, skip_gyro_white=False,
-                              dr_accel_bias=True, bias_model="legacy"):
+                              dr_accel_bias=True, bias_model="legacy", hold=False):
     """Replay the DOCUMENTED legacy draw sequence on a twin generator; returns its final state.
-    reset_idx: rand(m,G) n_eff; [dr_accel_bias] rand(m,3); [legacy bias] rand(m,G)+rand(m,G).
-    step: [not sampled] randn(N,3) gyro-AR; [not kf] randn(N,3) white; randn(N,G,3) fix noise;
-          rand(N,G) teleport; randn(N,G,3) wild; rand(N,G) missed; randn(N,G) normal ang;
-          randn(N,G,3) axis; rand(N,G) flip; randn(N,G) area."""
+    reset_idx: rand(m,G) n_eff; [dr_accel_bias] rand(m,3); [legacy bias] rand(m,G)+rand(m,G);
+               [hold armed] rand(m) initial loop period.
+    step: [hold armed] rand(N) period renewal; [not sampled] randn(N,3) gyro-AR; [not kf]
+          randn(N,3) white; randn(N,G,3) fix noise; rand(N,G) teleport; randn(N,G,3) wild;
+          rand(N,G) missed; randn(N,G) normal ang; randn(N,G,3) axis; rand(N,G) flip;
+          randn(N,G) area."""
     tg = torch.Generator()
     tg.manual_seed(seed)
     def randn(*s): torch.randn(*s, generator=tg, dtype=dtype)
@@ -407,7 +516,11 @@ def _twin_replay_legacy_draws(seed, N, G, n_steps, dtype, *, skip_gyro_white=Fal
         rand(N, 3)                                 # accel bias
     if bias_model == "legacy":
         rand(N, G); rand(N, G)                     # mag + sign
+    if hold:
+        rand(N)                                    # initial loop period (choked-loop emulation)
     for _ in range(n_steps):
+        if hold:
+            rand(N)                                # period renewal (fixed count, drawn every step)
         if not skip_gyro_white:
             randn(N, 3)                            # gyro AR(1)
             randn(N, 3)                            # accel white
@@ -460,6 +573,21 @@ def test_off_faithful_path_owns_its_own_draw_count():
     assert torch.equal(gstate, twin)
     # rates == the raw sample verbatim (measured-zero noise), roll_pitch != truth in general
     assert torch.equal(out.body_rates, w)
+    # hi=1 (default): the choked-loop hold is DISARMED -- no hold state, no hold draws
+    assert not est._est_hold
+
+
+def test_off_hold_path_draw_count_is_one_reset_plus_one_per_step():
+    """est_dt_ticks_hi=4 (the _pef configuration): the hold adds EXACTLY one rand(m) at reset (the
+    initial loop period) + one rand(N) per step (the renewal draw, consumed only by advancing envs
+    but drawn for all -- fixed count), on top of the faithful sequence. Pinned by twin replay."""
+    cfg = EgoEstimatorConfig(att_model="eskf", vel_model="kf", rate_model="sampled",
+                             est_dt_ticks_hi=4)
+    est, out, gstate, (q, w, v) = _run_estimator(cfg, seed=1001)
+    assert est._est_hold
+    twin = _twin_replay_legacy_draws(1001, 5, 2, 15, out.rel_pos.dtype,
+                                     skip_gyro_white=True, hold=True)
+    assert torch.equal(gstate, twin)
 
 
 # ================================================================================================
@@ -624,11 +752,232 @@ def test_acc_wire_replay_parity_and_divergence_bands_from_fixture():
     assert 15.0 <= b["p90_deg"] <= 35.0, b
     assert b["max_deg"] > 25.0, b
     assert b["sf_mag_g"]["median"] >= 2.5                                  # matched-|f| gate
-    # 33.3 ms training-dt band (the in-env T3 pass band): nonzero but smaller than the 57 ms band
+    # 33.3 ms raw-training-tick band: nonzero but smaller than the 57 ms band
     grid33 = np.arange(tick_t[0], tick_t[-1], 1e6 / 30.0)
     b33 = divergence_band(t_us, acc, gyr, grid33, r0, p0)
     assert 0.8 <= b33["median_deg"] <= 6.0, b33
     assert b33["p90_deg"] <= 20.0, b33
+    # MODE B(iii) -- the RENEWAL grid over the measured tick-gap pmf (k_hi=4) == the _pef
+    # training-dt mixture (ego_est_dt_ticks_hi=4) and the in-env T3 pass band: the tail (p90/max,
+    # the fatal steering-on-lies regime) must reach the wire's; the median sits between the 33 ms
+    # quantization floor and the recorded-grid band (grid quantization, documented in
+    # leveler_bench.renewal_grid).
+    from leveler_bench import renewal_grid, tick_gap_report
+    b3 = divergence_band(t_us, acc, gyr, renewal_grid(tick_t[0], tick_t[-1], k_hi=4, seed=0),
+                         r0, p0)
+    assert 1.0 <= b3["median_deg"] <= 8.0, b3
+    assert b3["p90_deg"] >= 10.0, b3
+    assert b3["max_deg"] > 25.0, b3
+    # the measured tick-gap extraction (MEASURED_TICK_GAP_PMF provenance): the a5 hist as pinned
+    rep = tick_gap_report(ticks)
+    assert rep["round_k_hist"] == {1: 31, 2: 4, 3: 8, 4: 4}, rep
+    assert rep["k_max"] == 4
     # dense-stepping control: the non-aliasing floor is several-fold smaller than the tick band
     bd = divergence_band(t_us, acc, gyr, grid33, r0, p0, dense=True)
     assert bd["median_deg"] < 0.5 * b33["median_deg"], (bd, b33)
+
+
+# ================================================================================================
+# (HOLD) CHOKED-LOOP dt EMULATION (est_dt_ticks_hi; reviewer-caught 2026-07-11: the wire never ran
+# at the 30 Hz training tick -- the faithful channels must advance on the measured tick-gap band).
+# ================================================================================================
+def test_hold_semantics_freeze_between_advances_and_matched_dt_on_advance():
+    """Periods forced to [1,2,3,4] (the renewal redraw stubbed to identity): each env's faithful
+    obs channels (roll_pitch, velocity, body_rates) are FROZEN on held ticks and its emulated
+    leveler advance equals a standalone leveler stepped ONCE with dt = k * tick on that tick's
+    LATEST sample -- exactly the wire's step-once-per-loop-tick contract at a choked loop. The KF
+    state must not move on held ticks (no predict, no fix processing)."""
+    N, G = 4, 1
+    tick = 1.0 / 30.0
+    cfg = EgoEstimatorConfig(att_model="eskf", vel_model="kf", rate_model="sampled",
+                             est_dt_ticks_hi=4)
+    gp = torch.tensor([[10.0, 0.0, 2.0]], dtype=DT64)
+    est = BatchedEgoEstimator(N, gp, torch.zeros(1, dtype=DT64), config=cfg,
+                              generator=torch.Generator().manual_seed(77))
+    periods = torch.tensor([1, 2, 3, 4])
+    est._draw_gap_ticks = lambda u: periods.clone()          # deterministic periods (renewal too)
+    q_id = torch.tensor([[0.0, 0.0, 0.0, 1.0]], dtype=DT64).expand(N, 4).contiguous()
+    est.reset_idx(torch.arange(N), torch.zeros(N, 3, dtype=DT64), torch.zeros(N, 3, dtype=DT64),
+                  q_id)
+    assert torch.equal(est._est_period, periods)
+
+    # standalone reference levelers, one per env, seeded EXACTLY like the estimator's internal seed
+    refs = [BatchedESKFLeveler(1, g_world=G_ZUP, dtype=DT64) for _ in range(N)]
+    for r in refs:
+        r.reset_idx(torch.tensor([0]), torch.tensor([[1.0, 0, 0, 0]], dtype=DT64))
+
+    g = torch.Generator().manual_seed(13)
+    prev = None
+    for s in range(1, 13):
+        gyro = torch.randn(N, 3, generator=g, dtype=DT64) * 2.0
+        d = torch.randn(N, 3, generator=g, dtype=DT64)
+        sf = d / d.norm(dim=-1, keepdim=True) * 3.0 * GRAVITY               # gate-dead 3 g
+        kf_x_before = est._navkf.x.clone()
+        out = est.step(torch.zeros(N, 3, dtype=DT64), torch.zeros(N, 3, dtype=DT64), q_id,
+                       gyro, tick, detectable=torch.ones(N, G, dtype=torch.bool),
+                       apparent_area=torch.full((N, G), 0.8, dtype=DT64), sf_body=sf)
+        for i, k in enumerate(periods.tolist()):
+            if s % k == 0:
+                # ADVANCE: the emulated leveler == one matched-dt step on this tick's sample
+                refs[i].step(gyro[i:i + 1], sf[i:i + 1], k * tick)
+                assert torch.allclose(est._eskf.q[i], refs[i].q[0], atol=1e-12), (i, s)
+                assert torch.equal(out.body_rates[i], gyro[i]), (i, s)      # fresh sample
+            else:
+                # HELD: untouched KF (no predict, no fixes) + frozen obs channels
+                assert torch.equal(est._navkf.x[i], kf_x_before[i]), (i, s)
+                if prev is not None:                       # s=1 has no previous output yet
+                    assert torch.equal(out.roll_pitch[i], prev.roll_pitch[i]), (i, s)
+                    assert torch.equal(out.velocity[i], prev.velocity[i]), (i, s)
+                    assert torch.equal(out.body_rates[i], prev.body_rates[i]), (i, s)
+        prev = out
+    # sanity: the k=4 env really did diverge from the k=1 env (the corruption band widened)
+    assert not torch.allclose(est._eskf.q[3], est._eskf.q[0], atol=1e-3)
+
+
+def test_hold_pmf_is_the_measured_distribution_and_hi_is_bounded():
+    """The renewal draw follows ego_ins_emul.MEASURED_TICK_GAP_PMF (measured, pooled a5+a7;
+    truncation renormalizes), and est_dt_ticks_hi beyond the measured band raises LOUDLY (a longer
+    band needs fresh wire measurements, never an invented tail)."""
+    from ego_ins_emul import MEASURED_TICK_GAP_PMF
+    cfg = EgoEstimatorConfig(att_model="eskf", vel_model="kf", rate_model="sampled",
+                             est_dt_ticks_hi=4)
+    gp = torch.tensor([[10.0, 0.0, 2.0]], dtype=DT64)
+    est = BatchedEgoEstimator(2, gp, torch.zeros(1, dtype=DT64), config=cfg)
+    # inverse-CDF endpoints: u -> k over the measured pmf
+    cdf = np.cumsum(np.asarray(MEASURED_TICK_GAP_PMF))
+    u = torch.tensor([cdf[0] - 1e-4, cdf[0] + 1e-4, cdf[2] + 1e-4, 0.9999], dtype=DT64)
+    k = est._draw_gap_ticks(u)
+    assert k.tolist() == [1, 2, 4, 4]
+    # large-sample frequencies match the pmf (the draw IS the measured distribution)
+    ug = torch.rand(200_000, generator=torch.Generator().manual_seed(3), dtype=DT64)
+    kk = est._draw_gap_ticks(ug)
+    freq = torch.bincount(kk, minlength=5)[1:5].double() / kk.numel()
+    assert torch.allclose(freq, torch.tensor(MEASURED_TICK_GAP_PMF, dtype=torch.double),
+                          atol=5e-3), freq
+    with pytest.raises(ValueError, match="MEASURED tick-gap band"):
+        BatchedEgoEstimator(2, gp, torch.zeros(1, dtype=DT64),
+                            config=EgoEstimatorConfig(att_model="eskf", est_dt_ticks_hi=9))
+
+
+# ================================================================================================
+# (PLANT) SPECIFIC-FORCE CAPTURE -- the single physical input feeding the whole faithful chain
+# (reviewer-caught 2026-07-11: zero committed coverage of the real dynamics' NED->FRD->FLU capture
+# math; locally testable via the BaseDynamics-stub pattern of tests/test_measured_aero.py).
+# ================================================================================================
+def _import_plant_module():
+    """Import rl/diffaero_dynamics.py with the diffaero BaseDynamics stubbed (value-faithful:
+    the real grad_decay only scales gradients) -- the test_measured_aero._import_adapter pattern,
+    duplicated locally to keep the test files decoupled."""
+    import importlib
+    import types
+    if "diffaero.dynamics.base_dynamics" not in sys.modules:
+        base_mod = types.ModuleType("diffaero.dynamics.base_dynamics")
+
+        class BaseDynamics:
+            def __init__(self, cfg, device):
+                self.n_agents = int(getattr(cfg, "n_agents", 1))
+                self.n_envs = int(getattr(cfg, "n_envs", 1))
+                self.dt = float(cfg.dt)
+                self.alpha = float(getattr(cfg, "alpha", 1.0))
+                self.device = device
+
+            def grad_decay(self, x):
+                return x
+
+            def detach(self):
+                self._state = self._state.detach()
+
+        base_mod.BaseDynamics = BaseDynamics
+        pkg = types.ModuleType("diffaero")
+        dyn_pkg = types.ModuleType("diffaero.dynamics")
+        pkg.dynamics = dyn_pkg
+        dyn_pkg.base_dynamics = base_mod
+        sys.modules.setdefault("diffaero", pkg)
+        sys.modules.setdefault("diffaero.dynamics", dyn_pkg)
+        sys.modules["diffaero.dynamics.base_dynamics"] = base_mod
+    return importlib.import_module("diffaero_dynamics")
+
+
+def _mk_plant(n_envs=4, n_substeps=5, capture=True, backend="torch"):
+    dd = _import_plant_module()
+    from racer import rl_plant as rp
+    cfg = SimpleNamespace(n_envs=n_envs, n_agents=1, dt=1.0 / 30.0, alpha=1.0, g=9.80665,
+                          n_substeps=n_substeps, controller=None, dr=False,
+                          dr_latency_max_steps=0, capture_specific_force=capture)
+    return dd.PeregrinePlantDynamics(cfg, torch.device("cpu"), backend=backend,
+                                     params=rp.PlantParams()), rp.PlantParams()
+
+
+def test_plant_capture_hover_seed_and_level_hover_step():
+    """Frame/sign pin (the invariant-4 minefield): the capture is seeded [0, 0, +g] FLU at init,
+    and a level hover step from rest reproduces it through the FULL NED->FRD->FLU capture chain
+    (thrust == hover -> f_world = [0,0,-g] NED, zero drag at v=0, identity attitude)."""
+    dyn, P = _mk_plant()
+    g = float(P.g)
+    expect = torch.zeros(4, 3); expect[:, 2] = g
+    assert torch.allclose(dyn._sf_body_flu, expect)                        # analytic hover seed
+    U = torch.zeros(4, 4); U[:, 0] = 1.0                                   # normed hover thrust
+    dyn.step(U)
+    assert torch.allclose(dyn._sf_body_flu, expect, atol=1e-5), dyn._sf_body_flu
+
+
+def test_plant_capture_is_the_last_substep_sample():
+    """LAST-substep-only semantics via the closed-form recurrence of the legacy-linear plant at
+    zero rate command (identity attitude throughout; drag on the OLD velocity -- the exact
+    _step_torch substep loop, z channel): at 2x hover thrust from rest the captured sf must equal
+    the 5th substep's sample (thrust + drag*v_4 state), NOT the 1st substep's (v=0)."""
+    dyn, P = _mk_plant(n_substeps=5)
+    # the recurrence below assumes the legacy-linear defaults (guards, not tuning)
+    assert P.quad_drag_c2 is None and P.coll_map_thr is None and P.mixer_idle is None
+    assert P.transport_delay_steps == 0
+    g, hover, drag = float(P.g), float(P.hover_thrust), float(P.linear_drag)
+    sub_dt = dyn.dt / dyn.n_substeps
+    thrust, vz = hover, 0.0                                                # NED z; from rest
+    sf_ned_z = []
+    for _ in range(dyn.n_substeps):
+        if P.thrust_tau_s > 0.0:
+            beta = 1.0 - math.exp(-sub_dt / P.thrust_tau_s)
+            thrust = thrust + beta * (2.0 * hover - thrust)
+        else:
+            thrust = 2.0 * hover
+        a_up = g * thrust / hover
+        f_z = -a_up - drag * vz                                            # OLD-velocity drag
+        sf_ned_z.append(f_z)                                               # accel - g_vec == f_world
+        vz = vz + (f_z + g) * sub_dt
+    U = torch.zeros(4, 4); U[:, 0] = 2.0
+    dyn.step(U)
+    sf = dyn._sf_body_flu
+    assert torch.allclose(sf[:, 0], torch.zeros(4), atol=1e-6)
+    assert torch.allclose(sf[:, 1], torch.zeros(4), atol=1e-6)
+    # FLU z = -NED z (the involutory FLIP [1,-1,-1])
+    assert torch.allclose(sf[:, 2], torch.full((4,), -sf_ned_z[-1]), atol=1e-4), \
+        (float(sf[0, 2]), -sf_ned_z[-1])
+    # discrimination: the last-substep value really differs from the first-substep one (drag has
+    # bitten by substep 5), so the assert above pins WHICH substep is captured
+    assert abs(sf_ned_z[-1] - sf_ned_z[0]) > 1e-2
+    assert not torch.allclose(sf[:, 2], torch.full((4,), -sf_ned_z[0]), atol=1e-4)
+
+
+def test_plant_capture_reset_reseeds_only_the_reset_envs():
+    dyn, P = _mk_plant()
+    U = torch.zeros(4, 4); U[:, 0] = 2.0
+    dyn.step(U)
+    stepped = dyn._sf_body_flu.clone()
+    g = float(P.g)
+    assert not torch.allclose(stepped[:, 2], torch.full((4,), g), atol=1e-3)   # 2x thrust != hover
+    dyn.reset_idx(torch.tensor([0, 2]))
+    hover_sf = torch.tensor([0.0, 0.0, g])
+    assert torch.allclose(dyn._sf_body_flu[0], hover_sf) and \
+        torch.allclose(dyn._sf_body_flu[2], hover_sf)                      # re-seeded
+    assert torch.equal(dyn._sf_body_flu[1], stepped[1]) and \
+        torch.equal(dyn._sf_body_flu[3], stepped[3])                       # untouched envs kept
+
+
+def test_plant_capture_default_off_and_numpy_backend_raises():
+    dyn_off, _ = _mk_plant(capture=False)
+    assert dyn_off._sf_body_flu is None                                    # default OFF: no buffer
+    U = torch.zeros(4, 4); U[:, 0] = 1.0
+    dyn_off.step(U)                                                        # hot path untouched
+    dyn_np, _ = _mk_plant(backend="rl_plant_numpy")
+    with pytest.raises(RuntimeError, match="torch-backend only"):          # L16: loud, no silent 0
+        dyn_np.step(U)

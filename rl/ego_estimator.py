@@ -85,6 +85,7 @@ from ego_ins_emul import (
     BatchedESKFLeveler,
     BatchedNavKF,
     KF_FIX_COV_FLOOR_STD,
+    MEASURED_TICK_GAP_PMF,
     quat_from_roll_pitch_yaw_zyx,
 )
 # The visibility gate (pure truth geometry) -- optional dependency: the env passes a precomputed
@@ -196,6 +197,21 @@ class EgoEstimatorConfig:
     #            IMU is noiseless -- rl/tools/imu_foundation.py; deploy obs[5:8] = s.gyro_body RAW,
     #            fly_rl.py:1810). No RNG draw on this path.
     rate_model: str = "ar1"
+    # ---- CHOKED-LOOP dt EMULATION (reviewer-caught gap 2026-07-11): the wire nav loop has NEVER
+    # run at the 30 Hz training tick (measured ego_obs tick gaps -- a5 median 41.6 ms / p90 107 /
+    # max 139 ms; a7 median 34.8 / max 83; see ego_ins_emul.MEASURED_TICK_GAP_PMF provenance), and
+    # per-tick leveler divergence SCALES WITH dt (leveler_bench: median 1.5 / p90 4.6 deg at 33 ms
+    # vs 5.2 / 26.8 at the recorded ~57 ms grid on the same real a5 IMU) -- so a fixed-33 ms
+    # emulation trains against a ~3.5x cleaner lie than the wire it will meet. When > 1, the
+    # emulated ESKF/KF (and the sampled-rate channel) advance on a RENEWAL schedule: after each
+    # advance the env draws its next hold length k from the MEASURED pooled tick-gap pmf truncated
+    # to {1..est_dt_ticks_hi} and re-normalized, then holds (obs channels frozen -- the wire
+    # freezes them too between loop ticks) for k-1 ticks and advances with dt = k * env.dt on the
+    # k-th. The pmf and the K=4 band are MEASURED, not invented (invariant 3); the policy still
+    # acts every training tick, which the wire's action-hold does not -- a conservative (harder)
+    # direction, documented. 1 (default) == byte-identical (advance every tick, dt = env.dt, no
+    # RNG draw). Only meaningful with the faithful models armed. Set via +env.ego_est_dt_ticks_hi.
+    est_dt_ticks_hi: int = 1
 
     # ---- GLOBAL noise scale (DIAGNOSTIC lever, Fengyou 2026-07-09; the perception-vs-control ablation) ----
     # A single multiplier on ALL injected estimator noise/corruption: the anisotropic vision fix sigma,
@@ -360,6 +376,22 @@ class BatchedEgoEstimator:
             self._R_datum_gate = torch.zeros(N, G, 3, 3, device=device, dtype=dtype)
             self._Rz_neg_yaw0 = torch.eye(3, device=device, dtype=dtype) \
                 .unsqueeze(0).repeat(N, 1, 1)
+        # ---- CHOKED-LOOP dt emulation state (est_dt_ticks_hi > 1 only; see EgoEstimatorConfig) --
+        # allocated ONLY when armed so the default path stays zero-alloc / zero-draw / byte-exact.
+        _hi = int(self.cfg.est_dt_ticks_hi)
+        self._est_hold = ((self._att_emul or self._vel_emul or self._rate_sampled) and _hi > 1)
+        if self._est_hold:
+            if _hi > len(MEASURED_TICK_GAP_PMF):
+                raise ValueError(
+                    f"est_dt_ticks_hi={_hi} exceeds the MEASURED tick-gap band "
+                    f"(K={len(MEASURED_TICK_GAP_PMF)}; ego_ins_emul.MEASURED_TICK_GAP_PMF) -- a "
+                    "longer band needs fresh wire measurements (leveler_bench tick_gap_report), "
+                    "never an invented tail")
+            pmf = torch.tensor(MEASURED_TICK_GAP_PMF[:_hi], device=device, dtype=dtype)
+            self._gap_cdf = torch.cumsum(pmf / pmf.sum(), dim=0)            # (hi,) renormalized
+            self._est_period = torch.ones(N, device=device, dtype=torch.long)
+            self._est_phase = torch.zeros(N, device=device, dtype=torch.long)
+            self._est_dt_accum = torch.zeros(N, device=device, dtype=dtype)
 
     # -------------------------------------------------------------------- helpers
     def _randn(self, *shape):
@@ -367,6 +399,12 @@ class BatchedEgoEstimator:
 
     def _rand(self, *shape):
         return torch.rand(*shape, device=self.device, dtype=self.dtype, generator=self.gen)
+
+    def _draw_gap_ticks(self, u: Tensor) -> Tensor:
+        """Inverse-CDF draw of the effective loop period k (in training ticks, long (...,)) from the
+        MEASURED tick-gap pmf (truncated + renormalized to est_dt_ticks_hi at __init__). u ~ U[0,1)."""
+        k = torch.searchsorted(self._gap_cdf, u.to(self._gap_cdf.dtype).contiguous()) + 1
+        return k.clamp(max=int(self.cfg.est_dt_ticks_hi))
 
     def _R_wb(self, drone_quat: Tensor) -> Tensor:
         """body->world Z-up rotation from an XYZW quat (N,4)."""
@@ -462,9 +500,16 @@ class BatchedEgoEstimator:
         else:
             self._bias[idx] = 0.0
 
-        # ---- ESTIMATOR-FAITHFUL cold-init (branch-gated; draws NOTHING -- RNG stream discipline
-        # trivially satisfied). Placed AFTER every legacy draw so the legacy sequence stays
-        # byte-verbatim. ----
+        # ---- ESTIMATOR-FAITHFUL cold-init (branch-gated). Placed AFTER every legacy draw so the
+        # legacy sequence stays byte-verbatim. Draw order on the armed path (its own documented
+        # contract, pinned by the draw-count tests): [est_hold] ONE rand(m) for the initial loop
+        # period; the filter seeds below draw NOTHING. ----
+        if self._est_hold:
+            # initial per-env effective loop period k ~ the MEASURED tick-gap pmf (renewal seed;
+            # subsequent periods redraw at each advance inside step()).
+            self._est_period[idx] = self._draw_gap_ticks(self._rand(m))
+            self._est_phase[idx] = 0
+            self._est_dt_accum[idx] = 0.0
         if self._att_emul:
             # deploy-faithful takeoff state: the wire level-seeds on the pad and converges over
             # ~100 s idle, so at handover the leveler is ~truth roll/pitch with an arbitrary-0 yaw
@@ -536,6 +581,26 @@ class BatchedEgoEstimator:
         N, G = self.n, self.G
         R_wb = self._R_wb(drone_quat)                                       # (N,3,3)
 
+        # ---- CHOKED-LOOP dt emulation (est_dt_ticks_hi > 1 only; see EgoEstimatorConfig): the
+        # faithful channels advance every k-th tick with the ACCUMULATED dt and hold (frozen)
+        # in between; k redraws from the MEASURED tick-gap pmf at each advance (renewal). Draw
+        # discipline: exactly ONE rand(N) per step when armed (drawn for all, consumed by the
+        # advancing envs), zero otherwise. ``est_dt`` <= 0 is the filters' documented no-op. ----
+        if self._est_hold:
+            u_gap = self._rand(N)                                           # fixed draw count
+            self._est_phase = self._est_phase + 1
+            self._est_dt_accum = self._est_dt_accum + dt
+            adv = self._est_phase >= self._est_period                       # (N,) bool
+            est_dt = torch.where(adv, self._est_dt_accum,
+                                 torch.zeros_like(self._est_dt_accum))
+            self._est_phase = torch.where(adv, torch.zeros_like(self._est_phase), self._est_phase)
+            self._est_dt_accum = torch.where(adv, torch.zeros_like(self._est_dt_accum),
+                                             self._est_dt_accum)
+            self._est_period = torch.where(adv, self._draw_gap_ticks(u_gap), self._est_period)
+        else:
+            adv = None                                                      # every tick advances
+            est_dt = dt
+
         # ---- rates: sampled raw gyro (faithful) OR legacy AR(1) colored noise ----
         gyro_used = gyro_sample if gyro_sample is not None else body_rates
         if self._rate_sampled:
@@ -543,7 +608,10 @@ class BatchedEgoEstimator:
             # (fly_rl.py:1810 s.gyro_body, NOT the AHRS bias-corrected rate). MEASURED-ZERO sensor
             # noise (a5 pad-idle, imu_foundation.py) -> nothing added, NO RNG draw on this branch
             # (the legacy _randn below is NOT executed -- new path owns its own draw count).
-            self._body_rates = gyro_used
+            # Under the choked-loop hold the sample refreshes only when the emulated loop runs
+            # (the wire delivers a new gyro obs only at loop ticks).
+            self._body_rates = gyro_used if adv is None else \
+                torch.where(adv.unsqueeze(-1), gyro_used, self._body_rates)
         else:
             # LEGACY (default; BYTE-IDENTICAL draw sequence): AR(1) colored gyro noise
             # e_t = rho*e_{t-1} + sqrt(1-rho^2)*sigma*w_t (stationary marginal sigma)
@@ -560,7 +628,9 @@ class BatchedEgoEstimator:
                                    "++dynamics.capture_specific_force=true and wire the env)")
             # ONE step per control tick on the LATEST sample -- the verified deploy rate contract
             # (navigator.py:585-607; a 143 Hz substep loop would be LESS faithful AND ~5x the cost).
-            self._eskf.step(gyro_used, sf_body, dt)
+            # est_dt carries the choked-loop hold (0 on held ticks = the leveler's no-op branch;
+            # the accumulated gap on an advance -- exactly the wire's step-once-per-loop-tick).
+            self._eskf.step(gyro_used, sf_body, est_dt)
             R_datum = self._eskf.R_wb()                                     # body->datum-world
             # THE obs-parity point: the SAME extraction the legacy path / deploy roll_pitch_zup
             # uses, applied to the EMULATED (possibly lying) attitude. Yaw datum never reaches obs.
@@ -579,8 +649,9 @@ class BatchedEgoEstimator:
                 R_datum = torch.einsum("nij,njk->nik", self._Rz_neg_yaw0, R_wb)
             # strapdown predict through the EMULATED attitude -- the load-bearing error coupling
             # (wrong gravity cancellation; deploy state_estimator.predict). Fix updates + the
-            # world->body projection happen below, after the fix stream is computed.
-            self._navkf.predict(sf_body, R_datum, dt)
+            # world->body projection happen below, after the fix stream is computed. est_dt =
+            # the choked-loop hold (0 on held ticks == the KF's dt<=0 predict-drop branch).
+            self._navkf.predict(sf_body, R_datum, est_dt)
         else:
             # LEGACY (default; BYTE-IDENTICAL): body-frame velocity integrates a residual accel
             # bias (the drift lever) + tiny white noise (per-episode residual; over Delta-t since
@@ -707,12 +778,21 @@ class BatchedEgoEstimator:
             # 3-channel chain (absolute + gate-rel in-plane + range); the full-chain translation is
             # the priced upgrade if the velocity benchmark misses. Teleport-class outliers are
             # rejected by the KF's chi2(3) fix gate (deploy md<=16.27), like the wire chain.
+            # choked-loop hold: the wire processes fixes only when the nav loop runs -- held
+            # ticks contribute NO KF update (their vision draw stream above is unchanged).
+            acc_kf = accepted if adv is None else (accepted & adv.unsqueeze(-1))
             z_datum = self._gate_pos_datum - torch.einsum("nij,ngj->ngi", R_datum, fix_body)
-            sig = torch.clamp(sigma_gate, min=KF_FIX_COV_FLOOR_STD)         # (N,G,3) gate frame
+            # deploy floor FORM (reviewer-caught 2026-07-11): localization.py:56 ADDS the floor IN
+            # QUADRATURE ("added in quadrature to every vision world-fix covariance"), not a clamp
+            # -- matched exactly: sig^2 = sigma^2 + FIX_COV_FLOOR_STD^2. (The other direction of
+            # the deviation -- deploy's gate-relative in-plane channel REMOVES the floor in-plane
+            # -- stays a documented conservative cut of the single-fix surrogate; see above.)
+            sig = torch.sqrt(sigma_gate * sigma_gate
+                             + KF_FIX_COV_FLOOR_STD ** 2)                   # (N,G,3) gate frame
             cov = torch.einsum("ngij,ngj,ngkj->ngik", self._R_datum_gate, sig * sig,
                                self._R_datum_gate)                          # R diag(sig^2) R^T
             for gi in range(G):                                             # sequential channel
-                self._navkf.update_position(z_datum[:, gi], cov[:, gi], accepted[:, gi])
+                self._navkf.update_position(z_datum[:, gi], cov[:, gi], acc_kf[:, gi])
             # obs velocity = KF world velocity projected world->body through the SAME (emulated)
             # attitude (deploy ego_obs.py:305-321) -- the second attitude-error injection. The yaw
             # datum cancels to first order (KF velocity and projection share it; ADJUDICATED).

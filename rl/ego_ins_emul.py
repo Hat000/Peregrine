@@ -131,6 +131,18 @@ MEASURED_GYRO_BIAS_RAD_S = (0.0, 0.0, 0.0)
 MEASURED_GYRO_NOISE_DENSITY = (0.0, 0.0, 0.0)            # rad/s/sqrt(Hz)
 MEASURED_ACCEL_NOISE_DENSITY = (0.0, 0.0, 0.0)           # m/s^2/sqrt(Hz)
 
+# MEASURED WIRE LOOP-TICK GAP DISTRIBUTION (reviewer-caught gap 2026-07-11: the wire nav loop has
+# NEVER run at the 30 Hz training tick, and per-tick leveler divergence scales with dt -- a 33 ms-
+# only emulation is ~3.5x CLEANER than every wire operating point measured to date). Extraction:
+# rl/tools/leveler_bench.py::tick_gap_report on the recorded ego_obs.jsonl tick schedules
+# (run 2026-07-11): round(gap / 33.3 ms) histogram
+#     a5 (48 ticks, 2.67 s): {1: 31, 2: 4, 3: 8, 4: 4}   (gap median 41.6 ms / p90 107 / max 139)
+#     a7 (27 ticks, 1.06 s): {1: 21, 2: 4, 3: 1}          (gap median 34.8 ms / max 83)
+# POOLED pmf over k = effective-loop-period in 33.3 ms training ticks (73 gaps total). Consumed by
+# EgoEstimatorConfig.est_dt_ticks_hi (renewal draw per estimator advance -- the choked-loop dt
+# emulation); band validated on the REAL a5/a7 IMU by leveler_bench MODE B(iii).
+MEASURED_TICK_GAP_PMF = (52.0 / 73.0, 8.0 / 73.0, 9.0 / 73.0, 4.0 / 73.0)   # k = 1, 2, 3, 4
+
 
 # ================================================================================================
 # Batched quaternion / rotation helpers (wxyz, body->world). Local to keep this module dependency-
@@ -298,8 +310,10 @@ class BatchedESKFLeveler:
         self.P = torch.diag(torch.tensor(ESKF_P0_DIAG, device=device, dtype=dtype)) \
             .unsqueeze(0).repeat(N, 1, 1)
         self.R_ref = torch.eye(3, device=device, dtype=dtype).unsqueeze(0).repeat(N, 1, 1)
-        # diagnostics: which envs applied an accel update on the last step (eskf_accel_update_duty)
+        # diagnostics: which envs applied an accel update on the last step (eskf_accel_update_duty),
+        # and which reached R_meas but were chi2-REJECTED (branch-coverage observability only)
         self.last_update_mask = torch.zeros(N, dtype=torch.bool, device=device)
+        self.last_reject_mask = torch.zeros(N, dtype=torch.bool, device=device)
 
     # -------------------------------------------------------------------- lifecycle
     @torch.no_grad()
@@ -330,6 +344,7 @@ class BatchedESKFLeveler:
             self.P[idx] = torch.diag(torch.tensor(P0, device=self.device, dtype=self.dtype))
         self.R_ref[idx] = quat_to_R_wxyz(self.q[idx])
         self.last_update_mask[idx] = False
+        self.last_reject_mask[idx] = False
 
     # -------------------------------------------------------------------- step
     @torch.no_grad()
@@ -380,9 +395,15 @@ class BatchedESKFLeveler:
         g = self.g_mag
         amag = torch.linalg.norm(accel, dim=-1)                             # (N,)
         m_valid = live & (amag >= 1e-6)                                     # (a)
-        lo = g * (1.0 - self.freefall_tol_lo)
-        hi = g * (1.0 + self.freefall_tol_hi)
-        m_band = (amag >= lo) & (amag <= hi)                                # (b) eskf.py:391-410
+        # (b) magnitude band, eskf.py:391-410. Deploy semantics: a NEGATIVE tolerance DISABLES that
+        # side of the band (eskf.py:402/:406 each guard with `tol >= 0` -- reviewer-caught 2026-07-11;
+        # the inherited constants 0.75/9.0 never take the disabled path, so this is config-space
+        # parity only, behavior-identical for every reachable config).
+        m_band = torch.ones_like(m_valid)
+        if self.freefall_tol_lo >= 0.0:
+            m_band = m_band & (amag >= g * (1.0 - self.freefall_tol_lo))
+        if self.freefall_tol_hi >= 0.0:
+            m_band = m_band & (amag <= g * (1.0 + self.freefall_tol_hi))
         dev = (amag - g) / g
         gate = torch.exp(-self.accel_gate_alpha * dev * dev)                # eskf.py:381-389
         m_gate = gate >= 1e-4                                               # (c) eskf.py:466
@@ -442,6 +463,8 @@ class BatchedESKFLeveler:
         self.b_g = torch.where(upd[:, None], b_new, self.b_g)
         self.P = torch.where(upd[:, None, None], P_new, self.P)
         self.last_update_mask = upd
+        # observability only (test coverage of the chi2 branch; no behavioral consumer)
+        self.last_reject_mask = pre & ~m_chi2
 
     # -------------------------------------------------------------------- readout
     def R_wb(self) -> Tensor:
