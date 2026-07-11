@@ -267,10 +267,30 @@ def test_default_navigatorconfig_is_byte_identical_to_vq1_off_path():
 
 
 def test_get_profile_registry():
-    assert set(PROFILES) == {"vq1_case_a", "vq2_case_c"}
+    assert set(PROFILES) == {"vq1_case_a", "vq2_case_c", "vq2_ego_lean"}
     assert get_profile("vq2_case_c").name == "vq2_case_c"
     with pytest.raises(KeyError):
         get_profile("nope")
+
+
+def test_vq2_ego_lean_is_case_c_minus_yaw_z_anchors():
+    """vq2_ego_lean drops EXACTLY the three vision yaw/z anchors (dead weight for the yaw-free
+    ego obs contract; ~50+25 ms/call = the a5/a7 gap to 30 Hz) and is otherwise byte-identical
+    to vq2_case_c — the base profile itself must stay untouched."""
+    import dataclasses
+    lean, base = get_profile("vq2_ego_lean"), get_profile("vq2_case_c")
+    assert lean.name == "vq2_ego_lean"
+    for f in ("use_vp_yaw", "use_gate_bearing_yaw", "use_floor_height"):
+        assert getattr(lean.nav_config, f) is False, f
+        assert getattr(base.nav_config, f) is True, f
+    for f in dataclasses.fields(lean.nav_config):
+        if f.name in ("use_vp_yaw", "use_gate_bearing_yaw", "use_floor_height"):
+            continue
+        assert getattr(lean.nav_config, f.name) == getattr(base.nav_config, f.name), f.name
+    assert lean.cmd_rate_scale == base.cmd_rate_scale
+    assert lean.gyro_sign == base.gyro_sign
+    assert lean.seeker_overrides == base.seeker_overrides
+    assert lean.controller_overrides == base.controller_overrides
 
 
 def test_seeker_controller_uses_ff_gain_one_not_double_compensating():

@@ -193,10 +193,39 @@ def vq2_case_c() -> DeployProfile:
     )
 
 
+def vq2_ego_lean() -> DeployProfile:
+    """VQ2 case-C minus the yaw/z CV anchors — for MAP-FREE EGO-POLICY flights ONLY.
+
+    The 21-dim ego actor obs contains NO yaw channel (egocentric contract): the builder discards
+    yaw after roll/pitch extraction, and the world->body velocity projection uses the same yaw
+    datum the KF velocity is estimated in, so a drifting (gyro-only) yaw datum cancels to first
+    order. The three vision yaw/z anchors are therefore dead weight on this path at ~50 ms
+    (vp_yaw) + ~25 ms (floor_height) per call — the measured gap between the a5/a7 loop rate and
+    the 30 Hz training rate. Drop them:
+      * ``use_vp_yaw=False``   — no VP-RANSAC/Manhattan call; ESKF yaw = gyro-integrated (drifts
+        slowly; harmless per the datum-cancellation above).
+      * ``use_gate_bearing_yaw=False`` — needs a known gate map; inert on map-free ego flights
+        anyway (turned off for explicitness).
+      * ``use_floor_height=False`` — KF z loses its only dedicated pin and dead-reckons on the
+        IMU; the ego policy does not consume world z (the takeoff-assist climb trigger degrades,
+        but both real flights handed over on the RATES trigger at ~0.2-0.7 s, well before climb).
+    Everything else (AHRS leveler, gate-relative KF chain, seeker/controller overrides,
+    cmd_rate_scale, gyro_sign) is byte-identical to ``vq2_case_c``. Do NOT fly the gate-seeker on
+    this profile — the seeker DOES consume yaw/z.
+    """
+    import dataclasses
+    p = vq2_case_c()
+    p.nav_config.use_vp_yaw = False          # NavigatorConfig is a mutable dataclass
+    p.nav_config.use_gate_bearing_yaw = False
+    p.nav_config.use_floor_height = False
+    return dataclasses.replace(p, name="vq2_ego_lean")   # DeployProfile is frozen
+
+
 # Named lookup for a one-flag CLI (`--deploy-profile vq2_case_c`). Keep keys == DeployProfile.name.
 PROFILES = {
     "vq1_case_a": vq1_case_a,
     "vq2_case_c": vq2_case_c,
+    "vq2_ego_lean": vq2_ego_lean,
 }
 
 
