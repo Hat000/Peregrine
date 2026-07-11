@@ -404,12 +404,52 @@ _SBATCH_APPENDED_KEYS = (
 
 _PERCEPT_STAGES = ("dual_gate_boot_floor_percept", "dual_gate_fullstack_floor_percept")
 
+# The exact contents of the LIVE _percept chain stages (consumed by the running vperc0 job 3305662,
+# deployed snapshot @ 6615458). SNAPSHOT-PINNED literally -- previously these stages had only the
+# RELATIVE superset test below (which silently passes if base+_PERCEPT_KEYS mutate together); the
+# estimator-faithful package (2026-07-11) must land STRICTLY additively on top, so the live configs
+# get their own byte-literal guard FIRST. If a legitimate future edit changes them, update this pin
+# CONSCIOUSLY (and check no live run consumes them).
+_DUAL_GATE_BOOT_FLOOR_PERCEPT_PIN = {
+    **_DUAL_GATE_BOOT_FLOOR_PIN,
+    "ego_blur_gate": True,
+    "ego_blur_rate_lo_rad_s": 2.0,
+    "ego_blur_rate_hi_rad_s": 4.0,
+    "ego_spin_rate_abort": 3.5,
+    "ego_spin_time_abort": 0.4,
+    "ego_spin_rev_abort": 1.5,
+    "ego_spin_rev_window_s": 4.0,
+    "ego_yaw_cmd_clamp_rad_s": 0.35,
+    "rw_perception": 0.02,
+    "rw_perception_exponent": 4.0,
+}
+_DUAL_GATE_FULLSTACK_FLOOR_PERCEPT_PIN = {
+    **_DUAL_GATE_FULLSTACK_FLOOR_PIN,
+    "ego_blur_gate": True,
+    "ego_blur_rate_lo_rad_s": 2.0,
+    "ego_blur_rate_hi_rad_s": 4.0,
+    "ego_spin_rate_abort": 3.5,
+    "ego_spin_time_abort": 0.4,
+    "ego_spin_rev_abort": 1.5,
+    "ego_spin_rev_window_s": 4.0,
+    "ego_yaw_cmd_clamp_rad_s": 0.35,
+    "rw_perception": 0.02,
+    "rw_perception_exponent": 4.0,
+}
+
 
 def test_live_floor_chain_stages_snapshot_pinned():
     """LIVE-RUN GUARD: dual_gate_boot_floor / dual_gate_fullstack_floor byte-identical to the pinned
     literals -- the perception-honesty package lands STRICTLY additively."""
     assert C.STAGES["dual_gate_boot_floor"] == _DUAL_GATE_BOOT_FLOOR_PIN
     assert C.STAGES["dual_gate_fullstack_floor"] == _DUAL_GATE_FULLSTACK_FLOOR_PIN
+
+
+def test_live_percept_chain_stages_snapshot_pinned():
+    """LIVE-RUN GUARD (vperc0, job 3305662 @ 6615458): the two _percept stages byte-identical to the
+    pinned literals -- the estimator-faithful (_pef) package lands STRICTLY additively."""
+    assert C.STAGES["dual_gate_boot_floor_percept"] == _DUAL_GATE_BOOT_FLOOR_PERCEPT_PIN
+    assert C.STAGES["dual_gate_fullstack_floor_percept"] == _DUAL_GATE_FULLSTACK_FLOOR_PERCEPT_PIN
 
 
 def test_percept_stages_are_strict_supersets_of_their_bases():
