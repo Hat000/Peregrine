@@ -340,3 +340,38 @@ def test_roll_pitch_training_extraction_roundtrip():
 def test_slot1_stub_rejected():
     with pytest.raises(NotImplementedError):
         EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True))
+
+
+# =====================================================================================
+# COARSE-MAP 'map' sector mode (2026-07-12) — the horizontal turn prior the _pef
+# champions trained on but 'auto' cannot compute (no next-gate geometry on the wire).
+# =====================================================================================
+def _map_update(builder, gate_index, t_ns=0):
+    """update() with no fix (blind approach) — isolates the STATIC sector channel."""
+    return builder.update(
+        sim_time_ns=t_ns, gate_index=gate_index, R_frd2ned=np.eye(3),
+        vel_ned=np.zeros(3), gyro_frd=np.zeros(3), pose=None, last_normed_thrust=0.0)
+
+
+def test_sector_map_feeds_static_bucket_before_any_fix():
+    """'map' latches coarse_map[active_gate_index] into obs[9:11] on the gate-change boundary —
+    live through the blind approach (pose=None), promoting on advance, clamping past the last row."""
+    cmap = np.array([[-1.0, 1.0], [0.0, 0.0], [1.0, -1.0]])   # g0 right-up, g1 straight, g2 left-down
+    b = EgoObsBuilder(EgoObsBuilderConfig(sector_mode="map", coarse_map=cmap, virtual_flip=False))
+    np.testing.assert_allclose(_map_update(b, 0, 0)[9:11], [-1.0, 1.0])      # blind, no fix yet
+    np.testing.assert_allclose(_map_update(b, 1, 1_000_000)[9:11], [0.0, 0.0])   # promote
+    np.testing.assert_allclose(_map_update(b, 9, 2_000_000)[9:11], [1.0, -1.0])  # clamp to last row
+
+
+def test_sector_map_requires_valid_coarse_map():
+    with pytest.raises(ValueError):
+        EgoObsBuilder(EgoObsBuilderConfig(sector_mode="map", coarse_map=None))
+    with pytest.raises(ValueError):   # buckets must be in {-1,0,1}
+        EgoObsBuilder(EgoObsBuilderConfig(sector_mode="map", coarse_map=np.array([[2.0, 0.0]])))
+
+
+def test_sector_auto_zero_untouched_by_map_addition():
+    """Regression: adding 'map' left 'auto'/'zero' emitting (0,0) before a fix (no perturbation)."""
+    for mode in ("auto", "zero"):
+        b = EgoObsBuilder(EgoObsBuilderConfig(sector_mode=mode, virtual_flip=False))
+        np.testing.assert_allclose(_map_update(b, 0, 0)[9:11], [0.0, 0.0])

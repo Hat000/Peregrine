@@ -579,11 +579,25 @@ def load_ego_actor(path: str) -> nn.Module:
     return actor
 
 
+def _load_coarse_map(path: str) -> np.ndarray:
+    """Load a VQ2 coarse-map JSON ``{"sector": [[horiz,vert], ...]}`` -> (G,2) float64 in {-1,0,1}.
+    Row g is the STATIC turn bucket fed while active_gate_index==g (the deploy analog of training's
+    build_coarse_map). Validated here so a malformed map fails at startup, not mid-flight."""
+    with open(path) as f:
+        data = json.load(f)
+    sector = np.asarray(data["sector"], dtype=np.float64).reshape(-1, 2)
+    if sector.shape[0] < 1:
+        raise ValueError(f"coarse map {path}: 'sector' must have >= 1 gate row.")
+    if not np.isin(sector, (-1.0, 0.0, 1.0)).all():
+        raise ValueError(f"coarse map {path}: every [horiz,vert] bucket must be in {{-1,0,1}}.")
+    return sector
+
+
 @torch.no_grad()
 def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
                 virtual_flip: bool = False, max_thrust: float = 0.0,
                 debug: dict | None = None, yaw_scale: float = 1.0,
-                yaw_clamp: float = 0.0
+                yaw_clamp: float = 0.0, pitch_clamp_rad: float = 0.0
                 ) -> tuple[np.ndarray, float, float]:
     """One forward pass, replicating the TRAINING action pipeline exactly:
     test-mode action = tanh(actor_mean(obs)), then env.rescale_action onto
@@ -614,6 +628,15 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     full authority, so it cuts them ~9x OOD) and NOT yaw_scale (multiplicative —
     it mis-scales the whole yaw transfer function instead of clipping its tail).
     Applied after yaw_scale so the clamp is the final word on the wire.
+
+    ``pitch_clamp_rad``: perception fence (rad, 0 = off), EGO obs only. Past this
+    nose-down pitch the +20 deg camera mount points at the floor and the policy loses
+    the gate (measured gate-0 failure); this blocks FURTHER nose-down while always
+    allowing nose-up recovery. Reads obs[4] (leveled body pitch) and the final FRD
+    pitch-rate command, both with EMPIRICALLY-pinned signs (virtual_flip-agnostic).
+    A one-sided asymmetric limit — NOT a symmetric clamp — so forward flight up to the
+    cap is untouched. Set it BELOW the -17.8 deg resting tilt magnitude (e.g. 30 deg)
+    so hover is never fenced.
     """
     obs_t = torch.as_tensor(obs_np[None], dtype=torch.float32)   # (1, 17)
     mean  = actor(obs_t)[0].cpu().numpy().astype(np.float64)     # (4,) raw mean
@@ -635,6 +658,16 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     if virtual_flip:
         rate_flu = _RZ_PI_BODY @ rate_flu       # virtual body frame -> real body
     rate_frd = rate_flu * _ACT_FLU_TO_FRD
+    if pitch_clamp_rad > 0.0 and float(obs_np[4]) <= -pitch_clamp_rad:
+        # PERCEPTION FENCE (EGO obs only; obs[4] = leveled body pitch): the +20 deg camera mount
+        # means camera_elev = body_pitch + 20 deg, so a hard head-down forward attitude points the
+        # camera at the floor and LOSES the gate (measured: pitch -50 deg -> cam -30 deg -> pose_seen->0,
+        # ego-flight-vpef-zbias-2026-07-12). Past the nose-down cap, block FURTHER nose-down (keep the
+        # gate in frame) but always let nose-UP recovery through. Signs are EMPIRICAL from that flight
+        # (nose-down <=> obs[4]<0 AND rate_frd[1]<0), so this is virtual_flip-agnostic. Applied on the
+        # final FRD command; a cap ABOVE the -17.8 deg resting tilt so hover is never fenced.
+        rate_frd = rate_frd.copy()
+        rate_frd[1] = max(float(rate_frd[1]), 0.0)
     collective = float(np.clip(normed_thrust * _HOVER_THRUST, 0.0, 1.0))
     if debug is not None:
         debug["actor_mean"] = mean.tolist()
@@ -1710,6 +1743,17 @@ def _fly_ego(client, actor, args, flight_idx: int,
     # quality gates + the temporal track); its pursuit controller is never invoked.
     nav, seeker, _ = _build_casec_seeker(args, gates)
 
+    coarse_map = None
+    if args.ego_sector_mode == "map":
+        if not args.ego_coarse_map:
+            print("  [ego] --ego-sector-mode map requires --ego-coarse-map <file>. abort.",
+                  file=sys.stderr)
+            result["final_state"] = "NO_COARSE_MAP"
+            return result
+        coarse_map = _load_coarse_map(args.ego_coarse_map)
+        print(f"  [ego] coarse map from --ego-coarse-map {args.ego_coarse_map} "
+              f"({coarse_map.shape[0]} gates): {coarse_map.astype(int).tolist()}")
+
     builder = EgoObsBuilder(EgoObsBuilderConfig(
         stale_horizon_s=args.ego_stale_horizon,
         det_hold_s=args.ego_det_hold,
@@ -1717,6 +1761,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
         virtual_flip=args.virtual_flip,
         slot1_enabled=False,               # --ego-slot1 is rejected at startup (stub)
         sector_mode=args.ego_sector_mode,
+        coarse_map=coarse_map,
     ))
 
     print(f"\n[ego] ckpt={args.ego_ckpt}  profile={profile.name} "
@@ -1727,6 +1772,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"sysid'd at wire scale 1.0)")
     print(f"[ego] det_hold={args.ego_det_hold:g}s stale_horizon={args.ego_stale_horizon:g}s "
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
+          f"pitch_clamp={args.ego_pitch_clamp:g}deg yaw_clamp={args.ego_yaw_clamp:g} "
           f"virtual_flip={args.virtual_flip} rate={args.rate:g}Hz max={args.max_seconds:g}s ...")
 
     # --- autonomous takeoff assist (A2 ground-unstick; see EgoTakeoffAssist) ---
@@ -1893,7 +1939,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
             n_masked += 1
         rate_frd, collective, last_normed = policy_step(
             actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
-            yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp)
+            yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp,
+            pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)))
         # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
         # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
         # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
@@ -2427,11 +2474,26 @@ def build_parser() -> argparse.ArgumentParser:
                          "instead of the vq2_case_c profile's 0.4: the RL plant was sysid'd at "
                          "wire scale 1.0, so the policy expects the raw command->realized gain. "
                          "Override only for a deliberate gain experiment.")
-    ap.add_argument("--ego-sector-mode", default="auto", choices=["auto", "zero"],
+    ap.add_argument("--ego-sector-mode", default="auto", choices=["auto", "zero", "map"],
                     help="EGO coarse-sector (obs[9:11]) source: 'auto' = static per-gate bucket "
-                         "computed at first acquisition (horiz=0, vert=leveled elevation bucket "
-                         "-- the wire analog of training's build_coarse_map); 'zero' = pin (0,0) "
-                         "(flat-course / diagnostic fallback).")
+                         "computed at first acquisition (horiz=0 -- the wire has no next-gate "
+                         "geometry -- vert=leveled elevation bucket); 'zero' = pin (0,0) "
+                         "(flat-course / diagnostic fallback); 'map' = feed a hand-authored per-gate "
+                         "[horiz,vert] turn bucket keyed on active_gate_index (--ego-coarse-map). "
+                         "'map' restores the horizontal TURN prior the _pef champions trained on -- "
+                         "without it the policy flies as if every next gate is dead ahead.")
+    ap.add_argument("--ego-coarse-map", type=str, default="",
+                    help="Path to a VQ2 coarse-map JSON for --ego-sector-mode map: "
+                         '{"sector": [[horiz,vert], ...]} one row per gate, each in {-1,0,1}. '
+                         "horiz -1=next gate RIGHT / +1=LEFT / 0=straight; vert +1=UP / -1=DOWN / "
+                         "0=level. Row g is fed while active_gate_index==g (past the last row -> "
+                         "clamp to the last row). Hand-author it as you survey the course.")
+    ap.add_argument("--ego-pitch-clamp", type=float, default=0.0,
+                    help="EGO perception fence in DEGREES (0 = off): cap the nose-down body pitch so "
+                         "the +20 deg camera keeps the gate in frame (measured gate-0 loss at pitch "
+                         "-50 deg / cam -30 deg). Blocks further nose-down past the cap, always allows "
+                         "nose-up recovery (one-sided). Try 30 -- must exceed the 17.8 deg resting "
+                         "tilt so hover is never fenced.")
     ap.add_argument("--ego-slot1", action="store_true",
                     help="STUB (rejected at startup): fill obs slot1 with the NEXT gate for a "
                          "future multi-gate-trained policy. The current champions are single-"
@@ -2802,6 +2864,8 @@ def main() -> int:
                     "ego_obs_coast": args.ego_obs_coast,
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,
+                    "ego_coarse_map": args.ego_coarse_map,
+                    "ego_pitch_clamp": args.ego_pitch_clamp,
                     "ego_yaw_clamp": args.ego_yaw_clamp,
                     "ego_kp_persist": args.ego_kp_persist}
                    if getattr(args, "ego_ckpt", None) else {}),

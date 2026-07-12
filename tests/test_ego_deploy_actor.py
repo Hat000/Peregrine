@@ -207,3 +207,23 @@ def test_directional_sanity_soft_print(ego_bounds):
               f"pitch {rate_frd[1]:+.3f}, yaw {rate_frd[2]:+.3f}] rad/s  "
               f"collective={coll:.3f}  slot0(obs)={obs[11:14].round(2).tolist()}")
     print("  (human review: LEFT vs RIGHT should steer opposite ways in yaw and/or roll)")
+
+
+def test_pitch_clamp_blocks_nose_down_past_cap(ego_bounds):
+    """Perception fence (--ego-pitch-clamp): past the nose-down cap, block FURTHER nose-down
+    (rate_frd[1] < 0, empirically the nose-down command sign) but always pass nose-up recovery;
+    inactive above the cap and when off. obs[4] = leveled body pitch (nose-down negative)."""
+    cap = float(np.radians(30.0))
+    nd = _StubActor([0.0, 0.0, 50.0, 0.0])    # -> rate_frd[1] < 0 (nose-down) at virtual_flip=False
+    nu = _StubActor([0.0, 0.0, -50.0, 0.0])   # -> rate_frd[1] > 0 (nose-up)
+    past = np.zeros(EGO_OBS_DIM, np.float32); past[4] = -0.60   # -34 deg: past the 30 deg cap
+    within = np.zeros(EGO_OBS_DIM, np.float32); within[4] = -0.30  # -17 deg: within cap (resting tilt)
+    ps = lambda actor, obs, cap_: fly_rl.policy_step(
+        actor, obs, virtual_flip=False, pitch_clamp_rad=cap_)[0][1]
+    # sanity: unfenced, the stubs really are nose-down / nose-up
+    assert ps(nd, past, 0.0) < 0 and ps(nu, past, 0.0) > 0
+    # past cap: nose-down hard-blocked to 0, nose-up untouched
+    assert ps(nd, past, cap) == pytest.approx(0.0, abs=1e-9)
+    assert ps(nu, past, cap) > 0
+    # within cap: fence inactive (nose-down passes)
+    assert ps(nd, within, cap) < 0

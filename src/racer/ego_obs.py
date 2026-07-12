@@ -63,6 +63,11 @@ COARSE SECTOR (deploy analog of ``build_coarse_map``, peregrine_racing_ego.py:18
   static and fed regardless of visibility/masking). Before the first fix of a gate it is (0,0)
   (neutral prior; training would have fed the true static bucket -- documented divergence).
   ``sector_mode='zero'`` pins (0,0) permanently (the flat-course / diagnostic fallback).
+  ``sector_mode='map'`` feeds a hand-authored STATIC per-gate ``coarse_map[active_gate_index]``
+  (horiz,vert) bucket, latched on each active-gate change BEFORE the first fix -- the deploy
+  restoration of the horizontal TURN prior the ``_pef`` champions trained on (``auto`` can only
+  ever emit horiz=0: the wire has no next-gate geometry). This is what lets the policy anticipate
+  an off-axis next gate instead of flying as if every gate is dead ahead.
 
 The final 21-dim assembly + masking goes through ``ego_actor_obs_np`` -- a faithful single-env
 numpy port of the training ``ego_actor_obs`` (window indexing, keep-logic, mask multiply, concat
@@ -241,7 +246,13 @@ class EgoObsBuilderConfig:
     obs_coast: bool = False                        # champion = coast OFF (blackout cliff)
     virtual_flip: bool = True                      # tail-first virtual body flip (fly_rl convention)
     slot1_enabled: bool = False                    # STUB: future multi-gate policies (H6: keep off)
-    sector_mode: str = "auto"                      # 'auto' (first-fix elevation bucket) | 'zero'
+    sector_mode: str = "auto"                      # 'auto' (first-fix elevation bucket) | 'zero' | 'map'
+    coarse_map: "np.ndarray | None" = None         # (G,2) per-gate [horiz,vert] in {-1,0,1}; REQUIRED for
+                                                   # sector_mode='map'. horiz -1=next gate RIGHT / +1=LEFT /
+                                                   # 0=straight; vert +1=UP / -1=DOWN / 0=level. sector[g] is
+                                                   # fed while active_gate_index==g (the multi-gate turn prior
+                                                   # the wire cannot compute -- the deploy analog of the STATIC
+                                                   # build_coarse_map bucket the _pef champions trained on).
     sector_deadband_rad: float = SECTOR_DEADBAND_RAD
     propagate_gaps: bool = True                    # ego-propagate held rel_pos between fixes
 
@@ -258,6 +269,16 @@ class EgoObsBuilder:
             raise NotImplementedError(
                 "slot1 filling is a STUB for future multi-gate policies; the deployed champions "
                 "are single-gate-trained (slot1 was zero their whole training life -- H6).")
+        if self.cfg.sector_mode == "map":
+            if self.cfg.coarse_map is None:
+                raise ValueError(
+                    "sector_mode='map' requires coarse_map: an (G,2) per-gate [horiz,vert] bucket "
+                    "array in {-1,0,1} (the hand-authored VQ2 turn prior).")
+            self._coarse_map = np.asarray(self.cfg.coarse_map, dtype=np.float64).reshape(-1, 2)
+            if not np.isin(self._coarse_map, (-1.0, 0.0, 1.0)).all():
+                raise ValueError("coarse_map buckets must each be in {-1,0,1}.")
+        else:
+            self._coarse_map = None
         self.last_diag: dict = {}
         self._reset_slot()
         self._gate_index: int | None = None
@@ -299,6 +320,13 @@ class EgoObsBuilder:
         if self._gate_index is None or int(gate_index) != self._gate_index:
             self._reset_slot()
             self._gate_index = int(gate_index)
+            # 'map' mode: latch the hand-authored per-gate turn bucket NOW -- before the first fix,
+            # so the anticipation prior is live through the blind approach (training feeds sector[tg]
+            # statically regardless of visibility). 'auto' still waits for the first fix (below);
+            # 'zero' leaves it None -> (0,0). Past the last mapped gate -> clamp to the last row.
+            if cfg.sector_mode == "map":
+                gi = int(np.clip(self._gate_index, 0, self._coarse_map.shape[0] - 1))
+                self._sector = (float(self._coarse_map[gi, 0]), float(self._coarse_map[gi, 1]))
 
         # -- frames --------------------------------------------------------------------------
         R = np.asarray(R_frd2ned, dtype=np.float64)

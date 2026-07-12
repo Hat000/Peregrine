@@ -1,0 +1,8 @@
+{
+  "_doc": "VQ2 coarse map for --ego-sector-mode map. 'sector' is one [horiz, vert] turn bucket PER GATE, each value in {-1, 0, 1}, in the drone's gravity-leveled approach frame. Row g answers 'as I arrive at gate g, where is gate g+1?' and is fed into obs[9:11] while active_gate_index == g (the anticipation prior the _pef policy trained on; the wire cannot compute it). CONVENTION (verified against training build_coarse_map + the vpef-zbias flight where gates 1-2 were off to the RIGHT): horiz -1 = next gate to the RIGHT of approach, +1 = LEFT, 0 = straight ahead; vert +1 = next gate ABOVE, -1 = BELOW, 0 = level. Hand-author one row per gate AS YOU SURVEY the course; past the last row the builder clamps to the last row. 1-BIT FLY-CHECK: if the drone banks the WRONG way (left when the gate is right), NEGATE the horiz value.",
+  "_provenance": "gate 0 -> gate 1 = upper-right (Fengyou, live observation, 2026-07-12). Remaining gates TBD by survey.",
+  "sector": [
+    [-1, 1],
+    [0, 0]
+  ]
+}
