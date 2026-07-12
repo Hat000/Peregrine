@@ -1759,7 +1759,11 @@ def _fly_ego(client, actor, args, flight_idx: int,
         det_hold_s=args.ego_det_hold,
         obs_coast=args.ego_obs_coast,
         virtual_flip=args.virtual_flip,
-        slot1_enabled=False,               # --ego-slot1 is rejected at startup (stub)
+        slot1_enabled=bool(args.ego_slot1),  # WINDOW=2 next-gate slot (multi-gate _pef champions).
+                                             # OFF (default) => single-slot n_gates=1, slot1 zeros
+                                             # (single-gate champions / H6). ON => the builder consumes
+                                             # the next_pose SEAM below (masks to zero while it stays
+                                             # None -- see the flight loop). SOURCE = vision-stack-owned.
         sector_mode=args.ego_sector_mode,
         coarse_map=coarse_map,
     ))
@@ -1772,6 +1776,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"sysid'd at wire scale 1.0)")
     print(f"[ego] det_hold={args.ego_det_hold:g}s stale_horizon={args.ego_stale_horizon:g}s "
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
+          f"slot1={args.ego_slot1}{' (next_pose SOURCE not yet wired -> slot1 MASKED to zero)' if args.ego_slot1 else ''} "
           f"pitch_clamp={args.ego_pitch_clamp:g}deg yaw_clamp={args.ego_yaw_clamp:g} "
           f"virtual_flip={args.virtual_flip} rate={args.rate:g}Hz max={args.max_seconds:g}s ...")
 
@@ -1930,11 +1935,24 @@ def _fly_ego(client, actor, args, flight_idx: int,
         if pose is not None:
             n_pose_ticks += 1
 
+        # --- SLOT1 (next-gate, tg+1) SEAM [--ego-slot1] -----------------------------------------
+        # This is the RL-owned SINK for the WINDOW=2 obs slot1: builder.update(next_pose=...) below.
+        # The SOURCE -- surfacing + ASSOCIATING the NEXT gate (active_gate_index+1) as its own PnP
+        # GatePose -- is VISION-STACK-owned; the seeker here tracks ONLY the single active gate, so no
+        # associated next-gate pose exists yet. Until the vision side supplies one, next_pose stays
+        # None => the builder masks slot1 to ZERO. This is the H6-SAFE default: training only ever fed
+        # slot1 the CORRECT tg+1 pose or zero, NEVER a wrong gate, so an unavailable/uncertain next
+        # gate MUST mask to zero (do not fabricate). When --ego-slot1 is OFF (default) the builder is
+        # single-slot (n_gates=1) and next_pose is ignored -> byte-identical to the single-gate deploy.
+        # TODO(vision-stack): populate next_pose with the tg+1 GatePose associated to active_gate+1
+        # (masked-when-uncertain) to activate the multi-gate _pef obs.
+        next_pose = None
+
         # --- 21-dim obs + policy + command ---
         obs = builder.update(
             sim_time_ns=st, gate_index=gate_index, R_frd2ned=R_frd2ned,
             vel_ned=nav_state.velocity_ned, gyro_frd=s.gyro_body,
-            pose=pose, last_normed_thrust=last_normed)
+            pose=pose, next_pose=next_pose, last_normed_thrust=last_normed)
         if not builder.last_diag.get("det_proxy", False):
             n_masked += 1
         rate_frd, collective, last_normed = policy_step(
@@ -2495,10 +2513,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "nose-up recovery (one-sided). Try 30 -- must exceed the 17.8 deg resting "
                          "tilt so hover is never fenced.")
     ap.add_argument("--ego-slot1", action="store_true",
-                    help="STUB (rejected at startup): fill obs slot1 with the NEXT gate for a "
-                         "future multi-gate-trained policy. The current champions are single-"
-                         "gate-trained -- slot1 was zero their whole training life; filling it "
-                         "is OOD (audit H6). Kept as the CLI seam for the multi-gate generation.")
+                    help="Activate the WINDOW=2 next-gate obs slot (slot1 = active_gate_index+1) for "
+                         "the MULTI-gate _pef champions (trained with slot1 populated). Wires the "
+                         "RL-owned SINK: EgoObsBuilder(slot1_enabled=True) + builder.update(next_pose=). "
+                         "The next-gate SOURCE -- surfacing + associating the tg+1 gate as its own PnP "
+                         "pose -- is VISION-STACK-owned and NOT yet supplied, so slot1 currently masks "
+                         "to ZERO (H6-safe: training only ever fed the correct tg+1 or zero, never a "
+                         "wrong gate). Leave OFF for the single-gate champions (slot1 pinned zero). "
+                         "OFF is byte-identical to the pre-slot1 deploy.")
     ap.add_argument("--ego-takeoff-assist", action=argparse.BooleanOptionalAction, default=True,
                     help="EGO autonomous ground-unstick assist (A2). The trained ego opener is a "
                          "low-thrust (~0.25 g) airborne re-orient; on the VQ2 pad the roughly "
@@ -2623,12 +2645,10 @@ def main() -> int:
     # fall back to the RL-actor --checkpoint .pth as if it were YOLO weights).
     _validate_seeker_detector(args)
 
-    # --ego-slot1 is a STUB seam for future multi-gate policies: reject LOUD at startup rather
-    # than silently flying a single-gate champion with an OOD-filled slot1 (audit H6).
-    if getattr(args, "ego_slot1", False):
-        raise SystemExit("--ego-slot1 is a STUB: slot1 filling is not implemented (the deployed "
-                         "champions are single-gate-trained; filling slot1 is OOD -- audit H6). "
-                         "Remove the flag.")
+    # --ego-slot1 activates the WINDOW=2 next-gate obs slot (the multi-gate _pef generation). The
+    # RL-owned SINK is wired (EgoObsBuilder slot1_enabled + the flight-loop next_pose seam); the
+    # next-gate SOURCE (vision-stack association of tg+1) is not yet supplied, so slot1 currently
+    # masks to ZERO until the pilot wires next_pose (H6-safe: never a wrong gate). No startup reject.
 
     # -- load checkpoint (RL actor) --
     # Under --gate-seeker the RL actor is UNUSED: fly_once passes it straight through to the
@@ -2867,6 +2887,7 @@ def main() -> int:
                     "ego_coarse_map": args.ego_coarse_map,
                     "ego_pitch_clamp": args.ego_pitch_clamp,
                     "ego_yaw_clamp": args.ego_yaw_clamp,
+                    "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist}
                    if getattr(args, "ego_ckpt", None) else {}),
             )

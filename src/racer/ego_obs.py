@@ -9,12 +9,25 @@ Reproduces, on the live MAVLink wire, the observation contract of the egocentric
   5:8    | body_rates        | rad/s, BODY FLU, virtual-flipped
   8      | last_collective   | previous tick's RESCALED normed_thrust, g-units [0, 3.765]
   9:11   | coarse_sector     | (horiz, vert) each in {-1, 0, 1}, gravity-leveled heading frame
-  11:14  | slot0 rel_pos     | m, drone->ACTIVE-gate, BODY FLU, virtual-flipped, MASKED to 0
+  11:14  | slot0 rel_pos     | m, drone->ACTIVE-gate (tg), BODY FLU, virtual-flipped, MASKED to 0
   14     | slot0 confidence  | [0,1] staleness scalar (1 fresh, linear -> 0 at the horizon)
   15     | slot0 visible_area| [0,1] normalized apparent inner-opening area (1 == square-on)
-  16:19  | slot1 rel_pos     | PINNED ZEROS (single-gate-trained champion; H6)
-  19     | slot1 confidence  | 0
-  20     | slot1 visible_area| 0
+  16:19  | slot1 rel_pos     | m, drone->NEXT-gate (tg+1), same frame/mask as slot0 -- ZEROS unless
+         |                   |   ``slot1_enabled`` AND a fresh next-gate pose is supplied (else H6-safe)
+  19     | slot1 confidence  | [0,1] staleness scalar for the NEXT gate (0 when slot1 masked)
+  20     | slot1 visible_area| [0,1] apparent area for the NEXT gate (0 when slot1 masked)
+
+WINDOW=2 (``[current, next]``): slot0 is the ACTIVE gate (tg = RACE_STATUS active_gate_index),
+slot1 is the NEXT gate in COURSE ORDER (tg+1) -- mirroring the training ``ego_window_indices``
+(gate index clamp(tg+k, max=n_gates-1)) + per-slot INDEPENDENT masking of ``ego_actor_obs``. The
+single-gate champions trained with slot1 PINNED ZERO (H6); the multi-gate ``_pef`` generation
+trained with slot1 frequently populated (n_gates=2, 10-20 m spacing -> the next gate co-visible on
+the current approach), so for THOSE checkpoints feeding zeros is OOD. ``slot1_enabled`` (default
+OFF) selects between the two: OFF -> the single-slot n_gates=1 path (slot1 zeros, byte-identical to
+the single-gate deploy); ON -> a real 2-slot window fed by a caller-supplied ``next_pose``. The
+next-gate SOURCE (surfacing + associating tg+1 as its own PnP pose) is VISION-STACK-owned; this
+module is only the SINK. Training NEVER fed a WRONG gate into slot1 -- only the correct tg+1 or
+zero -- so an absent/uncertain ``next_pose`` MUST mask to zero here (never fabricated).
 
 FRAME CONVENTIONS (the part that silently kills policies):
   * Training flies TAIL-FIRST: all body-frame obs quantities (velocity, rates, rel_pos, roll/
@@ -245,7 +258,11 @@ class EgoObsBuilderConfig:
     det_hold_s: float = EGO_DET_HOLD_S             # deploy det-proxy hold after loss-of-lock
     obs_coast: bool = False                        # champion = coast OFF (blackout cliff)
     virtual_flip: bool = True                      # tail-first virtual body flip (fly_rl convention)
-    slot1_enabled: bool = False                    # STUB: future multi-gate policies (H6: keep off)
+    slot1_enabled: bool = False                    # WINDOW=2 next-gate slot. OFF (default) = single-slot
+                                                   # n_gates=1 path (slot1 zeros; single-gate champions /
+                                                   # H6). ON = real 2-slot window fed by update(next_pose=)
+                                                   # for the multi-gate _pef generation; a None/uncertain
+                                                   # next_pose still masks slot1 to zero (never fabricated).
     sector_mode: str = "auto"                      # 'auto' (first-fix elevation bucket) | 'zero' | 'map'
     coarse_map: "np.ndarray | None" = None         # (G,2) per-gate [horiz,vert] in {-1,0,1}; REQUIRED for
                                                    # sector_mode='map'. horiz -1=next gate RIGHT / +1=LEFT /
@@ -259,16 +276,18 @@ class EgoObsBuilderConfig:
 
 class EgoObsBuilder:
     """Per-flight stateful builder: feed it one ``update(...)`` per control tick, get the 21-dim
-    obs. Holds the per-gate slot state (last fix, staleness clock, held visible_area, static
-    sector) and resets it on an active-gate-index change (the training window promotion has no
-    state to carry: the new slot0 starts masked until first acquisition)."""
+    obs. Holds the PER-SLOT track state (held rel_flu, area, last fix + propagation clocks) for the
+    WINDOW=2 window [slot0=active gate, slot1=next gate] plus the shared static coarse sector, and
+    resets ALL of it on an active-gate-index change (the training window promotion carries no state:
+    the new slot0 -- and, when enabled, the new slot1 -- start masked until first acquisition).
+
+    slot0 is always driven by ``update(pose=...)`` (the active gate). When ``slot1_enabled`` the
+    next-gate slot is driven by ``update(next_pose=...)``; both slots ego-propagate through fix gaps
+    and mask by the SAME staleness/det-hold/conf>0 rule, INDEPENDENTLY. With slot1 disabled (or no
+    next_pose ever supplied) the emitted obs is byte-identical to the single-gate deploy."""
 
     def __init__(self, config: EgoObsBuilderConfig | None = None):
         self.cfg = config or EgoObsBuilderConfig()
-        if self.cfg.slot1_enabled:
-            raise NotImplementedError(
-                "slot1 filling is a STUB for future multi-gate policies; the deployed champions "
-                "are single-gate-trained (slot1 was zero their whole training life -- H6).")
         if self.cfg.sector_mode == "map":
             if self.cfg.coarse_map is None:
                 raise ValueError(
@@ -285,11 +304,14 @@ class EgoObsBuilder:
 
     # -- state management -------------------------------------------------------------------
     def _reset_slot(self) -> None:
-        self._rel_flu: np.ndarray | None = None    # held drone->gate, body FLU, UNflipped
-        self._area: float = 0.0                    # held apparent-area (refreshed on a fix)
-        self._last_fix_sim_ns: int | None = None   # staleness clock anchor
-        self._last_prop_sim_ns: int | None = None  # ego-propagation clock
-        self._sector: tuple[float, float] | None = None   # static per-gate (horiz, vert)
+        # PER-SLOT held state for the WINDOW=2 window [slot0=active gate, slot1=next gate]. slot1
+        # is only maintained/consumed when cfg.slot1_enabled; kept allocated regardless so the state
+        # shape is constant. The coarse ``_sector`` is SHARED (the active gate's static turn bucket).
+        self._rel_flu: list[np.ndarray | None] = [None, None]   # held drone->gate, body FLU, UNflipped
+        self._area: list[float] = [0.0, 0.0]                    # held apparent-area (refreshed on a fix)
+        self._last_fix_sim_ns: list[int | None] = [None, None]  # staleness clock anchor, per slot
+        self._last_prop_sim_ns: list[int | None] = [None, None] # ego-propagation clock, per slot
+        self._sector: tuple[float, float] | None = None         # static per-gate (horiz, vert), shared
 
     def reset(self) -> None:
         """Full reset (sim epoch restart / new flight)."""
@@ -299,18 +321,24 @@ class EgoObsBuilder:
     # -- per-tick ---------------------------------------------------------------------------
     def update(self, *, sim_time_ns: int, gate_index: int, R_frd2ned: np.ndarray,
                vel_ned: np.ndarray | None, gyro_frd: np.ndarray | None,
-               pose: GatePose | None, last_normed_thrust: float) -> np.ndarray:
+               pose: GatePose | None, last_normed_thrust: float,
+               next_pose: GatePose | None = None) -> np.ndarray:
         """One control tick -> the 21-dim float32 obs.
 
         sim_time_ns   IMU master clock (drives staleness + propagation dt).
-        gate_index    RACE_STATUS active_gate_index (slot0 = this gate ONLY).
+        gate_index    RACE_STATUS active_gate_index (slot0 = this gate; slot1 = gate_index+1).
         R_frd2ned     TRUE physical body FRD -> world NED rotation (AHRS).
         vel_ned       KF world velocity (NED); None -> zeros.
         gyro_frd      TRUE FRD body rates (DroneState.gyro_body, wire-sign-corrected); None -> zeros.
-        pose          a FRESH quality-gated GatePose for the active gate (caller passes it only
-                      once per new frame_id), or None.
+        pose          a FRESH quality-gated GatePose for the ACTIVE gate (caller passes it only
+                      once per new frame_id), or None. Drives slot0.
         last_normed_thrust  the previous tick's RESCALED normed_thrust in g-units [0, act_max]
                       (policy_step's third return; 0.0 at flight start) -- NOT the wire collective.
+        next_pose     a FRESH quality-gated GatePose for the NEXT gate (tg+1), or None. Drives slot1
+                      and is consumed ONLY when cfg.slot1_enabled; None (or stale) -> slot1 masks to
+                      ZERO. The caller (vision stack) MUST have ASSOCIATED this pose to the tg+1 gate
+                      -- training only ever fed the correct next gate or zero, never a wrong gate, so
+                      pass None whenever the association is unavailable or uncertain (do NOT fabricate).
         """
         cfg = self.cfg
         t_ns = int(sim_time_ns)
@@ -352,54 +380,92 @@ class EgoObsBuilder:
             R_obs, v_obs, w_obs = R_b2w_zup, v_flu, w_flu
         roll_obs, pitch_obs = roll_pitch_zup(R_obs)
 
-        # -- ego-propagate the held rel_pos through the fix gap (training estimator parity:
-        # rel_new = exp(-[w]x dt) @ rel_old - v_body*dt; chaum ego_estimator.py:447-459) --------
-        if self._rel_flu is not None and cfg.propagate_gaps and self._last_prop_sim_ns is not None:
-            dt = (t_ns - self._last_prop_sim_ns) / 1e9
-            if dt > 0.0:
-                dR = Rotation.from_rotvec(-w_flu * dt).as_matrix()
-                self._rel_flu = dR @ self._rel_flu - v_flu * dt
-        self._last_prop_sim_ns = t_ns
+        # -- PER-SLOT ego-propagation + fresh fix. slot0 <- pose (active gate tg); slot1 <- next_pose
+        # (tg+1), consumed ONLY when slot1_enabled (n_slots stays 1 otherwise, so slot1 state is never
+        # touched and the single-slot path below is byte-identical to the pre-slot1 builder). Both
+        # slots use the SAME propagation/fix math; the coarse sector is computed from slot0 ONLY. -----
+        n_slots = EGO_WINDOW if cfg.slot1_enabled else 1
+        slot_poses = (pose, next_pose)
+        pose_seen = [False, False]
+        for slot in range(n_slots):
+            sp = slot_poses[slot]
+            # ego-propagate the held rel_pos through the fix gap (training estimator parity:
+            # rel_new = exp(-[w]x dt) @ rel_old - v_body*dt; chaum ego_estimator.py:447-459)
+            if (self._rel_flu[slot] is not None and cfg.propagate_gaps
+                    and self._last_prop_sim_ns[slot] is not None):
+                dt = (t_ns - self._last_prop_sim_ns[slot]) / 1e9
+                if dt > 0.0:
+                    dR = Rotation.from_rotvec(-w_flu * dt).as_matrix()
+                    self._rel_flu[slot] = dR @ self._rel_flu[slot] - v_flu * dt
+            self._last_prop_sim_ns[slot] = t_ns
+            # fresh fix: snap (K=1) + refresh the held area + reset the staleness clock
+            seen = sp is not None and np.isfinite(np.asarray(sp.t_cam_gate)).all()
+            pose_seen[slot] = seen
+            if seen:
+                rel_frd = rel_pos_body_frd_from_gatepose(sp.t_cam_gate)
+                self._rel_flu[slot] = _FLIP_FRD_FLU * rel_frd
+                self._area[slot] = visible_area_from_gatepose(sp.R_cam_gate, sp.t_cam_gate)
+                self._last_fix_sim_ns[slot] = t_ns
+                # coarse sector (auto) is the ACTIVE gate's first-fix elevation bucket -- slot0 ONLY.
+                if slot == 0 and self._sector is None and cfg.sector_mode == "auto":
+                    self._sector = self._compute_sector(self._rel_flu[0], roll_true, pitch_true)
 
-        # -- fresh fix: snap (K=1) + refresh the held area + reset the staleness clock ---------
-        pose_seen = pose is not None and np.isfinite(np.asarray(pose.t_cam_gate)).all()
-        if pose_seen:
-            rel_frd = rel_pos_body_frd_from_gatepose(pose.t_cam_gate)
-            self._rel_flu = _FLIP_FRD_FLU * rel_frd
-            self._area = visible_area_from_gatepose(pose.R_cam_gate, pose.t_cam_gate)
-            self._last_fix_sim_ns = t_ns
-            if self._sector is None and cfg.sector_mode == "auto":
-                self._sector = self._compute_sector(self._rel_flu, roll_true, pitch_true)
+        # -- per-slot staleness -> confidence + det proxy + the virtual-flipped rel_pos obs -------
+        def _channels(slot: int) -> tuple[np.ndarray, float, bool, float]:
+            rel_flu = self._rel_flu[slot]
+            if self._last_fix_sim_ns[slot] is None or rel_flu is None:
+                age = float("inf")
+            else:
+                age = max(0.0, (t_ns - self._last_fix_sim_ns[slot]) / 1e9)
+            c = float(np.clip(1.0 - age / max(cfg.stale_horizon_s, 1e-9), 0.0, 1.0))
+            d = age < cfg.det_hold_s
+            r = (np.zeros(3) if rel_flu is None
+                 else (_RZ_PI_BODY @ rel_flu if cfg.virtual_flip else rel_flu))
+            return r, c, d, age
 
-        # -- staleness -> confidence + det proxy ----------------------------------------------
-        if self._last_fix_sim_ns is None or self._rel_flu is None:
-            age_s = float("inf")
+        rel0, conf0, det0, age0 = _channels(0)
+        sector_row = self._sector if self._sector is not None else (0.0, 0.0)
+
+        # -- assemble through the training masking/concat logic. slot1_enabled => a real WINDOW=2
+        # window (n_gates=2, both slots masked independently); OFF => the single-gate n_gates=1 path
+        # (slot1 window-invalid => zeros), byte-identical to the pre-slot1 builder. -----------------
+        if cfg.slot1_enabled:
+            rel1, conf1, det1, age1 = _channels(1)
+            sector = np.array([sector_row, sector_row], dtype=np.float64)       # (2,2); only [tg=0] used
+            obs = ego_actor_obs_np(
+                velocity=v_obs, roll_pitch=np.array([roll_obs, pitch_obs]), body_rates=w_obs,
+                last_collective=float(last_normed_thrust), sector=sector,
+                rel_pos=np.stack([rel0, rel1]), confidence=np.array([conf0, conf1]),
+                visible_area=np.array([self._area[0], self._area[1]]),
+                detectable=np.array([det0, det1]),
+                target_gate=0, n_gates=2, obs_coast=cfg.obs_coast)
         else:
-            age_s = max(0.0, (t_ns - self._last_fix_sim_ns) / 1e9)
-        conf = float(np.clip(1.0 - age_s / max(cfg.stale_horizon_s, 1e-9), 0.0, 1.0))
-        det_proxy = age_s < cfg.det_hold_s
-
-        # -- assemble through the training masking/concat logic --------------------------------
-        rel_obs = (np.zeros(3) if self._rel_flu is None
-                   else (_RZ_PI_BODY @ self._rel_flu if cfg.virtual_flip else self._rel_flu))
-        sector = np.array([self._sector if self._sector is not None else (0.0, 0.0)],
-                          dtype=np.float64)                                    # (1,2)
-        obs = ego_actor_obs_np(
-            velocity=v_obs, roll_pitch=np.array([roll_obs, pitch_obs]), body_rates=w_obs,
-            last_collective=float(last_normed_thrust), sector=sector,
-            rel_pos=rel_obs.reshape(1, 3), confidence=np.array([conf]),
-            visible_area=np.array([self._area]), detectable=np.array([det_proxy]),
-            target_gate=0, n_gates=1,          # n_gates=1 => slot1 window-invalid => zeros,
-            obs_coast=cfg.obs_coast)           # EXACTLY the single-gate champion's training state
+            conf1 = det1 = age1 = None
+            sector = np.array([sector_row], dtype=np.float64)                    # (1,2)
+            obs = ego_actor_obs_np(
+                velocity=v_obs, roll_pitch=np.array([roll_obs, pitch_obs]), body_rates=w_obs,
+                last_collective=float(last_normed_thrust), sector=sector,
+                rel_pos=rel0.reshape(1, 3), confidence=np.array([conf0]),
+                visible_area=np.array([self._area[0]]), detectable=np.array([det0]),
+                target_gate=0, n_gates=1,          # n_gates=1 => slot1 window-invalid => zeros,
+                obs_coast=cfg.obs_coast)           # EXACTLY the single-gate champion's training state
 
         self.last_diag = {
-            "age_s": age_s if np.isfinite(age_s) else None,
-            "conf": conf, "det_proxy": bool(det_proxy), "area": self._area,
-            "pose_seen": bool(pose_seen),
-            "rel_flu": None if self._rel_flu is None else self._rel_flu.tolist(),
+            "age_s": age0 if np.isfinite(age0) else None,
+            "conf": conf0, "det_proxy": bool(det0), "area": self._area[0],
+            "pose_seen": bool(pose_seen[0]),
+            "rel_flu": None if self._rel_flu[0] is None else self._rel_flu[0].tolist(),
             "sector": list(sector[0]),
             "roll_obs": roll_obs, "pitch_obs": pitch_obs,
+            "slot1_enabled": bool(cfg.slot1_enabled),
         }
+        if cfg.slot1_enabled:
+            self.last_diag.update({
+                "conf1": conf1, "det_proxy1": bool(det1), "area1": self._area[1],
+                "age_s1": age1 if np.isfinite(age1) else None,
+                "pose_seen1": bool(pose_seen[1]),
+                "rel_flu1": None if self._rel_flu[1] is None else self._rel_flu[1].tolist(),
+            })
         return obs
 
     # -- coarse sector (see module docstring) -------------------------------------------------

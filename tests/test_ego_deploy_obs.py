@@ -337,9 +337,124 @@ def test_roll_pitch_training_extraction_roundtrip():
         assert po == pytest.approx(p, abs=1e-9)
 
 
-def test_slot1_stub_rejected():
-    with pytest.raises(NotImplementedError):
-        EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True))
+def test_slot1_enabled_constructs():
+    """slot1_enabled is no longer a stub: the builder constructs and emits a 21-dim obs (slot1
+    masks to zero until a next_pose is supplied)."""
+    b = EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True))
+    obs = b.update(sim_time_ns=1_000_000_000, gate_index=0, R_frd2ned=np.eye(3),
+                   vel_ned=np.zeros(3), gyro_frd=np.zeros(3),
+                   pose=_pose_dead_ahead(10.0), last_normed_thrust=0.0)
+    assert obs.shape == (EGO_OBS_DIM,)
+    np.testing.assert_array_equal(obs[16:21], 0.0)   # no next_pose yet -> slot1 zero
+
+
+# =====================================================================================
+# SLOT1 (WINDOW=2 next-gate) — the RL-owned SINK activation (2026-07-12).
+# The H6 tripwire at the builder level: slot1_enabled=False OR next_pose=None must stay
+# byte-identical to the single-gate deploy; a supplied next_pose fills slot1 through the
+# SAME masking; it masks back to zero on staleness/None/gate-change.
+# =====================================================================================
+def _run_seq(builder, next_poses=None):
+    """Drive a scripted sequence (fix, gap, stale-out, re-acq, gate advance) and return the
+    stacked obs. next_poses: optional list of the per-tick next_pose (else all None)."""
+    t0 = 1_000_000_000
+    script = [
+        # (dt_ns, gate_index, pose, vel_ned)
+        (0,            0, _pose_dead_ahead(10.0), np.array([3.0, 0.0, 0.0])),
+        (100_000_000,  0, None,                   np.array([3.0, 0.0, 0.0])),   # gap (inside det_hold)
+        (300_000_000,  0, None,                   np.array([3.0, 0.0, 0.0])),   # stale past det_hold
+        (400_000_000,  0, _pose_dead_ahead(8.0),  np.array([3.0, 0.0, 0.0])),   # re-acquire
+        (450_000_000,  1, None,                   np.array([3.0, 0.0, 0.0])),   # gate advance -> cold
+    ]
+    out = []
+    for i, (dt, gi, pose, vel) in enumerate(script):
+        npose = None if next_poses is None else next_poses[i]
+        out.append(builder.update(
+            sim_time_ns=t0 + dt, gate_index=gi, R_frd2ned=np.eye(3), vel_ned=vel,
+            gyro_frd=np.zeros(3), pose=pose, next_pose=npose, last_normed_thrust=0.0).copy())
+    return np.stack(out)
+
+
+def test_slot1_disabled_or_none_is_byte_identical():
+    """H6 TRIPWIRE (builder level): slot1_enabled=False vs slot1_enabled=True fed next_pose=None
+    every tick must be byte-identical across the whole scripted flight (slot1 zeros either way)."""
+    off = _run_seq(EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=False)))
+    on_none = _run_seq(EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True)))
+    np.testing.assert_array_equal(off, on_none)
+    np.testing.assert_array_equal(off[:, 16:21], 0.0)   # slot1 pinned zero throughout
+
+
+def test_slot1_populated_carries_next_gate_through_same_masking():
+    """A supplied next_pose fills obs[16:21] with the NEXT gate's rel_pos/conf/area through the
+    SAME frame + masking as slot0, and leaves obs[0:16] byte-identical to the slot1-off build."""
+    b_on = EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True))
+    b_off = EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=False))
+    kw = dict(sim_time_ns=1_000_000_000, gate_index=0, R_frd2ned=np.eye(3),
+              vel_ned=np.array([3.0, 0.0, 0.0]), gyro_frd=np.zeros(3),
+              pose=_pose_dead_ahead(10.0), last_normed_thrust=1.5)
+    # next gate 18 m ahead, 3 m to the RIGHT (body FRD +y), head-on quad
+    next_pose = _pose_dead_ahead(18.0, lateral=3.0)
+    obs_on = b_on.update(next_pose=next_pose, **kw)
+    obs_off = b_off.update(**kw)
+    # slot0 + all non-slot1 channels UNCHANGED by activating slot1
+    np.testing.assert_array_equal(obs_on[0:16], obs_off[0:16])
+    np.testing.assert_allclose(obs_on[11:14], [-10.0, 0.0, 0.25], atol=1e-5)   # slot0 (flipped FLU)
+    # slot1: rel_body_frd = [18, 3, -0.25(boresight)] -> FLU [18,-3,0.25] -> virtual-flip [-18,3,0.25]
+    np.testing.assert_allclose(obs_on[16:19], [-18.0, 3.0, 0.25], atol=1e-5)
+    assert obs_on[19] == pytest.approx(1.0)              # fresh next-gate conf
+    assert obs_on[20] == pytest.approx(1.0, abs=0.05)    # head-on area ~ 1
+    # cross-check the FULL 21-dim against the VERBATIM training reference at n_gates=2, fed the
+    # builder's own per-slot channels (proves the 2-slot assembly IS the training code path).
+    d = b_on.last_diag
+    est = SimpleNamespace(
+        rel_pos=torch.as_tensor(np.stack([obs_on[11:14], obs_on[16:19]])[None]).float(),
+        confidence=torch.as_tensor([[obs_on[14], obs_on[19]]]).float(),
+        visible_area=torch.as_tensor([[obs_on[15], obs_on[20]]]).float(),
+        velocity=torch.as_tensor(obs_on[0:3][None]).float(),
+        roll_pitch=torch.as_tensor(obs_on[3:5][None]).float(),
+        body_rates=torch.as_tensor(obs_on[5:8][None]).float())
+    sec = np.tile(obs_on[9:11], (2, 1))[None]           # (1,G=2,2); only tg=0 row is read
+    ref = _ref_ego_actor_obs(
+        est, torch.as_tensor([[True, True]]), torch.as_tensor([0]),
+        torch.as_tensor([obs_on[8]]).float(), torch.as_tensor(sec).float(),
+        2, obs_coast=False).numpy()[0]
+    np.testing.assert_allclose(obs_on, ref, rtol=0.0, atol=1e-6)
+    assert d["slot1_enabled"] is True and d["pose_seen1"] is True
+
+
+def test_slot1_masks_to_zero_when_next_pose_goes_stale():
+    """slot1 masks INDEPENDENTLY of slot0: with slot0 fed fresh every tick, dropping next_pose
+    past det_hold (0.2 s) zeros obs[16:21] while slot0 stays live."""
+    b = EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True))
+    t0 = 1_000_000_000
+    kw0 = dict(gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3), gyro_frd=np.zeros(3),
+               last_normed_thrust=0.0)
+    b.update(sim_time_ns=t0, pose=_pose_dead_ahead(10.0),
+             next_pose=_pose_dead_ahead(18.0, lateral=3.0), **kw0)
+    # +0.1 s inside det_hold, next_pose dropped: still fed (conf decays)
+    obs = b.update(sim_time_ns=t0 + 100_000_000, pose=_pose_dead_ahead(9.0), next_pose=None, **kw0)
+    assert obs[19] == pytest.approx(0.8, abs=1e-6)   # slot1 conf = 1 - 0.1/0.5
+    assert abs(obs[16]) > 5.0                          # slot1 rel still fed
+    # +0.3 s past det_hold: slot1 blackout cliff -> zeros; slot0 (fresh) stays live
+    obs = b.update(sim_time_ns=t0 + 300_000_000, pose=_pose_dead_ahead(7.0), next_pose=None, **kw0)
+    np.testing.assert_array_equal(obs[16:21], 0.0)     # slot1 masked
+    assert obs[14] == pytest.approx(1.0)               # slot0 fresh, unaffected
+
+
+def test_slot1_reset_on_gate_change_clears_both_slots():
+    """RACE_STATUS advance resets BOTH slots: with no fresh poses on the new gate, slot0 AND slot1
+    start cold (masked)."""
+    b = EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True))
+    t0 = 1_000_000_000
+    obs = b.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+                   gyro_frd=np.zeros(3), pose=_pose_dead_ahead(10.0),
+                   next_pose=_pose_dead_ahead(18.0, lateral=3.0), last_normed_thrust=0.0)
+    assert obs[14] == pytest.approx(1.0) and obs[19] == pytest.approx(1.0)   # both populated
+    obs = b.update(sim_time_ns=t0 + 33_000_000, gate_index=1, R_frd2ned=np.eye(3),
+                   vel_ned=np.zeros(3), gyro_frd=np.zeros(3), pose=None, next_pose=None,
+                   last_normed_thrust=0.0)
+    np.testing.assert_array_equal(obs[11:16], 0.0)     # slot0 cold
+    np.testing.assert_array_equal(obs[16:21], 0.0)     # slot1 cold
 
 
 # =====================================================================================
