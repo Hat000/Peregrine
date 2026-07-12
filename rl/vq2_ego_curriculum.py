@@ -1566,6 +1566,81 @@ STAGES: dict[str, dict] = {
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
                  "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
     },
+    # ================================================================================================
+    # R0 STILL-YAW HOVER BOOT (hover_still_boot, 2026-07-12) -- the FIRST rung (R0) of a FRESH curriculum
+    # lineage. GOAL: a fresh-trained HOVER that (a) holds position/altitude and (b) does NOT yaw-dither, so
+    # every later flying rung WARM-STARTS from a "still-yaw" base and no downstream stage can co-opt yaw-
+    # dither as a tracking crutch -- plus a VERY GENTLE velocity-jerk smoothness prior from birth. OFF-LADDER
+    # (STAGES=hover_still_boot); FRESH-START (no init_from). Run:
+    #   sbatch --export=ALL,SEED=0,RUNTAG=vr0h0,STAGES="hover_still_boot",\
+    #     UPD_hover_still_boot=4000,PRECHECK=1 rl/peregrine_vq2_ego.sbatch
+    # PRECHECK=1 MANDATORY on the first launch + the L16 guard: the precheck log must show the NEW per-step
+    # loss_components keys emitting -- velsmooth_pen + yaw_dither_pen + spin_abort_rate + the estimator-
+    # faithful keys (eskf_tilt_err_deg_mean / kf_vel_err_mean / sf_mag_g_mean); absent keys == a knob did
+    # not arm.
+    # BASE = the hover_hold probe: a fixed 15 m LEVEL gate that is IGNORED by the reward (every gate-homing
+    # term -- progress/passage/increment/area/centering/exit -- is ZEROED), so there is NO forward objective
+    # and holding the spawn position/altitude is the UNIQUE optimum (no gates to chase -> no coarse map, no
+    # parabola crossing, no perception term). ARMED FROM UPDATE 0 (the four R0 arms):
+    #   (i)   rw_yaw_dither=0.5 -- the anti-dither yaw-jerk penalty (yaw-stillness; ego_reward.yaw_dither_penalty).
+    #   (ii)  the FATAL SPIN ABORT package (ego_spin_rate/time/rev aborts) -- REQUIRED to close the slow
+    #         CONSTANT-yaw-drift escape the jerk penalty alone leaves (a steady drift has ~0 jerk); the
+    #         accumulated-rotation trigger (ego_spin_rev_abort=1.5 rev / 4 s window) is the drift closer. NO-SPIN
+    #         stays HARD / BY CONSTRUCTION (fatal abort + yaw clamp fold COLLISION-CLASS), never by reward shaping.
+    #   (iii) rw_vel_smooth=1e-4 -- the NEW velocity-jerk prior (VERY gentle; clips only extreme snappy CoM-accel
+    #         spikes; steady speed AND smooth hard accel both pay ~0; orthogonal to yaw/roll -- a flip barely
+    #         moves the CoM). SWEEPABLE via EXTRA=++env.rw_vel_smooth=...
+    #   (iv)  rw_altitude_hold=1.0 -- the give-up-resistant POSITIVE spawn-altitude bonus (from hover_hold).
+    # YAW-CLAMP CALIBRATION FOOTGUN: the yaw-dither penalty prices the APPLIED (post-clamp) yaw-rate delta. So
+    # the yaw clamp is ARMED AT THE BASE too -- ego_yaw_cmd_clamp_rad_s=0.35 (== the _pef/nodither lineage) --
+    # and rw_yaw_dither stays calibrated FOR THE CLAMPED regime: a rail-FLIP delta = 0.35-(-0.35) = 0.70 rad/s
+    # -> -0.5*0.70^2 = -0.245/step. Arming the clamp here (the PREFERRED option) rather than retuning
+    # rw_yaw_dither ~20x DOWN for the unclamped +-3.14 rail keeps the still-yaw skill calibrated to the SAME
+    # clamp the lineage flies, so it transfers on warm-start. (Deploy note carried from _percept: any flight
+    # of a clamped ckpt also needs the fly_rl yaw-only clamp -- N/A for this hover ancestor, which is not flown.)
+    # ESTIMATOR-FAITHFUL, LOW noise (R0; hardening ramps in LATER rungs): ego_faithful=true with
+    # ego_noise_scale=0.0 (clean VISION noise -- the ESKF/KF are algorithm-structural and noise_scale-
+    # INDEPENDENT, so the base already flies the LYING estimator obs, the owner NO-GT directive) and
+    # ego_est_dt_ticks_hi=1 (CLEAN 30 Hz leveler ~2 deg err; the dt-curriculum 1->4 hardens in later rungs).
+    # The plant knobs (++dynamics.n_substeps=5 + capture_specific_force) MATCH the _pef lineage so the warm-
+    # start transfer is a clean SAME-PLANT continuation (n_substeps changes plant trajectories -> a mismatch
+    # would strand the transfer). 🚩 same _pef PRE-LAUNCH CHECK: params.transport_delay_steps counts SUBSTEPS.
+    # GROUND: floor_at_spawn=true (lethal floor at spawn_z-0.25, the A1 ground-contact-deadlock fix) +
+    # standing_start (inherited, standing_start_frac=1.0 -- REQUIRED by floor_at_spawn) so the hover boot can
+    # leave the pad; a floor / ceiling / spin exit folds COLLISION-CLASS (gate_collision -> terminal_base +
+    # banked forfeit) -> NEVER a free reward exit (rw_parabola_crossing stays OFF so the terminal fires on the
+    # non-parabola path where the lethal mask is already inside gate_collision). algo=appo, gamma=0.9975 (both
+    # MANDATORY -- ppo leaves the privileged critic disconnected = seed collapse). BUDGET ~4000 upd (fresh
+    # discovery of a hover). SUCCESS (training metrics; renders untrustworthy): alt_err_m sub-metre,
+    # exit_spin/spin_abort_rate ~0 (NON-spinning), exit_timeout dominant, yaw_dither_pen + velsmooth_pen -> ~0
+    # by convergence.
+    # ================================================================================================
+    "hover_still_boot": {
+        **_COMMON,
+        "course_n_gates": 1,
+        "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # fixed 15 m level gate (IGNORED by reward)
+        "course_drop_lo": 0.0, "course_drop_hi": 0.0,
+        "floor_at_spawn": True,                       # lethal floor at spawn_z - 0.25 m (A1 fix; leave the pad)
+        # ZERO every gate-homing term -> pure altitude-hold hover, no forward pull (== hover_hold).
+        "rw_progress": 0.0, "rw_passage": 0.0, "rw_passage_increment": 0.0,
+        "rw_area_dist_ref_m": 0.0, "rw_centering": 0.0, "rw_exit_align": 0.0,
+        # (iv) give-up-resistant POSITIVE spawn-altitude bonus (spawn altitude = the unique optimum).
+        "rw_altitude_hold": 1.0, "rw_altitude_hold_band_m": 8.0,
+        # (i) anti-dither yaw-jerk penalty, calibrated for the CLAMPED regime (see the block comment).
+        "rw_yaw_dither": 0.5,
+        # (iii) NEW velocity-jerk smoothness prior -- VERY gentle (clips only extreme snappy spikes).
+        "rw_vel_smooth": 1.0e-4,
+        # (ii) FATAL SPIN ABORT + YAW CLAMP (HARD no-spin by construction == the _pef lineage VERBATIM).
+        "ego_spin_rate_abort": 3.5, "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5, "ego_spin_rev_window_s": 4.0,   # the constant-drift closer
+        "ego_yaw_cmd_clamp_rad_s": 0.35,              # clamp ARMED at the base (the yaw-dither calibration regime)
+        # ESTIMATOR-FAITHFUL, LOW noise (R0): clean vision (0.0) + clean 30 Hz leveler (ticks_hi=1).
+        "ego_noise_scale": 0.0,
+        "ego_faithful": True, "ego_est_dt_ticks_hi": 1,
+        "_raw": {"env.max_time": 40, "algo.gamma": _GAMMA,
+                 # estimator-faithful plant knobs (== the _pef lineage plant, for a clean same-plant warm-start).
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
     #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
     #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate

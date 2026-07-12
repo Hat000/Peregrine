@@ -1073,3 +1073,81 @@ def test_yaw_dither_default_off_and_parity_with_pefcap_inputs():
         yaw_cmd_delta=_t([1.4, -0.9]), **kw)
     assert torch.equal(r_ref, r_new)                               # BYTE-identical
     assert comps["yaw_dither_pen"] == 0.0
+
+
+# ================================================================================================
+# VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12): -rw_vel_smooth * ||jerk||^2,
+# jerk = accel_curr - accel_prev (1st diff of the WORLD CoM acceleration = 2nd diff of velocity).
+#   * ZERO at a steady ACCELERATION (accel_curr == accel_prev) -> steady speed AND smooth hard accel free.
+#   * grows with the squared jerk (a snappy accel spike pays); NEGATIVE sign.
+#   * orthogonal to yaw/roll -- a flip barely moves the CoM -> ~0 jerk (world-vel, NOT body specific force).
+#   * OFF-by-default byte-identical (weight 0 -> exactly 0; None input -> the reward term is 0).
+# ================================================================================================
+def _v3(rows):
+    return torch.tensor(rows, dtype=DT)
+
+
+def test_vel_smooth_penalty_zero_off_steady_zero_and_spike_penalised():
+    w = 1.0e-4
+    steady = _v3([[3.0, -2.0, 1.0]])                               # accel unchanged step-to-step
+    # STEADY ACCELERATION (accel_curr == accel_prev) -> jerk 0 -> 0 (a constant hard accel is FREE).
+    assert R.velocity_jerk_penalty(steady, steady.clone(), w).item() == pytest.approx(0.0, abs=1e-12)
+    # ZERO ACCELERATION on both steps (steady speed) also pays 0.
+    z = torch.zeros(1, 3, dtype=DT)
+    assert R.velocity_jerk_penalty(z, z, w).item() == 0.0
+    # a SNAPPY accel SPIKE: accel jumps 0 -> [30,0,0] in one step -> jerk = [30,0,0] -> -w*30^2.
+    spike = R.velocity_jerk_penalty(_v3([[30.0, 0.0, 0.0]]), z, w)
+    assert spike.item() == pytest.approx(-w * 30.0 ** 2, abs=1e-9)
+    assert spike.item() < 0.0                                       # NEGATIVE (a penalty)
+    # MONOTONIC in ||jerk||: a bigger accel jump pays strictly MORE.
+    assert R.velocity_jerk_penalty(_v3([[60.0, 0.0, 0.0]]), z, w).item() < spike.item()
+    # ORTHOGONAL to a yaw/roll flip: the CoM barely moves -> accel_curr ~ accel_prev -> ~0 penalty
+    # (a tiny 0.01 m/s^2 residual, NOT the full accel magnitude the body specific force would see).
+    near = R.velocity_jerk_penalty(_v3([[5.001, 0.0, 0.0]]), _v3([[5.0, 0.0, 0.0]]), w)
+    assert abs(near.item()) < 1e-6
+    # OFF (weight 0) -> exactly 0 for ANY jerk (byte-identical default).
+    assert R.velocity_jerk_penalty(_v3([[100.0, 100.0, 100.0]]), z, 0.0).item() == 0.0
+
+
+def test_vel_smooth_wired_into_compute_ego_reward_and_off_is_byte_identical():
+    n = 1
+    base = R.EgoRewardWeights()                                     # vel_smooth 0 (default)
+    r_none, _, _ = R.compute_ego_reward(base, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                        **_spin_kw(n, [0.0]))
+    # passing a big accel jerk with the weight 0 -> BYTE-identical (the term is exactly 0)
+    r_off, c_off, _ = R.compute_ego_reward(
+        base, gate_collision=torch.zeros(n, dtype=torch.bool),
+        accel_curr=_v3([[40.0, 0.0, 0.0]]), accel_prev=torch.zeros(n, 3, dtype=DT), **_spin_kw(n, [0.0]))
+    assert r_off.item() == r_none.item()
+    assert c_off["velsmooth_pen"] == 0.0
+    # ARMED: a spike drops the reward by EXACTLY the penalty (smooth, NON-terminal); a steady accel 0.
+    w = R.EgoRewardWeights(vel_smooth=1.0e-4)
+    a = _v3([[10.0, -5.0, 2.0]])
+    r_steady, c_steady, _ = R.compute_ego_reward(
+        w, gate_collision=torch.zeros(n, dtype=torch.bool),
+        accel_curr=a, accel_prev=a.clone(), **_spin_kw(n, [0.0]))
+    r_spike, c_spike, _ = R.compute_ego_reward(
+        w, gate_collision=torch.zeros(n, dtype=torch.bool),
+        accel_curr=_v3([[30.0, 0.0, 0.0]]), accel_prev=torch.zeros(n, 3, dtype=DT), **_spin_kw(n, [0.0]))
+    pen = 1.0e-4 * 30.0 ** 2
+    assert c_steady["velsmooth_pen"] == pytest.approx(0.0, abs=1e-12)   # steady accel pays 0 (hard accel free)
+    assert c_spike["velsmooth_pen"] == pytest.approx(pen, abs=1e-9)
+    assert (r_steady.item() - r_spike.item()) == pytest.approx(pen, abs=1e-9)   # reward drops by the penalty
+
+
+def test_vel_smooth_default_off_and_parity_with_all_new_inputs():
+    """PARITY: the default weight is OFF, and passing accel_curr/accel_prev alongside every other new
+    input with all weights at default is byte-identical (all new terms contribute exactly 0)."""
+    assert R.EgoRewardWeights().vel_smooth == 0.0                   # default OFF
+    n = 2
+    w = R.EgoRewardWeights()
+    kw = _spin_kw(n, [0.0, 7.0])
+    r_ref, _, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool), **kw)
+    r_new, comps, _ = R.compute_ego_reward(
+        w, gate_collision=torch.zeros(n, dtype=torch.bool),
+        roll=_t([0.2, -1.0]), pitch=_t([-0.4, 0.8]), cos_view_next=_t([0.5, -1.0]),
+        yaw_cmd_delta=_t([1.4, -0.9]),
+        accel_curr=_v3([[40.0, 0.0, 0.0], [0.0, 12.0, -3.0]]),
+        accel_prev=torch.zeros(n, 3, dtype=DT), **kw)
+    assert torch.equal(r_ref, r_new)                               # BYTE-identical
+    assert comps["velsmooth_pen"] == 0.0

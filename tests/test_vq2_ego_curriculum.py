@@ -766,3 +766,99 @@ def test_nodither_offladder_no_init_from_no_sbatch_collision_renders():
         if key.startswith("++"):
             continue
         assert key not in _SBATCH_APPENDED_KEYS, tok
+
+
+# ================================================================================================
+# R0 STILL-YAW HOVER BOOT (hover_still_boot, 2026-07-12): the FIRST rung of a fresh lineage. A pure
+# altitude-hold hover (gate terms zeroed, == hover_hold) + the four R0 arms (yaw-dither, spin abort,
+# vel-jerk, altitude-hold) + the yaw clamp armed at the base + estimator-faithful at LOW noise.
+# ================================================================================================
+_R0_STAGE = "hover_still_boot"
+
+
+def test_common_vel_smooth_default_off_on_every_ladder_stage():
+    # the velocity-jerk prior is default-OFF (never in _COMMON); no ordered ladder stage arms it.
+    assert "rw_vel_smooth" not in C._COMMON
+    for s in C.STAGE_ORDER:
+        assert C.STAGES[s].get("rw_vel_smooth", 0.0) == 0.0, s
+    # ... and the reward-weights default is OFF (byte-identical when absent).
+    from ego_reward import EgoRewardWeights
+    assert EgoRewardWeights().vel_smooth == 0.0
+
+
+def test_r0_hover_still_boot_is_offladder_fresh_hover_with_the_four_arms():
+    """R0 = a pure altitude-hold hover (every gate-homing term zeroed, == hover_hold) with the four arms
+    armed from update 0, FRESH-START (no init_from), off-ladder."""
+    assert _R0_STAGE not in C.STAGE_ORDER                          # off-ladder, standalone only
+    s = C.STAGES[_R0_STAGE]
+    # BASE == hover_hold scoping: fixed 15 m level gate IGNORED by the reward (all gate-homing zeroed).
+    assert s["course_n_gates"] == 1
+    assert s["course_spawn_dist_lo"] == s["course_spawn_dist_hi"] == 15.0
+    assert s["course_drop_lo"] == s["course_drop_hi"] == 0.0
+    for k in ("rw_progress", "rw_passage", "rw_passage_increment", "rw_area_dist_ref_m",
+              "rw_centering", "rw_exit_align"):
+        assert s[k] == 0.0, k
+    # (iv) altitude-hold ON (the give-up-resistant spawn-altitude bonus).
+    assert s["rw_altitude_hold"] == 1.0 and s["rw_altitude_hold_band_m"] == 8.0
+    # (i) anti-dither yaw-jerk penalty ARMED, calibrated for the clamped regime.
+    assert s["rw_yaw_dither"] == 0.5
+    # (iii) the NEW velocity-jerk prior ARMED and VERY gentle.
+    assert s["rw_vel_smooth"] == pytest.approx(1.0e-4)
+    # (ii) the FATAL SPIN ABORT package (incl. the accumulated-rotation constant-drift closer).
+    assert s["ego_spin_rate_abort"] == 3.5 and s["ego_spin_time_abort"] == 0.4
+    assert s["ego_spin_rev_abort"] == 1.5 and s["ego_spin_rev_window_s"] == 4.0
+    # FRESH (no init_from) + appo/gamma.
+    assert not any("init_from" in k for k in s["_raw"])
+    assert s["ego"] is True and s["_raw"]["algo.gamma"] == C._GAMMA
+
+
+def test_r0_arms_yaw_clamp_at_the_base_for_the_dither_calibration():
+    """THE YAW-CLAMP CALIBRATION FOOTGUN: rw_yaw_dither=0.5 assumes the CLAMPED regime (a rail-flip delta =
+    2*0.35 = 0.70), so the yaw clamp MUST be armed at the base too (the preferred option, matching the
+    lineage). An unclamped base would give a +-3.14 rail delta ~9x larger and mis-price the penalty ~20x."""
+    s = C.STAGES[_R0_STAGE]
+    assert s["ego_yaw_cmd_clamp_rad_s"] == 0.35                     # clamp armed at the base (lineage value)
+
+
+def test_r0_is_estimator_faithful_at_low_noise():
+    """Estimator-faithful (owner NO-GT directive) at LOW noise (R0; hardening ramps in later rungs):
+    clean vision (ego_noise_scale=0.0) + clean 30 Hz leveler (ego_est_dt_ticks_hi=1), with the _pef plant
+    knobs (n_substeps=5 + capture_specific_force) for a clean same-plant warm-start."""
+    s = C.STAGES[_R0_STAGE]
+    assert s["ego_faithful"] is True
+    assert s["ego_noise_scale"] == 0.0                             # clean vision noise (LOW; ramps later)
+    assert s["ego_est_dt_ticks_hi"] == 1                           # clean 30 Hz leveler (dt-curriculum later)
+    assert s["_raw"]["++dynamics.n_substeps"] == 5                 # aliasing channel + plant parity w/ _pef
+    assert s["_raw"]["++dynamics.capture_specific_force"] is True  # required by ego_faithful (raises else)
+
+
+def test_r0_keeps_ground_intact_and_no_free_exit():
+    """GROUND: floor_at_spawn ON (the A1 ground-contact-deadlock fix) so the hover can leave the pad; a
+    floor/ceiling/spin exit folds COLLISION-CLASS. NO parabola (so the terminal fires on the non-parabola
+    path where the lethal mask is already inside gate_collision -> no free reward exit). standing_start=1.0
+    (inherited) is REQUIRED by floor_at_spawn."""
+    s = C.STAGES[_R0_STAGE]
+    assert s["floor_at_spawn"] is True
+    assert s["standing_start_frac"] == 1.0                         # inherited; required by floor_at_spawn
+    assert s.get("rw_parabola_crossing", False) is False           # non-parabola terminal path (lethal fold)
+    assert s.get("rw_perception", 0.0) == 0.0                      # no gates to chase -> no perception term
+
+
+def test_r0_renders_valid_tokens():
+    toks = C.render_overrides(_R0_STAGE)
+    assert "+env.rw_altitude_hold=1.0" in toks
+    assert "+env.rw_yaw_dither=0.5" in toks
+    assert "+env.rw_vel_smooth=0.0001" in toks                     # the NEW velocity-jerk prior
+    assert "+env.ego_spin_rev_abort=1.5" in toks                    # the constant-drift spin closer
+    assert "+env.ego_yaw_cmd_clamp_rad_s=0.35" in toks             # clamp armed at the base
+    assert "+env.ego_faithful=true" in toks
+    assert "+env.ego_est_dt_ticks_hi=1" in toks
+    assert "+env.floor_at_spawn=true" in toks
+    assert "+env.rw_progress=0.0" in toks                          # forward homing zeroed
+    assert "++dynamics.n_substeps=5" in toks
+    assert "algo.gamma=0.9975" in toks                            # _raw verbatim (no +)
+    for tok in toks:                                               # no _pef/BASE-appended key collision
+        key = tok.split("=", 1)[0]
+        if key.startswith("++"):
+            continue
+        assert key not in _SBATCH_APPENDED_KEYS, tok

@@ -318,6 +318,23 @@ class EgoRewardWeights:
     # kills the constant-spin escape; keep BOTH. 0 == OFF (byte-identical). Tune via +env.rw_yaw_dither.
     yaw_dither: float = 0.0          # rw_yaw_dither; weight on (delta yaw_cmd)^2 [per (rad/s)^2]; 0 == OFF
 
+    # --- VELOCITY-JERK smoothness prior (R0 still-yaw hover boot, 2026-07-12; AUTHORIZED smoothness, NOT
+    # energy/speed). A SMOOTHNESS penalty on the temporal CHANGE of the WORLD-frame CoM acceleration:
+    # R_velsmooth = -vel_smooth * ||jerk||^2, jerk = accel_curr - accel_prev (the 1st difference of
+    # acceleration == the 2nd time-difference of velocity; accel = (v_t - v_{t-1})/dt, world Z-up). It
+    # penalises snappy JERK SPIKES, NOT velocity or acceleration magnitude: a STEADY SPEED (accel 0) AND a
+    # SMOOTH HARD acceleration (accel constant, jerk 0) both pay ~0 -- ONLY a SUDDEN change of acceleration
+    # bites, so it is NOT a speed/energy penalty (fast, hard, smooth flight is free). ORTHOGONAL to the
+    # yaw/roll control mechanism BY CONSTRUCTION: a yaw (or roll) flip barely moves a quad's centre of mass,
+    # so the WORLD-velocity jerk is ~0 and pays ~0 -- deliberately the world CoM jerk and NOT the body
+    # specific force, whose ~1 g gravity component ROTATES with attitude and would spuriously TAX every
+    # roll/pitch as if it were a CoM jerk. Squared (SMOOTH + magnitude-aware): benign near-zero jitter pays
+    # ~0, a big spike pays the most, and it vanishes at convergence (steady accel -> jerk 0 -> 0, non-
+    # farmable). VERY gentle when armed (Fengyou: "just clip extreme snappy spikes"). Sign NEGATIVE. The env
+    # threads the previous world velocity + acceleration and passes accel_curr/accel_prev (None -> the term
+    # is 0). 0 == OFF (byte-identical). Tune via +env.rw_vel_smooth.
+    vel_smooth: float = 0.0          # rw_vel_smooth; weight on ||jerk||^2 [per (m/s^2)^2]; 0 == OFF
+
     # --- NEXT-GATE exit-line anticipation (dual_gate+ stage; small; on by curriculum) ---
     exit_align: float = 0.0          # R_exit weight; 0 == OFF (single_gate/handoff stages)
 
@@ -770,6 +787,27 @@ def yaw_dither_penalty(yaw_cmd_delta: Tensor, rw_yaw_dither: float) -> Tensor:
     return -rw_yaw_dither * yaw_cmd_delta ** 2
 
 
+def velocity_jerk_penalty(accel_curr: Tensor, accel_prev: Tensor, rw_vel_smooth: float) -> Tensor:
+    """VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12): R_velsmooth = -rw_vel_smooth *
+    ||jerk||^2, where jerk = ``accel_curr`` - ``accel_prev`` (the 1st difference of acceleration == the 2nd
+    time-difference of velocity). ``accel_curr``/``accel_prev`` are the CURRENT and PREVIOUS-step WORLD-frame
+    CoM accelerations (N,3), accel = (v_t - v_{t-1})/dt (the env threads the prev velocity + acceleration).
+
+    Penalises a snappy JERK SPIKE, NOT velocity or acceleration magnitude: a STEADY SPEED (accel 0 -> jerk 0)
+    AND a SMOOTH HARD acceleration (accel constant -> jerk 0) BOTH pay ~0 -- only a SUDDEN change of
+    acceleration bites, so this is NOT a speed/energy penalty (fast, hard, smooth flight is free). ORTHOGONAL
+    to the yaw/roll mechanism BY CONSTRUCTION: a yaw (or roll) flip barely moves the centre of mass, so the
+    WORLD-velocity jerk is ~0 -> ~0 penalty (this is WHY it is the world CoM jerk and NOT the body specific
+    force, whose ~1 g gravity term rotates with attitude and would spuriously tax roll/pitch). Squared
+    (smooth + magnitude-aware) so benign near-zero jitter pays ~0 and it vanishes at convergence (steady
+    accel -> jerk 0 -> 0, non-farmable). Sign NEGATIVE. rw_vel_smooth==0 -> zeros (byte-identical). (N,)."""
+    assert torch is not None
+    if rw_vel_smooth == 0.0:
+        return torch.zeros(accel_curr.shape[0], device=accel_curr.device, dtype=accel_curr.dtype)
+    jerk = accel_curr - accel_prev
+    return -rw_vel_smooth * (jerk ** 2).sum(dim=-1)
+
+
 # ================================================================================================
 # R_exit: NEXT-GATE exit-line anticipation (dual_gate+ stage; small; on by curriculum).
 # ================================================================================================
@@ -870,6 +908,8 @@ def compute_ego_reward(
     roll: "Tensor | None" = None,
     pitch: "Tensor | None" = None,
     yaw_cmd_delta: "Tensor | None" = None,
+    accel_curr: "Tensor | None" = None,
+    accel_prev: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
@@ -943,6 +983,13 @@ def compute_ego_reward(
     # or None. See yaw_dither_penalty: the retained fatal spin abort closes the constant-drift (slow-spin) hole.
     r_yawdith = (yaw_dither_penalty(yaw_cmd_delta, w.yaw_dither)
                  if yaw_cmd_delta is not None else torch.zeros_like(r_prog))
+    # VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12; OFF unless w.vel_smooth>0 ->
+    # byte-identical): penalise the temporal CHANGE of the world-frame CoM acceleration (a snappy spike pays;
+    # steady speed AND smooth hard accel both pay ~0). The env passes accel_curr = (v_t - v_{t-1})/dt +
+    # accel_prev (the threaded prev accel), or None. See velocity_jerk_penalty: orthogonal to yaw/roll (a
+    # flip barely moves the CoM -> ~0 jerk), NOT a speed/energy penalty.
+    r_velsmooth = (velocity_jerk_penalty(accel_curr, accel_prev, w.vel_smooth)
+                   if (accel_curr is not None and accel_prev is not None) else torch.zeros_like(r_prog))
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
@@ -967,7 +1014,7 @@ def compute_ego_reward(
                                 forfeit_mask=forfeit_mask)
 
     reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_corr + r_align + r_perc + r_perc_next
-              + r_att + r_yawdith + r_fin + r_cone + r_smooth + r_exit + r_time - term)
+              + r_att + r_yawdith + r_velsmooth + r_fin + r_cone + r_smooth + r_exit + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
@@ -981,6 +1028,7 @@ def compute_ego_reward(
         "perception_next_reward": float(r_perc_next.mean()),
         "att_pen": float((-r_att).mean()),
         "yaw_dither_pen": float((-r_yawdith).mean()),
+        "velsmooth_pen": float((-r_velsmooth).mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),

@@ -643,6 +643,12 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # per-env PBRS contouring potential state: the previous-step perpendicular offset from the current
         # gate-centre segment (for the MPCC contouring term corridor*(perp_prev - perp_curr)).
         self._corr_perp_prev = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        # per-env VELOCITY-JERK smoothness state (R0 still-yaw hover boot; ego_reward.velocity_jerk_penalty):
+        # the previous-step WORLD velocity + WORLD acceleration for the jerk = accel_curr - accel_prev,
+        # accel = (v_t - v_{t-1})/dt. Zeroed at reset (a standing start has v~0 -> the first-step jerk ~0).
+        # Only READ/rolled when rw_vel_smooth != 0 -> byte-identical when the term is OFF (never touched).
+        self._prev_vel = torch.zeros(self.n_envs, 3, device=dev, dtype=self._ego_dtype)
+        self._prev_accel = torch.zeros(self.n_envs, 3, device=dev, dtype=self._ego_dtype)
         # ONCE-PER-GATE parabola latch buffer (ego_reward.crossing_parabola_reward contract; the audit
         # re-payment-farm fix): per-env bool, passed into compute_ego_reward EVERY step and mutated IN
         # PLACE there (marked on a forward target-plane crossing) ONLY when rw_parabola_latch is on.
@@ -900,6 +906,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # fatal-spin-abort state: fresh episode -> zero the sustained clock + rotation accumulator.
             self._spin_clock[env_idx] = 0.0
             self._rot_accum[env_idx] = 0.0
+            # velocity-jerk smoothness state: fresh episode -> zero the prev world velocity + acceleration
+            # so no cross-episode jerk leaks (a standing start has v~0 -> the first-step jerk is ~0 anyway).
+            self._prev_vel[env_idx] = 0.0
+            self._prev_accel[env_idx] = 0.0
             self._kp_persist_count[env_idx] = 0   # kp-persist: fresh episode -> streak restarts
             # clear the ONCE-PER-GATE parabola latch for EVERY reset path: step() funnels BOTH
             # terminated and truncated (timeout) envs through reset_idx, so this is the single choke
@@ -1312,6 +1322,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             yaw_cmd_delta = None
             if self._egorw.yaw_dither != 0.0:
                 yaw_cmd_delta = action[..., 3] - self.last_action[..., 3]
+            # VELOCITY-JERK smoothness input (R0 still-yaw hover boot 2026-07-12; None unless
+            # rw_vel_smooth>0 -> byte-identical off): the CURRENT-step WORLD CoM acceleration
+            # accel_curr = (v_t - v_{t-1})/dt (self._prev_vel holds v_{t-1}); accel_prev = the threaded
+            # previous acceleration a_{t-1}. compute_ego_reward differences them into the jerk =
+            # accel_curr - accel_prev. Rolled forward AFTER the reward (below), BEFORE reset_idx zeros them.
+            accel_curr = accel_prev = None
+            if self._egorw.vel_smooth != 0.0:
+                accel_curr = (self._v - self._prev_vel) / float(self.dt)
+                accel_prev = self._prev_accel
             reward, loss_components, r_prog = compute_ego_reward(
                 self._egorw,
                 s_curr=s_curr, s_prev=self._seg_s_prev,
@@ -1358,7 +1377,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # leveled roll/pitch (None unless a weight>0). All pefcap-package, byte-identical when OFF.
                 cos_view_next=cos_view_next, roll=roll_att, pitch=pitch_att,
                 # ANTI-DITHER yaw smoothness (None unless rw_yaw_dither>0): the applied yaw-command jerk.
-                yaw_cmd_delta=yaw_cmd_delta)
+                yaw_cmd_delta=yaw_cmd_delta,
+                # VELOCITY-JERK smoothness (None unless rw_vel_smooth>0): current + previous world CoM accel.
+                accel_curr=accel_curr, accel_prev=accel_prev)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious
@@ -1385,6 +1406,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                                                            env_idx=adv_idx)
             self._seg_s_prev = new_s_prev
             self._corr_perp_prev = new_perp_prev
+            # roll the velocity-jerk state forward (armed only): a_t -> prev_accel, v_t -> prev_vel, for
+            # the next step's jerk = accel_curr - accel_prev. BEFORE reset_idx (which zeros them per env).
+            if self._egorw.vel_smooth != 0.0:
+                self._prev_accel = accel_curr.detach()
+                self._prev_vel = self._v.detach().clone()
             loss_components["ego_collision_rate"] = float(gate_collision.float().mean())
             loss_components["banked_prog_mean"] = float(self._banked_prog.mean())
         else:
