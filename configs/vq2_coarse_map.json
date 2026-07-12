@@ -1,8 +1,9 @@
 {
   "_doc": "VQ2 coarse map for --ego-sector-mode map. 'sector' is one [horiz, vert] turn bucket PER GATE, each value in {-1, 0, 1}, in the drone's gravity-leveled approach frame. Row g answers 'as I arrive at gate g, where is gate g+1?' and is fed into obs[9:11] while active_gate_index == g (the anticipation prior the _pef policy trained on; the wire cannot compute it). CONVENTION (verified against training build_coarse_map + the vpef-zbias flight where gates 1-2 were off to the RIGHT): horiz -1 = next gate to the RIGHT of approach, +1 = LEFT, 0 = straight ahead; vert +1 = next gate ABOVE, -1 = BELOW, 0 = level. Hand-author one row per gate AS YOU SURVEY the course; past the last row the builder clamps to the last row. 1-BIT FLY-CHECK: if the drone banks the WRONG way (left when the gate is right), NEGATE the horiz value.",
-  "_provenance": "gate 0 -> gate 1 = upper-right (Fengyou, live observation, 2026-07-12). Remaining gates TBD by survey.",
+  "_provenance": "Rows keyed to the gate you are LEAVING (row g = where gate g+1 sits, read while active_gate_index==g). row0 [-1,1]=gate1 upper-right (Fengyou live obs, Run 6). row1 [0,0]=LEVEL: gate2 is surveyed BELOW gate1, BUT this row is read WHILE APPROACHING the UP gate1 -- a [0,-1] here injects a down-lean that fights the climb and CLIPS gate1's bottom (Runs 7/9, confirmed). NEVER put negative vert on the leg into an up-gate; keep row1 level. row2 [1,0]=gate3 to the LEFT -- the turn cue Run 6 lacked (it clamped to straight and hit a WALL heading to gate3). This 3-row map is IDENTICAL to Run 6 through gate1 and adds the gate3 left-turn -> strictly better. gate0's own 'above-front' is the spawn->gate0 leg, flown by vision -- NOT a row. 1-BIT FLY-CHECK per row; extend as surveyed. NOTE the gate1 clip + run-to-run variance are NOT map problems (see the flight ledger) -- do not chase them here.",
   "sector": [
     [-1, 1],
-    [0, 0]
+    [0, 0],
+    [1, 0]
   ]
 }
