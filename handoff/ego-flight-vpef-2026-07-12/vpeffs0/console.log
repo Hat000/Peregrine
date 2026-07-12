@@ -1,0 +1,51 @@
+=== FLIGHT 2 vpeffs0 (behavioral) launch ===
+cmd: python -u -m rl.fly_rl --ego-ckpt ckpts/vpeffs0_actor.pth --ego-yaw-clamp 0.7 --deploy-profile vq2_ego_lean --rate 30 --seeker-detector yolo --seeker-weights <negreal42 engine> --label ego_vpeffs0_2026-07-12
+loading EGO actor: ckpts/vpeffs0_actor.pth
+[load_ego_actor] EGO action bounds HARDCODED: thrust [0,3.765] rates +-3.14 rad/s (no sidecar consulted; the ego launcher writes none and the legacy [0,5] fallback would overdrive thrust ~33%).
+  type: _ActorMean
+  obs_dim=21 -> action shape=(4,)  (expected (4,))
+  [ego] FORCING cmd_rate_scale=1 (--ego-rate-scale; profile 'vq2_ego_lean' value 0.4 NOT applied) gyro_sign=(-1.0, -1.0, -1.0)
+connecting udp:127.0.0.1:14550 ...
+  [detector] GateDetector on device='cuda:0' (weights='C:/Users/Shadow/Peregrine/models/vq2_darkred_negreal42_2026-07-05_fp16_384x640.engine')
+Loading C:/Users/Shadow/Peregrine/models/vq2_darkred_negreal42_2026-07-05_fp16_384x640.engine for TensorRT inference...
+[07/11/2026-23:33:57] [TRT] [I] Loaded engine size: 22 MiB
+[07/11/2026-23:33:57] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +12, now: CPU 0, GPU 30 (MiB)
+  [prewarm] YOLO detector warmed in 4.68s (first-predict off the launch window; tick-0 stall eliminated).
+
+====================== FLIGHT 1/1 ======================
+recording -> data\runs\20260712_063357_ego_vpeffs0_2026-07-12_f1
+>>> Waiting PASSIVELY for the race GO (no sim-control command will be sent; this is the submission-safe posture).
+  countdown +0.90s     countdown +0.65s     countdown +0.40s     countdown +0.15s     countdown -0.10s   
+  GO!  pos_off=0.00 m.  armed=True sim_t= 394.251s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+
+[arm] ...
+  attempt 1/3: ACK=MAV_RESULT_ACCEPTED  armed=True
+  [ego] no live TRACK_INFO + self-localizing profile -> MAP-FREE flight (vision yaw/z + the tracked gate lever; NO absolute map).
+
+[ego] ckpt=ckpts/vpeffs0_actor.pth  profile=vq2_ego_lean self_localizing=True
+[ego] act bounds thrust [0,3.765] rates +-3.14 | cmd_rate_scale=1 (ego FORCES wire scale via --ego-rate-scale; the seeker profile's 0.4 is NOT applied -- the RL plant was sysid'd at wire scale 1.0)
+[ego] det_hold=0.2s stale_horizon=0.5s obs_coast=False sector_mode=auto virtual_flip=True rate=30Hz max=120s ...
+[ego] takeoff-assist ON: thrust floor 1.1 g (collective 0.292); rate commands pass through untouched; disarms PERMANENTLY on |gyro_body|>1.0 rad/s OR climb>0.5 m OR 1.5s (whichever first). Fully automatic (§7-compliant).
+
+  [ego-assist] ACTIVE (thrust floor 1.100 g)
+  t= 394.33s gi=0 conf=1.00 area=0.95 thr=0.292 rate=[+0.23,-1.09,-0.34]   
+  [ego-assist] HANDOVER at t=0.230s trigger=rates
+  t= 395.36s gi=0 conf=1.00 area=1.00 thr=0.320 rate=[-0.05,+0.05,-0.16]     t= 396.37s gi=0 conf=0.60 area=0.89 thr=0.330 rate=[-0.10,-0.81,+0.70]   
+  [ego] HARD COLLISION -> abort.
+  [ego-log] wrote 56 ticks -> data\runs\20260712_063357_ego_vpeffs0_2026-07-12_f1\ego_obs.jsonl
+  [loop-rate]  20.9 Hz over 56 ticks (target 30); worst work 133 ms; 66.1% ticks over budget -> CHOKED
+  [ego-diag] fresh gate levers=28  masked-slot0 ticks=21/56 (38% blackout duty)
+  [ego-timing] wrote 56 ticks -> ego_timing.jsonl
+  [ego-timing] median ms/tick: work=40 nav_update=23 detect_lever=15
+  [ego-timing]   detect ticks (n=56): work=40 nav_update=23 detect_lever=15
+  [ego-timing]   nav.detect: n=56 avg=22.2ms max=69.6ms
+
+[safety] disarming ...
+
+  flight 1: CRASH  gates=0  session=data\runs\20260712_063357_ego_vpeffs0_2026-07-12_f1
+  [video-thread] frames=264 max_gap=171ms@fid=1157 gaps>200ms=0 gaps>1s=0 gap_sum=8761ms max_pub=0.1ms reconnects=0(idle=0,exc=0) | wire: datagrams=257039 completed=264 evicted=0 dup=248800 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
+
+==== fly_rl summary ====
+  flight 1: CRASH      gates=0  data\runs\20260712_063357_ego_vpeffs0_2026-07-12_f1
+  collisions (all flights): 11 (ids [1001]; 1001=gate 1002=env)
+=== FLIGHT 2 pilot exited rc=0 ===
