@@ -1010,3 +1010,66 @@ def test_pefcap_reward_byte_identical_when_all_knobs_off():
         cos_view_next=_t([0.9, -1.0, 0.2]), **kw)
     assert torch.equal(r_ref, r_new)                               # BYTE-identical
     assert comps["att_pen"] == 0.0 and comps["perception_next_reward"] == 0.0
+
+
+# ================================================================================================
+# ANTI-DITHER yaw smoothness (nodither fine-tune 2026-07-12): squared yaw-command JERK.
+#   * ZERO at a steady yaw command (incl. a CONSTANT nonzero turn -> a sustained turn is FREE).
+#   * grows with the squared temporal change (a +-clamp rail-flip pays heavily); NEGATIVE sign.
+#   * SMOOTH + magnitude-aware -> benign near-zero jitter pays ~0 (a sign-flip indicator would not).
+#   * OFF-by-default byte-identical (weight 0 -> exactly 0; None input -> the reward term is 0).
+# ================================================================================================
+def test_yaw_dither_penalty_zero_at_steady_grows_with_flip_correct_sign():
+    w = 0.5
+    # STEADY (delta 0) -> 0; a CONSTANT nonzero turn is ALSO delta 0 -> pays 0 (a sustained turn is free).
+    assert R.yaw_dither_penalty(_t([0.0]), w).item() == 0.0
+    # a +-0.35 TRAINING-clamp rail-FLIP: delta = 0.35 - (-0.35) = 0.70 -> -w*0.70^2 (a real deterrent).
+    flip = R.yaw_dither_penalty(_t([0.70]), w)
+    assert flip.item() == pytest.approx(-w * 0.70 ** 2, abs=1e-12)
+    assert flip.item() < 0.0                                        # NEGATIVE (a penalty)
+    # symmetric in the SIGN of the change (squared jerk): +0.70 and -0.70 pay identically.
+    assert R.yaw_dither_penalty(_t([-0.70]), w).item() == pytest.approx(flip.item(), abs=1e-12)
+    # MONOTONIC in |delta|: a bigger flip pays strictly MORE (deploy-clamp 0.7 flip = delta 1.40) ...
+    assert R.yaw_dither_penalty(_t([1.40]), w).item() < flip.item()
+    # ... and benign NEAR-ZERO jitter pays ~0 (the discrimination a sign-flip indicator lacks).
+    assert abs(R.yaw_dither_penalty(_t([0.02]), w).item()) < 1e-3
+    # OFF (weight 0) -> exactly 0 for ANY delta (byte-identical default).
+    assert R.yaw_dither_penalty(_t([5.0]), 0.0).item() == 0.0
+
+
+def test_yaw_dither_wired_into_compute_ego_reward_and_off_is_byte_identical():
+    n = 1
+    base = R.EgoRewardWeights()                                     # yaw_dither 0 (default)
+    r_none, _, _ = R.compute_ego_reward(base, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                        **_spin_kw(n, [0.0]))
+    # passing a big yaw delta with the weight 0 -> BYTE-identical (the term is exactly 0)
+    r_off, c_off, _ = R.compute_ego_reward(base, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                           yaw_cmd_delta=_t([1.4]), **_spin_kw(n, [0.0]))
+    assert r_off.item() == r_none.item()
+    assert c_off["yaw_dither_pen"] == 0.0
+    # ARMED: a rail-flip drops the reward by EXACTLY the penalty (smooth, NON-terminal); a steady turn 0.
+    w = R.EgoRewardWeights(yaw_dither=0.5)
+    r_steady, c_steady, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                                 yaw_cmd_delta=_t([0.0]), **_spin_kw(n, [0.0]))
+    r_flip, c_flip, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                             yaw_cmd_delta=_t([0.70]), **_spin_kw(n, [0.0]))
+    pen = 0.5 * 0.70 ** 2
+    assert c_steady["yaw_dither_pen"] == pytest.approx(0.0)         # steady turn pays 0 (turns are free)
+    assert c_flip["yaw_dither_pen"] == pytest.approx(pen, abs=1e-9)
+    assert (r_steady.item() - r_flip.item()) == pytest.approx(pen, abs=1e-9)   # reward drops by the penalty
+
+
+def test_yaw_dither_default_off_and_parity_with_pefcap_inputs():
+    """PARITY: the default weight is OFF, and passing yaw_cmd_delta alongside the pefcap inputs with all
+    weights at default is byte-identical (all new terms contribute exactly 0)."""
+    assert R.EgoRewardWeights().yaw_dither == 0.0                   # default OFF
+    n = 2
+    w = R.EgoRewardWeights()
+    kw = _spin_kw(n, [0.0, 7.0])
+    r_ref, _, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool), **kw)
+    r_new, comps, _ = R.compute_ego_reward(
+        w, gate_collision=torch.zeros(n, dtype=torch.bool),
+        roll=_t([0.2, -1.0]), pitch=_t([-0.4, 0.8]), cos_view_next=_t([0.5, -1.0]),
+        yaw_cmd_delta=_t([1.4, -0.9]), **kw)
+    assert torch.equal(r_ref, r_new)                               # BYTE-identical
+    assert comps["yaw_dither_pen"] == 0.0

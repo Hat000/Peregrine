@@ -299,6 +299,25 @@ class EgoRewardWeights:
     dact: float = 1.0e-3             # R5 on ||Delta action||^2
     corner: float = 0.0              # R7 joint corner tax (PREFERRED smoothness); 0 == OFF by default
 
+    # --- ANTI-DITHER YAW SMOOTHNESS (nodither fine-tune, 2026-07-12; AUTHORIZED anti-dither, NOT energy).
+    # A SMOOTHNESS penalty on the temporal CHANGE of the yaw-rate COMMAND: R_yawdith = -yaw_dither *
+    # (yaw_cmd_t - yaw_cmd_{t-1})^2, on the APPLIED (post-clamp) yaw action channel (channel 3, rad/s). It
+    # targets the DITHER the position-free egocentric obs leaves UNPRICED (no yaw channel -> yaw is reward-
+    # INDIFFERENT -> the command rails the +-clamp and SIGN-FLIPS ~30% of ticks on flights). WHY a squared
+    # JERK (temporal change) and NOT a magnitude/|omega|/energy penalty (owner directive): a SUSTAINED,
+    # steady yaw command (a needed downstream TURN) has Delta~0 -> pays ~0, so a smooth turn / speed is
+    # NEVER penalised; ONLY the oscillation transient pays (a +-clamp rail-flip Delta=2*clamp -> heavy). WHY
+    # squared-jerk over a SIGN-FLIP INDICATOR (the considered alternative): the indicator is DISCONTINUOUS
+    # (bad gradient; "policy reacts better to smooth things") AND magnitude-BLIND -- it taxes benign tiny
+    # jitter around zero-yaw straight cruise EXACTLY as much as a full rail-flip (a standing tax on straight
+    # flight), whereas the squared form pays ~0 for near-zero jitter and the MOST for a rail-flip -- the
+    # exact dither discrimination wanted -- and vanishes at convergence (steady command -> Delta 0 -> 0, so
+    # it is NON-farmable, min 0 at steady yaw). The CONSTANT-DRIFT escape (a slow STEADY yaw = 0 jerk = a
+    # slow spin that dodges THIS term) is closed BY CONSTRUCTION by the RETAINED fatal spin abort (the
+    # ego_spin_rev_* accumulated-rotation trigger + the yaw clamp) -- this term kills the dither, the abort
+    # kills the constant-spin escape; keep BOTH. 0 == OFF (byte-identical). Tune via +env.rw_yaw_dither.
+    yaw_dither: float = 0.0          # rw_yaw_dither; weight on (delta yaw_cmd)^2 [per (rad/s)^2]; 0 == OFF
+
     # --- NEXT-GATE exit-line anticipation (dual_gate+ stage; small; on by curriculum) ---
     exit_align: float = 0.0          # R_exit weight; 0 == OFF (single_gate/handoff stages)
 
@@ -733,6 +752,24 @@ def smoothness_penalty(omega: Tensor, action_norm: Tensor, last_action_norm: Ten
     return -(w.rate * rate_mag + w.dact * dact + w.corner * corner)
 
 
+def yaw_dither_penalty(yaw_cmd_delta: Tensor, rw_yaw_dither: float) -> Tensor:
+    """ANTI-DITHER yaw SMOOTHNESS penalty (nodither fine-tune 2026-07-12): R_yawdith = -rw_yaw_dither *
+    yaw_cmd_delta^2, where ``yaw_cmd_delta`` = yaw_cmd_t - yaw_cmd_{t-1} is the temporal change of the
+    APPLIED (post-clamp) yaw-rate command (action channel 3, rad/s). Penalises OSCILLATION of the yaw
+    command (a +-clamp rail-flip -> large |delta| -> heavy penalty) while a SUSTAINED / steady yaw command
+    (a needed turn -> delta ~0) pays ~0 -- so a smooth turn / speed is NEVER penalised and only the dither
+    transient pays. Squared (SMOOTH + magnitude-aware): near-zero jitter pays ~0, a rail-flip pays the most
+    -- the dither discrimination a sign-flip indicator LACKS (the indicator is discontinuous AND over-taxes
+    benign near-zero jitter around zero-yaw straight flight). NON-farmable: a steady command earns 0, so it
+    vanishes at convergence (min 0 at steady yaw). The constant-DRIFT escape (a slow steady spin, 0 jerk) is
+    NOT closed here -- the retained fatal spin abort (ego_spin_rev_*) closes it BY CONSTRUCTION. Sign:
+    NEGATIVE (a penalty). rw_yaw_dither==0 -> OFF (zeros -> byte-identical). Returns the (<=0) penalty (N,)."""
+    assert torch is not None
+    if rw_yaw_dither == 0.0:
+        return torch.zeros_like(yaw_cmd_delta)
+    return -rw_yaw_dither * yaw_cmd_delta ** 2
+
+
 # ================================================================================================
 # R_exit: NEXT-GATE exit-line anticipation (dual_gate+ stage; small; on by curriculum).
 # ================================================================================================
@@ -832,6 +869,7 @@ def compute_ego_reward(
     cos_view_next: "Tensor | None" = None,
     roll: "Tensor | None" = None,
     pitch: "Tensor | None" = None,
+    yaw_cmd_delta: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
@@ -899,6 +937,12 @@ def compute_ego_reward(
     # perception-preservation penalty on the leveled attitude beyond the free band (see attitude_limit_penalty).
     r_att = (attitude_limit_penalty(roll, pitch, w)
              if (roll is not None and pitch is not None) else torch.zeros_like(r_prog))
+    # ANTI-DITHER yaw smoothness (nodither fine-tune 2026-07-12; OFF unless w.yaw_dither>0 -> byte-identical):
+    # penalise the temporal CHANGE of the applied yaw-rate command (a +-clamp rail-flip pays heavy; a steady
+    # turn pays ~0). The env passes yaw_cmd_delta = applied_yaw_t - applied_yaw_{t-1} (channel 3, post-clamp)
+    # or None. See yaw_dither_penalty: the retained fatal spin abort closes the constant-drift (slow-spin) hole.
+    r_yawdith = (yaw_dither_penalty(yaw_cmd_delta, w.yaw_dither)
+                 if yaw_cmd_delta is not None else torch.zeros_like(r_prog))
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
@@ -923,7 +967,7 @@ def compute_ego_reward(
                                 forfeit_mask=forfeit_mask)
 
     reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_corr + r_align + r_perc + r_perc_next
-              + r_att + r_fin + r_cone + r_smooth + r_exit + r_time - term)
+              + r_att + r_yawdith + r_fin + r_cone + r_smooth + r_exit + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
@@ -936,6 +980,7 @@ def compute_ego_reward(
         "perception_reward": float(r_perc.mean()),
         "perception_next_reward": float(r_perc_next.mean()),
         "att_pen": float((-r_att).mean()),
+        "yaw_dither_pen": float((-r_yawdith).mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),

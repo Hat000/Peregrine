@@ -1351,6 +1351,77 @@ STAGES: dict[str, dict] = {
                  "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
     },
     # ================================================================================================
+    # NODITHER fine-tune (2026-07-12) -- dual_gate_fullstack_floor_pef VERBATIM (course + reward + the
+    # HARD no-spin package + the estimator-faithful _raw ALL byte-identical, so the flight skill is
+    # preserved) PLUS exactly ONE new armed knob: rw_yaw_dither. A SHORT WARM-STARTED fine-tune whose
+    # ONLY job is to produce a "DITHER-FREE ANCESTOR": warm from the best low-dither flyer (vpeffs0) and
+    # add the anti-dither yaw-jerk penalty until the yaw command is STILL and it STILL flies, so future
+    # lineages warm from a clean base. OFF-LADDER, run as a SINGLE standalone stage warm-started from
+    # vpeffs0 (the launcher wires +init_from at run time via EXTRA -- NOT hardcoded in the stage):
+    #   sbatch --export=ALL,SEED=0,RUNTAG=vpefnd0,\
+    #     STAGES="dual_gate_fullstack_floor_pef_nodither",\
+    #     UPD_dual_gate_fullstack_floor_pef_nodither=3000,\
+    #     EXTRA="+init_from=/scratch/network/fl3689/diffaero/outputs/train/ego_dual_gate_fullstack_floor_pef_seed0_vpeffs0/checkpoints" \
+    #     rl/peregrine_vq2_ego.sbatch
+    # (confirm the vpeffs0 checkpoints dir before launch -- RUNTAG that produced vpeffs0). A single-stage
+    # run leaves PREV_CKPT empty so the loop appends NO +init_from -> the EXTRA one does not collide.
+    # WHY the anti-dither term is authorized + rides ALONGSIDE the no-spin guarantee (Fengyou 2026-07-12):
+    # it is a pure SMOOTHNESS penalty on the yaw-command temporal CHANGE (a rail-FLIP pays; a sustained
+    # smooth TURN pays ~0 -- turns are needed downstream, speed is NOT penalised), NOT a magnitude/|omega|/
+    # energy penalty. The HARD no-spin stays BY CONSTRUCTION: the fatal spin abort (ego_spin_*) + yaw clamp
+    # are UNTOUCHED here. The jerk penalty alone has an escape -- a slow CONSTANT yaw drift has ~0 jerk, so
+    # it would dodge the penalty and become a slow spin; the RETAINED accumulated-rotation spin abort
+    # (ego_spin_rev_abort=1.5 rev / 4 s window) is what closes that hole. Jerk kills the dither, the abort
+    # kills the constant-spin escape -- KEEP BOTH.
+    # WEIGHT CALIBRATION (rw_yaw_dither=0.5, conservative; SWEEPABLE via EXTRA=++env.rw_yaw_dither=...):
+    # the penalty is -0.5 * (delta yaw_cmd)^2 on the APPLIED (post-clamp) yaw rate. At the TRAINING clamp
+    # ego_yaw_cmd_clamp_rad_s=0.35 a full rail-FLIP is delta = 0.35-(-0.35) = 0.70 rad/s -> penalty
+    # 0.5*0.70^2 = 0.245/step -- ~41% of a bring-up per-step progress (rw_progress 2.0 * ~0.30 m/step ~
+    # 0.60), a REAL deterrent that CANNOT dominate a productive step; and it only bites the ~30% of ticks
+    # that flip, so the average tax is ~0.07/step and vanishes to 0 at convergence (steady yaw -> delta 0).
+    # A half-flip (rail->0, delta 0.35) pays 0.061; benign near-zero jitter (delta 0.05) pays 0.00125 (~0).
+    # (At the DEPLOY clamp 0.7 the same flip is delta 1.4 -> 0.98; that is the deploy regime, not trained
+    # here.) SWEEP UP (0.5->1.0->2.0) if dither persists; DOWN if gate acquisition / flight degrades.
+    # BUDGET: SHORT -- ~2000-4000 updates (a warm reshape of ONE behaviour, not fresh discovery); 3000
+    # recommended, early-stoppable once exit_spin/spin_abort_rate ~0 AND DET thread holds vs vpeffs0.
+    # ================================================================================================
+    "dual_gate_fullstack_floor_pef_nodither": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_fullstack_floor_pef
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime; the packages ride along.
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,
+        "ego_blur_rate_hi_rad_s": 4.0,
+        "ego_spin_rate_abort": 3.5,        # HARD no-spin package == _pef VERBATIM (UNTOUCHED)
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,         # the accumulated-rotation trigger = the constant-drift closer
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,   # yaw clamp UNTOUCHED (the anti-dither term rides ALONGSIDE)
+        "rw_perception": 0.02,
+        "rw_perception_exponent": 4.0,
+        "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,
+        # ---- nodither ADDITION (the ONE new armed knob; default-OFF on every other stage) ----
+        "rw_yaw_dither": 0.5,              # anti-dither yaw-jerk penalty (conservative; see the block comment)
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here: run STANDALONE, the launcher wires vpeffs0 via EXTRA (single-stage
+                 # run -> PREV_CKPT empty -> no loop-appended +init_from to collide with).
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
+    # ================================================================================================
     # BEHAVIORAL-CAP chain (_pefcap, 2026-07-12) -- the _pef chain VERBATIM plus a DEFAULT-OFF package
     # that pushes the deployed behavioral limits INTO the trained policy so it self-limits WITHOUT any
     # deploy-side control clamp. Targets the two live-flight failures: (a) the coarse-map horiz turn prior

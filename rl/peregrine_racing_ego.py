@@ -1303,6 +1303,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             if self._egorw.att_pitch != 0.0 or self._egorw.att_roll != 0.0:
                 rp_att = _euler_roll_pitch_from_R(quat_xyzw_to_matrix_torch(self._q))
                 roll_att, pitch_att = rp_att[:, 0], rp_att[:, 1]
+            # ANTI-DITHER yaw smoothness input (nodither fine-tune 2026-07-12; None unless rw_yaw_dither>0 ->
+            # byte-identical off): the temporal change of the APPLIED (post-clamp) yaw-rate command (channel 3,
+            # rad/s) -- the SAME clamped ``action`` / ``self.last_action`` the smoothness reward + obs feed see.
+            # A steady yaw (a needed turn) -> delta~0 -> ~0 penalty; a +-clamp rail-flip -> large delta -> heavy
+            # penalty (the dither). Read HERE, BEFORE self.last_action is rolled to the current action (~L1440),
+            # so self.last_action still holds the PREVIOUS step's applied command.
+            yaw_cmd_delta = None
+            if self._egorw.yaw_dither != 0.0:
+                yaw_cmd_delta = action[..., 3] - self.last_action[..., 3]
             reward, loss_components, r_prog = compute_ego_reward(
                 self._egorw,
                 s_curr=s_curr, s_prev=self._seg_s_prev,
@@ -1347,7 +1356,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 cos_view=cos_view,
                 # NEXT-GATE perception (None unless rw_perception_next>0; detectability-gated) + ATTITUDE-LIMIT
                 # leveled roll/pitch (None unless a weight>0). All pefcap-package, byte-identical when OFF.
-                cos_view_next=cos_view_next, roll=roll_att, pitch=pitch_att)
+                cos_view_next=cos_view_next, roll=roll_att, pitch=pitch_att,
+                # ANTI-DITHER yaw smoothness (None unless rw_yaw_dither>0): the applied yaw-command jerk.
+                yaw_cmd_delta=yaw_cmd_delta)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious

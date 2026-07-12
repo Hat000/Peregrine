@@ -716,3 +716,53 @@ def test_pefcap_no_sbatch_collision_and_no_init_from():
             if key.startswith("++"):
                 continue
             assert key not in _SBATCH_APPENDED_KEYS, (s, tok)
+
+
+# ================================================================================================
+# NODITHER fine-tune (2026-07-12): dual_gate_fullstack_floor_pef VERBATIM + exactly rw_yaw_dither armed.
+# ================================================================================================
+_NODITHER_STAGE = "dual_gate_fullstack_floor_pef_nodither"
+_NODITHER_NEW_KEYS = {"rw_yaw_dither"}
+
+
+def test_nodither_is_pef_fullstack_verbatim_plus_only_yaw_dither():
+    """The fine-tune stage = dual_gate_fullstack_floor_pef VERBATIM (course + reward + the no-spin
+    package + the estimator-faithful _raw all byte-identical) PLUS exactly ONE new armed knob:
+    rw_yaw_dither. Nothing else changes -> the flight skill + the HARD no-spin guarantee are preserved."""
+    nd, pef = C.STAGES[_NODITHER_STAGE], C.STAGES["dual_gate_fullstack_floor_pef"]
+    for k, v in pef.items():
+        if k == "_raw":
+            assert nd["_raw"] == v                                  # _raw byte-identical (noise + plant knobs)
+        else:
+            assert nd[k] == v, k                                    # every _pef key verbatim
+    extra = {k for k in nd if k not in pef}
+    assert extra == _NODITHER_NEW_KEYS, extra
+    assert nd["rw_yaw_dither"] > 0.0                                # ARMED (the whole point of the fine-tune)
+
+
+def test_nodither_keeps_hard_no_spin_and_yaw_clamp_untouched():
+    """The no-spin guarantee stays BY CONSTRUCTION: the fatal spin abort (incl. the accumulated-rotation
+    trigger that closes the constant-drift/slow-spin escape) + the realized-yaw clamp are EXACTLY the _pef
+    values -- the anti-dither jerk penalty rides ALONGSIDE them, it does not touch or weaken them."""
+    nd = C.STAGES[_NODITHER_STAGE]
+    assert nd["ego_spin_rate_abort"] == 3.5 and nd["ego_spin_time_abort"] == 0.4
+    assert nd["ego_spin_rev_abort"] == 1.5 and nd["ego_spin_rev_window_s"] == 4.0   # the drift closer
+    assert nd["ego_yaw_cmd_clamp_rad_s"] == 0.35
+
+
+def test_nodither_offladder_no_init_from_no_sbatch_collision_renders():
+    nd = C.STAGES[_NODITHER_STAGE]
+    assert _NODITHER_STAGE not in C.STAGE_ORDER                     # off-ladder (standalone warm-start)
+    assert not any("init_from" in k for k in nd["_raw"])           # launcher/EXTRA wires vpeffs0 at run time
+    toks = C.render_overrides(_NODITHER_STAGE)
+    assert "+env.rw_yaw_dither=0.5" in toks                         # the ONE armed anti-dither knob
+    assert "+env.ego_faithful=true" in toks                         # the _pef estimator-faithful rides along
+    assert "+env.ego_yaw_cmd_clamp_rad_s=0.35" in toks             # the no-spin clamp preserved
+    assert "+env.ego_spin_rev_abort=1.5" in toks                    # the constant-drift spin closer preserved
+    assert "algo.gamma=0.9975" in toks
+    assert not any(t.startswith("+env.ego_noise_scale") for t in toks)   # real-noise fullstack regime
+    for tok in toks:                                               # no _pef/BASE-appended key collision
+        key = tok.split("=", 1)[0]
+        if key.startswith("++"):
+            continue
+        assert key not in _SBATCH_APPENDED_KEYS, tok
