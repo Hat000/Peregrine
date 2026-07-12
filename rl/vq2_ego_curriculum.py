@@ -1621,19 +1621,29 @@ STAGES: dict[str, dict] = {
         "course_spawn_dist_lo": 15.0, "course_spawn_dist_hi": 15.0,   # fixed 15 m level gate (IGNORED by reward)
         "course_drop_lo": 0.0, "course_drop_hi": 0.0,
         "floor_at_spawn": True,                       # lethal floor at spawn_z - 0.25 m (A1 fix; leave the pad)
-        # ZERO every gate-homing term -> pure altitude-hold hover, no forward pull (== hover_hold).
+        # ZERO the gate-homing PULL (progress/passage/centering) -> no forward pull; rw_progress=0 makes
+        # progress_to_center INERT (it only swaps the s-formula, still x rw_progress). The 15 m front gate
+        # therefore stays a VISUAL ANCHOR only (rw_perception below), NOT a target to fly at.
         "rw_progress": 0.0, "rw_passage": 0.0, "rw_passage_increment": 0.0,
         "rw_area_dist_ref_m": 0.0, "rw_centering": 0.0, "rw_exit_align": 0.0,
         # (iv) give-up-resistant POSITIVE spawn-altitude bonus (spawn altitude = the unique optimum).
         "rw_altitude_hold": 1.0, "rw_altitude_hold_band_m": 8.0,
+        # GATE-ANCHOR (Fengyou 2026-07-12): reward keeping the front gate CENTRED in view -> an OBSERVABLE
+        # lateral+vertical reference (slot0 bearing, GT view-angle legal in reward) so station-keeping is
+        # LEARNABLE. Dense gradient (centred > off-centre); no farm risk (no progress to farm against at a
+        # hover). Becomes the YAW anchor at R0.5 when the yaw clamp opens.
+        "rw_perception": 0.02, "rw_perception_exponent": 4.0,
         # (i) anti-dither yaw-jerk penalty, calibrated for the CLAMPED regime (see the block comment).
         "rw_yaw_dither": 0.5,
         # (iii) NEW velocity-jerk smoothness prior -- VERY gentle (clips only extreme snappy spikes).
         "rw_vel_smooth": 1.0e-4,
-        # (ii) FATAL SPIN ABORT + YAW CLAMP (HARD no-spin by construction == the _pef lineage VERBATIM).
+        # (ii) NO-SPIN BY CONSTRUCTION: yaw CLAMPED TO 0 at the base -> drone physically cannot spin. Keep the
+        # instantaneous-RATE abort (on obs rates -> OBSERVABLE -> fair; catches genuine tumbles); DROP the
+        # rev-ACCUMULATOR abort (Fengyou 2026-07-12: accumulated rotation is NOT in the obs -> unobservable ->
+        # an unfair/unlearnable termination; the yaw clamp makes it unnecessary anyway).
         "ego_spin_rate_abort": 3.5, "ego_spin_time_abort": 0.4,
-        "ego_spin_rev_abort": 1.5, "ego_spin_rev_window_s": 4.0,   # the constant-drift closer
-        "ego_yaw_cmd_clamp_rad_s": 0.35,              # clamp ARMED at the base (the yaw-dither calibration regime)
+        "ego_spin_rev_abort": 0.0, "ego_spin_rev_window_s": 4.0,   # rev-accumulator DISABLED (unobservable state)
+        "ego_yaw_cmd_clamp_rad_s": 0.0,               # YAW CLAMPED TO 0 -> no spin by construction (R0 base)
         # ESTIMATOR-FAITHFUL, LOW noise (R0): clean vision (0.0) + clean 30 Hz leveler (ticks_hi=1).
         "ego_noise_scale": 0.0,
         "ego_faithful": True, "ego_est_dt_ticks_hi": 1,

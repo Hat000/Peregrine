@@ -787,8 +787,8 @@ def test_common_vel_smooth_default_off_on_every_ladder_stage():
 
 
 def test_r0_hover_still_boot_is_offladder_fresh_hover_with_the_four_arms():
-    """R0 = a pure altitude-hold hover (every gate-homing term zeroed, == hover_hold) with the four arms
-    armed from update 0, FRESH-START (no init_from), off-ladder."""
+    """R0 = a GATE-ANCHORED station-keeping hover (gate-homing PULL zeroed, but the front gate is a VISUAL
+    ANCHOR via rw_perception) with the arms armed from update 0, FRESH-START (no init_from), off-ladder."""
     assert _R0_STAGE not in C.STAGE_ORDER                          # off-ladder, standalone only
     s = C.STAGES[_R0_STAGE]
     # BASE == hover_hold scoping: fixed 15 m level gate IGNORED by the reward (all gate-homing zeroed).
@@ -804,20 +804,23 @@ def test_r0_hover_still_boot_is_offladder_fresh_hover_with_the_four_arms():
     assert s["rw_yaw_dither"] == 0.5
     # (iii) the NEW velocity-jerk prior ARMED and VERY gentle.
     assert s["rw_vel_smooth"] == pytest.approx(1.0e-4)
-    # (ii) the FATAL SPIN ABORT package (incl. the accumulated-rotation constant-drift closer).
+    # (ii) RATE abort kept (observable in obs rates -> fair); rev-ACCUMULATOR abort DISABLED (unobservable
+    # accumulated rotation, Fengyou 2026-07-12).
     assert s["ego_spin_rate_abort"] == 3.5 and s["ego_spin_time_abort"] == 0.4
-    assert s["ego_spin_rev_abort"] == 1.5 and s["ego_spin_rev_window_s"] == 4.0
+    assert s["ego_spin_rev_abort"] == 0.0
+    # GATE-ANCHOR: rw_perception armed -> keep the front gate centred = OBSERVABLE station-keeping reference.
+    assert s["rw_perception"] == 0.02 and s["rw_perception_exponent"] == 4.0
     # FRESH (no init_from) + appo/gamma.
     assert not any("init_from" in k for k in s["_raw"])
     assert s["ego"] is True and s["_raw"]["algo.gamma"] == C._GAMMA
 
 
-def test_r0_arms_yaw_clamp_at_the_base_for_the_dither_calibration():
-    """THE YAW-CLAMP CALIBRATION FOOTGUN: rw_yaw_dither=0.5 assumes the CLAMPED regime (a rail-flip delta =
-    2*0.35 = 0.70), so the yaw clamp MUST be armed at the base too (the preferred option, matching the
-    lineage). An unclamped base would give a +-3.14 rail delta ~9x larger and mis-price the penalty ~20x."""
+def test_r0_yaw_clamped_to_zero_no_spin_by_construction():
+    """R0 NO-SPIN BY CONSTRUCTION (Fengyou 2026-07-12): the yaw command is CLAMPED TO 0 at the base so the
+    drone physically cannot spin -- replacing the unobservable rev-accumulator abort. rw_yaw_dither stays
+    armed (INERT while the clamp is 0) and becomes live when the yaw clamp opens at R0.5."""
     s = C.STAGES[_R0_STAGE]
-    assert s["ego_yaw_cmd_clamp_rad_s"] == 0.35                     # clamp armed at the base (lineage value)
+    assert s["ego_yaw_cmd_clamp_rad_s"] == 0.0                      # yaw clamped to 0 -> no spin by construction
 
 
 def test_r0_is_estimator_faithful_at_low_noise():
@@ -841,7 +844,7 @@ def test_r0_keeps_ground_intact_and_no_free_exit():
     assert s["floor_at_spawn"] is True
     assert s["standing_start_frac"] == 1.0                         # inherited; required by floor_at_spawn
     assert s.get("rw_parabola_crossing", False) is False           # non-parabola terminal path (lethal fold)
-    assert s.get("rw_perception", 0.0) == 0.0                      # no gates to chase -> no perception term
+    assert s.get("rw_perception", 0.0) == 0.02                     # front gate = VISUAL ANCHOR (not a fly-at target)
 
 
 def test_r0_renders_valid_tokens():
@@ -849,8 +852,9 @@ def test_r0_renders_valid_tokens():
     assert "+env.rw_altitude_hold=1.0" in toks
     assert "+env.rw_yaw_dither=0.5" in toks
     assert "+env.rw_vel_smooth=0.0001" in toks                     # the NEW velocity-jerk prior
-    assert "+env.ego_spin_rev_abort=1.5" in toks                    # the constant-drift spin closer
-    assert "+env.ego_yaw_cmd_clamp_rad_s=0.35" in toks             # clamp armed at the base
+    assert "+env.ego_spin_rev_abort=0.0" in toks                    # rev-accumulator DISABLED (unobservable)
+    assert "+env.ego_yaw_cmd_clamp_rad_s=0.0" in toks              # yaw clamped to 0 -> no spin by construction
+    assert "+env.rw_perception=0.02" in toks                       # gate-anchor armed (station-keeping reference)
     assert "+env.ego_faithful=true" in toks
     assert "+env.ego_est_dt_ticks_hi=1" in toks
     assert "+env.floor_at_spawn=true" in toks
