@@ -301,3 +301,87 @@ def test_decimate_n_reduces_backstop_calls_vs_every_tick():
         navmod.estimate_heading = orig_h
     assert calls["one"] == 20 and calls["five"] == 4          # 20 vs 20//5
     assert calls["five"] < calls["one"]
+
+
+# ======================================================================================
+# 3. Profile-level flag gating — the Run-6 (vq2_ego_lean) per-tick budget invariant
+# ======================================================================================
+# The deploy loop-budget task (#27) suspected floor_height/vp_yaw of "running even when
+# disabled" and choking the 30 Hz ego loop. EMPIRICALLY that waste lives on the SEEKER
+# profile (vq2_case_c, use_floor_height=True / use_vp_yaw=True): on the a5 flight it charged
+# ~25 ms/call (floor) + ~50 ms/call (vp_yaw) on the loop thread. The EGO flight profile
+# (vq2_ego_lean, the Run-6 launch) turns BOTH flags OFF, and the navigator's per-anchor flag
+# guards (``_apply_vp_yaw`` / ``_apply_floor_height`` early-return) mean the heavy CV
+# estimators are then NEVER invoked -- so the "pure latency win" is already banked on Run-6.
+# These tests LOCK IN that invariant end-to-end from the CONSTRUCTED profile config (not
+# hand-set flags), so a future profile edit / guard refactor that silently re-introduces the
+# ~75 ms/tick anchor cost on the ego path fails CI instead of a flight.
+def _count_anchor_calls(nav_config, *, n_ticks: int = 30) -> tuple[int, int]:
+    """Run ``n_ticks`` synthetic PROCESSED vision ticks through a Navigator built from
+    ``nav_config`` and return (estimate_heading calls, estimate_floor_height calls).
+
+    Estimators are stubbed with counters (torch-free, mirrors the decimation tests above); the
+    stubs return HIGH-quality estimates so a call that IS made is not silently dropped by a
+    quality gate -- i.e. a zero count means the estimator was never INVOKED, not merely rejected."""
+    import racer.navigator as navmod
+    from racer.vision.floor_height import FloorHeightEstimate
+    from racer.vision.heading_vp import HeadingEstimate
+
+    h_calls = {"n": 0}
+    f_calls = {"n": 0}
+
+    def counting_heading(image_bgr, roll, pitch, **kw):
+        h_calls["n"] += 1
+        branches = np.array([0.0, np.pi / 2, np.pi, -np.pi / 2])
+        return HeadingEstimate(heading_mod90_rad=0.0, quality=0.9, n_support=40,
+                               vp_px=np.array([320.0, 180.0]), horizontality=0.05,
+                               branch_headings_rad=branches)
+
+    def counting_floor(image_bgr, roll, pitch, **kw):
+        f_calls["n"] += 1
+        return FloorHeightEstimate(height_m=3.0, quality=0.9, n_support=6, std_m=0.10)
+
+    gate = _gate_facing_north([30.0, 0.0, 0.0])
+    nav = Navigator(gates=[gate], detector=_FakeDetector(gate, [0.0, 0.0, 0.0]),
+                    config=nav_config)
+    orig_h, orig_f = navmod.estimate_heading, navmod.estimate_floor_height
+    try:
+        navmod.estimate_heading = counting_heading
+        navmod.estimate_floor_height = counting_floor
+        nav.update(_ds(0, gyro_body=np.zeros(3)))            # init tick (no vision)
+        for k in range(1, n_ticks + 1):
+            t = k * _DT_NS
+            nav.update(_ds(t, gyro_body=np.zeros(3)), _nav_frame(k, t))
+        assert nav._vision_tick_count == n_ticks             # every tick actually processed a frame
+    finally:
+        navmod.estimate_heading = orig_h
+        navmod.estimate_floor_height = orig_f
+    return h_calls["n"], f_calls["n"]
+
+
+def test_vq2_ego_lean_profile_never_runs_vp_yaw_or_floor_height():
+    """RUN-6 INVARIANT: the ego flight profile (vq2_ego_lean) disables both vision anchors, so over
+    30 processed vision ticks estimate_heading / estimate_floor_height are invoked ZERO times --
+    the per-tick budget the ego 30 Hz loop depends on. (Byte-identical to the pre-lean skip; this
+    just pins it so it can't silently regress into the flight loop.)"""
+    from racer.deploy_profile import get_profile
+
+    cfg = get_profile("vq2_ego_lean").nav_config
+    assert cfg.use_vp_yaw is False and cfg.use_floor_height is False
+    h, f = _count_anchor_calls(cfg)
+    assert h == 0, f"vq2_ego_lean must NOT run vp_yaw (ran {h}x) — dead weight on the yaw-free ego obs"
+    assert f == 0, f"vq2_ego_lean must NOT run floor_height (ran {f}x) — ~25 ms/tick pure waste on ego"
+
+
+def test_vq2_case_c_profile_runs_both_anchors_positive_control():
+    """POSITIVE CONTROL for the invariant above: the SEEKER profile (vq2_case_c) leaves both anchors
+    ON (decimated), so the SAME harness DOES invoke them (>0 each). This proves the ego_lean==0
+    assertion measures real gating and is not vacuously true (e.g. a broken harness that never runs
+    vision). Exact counts = the decimation cadence (30//5 vp_yaw, 30//3 floor)."""
+    from racer.deploy_profile import get_profile
+
+    cfg = get_profile("vq2_case_c").nav_config
+    assert cfg.use_vp_yaw is True and cfg.use_floor_height is True
+    h, f = _count_anchor_calls(cfg)
+    assert h == 30 // cfg.vp_yaw_decimate, f"case_c vp_yaw ran {h}x, expected {30 // cfg.vp_yaw_decimate}"
+    assert f == 30 // cfg.floor_height_decimate, f"case_c floor ran {f}x, expected {30 // cfg.floor_height_decimate}"
