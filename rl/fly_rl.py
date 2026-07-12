@@ -1337,6 +1337,10 @@ def _build_casec_seeker(args, gates):
             cruise_speed=args.seeker_speed,
             settle_s=args.seeker_settle,
             anchor_release_detections=args.seeker_anchor_dets,
+            # HARD 30 m range cap for the EGO deploy (2026-07-12): drop far detections (unreliable PnP
+            # + the ~30-38 m "Station 2" billboard FP) from the candidate pool, uniformly for slot0 +
+            # slot1. inf for the classical path (byte-identical). Fengyou: "we throw away info after 30 m."
+            max_valid_range_m=(30.0 if getattr(args, "ego_ckpt", None) else float("inf")),
             **(profile.seeker_overrides or {}),
         ),
         controller=make_seeker_controller(**(profile.controller_overrides or {})),
@@ -1776,7 +1780,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"sysid'd at wire scale 1.0)")
     print(f"[ego] det_hold={args.ego_det_hold:g}s stale_horizon={args.ego_stale_horizon:g}s "
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
-          f"slot1={args.ego_slot1}{' (next_pose SOURCE not yet wired -> slot1 MASKED to zero)' if args.ego_slot1 else ''} "
+          f"slot1={args.ego_slot1}{' (SOURCE: seeker tg+1 next-gate track)' if args.ego_slot1 else ''} "
           f"pitch_clamp={args.ego_pitch_clamp:g}deg yaw_clamp={args.ego_yaw_clamp:g} "
           f"virtual_flip={args.virtual_flip} rate={args.rate:g}Hz max={args.max_seconds:g}s ...")
 
@@ -1812,6 +1816,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
     worst_work_ms = 0.0
     n_over_budget = 0
     n_pose_ticks  = 0          # ticks with a fresh accepted gate lever
+    n_next_pose_ticks = 0      # ticks with a fresh accepted tg+1 (slot1) lever  [--ego-slot1 SOURCE]
     n_masked      = 0          # ticks flown with slot0 masked (the blackout regime)
     kp_n = max(0, int(getattr(args, "ego_kp_persist", 0)))   # <=1 == OFF (kp-persist debounce)
     kp_streak = 0              # consecutive fresh-frame accepted poses (debounce)
@@ -1944,9 +1949,15 @@ def _fly_ego(client, actor, args, flight_idx: int,
         # slot1 the CORRECT tg+1 pose or zero, NEVER a wrong gate, so an unavailable/uncertain next
         # gate MUST mask to zero (do not fabricate). When --ego-slot1 is OFF (default) the builder is
         # single-slot (n_gates=1) and next_pose is ignored -> byte-identical to the single-gate deploy.
-        # TODO(vision-stack): populate next_pose with the tg+1 GatePose associated to active_gate+1
-        # (masked-when-uncertain) to activate the multi-gate _pef obs.
+        # SOURCE (vision-stack, 2026-07-12): the tg+1 GatePose from the seeker's SECOND temporal track
+        # (detect_next_gate_lever), fed ONLY on a fresh frame + --ego-slot1. Between fresh fixes / on a
+        # coast it returns None and the builder ego-propagates + staleness-decays the last slot1 fix
+        # (the "general direction"). MUST run AFTER detect_gate_lever above (it excludes the active gate).
         next_pose = None
+        if args.ego_slot1 and _fresh_frame:
+            next_pose = seeker.detect_next_gate_lever(frame)
+            if next_pose is not None:
+                n_next_pose_ticks += 1
 
         # --- 21-dim obs + policy + command ---
         obs = builder.update(
@@ -1955,10 +1966,11 @@ def _fly_ego(client, actor, args, flight_idx: int,
             pose=pose, next_pose=next_pose, last_normed_thrust=last_normed)
         if not builder.last_diag.get("det_proxy", False):
             n_masked += 1
+        pol_dbg: dict = {}   # captures the RAW policy output (actor mean + rescaled action, pre-clamp)
         rate_frd, collective, last_normed = policy_step(
             actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
             yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp,
-            pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)))
+            pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)), debug=pol_dbg)
         # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
         # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
         # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
@@ -1980,11 +1992,27 @@ def _fly_ego(client, actor, args, flight_idx: int,
                 d = builder.last_diag
                 _ego_log.append({
                     "k": n_ticks, "sim_time_ns": st, "gate_index": gate_index,
+                    # INPUT: the full 21-dim policy obs (velocity, roll/pitch, body-rates, last-coll,
+                    # sector, slot0 rel/conf/area, slot1 rel/conf/area) -- exactly what the actor saw.
                     "obs": np.asarray(obs, dtype=np.float64).round(5).tolist(),
+                    # RAW policy OUTPUT (before the deploy-side yaw-clamp / pitch-fence / virtual-flip):
+                    # actor_mean = pre-tanh network output; act_raw = rescaled action
+                    # [normed_thrust, roll, pitch, yaw] in the policy's virtual-FLU frame. The
+                    # rate_frd / collective below are what we ACTUALLY SENT on the wire (post-clamp, FRD).
+                    "actor_mean": [round(v, 5) for v in pol_dbg.get("actor_mean", [])],
+                    "act_raw": [round(v, 5) for v in pol_dbg.get("act_rescaled", [])],
                     "pose_seen": d.get("pose_seen"), "age_s": d.get("age_s"),
                     "conf": round(float(d.get("conf", 0.0)), 4),
                     "area": round(float(d.get("area", 0.0)), 4),
                     "sector": d.get("sector"),
+                    # slot1 (tg+1) channels: next_pose_seen = the SOURCE fed a FRESH next-gate pose this
+                    # tick; pose_seen1/age_s1/conf1/area1/rel_flu1 = the builder's per-slot state for the
+                    # NEXT gate (rel_flu1 is the propagated body-frame rel-pos through a fix gap).
+                    "next_pose_seen": bool(next_pose is not None),
+                    "pose_seen1": d.get("pose_seen1"), "age_s1": d.get("age_s1"),
+                    "conf1": (None if d.get("conf1") is None else round(float(d.get("conf1")), 4)),
+                    "area1": round(float(d.get("area1", 0.0)), 4),
+                    "rel_flu1": d.get("rel_flu1"),
                     "rate_frd": rate_frd.round(4).tolist(),
                     "collective": round(collective, 5),
                     "normed_thrust": round(last_normed, 5),
@@ -2042,6 +2070,9 @@ def _fly_ego(client, actor, args, flight_idx: int,
     print(f"  [ego-diag] fresh gate levers={n_pose_ticks}  masked-slot0 ticks={n_masked}/{n_ticks} "
           f"({100.0 * n_masked / max(n_ticks, 1):.0f}% blackout duty)"
           + (f"  kp-suppressed={n_kp_suppressed}" if kp_n >= 2 else ""))
+    if args.ego_slot1:
+        print(f"  [ego-diag] slot1 next-gate levers={n_next_pose_ticks}/{n_ticks} "
+              f"({100.0 * n_next_pose_ticks / max(n_ticks, 1):.0f}% of ticks fed a fresh tg+1 pose)")
     # [DIAG] per-phase timing dump + summary (additive; localizes which phase eats the choke floor).
     if session_dir is not None and _timing_log:
         try:
@@ -2082,6 +2113,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
     result["loop_over_budget_pct"] = round(over_pct, 1)
     result["ego_fresh_levers"] = n_pose_ticks
     result["ego_masked_ticks"] = n_masked
+    result["ego_next_levers"] = n_next_pose_ticks
     if kp_n >= 2:                       # armed-only key: OFF-path result dict byte-identical
         result["ego_kp_suppressed"] = n_kp_suppressed
     result["final_state"] = final_state

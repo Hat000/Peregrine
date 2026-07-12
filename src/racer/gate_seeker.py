@@ -169,6 +169,16 @@ class GateSeekerConfig:
     # (reject weak / mis-localised gates -> treat as "no detection" -> hold).
     min_detect_score: float = 0.0
     max_reproj_px: float = 12.0
+    # --- HARD RANGE CAP on valid detections (2026-07-12, the billboard-FP fix) ---
+    # Drop ANY detection whose PnP range exceeds this from the candidate pool (_valid_poses), for BOTH
+    # the active (slot0) and next-gate (slot1) tracks, BEFORE any selection. Beyond ~30 m the PnP range
+    # is unreliable AND a gate that far is never the next to fly -- and a FAR "Station 2" billboard
+    # false-positive (~30-38 m) that a cold re-acquire would otherwise lock as the ACTIVE gate at a
+    # pass is removed here uniformly. Unlike a coast-when-all-far gate this NEVER blacks out slot0 for a
+    # real gate that is merely far-but-under-cap (near gates still lock normally). inf (default) == no
+    # cap == byte-identical (classical slow-lap); fly_rl sets 30 m for the EGO deploy. (Fengyou: "we
+    # throw away information after 30 m.")
+    max_valid_range_m: float = float("inf")
     # Cap the per-tick yaw-rate command in the visual-servo pursuit phase so a large bearing error
     # (gate at the edge of frame) is turned toward smoothly, never a saturated slew that would spin
     # the gate out of frame faster than the controller can track it.
@@ -221,6 +231,28 @@ class GateSeekerConfig:
     # Drop the track after this many CONSECUTIVE ticks with no consistent candidate (gate genuinely
     # lost / between gates) so re-acquisition can re-centre on a fresh gate.
     track_max_coast_ticks: int = 8
+
+    # --- NEXT-GATE (slot1) TRACK  (the --ego-slot1 SOURCE; 2026-07-12) ---
+    # The tg+1 gate for the WINDOW=2 ego obs slot1. ``detect_next_gate_lever`` maintains a SECOND
+    # temporal track -- a faithful mirror of the active-gate track above -- over the NEXT gate to fly
+    # (the nearest quality-gated gate that is NOT the locked active gate). It reuses the active track's
+    # continuity / EMA / coast tunables (``track_max_*``, ``track_ema_alpha``) for symmetry. Emits a
+    # fresh GatePose only on a cross-frame-consistent lock; between locks it returns None and the
+    # ego-obs builder ego-propagates + staleness-decays the last slot1 fix (the "general direction"
+    # coast), so None is a SOFT gap, not a hard mask. Identity-only: never synthesises a pose, and
+    # rejects a jump rather than locking a flapper. All-conservative; gated by --ego-slot1 (default off).
+    # A tg+1 SEED candidate beyond this range is rejected (an absurdly-far downrange gate is not the
+    # next gate to fly). Generous vs the ~10-20 m course spacing so an honest next gate always admits.
+    next_gate_max_range_m: float = 45.0
+    # A candidate within BOTH this range AND ``next_gate_dedup_bearing_rad`` of the ACTIVE track is the
+    # active gate itself (the same detection slot0 locked) -> excluded from the slot1 candidate set so
+    # the two slots never lock the same gate. Tight enough to keep a genuinely-separate next gate.
+    next_gate_dedup_range_m: float = 3.0
+    next_gate_dedup_bearing_rad: float = 0.10   # ~5.7 deg of camera bearing
+    # SEED reject: a candidate more than this much NEARER than the active gate is not the next gate to
+    # fly (a spurious near detection / the just-passed gate edge) -- the next gate is at-or-beyond the
+    # active one. Small so genuinely co-planar gates still admit.
+    next_gate_not_nearer_than_active_m: float = 3.0
 
     # --- POST-RELEASE PURSUIT RAMP + GUIDANCE RATE LIMIT (the LAYER-2b fix) ---
     # A short ramp on pursuit authority AFTER the anchor releases, so a noisy FIRST bearing can't
@@ -501,6 +533,15 @@ class GateSeeker:
     _track_range_m: float | None = field(default=None, repr=False)      # tracked gate range, EMA-smoothed
     _track_bearing: np.ndarray | None = field(default=None, repr=False)  # tracked gate camera bearing (az,el) rad
     _track_coast_ticks: int = field(default=0, repr=False)     # consecutive ticks with no consistent candidate
+    # -- next-gate (slot1 --ego-slot1 SOURCE) track: the tg+1 gate's smoothed (range, camera-bearing),
+    #    a mirror of the active track above; maintained/consumed ONLY via detect_next_gate_lever --
+    _next_track_range_m: float | None = field(default=None, repr=False)
+    _next_track_bearing: np.ndarray | None = field(default=None, repr=False)
+    _next_track_coast_ticks: int = field(default=0, repr=False)
+    # -- per-frame_id cache of _valid_poses (the active + next lever both consume it; the shared
+    #    detect() is already frame-idempotent, this also spares the second per-candidate PnP) --
+    _valid_poses_fid: int | None = field(default=None, repr=False)
+    _valid_poses_cache: list | None = field(default=None, repr=False)
     # -- post-release pursuit ramp (Layer 2b): the sim-time the anchor released --
     _release_t_ns: int | None = field(default=None, repr=False)
     _last_pursuit_t_ns: int | None = field(default=None, repr=False)  # last pursuit tick (heading slew dt)
@@ -602,7 +643,13 @@ class GateSeeker:
         return np.array([np.arctan2(float(t[0]), z), np.arctan2(float(t[1]), z)], dtype=np.float64)
 
     def _valid_poses(self, frame: Frame) -> list[GatePose]:
-        """All quality-gated candidate gate poses in ``frame`` (score + reproj + in-front), unsorted."""
+        """All quality-gated candidate gate poses in ``frame`` (score + reproj + in-front), unsorted.
+
+        Cached per ``frame_id`` so the active-gate lever and the next-gate lever (--ego-slot1) can both
+        consume it within a tick without re-running the per-candidate PnP twice."""
+        fid = getattr(frame, "frame_id", None)
+        if fid is not None and fid == self._valid_poses_fid and self._valid_poses_cache is not None:
+            return self._valid_poses_cache
         # A15/A17 double-detect fix: reuse the navigator's per-frame_id detections (same shared detector)
         # instead of running detect() a second time this frame. Identical observations, ~half the cost.
         observations: list[GateObservation] = list(detect_cached(self.detector, frame))
@@ -615,9 +662,13 @@ class GateSeeker:
                 continue
             if float(pose.reproj_error_px) > self.config.max_reproj_px:
                 continue
+            if float(pose.range_m) > self.config.max_valid_range_m:
+                continue                        # beyond the hard range cap: unreliable PnP / far FP
             if pose.t_cam_gate[2] <= 0.05:      # gate behind / on the image plane -> unusable bearing
                 continue
             out.append(pose)
+        self._valid_poses_fid = fid
+        self._valid_poses_cache = out
         return out
 
     def detect_gate_lever(self, frame: Frame | None) -> GatePose | None:
@@ -727,6 +778,93 @@ class GateSeeker:
         w = float(self.config.nearest_bearing_weight_m_per_rad)
         return min(admissible,
                    key=lambda p: p.range_m + w * float(np.linalg.norm(self._pose_bearing(p))))
+
+    def _is_active_gate(self, pose: GatePose) -> bool:
+        """True when ``pose`` is the candidate the ACTIVE-gate track (slot0) is locked on, using the
+        same (range, bearing) proximity the track-continuity gate uses. Such a candidate is excluded
+        from the slot1 set so the next-gate slot never re-locks the active gate. With no active track
+        yet (nothing locked / just reset) nothing is excluded."""
+        if self._track_range_m is None or self._track_bearing is None:
+            return False
+        dr = abs(float(pose.range_m) - float(self._track_range_m))
+        db = float(np.linalg.norm(self._pose_bearing(pose)
+                                  - np.asarray(self._track_bearing, dtype=np.float64)))
+        return (dr <= self.config.next_gate_dedup_range_m
+                and db <= self.config.next_gate_dedup_bearing_rad)
+
+    def detect_next_gate_lever(self, frame: Frame | None) -> GatePose | None:
+        """The NEXT-gate (tg+1) lever for the WINDOW=2 ego obs slot1 (the --ego-slot1 SOURCE).
+
+        A SECOND temporal track, mirroring :meth:`detect_gate_lever`'s active-gate track, over the next
+        gate to fly -- the nearest quality-gated gate that is NOT the locked active gate. Returns its
+        camera-relative :class:`GatePose` on a cross-frame-consistent lock, else ``None``.
+
+        ``None`` is a SOFT gap, not a hard mask: the ego-obs builder ego-propagates + staleness-decays
+        the last supplied slot1 fix (the "general direction" coast, identical to slot0's), so a brief
+        loss keeps feeding the decaying last-known next-gate direction. MAP-FREE and IDENTITY-ONLY: it
+        never fabricates a pose, and REJECTS a range/bearing jump (coast) rather than lock a flapper --
+        a wrong-gate feed is worse than a coast (training fed slot1 only the true tg+1 or zero).
+
+        MUST be called AFTER :meth:`detect_gate_lever` on the same frame: it excludes the candidate
+        consistent with the just-updated ACTIVE track so the two slots never lock the same gate."""
+        if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
+            return None
+        poses = self._valid_poses(frame)                          # frame-cached; no 2nd detect()/PnP
+        cands = [p for p in poses if not self._is_active_gate(p)]  # drop the active gate (slot0)
+        if not cands:
+            self._next_track_coast_ticks += 1
+            if self._next_track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                self._next_track_range_m, self._next_track_bearing = None, None
+            return None
+
+        if self._next_track_range_m is None or self._next_track_bearing is None:
+            # SEED (no next-track yet): the next gate to fly is the NEAREST admissible non-active gate.
+            # Reject the absurdly-far downrange gate and any candidate much NEARER than the active gate
+            # (a spurious near detection / just-passed edge -- the next gate is at-or-beyond the active).
+            amin = (None if self._track_range_m is None
+                    else float(self._track_range_m) - self.config.next_gate_not_nearer_than_active_m)
+            admissible = [p for p in cands
+                          if p.range_m <= self.config.next_gate_max_range_m
+                          and (amin is None or p.range_m >= amin)]
+            if not admissible:
+                self._next_track_coast_ticks += 1
+                if self._next_track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                    self._next_track_range_m, self._next_track_bearing = None, None
+                return None
+            chosen = min(admissible, key=lambda p: p.range_m)
+        else:
+            # CONTINUITY: the candidate nearest the track in (range, bearing); REJECT a jump -> coast.
+            pred_r = float(self._next_track_range_m)
+            pred_b = np.asarray(self._next_track_bearing, dtype=np.float64)
+            consistent = [
+                p for p in cands
+                if abs(p.range_m - pred_r) <= self.config.track_max_range_jump_m
+                and float(np.linalg.norm(self._pose_bearing(p) - pred_b))
+                <= self.config.track_max_bearing_jump_rad
+            ]
+            if not consistent:
+                self._next_track_coast_ticks += 1
+                if self._next_track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
+                    self._next_track_range_m, self._next_track_bearing = None, None
+                return None
+            chosen = min(
+                consistent,
+                key=lambda p: float(np.linalg.norm(self._pose_bearing(p) - pred_b))
+                + abs(p.range_m - pred_r) / max(self.config.track_max_range_jump_m, 1e-6),
+            )
+
+        # accept -> update the smoothed next-track (mirror the active-track EMA) + reset the coast.
+        a = float(np.clip(self.config.track_ema_alpha, 0.0, 1.0))
+        b_meas = self._pose_bearing(chosen)
+        if self._next_track_range_m is None or self._next_track_bearing is None:
+            self._next_track_range_m, self._next_track_bearing = float(chosen.range_m), b_meas
+        else:
+            self._next_track_range_m = ((1.0 - a) * float(self._next_track_range_m)
+                                        + a * float(chosen.range_m))
+            self._next_track_bearing = ((1.0 - a) * np.asarray(self._next_track_bearing, dtype=np.float64)
+                                        + a * b_meas)
+        self._next_track_coast_ticks = 0
+        return chosen
 
     def command_visual(self, nav: NavState, frame: Frame | None, active_gate_index: int, *,
                        is_final_gate: bool = False) -> ControlCommand:
@@ -1512,6 +1650,13 @@ class GateSeeker:
         self._track_range_m = None
         self._track_bearing = None
         self._track_coast_ticks = 0
+        # next-gate (slot1) track clears in lockstep: on a gate advance the window "promotes" and the
+        # builder carries no next-gate state, so the tg+1 slot re-acquires cold too (never a stale lock).
+        self._next_track_range_m = None
+        self._next_track_bearing = None
+        self._next_track_coast_ticks = 0
+        self._valid_poses_fid = None
+        self._valid_poses_cache = None
         self._release_t_ns = None
         self._last_pursuit_t_ns = None
         self._spawn_heading = None
