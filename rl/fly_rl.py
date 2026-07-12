@@ -597,7 +597,8 @@ def _load_coarse_map(path: str) -> np.ndarray:
 def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
                 virtual_flip: bool = False, max_thrust: float = 0.0,
                 debug: dict | None = None, yaw_scale: float = 1.0,
-                yaw_clamp: float = 0.0, pitch_clamp_rad: float = 0.0
+                yaw_clamp: float = 0.0, pitch_clamp_rad: float = 0.0,
+                roll_clamp_rad: float = 0.0
                 ) -> tuple[np.ndarray, float, float]:
     """One forward pass, replicating the TRAINING action pipeline exactly:
     test-mode action = tanh(actor_mean(obs)), then env.rescale_action onto
@@ -637,6 +638,15 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     A one-sided asymmetric limit — NOT a symmetric clamp — so forward flight up to the
     cap is untouched. Set it BELOW the -17.8 deg resting tilt magnitude (e.g. 30 deg)
     so hover is never fenced.
+
+    ``roll_clamp_rad``: attitude fence (rad, 0 = off), EGO obs only. The SYMMETRIC mirror of
+    ``pitch_clamp_rad`` for ROLL: roll has no preferred sign (banking either way tips the +20 deg
+    camera off the gate and drives the drone off-line), so this clamps BOTH directions — past
+    +this leveled-roll magnitude it blocks further POSITIVE roll, past -this it blocks further
+    NEGATIVE roll, and only roll-toward-level is ever let through. Reads obs[3] (leveled body
+    roll) and the final FRD roll-rate command rate_frd[0]. Being two-sided it is virtual_flip-
+    agnostic BY CONSTRUCTION (the flip negates obs[3] and rate_frd[0] together and the symmetric
+    |roll| <= cap is invariant) — no empirical sign pin needed, unlike the one-sided pitch fence.
     """
     obs_t = torch.as_tensor(obs_np[None], dtype=torch.float32)   # (1, 17)
     mean  = actor(obs_t)[0].cpu().numpy().astype(np.float64)     # (4,) raw mean
@@ -668,6 +678,19 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
         # final FRD command; a cap ABOVE the -17.8 deg resting tilt so hover is never fenced.
         rate_frd = rate_frd.copy()
         rate_frd[1] = max(float(rate_frd[1]), 0.0)
+    if roll_clamp_rad > 0.0 and abs(float(obs_np[3])) >= roll_clamp_rad:
+        # ATTITUDE FENCE (EGO obs only; obs[3] = leveled body roll): the SYMMETRIC mirror of the
+        # one-sided pitch fence above. Roll has no preferred sign (banking either way tips the +20 deg
+        # camera off the gate / drives the drone off-line), so clamp BOTH directions: past +cap block
+        # FURTHER positive roll, past -cap block FURTHER negative roll — only roll-toward-level is let
+        # through. rate_frd[0] = the final FRD roll-rate command. Because it is symmetric it is
+        # virtual_flip-agnostic BY CONSTRUCTION (the flip negates obs[3] and rate_frd[0] together and
+        # the |roll| <= cap bound is invariant), so no empirical sign pin is needed here.
+        rate_frd = rate_frd.copy()
+        if float(obs_np[3]) >= roll_clamp_rad:
+            rate_frd[0] = min(float(rate_frd[0]), 0.0)   # too much +roll -> block further +roll
+        else:
+            rate_frd[0] = max(float(rate_frd[0]), 0.0)   # too much -roll -> block further -roll
     collective = float(np.clip(normed_thrust * _HOVER_THRUST, 0.0, 1.0))
     if debug is not None:
         debug["actor_mean"] = mean.tolist()
@@ -1777,7 +1800,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
     print(f"[ego] det_hold={args.ego_det_hold:g}s stale_horizon={args.ego_stale_horizon:g}s "
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
           f"slot1={args.ego_slot1}{' (next_pose SOURCE not yet wired -> slot1 MASKED to zero)' if args.ego_slot1 else ''} "
-          f"pitch_clamp={args.ego_pitch_clamp:g}deg yaw_clamp={args.ego_yaw_clamp:g} "
+          f"pitch_clamp={args.ego_pitch_clamp:g}deg roll_clamp={args.ego_roll_clamp:g}deg "
+          f"yaw_clamp={args.ego_yaw_clamp:g} "
           f"virtual_flip={args.virtual_flip} rate={args.rate:g}Hz max={args.max_seconds:g}s ...")
 
     # --- autonomous takeoff assist (A2 ground-unstick; see EgoTakeoffAssist) ---
@@ -1958,7 +1982,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
         rate_frd, collective, last_normed = policy_step(
             actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
             yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp,
-            pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)))
+            pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)),
+            roll_clamp_rad=float(np.radians(args.ego_roll_clamp)))
         # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
         # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
         # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
@@ -2512,6 +2537,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "-50 deg / cam -30 deg). Blocks further nose-down past the cap, always allows "
                          "nose-up recovery (one-sided). Try 30 -- must exceed the 17.8 deg resting "
                          "tilt so hover is never fenced.")
+    ap.add_argument("--ego-roll-clamp", type=float, default=0.0,
+                    help="EGO attitude fence in DEGREES (0 = off): SYMMETRIC mirror of "
+                         "--ego-pitch-clamp for ROLL. Roll has no preferred sign, so this caps the "
+                         "leveled body roll in BOTH directions -- past +/-cap it blocks further roll "
+                         "in the offending direction (only roll-toward-level passes), so an aggressive "
+                         "bank can't tip the +20 deg camera off the gate / drive the drone off-line. "
+                         "Try 45. Two-sided => virtual_flip-agnostic by construction.")
     ap.add_argument("--ego-slot1", action="store_true",
                     help="Activate the WINDOW=2 next-gate obs slot (slot1 = active_gate_index+1) for "
                          "the MULTI-gate _pef champions (trained with slot1 populated). Wires the "
@@ -2886,6 +2918,7 @@ def main() -> int:
                     "ego_sector_mode": args.ego_sector_mode,
                     "ego_coarse_map": args.ego_coarse_map,
                     "ego_pitch_clamp": args.ego_pitch_clamp,
+                    "ego_roll_clamp": args.ego_roll_clamp,
                     "ego_yaw_clamp": args.ego_yaw_clamp,
                     "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist}

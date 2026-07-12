@@ -227,3 +227,32 @@ def test_pitch_clamp_blocks_nose_down_past_cap(ego_bounds):
     assert ps(nu, past, cap) > 0
     # within cap: fence inactive (nose-down passes)
     assert ps(nd, within, cap) < 0
+
+
+def test_roll_clamp_blocks_roll_past_cap_both_sides(ego_bounds):
+    """Attitude fence (--ego-roll-clamp): the SYMMETRIC mirror of the pitch fence. Past +cap block
+    FURTHER positive roll (rate_frd[0] -> min(.,0)); past -cap block FURTHER negative roll
+    (rate_frd[0] -> max(.,0)); roll-toward-level always passes; inactive within the band and when
+    off. obs[3] = leveled body roll; rate_frd[0] = the FRD roll-rate command (act[1] via [1,-1,1])."""
+    cap = float(np.radians(45.0))
+    pr = _StubActor([0.0, 50.0, 0.0, 0.0])     # -> rate_frd[0] > 0 (positive roll) at virtual_flip=False
+    nr = _StubActor([0.0, -50.0, 0.0, 0.0])    # -> rate_frd[0] < 0 (negative roll)
+    past_pos = np.zeros(EGO_OBS_DIM, np.float32); past_pos[3] = 0.90   # +51.6 deg: past the +45 cap
+    past_neg = np.zeros(EGO_OBS_DIM, np.float32); past_neg[3] = -0.90  # -51.6 deg: past the -45 cap
+    within = np.zeros(EGO_OBS_DIM, np.float32); within[3] = 0.30       # +17 deg: within the band
+    ps = lambda actor, obs, cap_: fly_rl.policy_step(
+        actor, obs, virtual_flip=False, roll_clamp_rad=cap_)[0][0]
+    # sanity: unfenced, the stubs really roll +/-
+    assert ps(pr, past_pos, 0.0) > 0 and ps(nr, past_pos, 0.0) < 0
+    # past +cap: positive roll hard-blocked to 0, negative (toward level) untouched
+    assert ps(pr, past_pos, cap) == pytest.approx(0.0, abs=1e-9)
+    assert ps(nr, past_pos, cap) < 0
+    # past -cap: negative roll hard-blocked to 0, positive (toward level) untouched
+    assert ps(nr, past_neg, cap) == pytest.approx(0.0, abs=1e-9)
+    assert ps(pr, past_neg, cap) > 0
+    # within the band: fence inactive (both directions pass)
+    assert ps(pr, within, cap) > 0 and ps(nr, within, cap) < 0
+    # off (cap=0): bit-identical passthrough even past the attitude limit
+    r_off = fly_rl.policy_step(pr, past_pos, virtual_flip=False)[0]
+    r_on0 = fly_rl.policy_step(pr, past_pos, virtual_flip=False, roll_clamp_rad=0.0)[0]
+    np.testing.assert_allclose(r_on0, r_off, atol=0.0)
