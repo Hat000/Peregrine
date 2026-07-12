@@ -177,3 +177,79 @@ def test_single_gate_differs_from_multi_gate():
     assert c1["gate_pos"].shape[1] == 1
     assert c6["gate_pos"].shape[1] == 6
     assert c1["gate_pos"].shape[1] != c6["gate_pos"].shape[1]
+
+
+# ================================================================================================
+# pefcap: the gate-1 out-of-fov target-bearing pair maps to the sampler's g1_out_of_fov_bearing_rad.
+# ================================================================================================
+def test_resolve_maps_g1_out_of_fov_pair():
+    ov = C.resolve_course_overrides(_Cfg(course_g1_out_of_fov_lo=0.82, course_g1_out_of_fov_hi=0.95))
+    assert ov == {"g1_out_of_fov_bearing_rad": (0.82, 0.95)}
+    # half-specified pair (only lo OR only hi) raises -- a silent half-override would waste compute.
+    with pytest.raises(ValueError):
+        C.resolve_course_overrides(_Cfg(course_g1_out_of_fov_lo=0.82))
+    with pytest.raises(ValueError):
+        C.resolve_course_overrides(_Cfg(course_g1_out_of_fov_hi=0.95))
+    # unset -> absent (the sampler's normal turn; existing stages byte-identical).
+    assert "g1_out_of_fov_bearing_rad" not in C.resolve_course_overrides(_Cfg(course_n_gates=2))
+
+
+def test_pefcap_stage_forwards_out_of_fov_and_hides_gate1_on_approach():
+    """End to end on the REAL sampler: the _pefcap boot stage's course knobs -> sample_courses ->
+    gate 1 lands out of the camera FOV on the gate-0 approach (the coarse-map turn prior is load-
+    bearing), while the OFF baseline leaves it co-visible."""
+    import math
+    import gate_visibility as GV
+    DT = torch.float64
+    ov = C.resolve_course_overrides(_stage_cfg("dual_gate_boot_floor_pefcap"))
+    assert ov["g1_out_of_fov_bearing_rad"] == (0.82, 0.95)          # forwarded from the stage
+    base = {k: v for k, v in ov.items() if k != "g1_out_of_fov_bearing_rad"}
+    n = 800
+    c_on = sample_courses(n, generator=torch.Generator().manual_seed(0), **ov)
+    c_off = sample_courses(n, generator=torch.Generator().manual_seed(0), **base)
+
+    def prepass_g1_detect_frac(c):
+        gp = c["gate_pos"].to(DT); sp = c["spawn_pos"].to(DT); gy = c["gate_yaw"].to(DT)
+        g0, g1, y1 = gp[:, 0], gp[:, 1], gy[:, 1]
+        D = sp + 0.9 * (g0 - sp)                                    # pre-pass vantage (90% of the way in)
+        v = g0 - D
+        az = torch.atan2(v[:, 1], v[:, 0])
+        gd = torch.stack([torch.tensor([[math.cos(-a), -math.sin(-a), 0.0],
+                                        [math.sin(-a), math.cos(-a), 0.0],
+                                        [0.0, 0.0, 1.0]], dtype=DT) @ (g1[i] - D[i])
+                          for i, a in enumerate(az.tolist())])
+        R = torch.eye(3, dtype=DT).unsqueeze(0).expand(n, 3, 3)
+        det, _ = GV.gate_detectable(torch.zeros_like(D), R, gd.unsqueeze(1),
+                                    (y1 - az).unsqueeze(1), is_quat=False)
+        return float(det[:, 0].float().mean())
+
+    on_frac = prepass_g1_detect_frac(c_on)
+    off_frac = prepass_g1_detect_frac(c_off)
+    assert off_frac > 0.4, off_frac                                # baseline: gate 1 co-visible pre-pass
+    assert on_frac < 0.05, on_frac                                 # knob ON: gate 1 hidden pre-pass
+    # the coarse-map horiz sector for gate 0 is now +-1 (load-bearing) on ~every course.
+    sector = C.build_coarse_map(c_on["gate_pos"], c_on["spawn_pos"])
+    assert float((sector[:, 0, 0].abs() == 1).float().mean()) > 0.95
+
+
+def test_resolve_maps_min_pair_dist():
+    assert C.resolve_course_overrides(_Cfg(course_min_pair_dist_m=7.0)) == {"min_pair_dist_m": 7.0}
+    with pytest.raises(ValueError):                                 # non-positive floor is nonsense
+        C.resolve_course_overrides(_Cfg(course_min_pair_dist_m=0.0))
+    # unset -> absent (the sampler default 10 m; existing stages byte-identical).
+    assert "min_pair_dist_m" not in C.resolve_course_overrides(_Cfg(course_n_gates=2))
+
+
+def test_pefcap_fullstack_realizes_8m_spacing_boot_stays_gentle():
+    """The fullstack lowers the reject floor to 7 m so course_seg_len_lo=8 is ACTUALLY realized (at the
+    default 10 m the sampler redraws every <10 m course -> seg_len_lo=8 silently truncates to 10). The
+    boot keeps the default -> its spacing floors at 10 m (gentle, protect the warm boot)."""
+    ov_full = C.resolve_course_overrides(_stage_cfg("dual_gate_fullstack_floor_pefcap"))
+    ov_boot = C.resolve_course_overrides(_stage_cfg("dual_gate_boot_floor_pefcap"))
+    assert ov_full["min_pair_dist_m"] == 7.0 and "min_pair_dist_m" not in ov_boot
+    cf = sample_courses(3000, generator=torch.Generator().manual_seed(1), **ov_full)
+    cb = sample_courses(3000, generator=torch.Generator().manual_seed(1), **ov_boot)
+    L1f = torch.linalg.norm((cf["gate_pos"][:, 1] - cf["gate_pos"][:, 0])[:, :2], dim=-1)
+    L1b = torch.linalg.norm((cb["gate_pos"][:, 1] - cb["gate_pos"][:, 0])[:, :2], dim=-1)
+    assert float(L1f.min()) < 8.5, float(L1f.min())                 # 8 m spacing realized in the fullstack
+    assert float(L1b.min()) >= 9.99, float(L1b.min())               # boot floored at 10 m

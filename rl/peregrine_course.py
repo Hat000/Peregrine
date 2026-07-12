@@ -151,6 +151,21 @@ DEFAULT_COURSE_RANGES = dict(
                                   # it (ego sets 0.0) leaves the egocentric distribution IDENTICAL while
                                   # placing every course ahead of the pad. The relative gate placement
                                   # still varies via the spawn attitude jitter + the turn/drop walk.)
+    g1_out_of_fov_bearing_rad=None,  # (pefcap, 2026-07-12) when set to (lo, hi), REPLACE the segment-0->1 turn
+                                  # (the bend AT gate 0, placing gate 1) with the turn that puts gate 1's CENTRE
+                                  # at a target bearing phi_t ~ U(lo, hi) just PAST the camera FOV edge (half-
+                                  # HFOV ~ 45deg; the model's HFOV is 90deg) on the gate-0 approach, so gate 1
+                                  # sits OUTSIDE the frame in the decision-critical pre-pass window and acquiring
+                                  # it REQUIRES the coarse-map horiz turn prior. The turn is COMPUTED PER-ENV
+                                  # from the ACTUAL sampled spawn distance L0 and gate0->gate1 spacing L1 (NOT a
+                                  # fixed angle): at a pre-pass reference vantage d_ref = _G1_OOFOV_APPROACH_FRAC
+                                  # * L0 behind gate 0 the drone->gate1 bearing off the approach heading is
+                                  # atan2(L1 sin tau, L1 cos tau + d); setting that == phi_t gives the law-of-
+                                  # sines parallax solve tau = phi_t + asin((d_ref/L1) sin phi_t). Larger spawn
+                                  # distance -> larger turn; wider spacing -> smaller. Random sign (left/right).
+                                  # The coarse map (build_coarse_map, UNCHANGED) then reads horiz=+-1 for gate 0
+                                  # and becomes load-bearing. Needs n_gates>=2 (else inert). None == OFF
+                                  # (byte-identical: the turn stays U(-turn_rad, turn_rad)).
     gates_above_spawn_m=None,     # (A1 floor fix, 2026-07-10) when set, EVERY gate centre z is kept
                                   # >= spawn_z + this clearance (the pad is z=0 in the sampler frame).
                                   # Enforced SEQUENTIALLY along the walk (z[g] = max(z[g-1]+dz[g], min_z))
@@ -166,6 +181,12 @@ DEFAULT_COURSE_RANGES = dict(
 VQ1_SPAWN_POS_ZUP = (0.0, 0.0, -0.02)
 VQ1_SPAWN_YAW = 0.0          # body yaw at spawn; gates at yaw pi => tail-first (gate-frame yaw ~ pi)
 VQ1_SPAWN_PITCH_RAD = -0.31  # -17.8 deg tilted pad (measured)
+
+# GATE-1 OUT-OF-FOV (pefcap 2026-07-12): the pre-pass reference vantage for the parallax turn solve, as a
+# FRACTION of the sampled spawn distance L0 BACK from gate 0 (i.e. the drone is ~(1-frac) of the way in).
+# 0.25 == require gate 1 out of FOV once the drone is 3/4 of the way to gate 0 (the decision-critical
+# pre-pass commit window; measured critical hide-turns 47-56 deg at that vantage, rl/tools calibration).
+_G1_OOFOV_APPROACH_FRAC = 0.25
 
 
 def _circ_mean(a, b):
@@ -212,10 +233,29 @@ def sample_courses(n, device="cpu", generator=None, **overrides):
         else:
             h0 = torch.full((m, 1), float(R["spawn_heading"]), device=device)
         turns = U(-R["turn_rad"], R["turn_rad"], m, G - 1)
-        headings = torch.cat([h0, h0 + torch.cumsum(turns, dim=1)], dim=1)          # (m, G)
+        # seg_len drawn BEFORE headings (headings does no RNG, so the OFF-path RNG order is unchanged) because
+        # the gate-1 out-of-FOV forcing below needs the sampled spawn distance L0 + spacing L1.
         seg_len = torch.empty(m, G, device=device)
         seg_len[:, 0] = U(*R["spawn_dist_m"], m)
         seg_len[:, 1:] = U(*R["seg_len_m"], m, G - 1)
+        # GATE-1 OUT-OF-FOV forcing (pefcap 2026-07-12; OFF when None == byte-identical). REPLACE the FIRST
+        # turn (the bend at gate 0, which places gate 1) with the turn that puts gate 1's CENTRE at a target
+        # bearing phi_t just past the camera FOV edge on the gate-0 approach, COMPUTED PER-ENV from the ACTUAL
+        # sampled spawn distance L0 and gate0->gate1 spacing L1 (not a fixed angle). At a pre-pass reference
+        # vantage d_ref = _G1_OOFOV_APPROACH_FRAC*L0 behind gate 0, the drone->gate1 bearing off the approach
+        # heading is atan2(L1 sin tau, L1 cos tau + d); setting that == phi_t gives the law-of-sines parallax
+        # solve tau = phi_t + asin((d_ref/L1) sin phi_t). Larger spawn distance -> larger turn; wider spacing
+        # -> smaller turn. Random sign (left/right). Needs a segment 1 (G>=2). Only the ON branch draws extra
+        # RNG (OFF path never enters). All other turns/segments untouched.
+        if R["g1_out_of_fov_bearing_rad"] is not None and G >= 2:
+            lo, hi = R["g1_out_of_fov_bearing_rad"]
+            phi_t = U(float(lo), float(hi), m)                                    # target gate1 bearing past edge
+            L0 = seg_len[:, 0]; L1 = seg_len[:, 1].clamp(min=1e-3)                # sampled spawn dist + spacing
+            d_ref = _G1_OOFOV_APPROACH_FRAC * L0                                  # pre-pass reference distance
+            tau_mag = phi_t + torch.asin(torch.clamp((d_ref / L1) * torch.sin(phi_t), -1.0, 1.0))
+            sign = torch.where(torch.rand(m, device=device, generator=generator) < 0.5, -1.0, 1.0)
+            turns[:, 0] = sign * tau_mag
+        headings = torch.cat([h0, h0 + torch.cumsum(turns, dim=1)], dim=1)          # (m, G)
         dz = torch.empty(m, G, device=device)
         dz[:, 0] = U(*R["spawn_below_g0_m"], m)                                     # gate 0 ABOVE pad
         drop = U(*R["drop_m"], m, G - 1)

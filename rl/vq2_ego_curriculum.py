@@ -1350,6 +1350,151 @@ STAGES: dict[str, dict] = {
                  "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
                  "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
     },
+    # ================================================================================================
+    # BEHAVIORAL-CAP chain (_pefcap, 2026-07-12) -- the _pef chain VERBATIM plus a DEFAULT-OFF package
+    # that pushes the deployed behavioral limits INTO the trained policy so it self-limits WITHOUT any
+    # deploy-side control clamp. Targets the two live-flight failures: (a) the coarse-map horiz turn prior
+    # (obs[9:11]) is UNDER-TRAINED -- gate 1 is co-visible at 10-20 m so the policy ignored the map; (b) the
+    # policy flies over-aggressively head-down (body pitch ~ -50deg -> the +20deg camera points -30deg ->
+    # LOSES the gate) and high-g. OFF-LADDER, run as the two-stage chain (mirrors _pef):
+    #   sbatch --export=ALL,SEED=<s>,RUNTAG=vpefcap<s>,\
+    #     STAGES="dual_gate_boot_floor_pefcap dual_gate_fullstack_floor_pefcap",\
+    #     UPD_dual_gate_boot_floor_pefcap=4000,UPD_dual_gate_fullstack_floor_pefcap=12000,PRECHECK=1 \
+    #     rl/peregrine_vq2_ego.sbatch
+    # THE CONCEPTUAL CORE it teaches (Fengyou 2026-07-12): "when you pass a gate and the next-gate slot is
+    # EMPTY, do NOT freelance -- TRUST THE COARSE MAP to turn toward the general direction until a gate comes
+    # into range, then fill the slot and continue." The levers below make slot1 GENUINELY EMPTY between gates
+    # (gate 1 spawned out of view + far gates range-gated out) so the coarse sector is the ONLY next-gate
+    # signal, and reward following it. No-spin stays HARD: the coarse map gives a BOUNDED 3x3 turn bucket,
+    # never license to scan/spin (no scan behavior is added anywhere).
+    # THE PACKAGE (every knob a NEW default-OFF append; the _pef stages + all existing stages stay
+    # byte-untouched -- live vpef* safe). It ARMS:
+    #   (A) SOFT ATTITUDE-LIMIT penalties (perception-preservation, NOT energy): -rw_att_pitch*relu(|pitch|
+    #       -att_pitch_limit_rad) -rw_att_roll*relu(|roll|-att_roll_limit_rad) on the TRUE leveled attitude,
+    #       per step, NON-TERMINAL. ZERO inside the free band (incl. the ~17.8deg nose-down REST tilt, below
+    #       the 30deg pitch limit) so it never rewards hovering and never kills a flight; grows past the
+    #       limit. Conservative weights (pitch 0.5, roll 0.3): at -50deg the pitch penalty is ~0.5*relu(0.873
+    #       -0.524)=0.177/step ~ 30% of a bring-up per-step progress (rw_progress 2.0 * ~0.30 m/step ~ 0.60)
+    #       and ~13% at race speed -- a real deterrent that does NOT dominate progress. SWEEP UP (0.5->1.0->
+    #       2.0) via EXTRA if the head-down behavior persists; RAISE the pitch limit (e.g. 0.6-0.7) if it
+    #       over-taxes normal cruise (the 30deg default leaves only ~12deg beyond the 18deg rest tilt).
+    #   (B) GATE-1 OUT OF FOV: the sampler REPLACES the segment-0->1 turn with the GEOMETRY-ADAPTIVE turn
+    #       (computed PER-ENV from the ACTUAL sampled spawn dist L0 + spacing L1 via the parallax solve, NOT a
+    #       fixed angle -- see peregrine_course) that lands gate 1 at a target bearing just past the camera FOV
+    #       edge on the gate-0 approach -> acquiring it REQUIRES the coarse-map turn prior (build_coarse_map is
+    #       UNCHANGED; it becomes load-bearing because vision no longer covers gate 1 pre-pass). RAMP: boot
+    #       target bearing 0.82-0.95 rad (47-54deg, "just past" the 45deg half-HFOV -> gentle) -> fullstack
+    #       0.95-1.10 rad (54-63deg, "sharper" -> gate 1 hidden earlier). VERIFIED (rl/gate_visibility + the
+    #       REAL sampler): with the knob ON gate-1 detectable-fraction in the pre-pass window collapses vs the
+    #       OFF baseline's ~1.0 co-visible; gate 1 is re-acquirable after the turn. horiz sector -> +-1.
+    #   (B') MAX-RANGE SLOT-FILL CAP (ego_obs_slot_range_cap_m=30 m): a gate beyond ~30 m estimated range does
+    #       NOT fill its slot (BOTH slots). PINS train/deploy parity (deploy range-gates slot fills at ~30 m to
+    #       reject far downstream gates -- a 50 m gate-4 seen through the openings must NEVER land in slot1 and
+    #       make the drone skip gates 1-3 to dive at gate 4) AND keeps slot1 empty between gates so the coarse
+    #       sector is the only next-gate signal. Default +inf == OFF (byte-identical).
+    #   (C) SEG-LENGTH RAMP: boot 10-20 m (GENTLE, protect the fragile warm-boot); fullstack 8-20 m (TIGHTER
+    #       min -- kills the long-coast+small-tweak shortcut, reduces co-visibility so the map is far more
+    #       load-bearing; 8 m is a deliberate hardening margin below the VQ2 real 10-20 m). It is the existing
+    #       course_seg_len_lo knob (default 10-20 -> existing stages byte-identical).
+    #   (D) NEXT-GATE perception bonus (rw_perception_next) + a budget SPLIT of the current perception:
+    #       rw_perception 0.02 -> 0.014, rw_perception_next 0.004 (sum 0.018 < rw_time 0.02 -> farm-neutral,
+    #       hover-and-stare nets <= 0/tick). The env GATES the next term on next-gate DETECTABILITY (within
+    #       ~30 m + >=4 corners), so it pays 0 while gate 1 is out of view -- it rewards TURNING the coarse-map
+    #       direction until the real next gate comes into range and fills slot1 (no camera pull off gate 0
+    #       during the approach; no off-gate farm). DEVIATION from _pef-verbatim: this re-allocates the field-
+    #       proven current-gate lever -- the split is SWEEPABLE via EXTRA (e.g. 0.012/0.006) keeping sum < 0.02.
+    # BOOT/FULLSTACK semantics identical to _pef (boot ego_noise_scale=0.0 calibration; fullstack real
+    # noise, +init_from auto-appended). The _pef estimator-faithful + hard-no-spin package rides along
+    # VERBATIM. Study before flight: the same _pef dt LAUNCH GATE + acceptance reads apply.
+    # ================================================================================================
+    "dual_gate_boot_floor_pefcap": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_boot_floor_pef
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,   # (RAMP) GENTLE 10-20 m in the boot (protect the
+        #                                                        fragile warm-boot learnability); fullstack -> 8 m
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        "ego_noise_scale": 0.0,       # calibration boot (== _pef): vision noise 0, leveler STILL LIES
+        # ---- perception-honesty package (== _percept/_pef verbatim) ----
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,
+        "ego_blur_rate_hi_rad_s": 4.0,
+        "ego_spin_rate_abort": 3.5,
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,
+        # ---- estimator-faithful package (== _pef verbatim) ----
+        "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,
+        # ---- pefcap ADDITIONS (default-OFF knobs, ARMED here) ----
+        "rw_att_pitch": 0.5, "att_pitch_limit_rad": 0.5235988,   # (A) 30 deg free band (> 17.8 deg rest)
+        "rw_att_roll": 0.3, "att_roll_limit_rad": 0.6981317,     # (A) 40 deg free band
+        "course_g1_out_of_fov_lo": 0.82, "course_g1_out_of_fov_hi": 0.95,   # (B) target gate1 bearing past the
+        #                                              FOV edge (47-54 deg), "just past edge"; the sampler solves
+        #                                              the actual turn per-env from the sampled spawn dist + spacing
+        "ego_obs_slot_range_cap_m": 30.0,                        # (B') far gates (>30 m est range) don't fill a slot
+        "rw_perception": 0.014, "rw_perception_next": 0.004,     # (C) split, sum 0.018 < rw_time 0.02
+        "rw_perception_exponent": 4.0,
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from: fresh boot (H6); the fullstack _pefcap stage chains from THIS stage.
+                 "++algo.noise_std_hold": 0.30, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
+    "dual_gate_fullstack_floor_pefcap": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_fullstack_floor_pef
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 8.0, "course_seg_len_hi": 20.0,    # (RAMP) TIGHTER min 10->8 m (kills the long-coast
+        #                                                        shortcut + reduces co-visibility; a deliberate
+        #                                                        hardening margin below the VQ2 real 10-20 m)
+        "course_min_pair_dist_m": 7.0,   # (RAMP) lower the sampler REJECTION floor 10->7 so the 8 m spacing is
+        #                                  ACTUALLY realized (at the default 10 m every <10 m course is redrawn ->
+        #                                  seg_len_lo=8 silently truncates to 10). Also un-truncates spawn_dist to
+        #                                  8 m (harder, intended). Still rejects genuine <7 m overlaps.
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime; the packages ride along.
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,
+        "ego_blur_rate_hi_rad_s": 4.0,
+        "ego_spin_rate_abort": 3.5,
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,
+        "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,
+        # ---- pefcap ADDITIONS (default-OFF knobs, ARMED here) ----
+        "rw_att_pitch": 0.5, "att_pitch_limit_rad": 0.5235988,   # (A) 30 deg free band (> 17.8 deg rest)
+        "rw_att_roll": 0.3, "att_roll_limit_rad": 0.6981317,     # (A) 40 deg free band
+        "course_g1_out_of_fov_lo": 0.95, "course_g1_out_of_fov_hi": 1.10,   # (B) SHARPER ramp: target gate1
+        #                                              bearing 54-63 deg past the FOV edge (hidden earlier on approach)
+        "ego_obs_slot_range_cap_m": 30.0,                        # (B') far gates (>30 m est range) don't fill a slot
+        "rw_perception": 0.014, "rw_perception_next": 0.004,     # (C) split, sum 0.018 < rw_time 0.02
+        "rw_perception_exponent": 4.0,
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here (LOAD-BEARING): the sbatch ladder auto-appends it on stage 2.
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
     # 3. DUAL_GATE_FULL (HARD/turning): 2 gates, full drop band, spacing 10-20 m. STAGE-SPECIFIC hard
     #    knob turns ON here (NOT in _COMMON): a small exit_align (next-gate exit-line, gate-gated once/
     #    pass -> non-farmable -> safe). The passage centering basin is now the _COMMON base-5 + per-gate
@@ -1384,7 +1529,9 @@ COURSE_SAMPLER_KEYS = ("course_n_gates", "course_seg_len_lo", "course_seg_len_hi
                        "course_spawn_dist_lo", "course_spawn_dist_hi",
                        "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
                        "course_spawn_heading", "course_spawn_yaw_jitter",
-                       "course_gates_above_spawn")
+                       "course_gates_above_spawn",
+                       "course_g1_out_of_fov_lo", "course_g1_out_of_fov_hi",
+                       "course_min_pair_dist_m")
 
 # The reward knobs that are HARD-STAGE-ONLY (must NEVER appear in _COMMON / never hit single_gate or
 # handoff_drill). Named so the test can assert the B2b scoping discipline structurally.

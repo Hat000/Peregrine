@@ -264,3 +264,29 @@ def test_c_stale_horizon_default_and_env_plumbing():
     assert abs(m12 - round(1.2 / dt)) <= 1, m12
     print(f"\n[c] stale-horizon plumbing OK: default 0.5 kept; coast masks at step {m05} (0.5 s) vs "
           f"{m12} (1.2 s) under the same blackout -- the override stretches the crossing window")
+
+
+# ================================================================================================
+# (d) MAX-RANGE SLOT-FILL CAP (pefcap 2026-07-12, ego_actor_obs slot_range_cap_m). +inf == OFF ==
+#     byte-identical; a finite cap masks a slot whose ESTIMATED range exceeds it (far gate -> empty slot).
+# ================================================================================================
+def test_d_slot_range_cap_masks_far_gate_and_inf_is_byte_identical():
+    N, G = 8, 3
+    gate_pos, gate_yaw, spawn = _straight_course(N, G, spacing=12.0)       # gates at 12, 24, 36 m
+    est = _make_est(N, gate_pos, gate_yaw, cfg=EE.EgoEstimatorConfig(noise_scale=0.0), seed=5)
+    q = _identity_quat(N)
+    pos = torch.zeros(N, 3, dtype=DT); vel = torch.zeros(N, 3, dtype=DT); rates = torch.zeros(N, 3, dtype=DT)
+    est.reset_idx(torch.arange(N), pos, vel, q)
+    sector = C.build_coarse_map(gate_pos, spawn)
+    lc = torch.zeros(N, dtype=DT)
+    detect = torch.ones(N, G, dtype=torch.bool)                            # all in view
+    out = est.step(pos, vel, q, rates, dt=1 / 30, detectable=detect, prev_quat=q)
+    tg = torch.zeros(N, dtype=torch.long)                                  # slot0=gate0(12m), slot1=gate1(24m)
+    d_default = C.ego_actor_obs(out, detect, tg, lc, sector, G)
+    d_inf = C.ego_actor_obs(out, detect, tg, lc, sector, G, slot_range_cap_m=float("inf"))
+    assert torch.equal(d_default, d_inf)                                   # +inf == OFF == byte-identical
+    capped = C.ego_actor_obs(out, detect, tg, lc, sector, G, slot_range_cap_m=20.0)
+    slot0, slot1 = capped[:, 11:16], capped[:, 16:21]                      # obs: ...sector[9:11], slot0[11:16], slot1[16:21]
+    assert torch.all(slot1 == 0.0)                                         # gate1 (~24 m > 20) does NOT fill slot1
+    assert torch.any(slot0 != 0.0)                                         # gate0 (~12 m < 20) still fills slot0
+    assert torch.equal(slot0, d_default[:, 11:16])                         # only the FAR slot is dropped

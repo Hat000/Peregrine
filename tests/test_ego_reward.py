@@ -927,3 +927,86 @@ def test_package_adds_no_per_step_penalty_at_defaults():
         w, gate_collision=torch.zeros(n, dtype=torch.bool), **_spin_kw(n, [0.0]))
     assert reward[0].item() == pytest.approx(-w.time)
     assert comps["perception_reward"] == pytest.approx(0.0)
+
+
+# ================================================================================================
+# pefcap package (2026-07-12): SOFT attitude-limit penalty + NEXT-GATE perception + PARITY when OFF.
+# ================================================================================================
+def test_attitude_limit_penalty_zero_in_band_grows_past_correct_sign():
+    """SOFT, NON-TERMINAL perception-preservation penalty: ZERO inside the free band (incl. the ~17.8deg
+    rest tilt), grows LINEARLY past the limit, NEGATIVE sign, magnitude limit (symmetric in pitch sign)."""
+    w = R.EgoRewardWeights(att_pitch=0.5, att_pitch_limit_rad=0.5235988,
+                           att_roll=0.3, att_roll_limit_rad=0.6981317)
+    # inside band: |pitch|=0.31 (the -17.8deg rest tilt) < 0.524, |roll|=0.10 < 0.698 -> ZERO
+    assert R.attitude_limit_penalty(_t([0.10]), _t([-0.31]), w).item() == pytest.approx(0.0)
+    # past the pitch limit: |pitch|=0.873 (-50deg) -> -0.5*relu(0.873-0.524)
+    rp = R.attitude_limit_penalty(_t([0.0]), _t([-0.873]), w)
+    assert rp.item() == pytest.approx(-0.5 * (0.873 - 0.5235988), abs=1e-6)
+    assert rp.item() < 0.0                                          # NEGATIVE (correct sign)
+    # |pitch| MAGNITUDE limit -> symmetric in sign
+    assert R.attitude_limit_penalty(_t([0.0]), _t([0.873]), w).item() == pytest.approx(rp.item(), abs=1e-9)
+    # roll excess only
+    assert R.attitude_limit_penalty(_t([0.9]), _t([0.0]), w).item() == pytest.approx(
+        -0.3 * (0.9 - 0.6981317), abs=1e-6)
+    # OFF (weights 0) -> exactly 0 for ANY attitude (byte-identical default)
+    assert R.attitude_limit_penalty(_t([2.0]), _t([2.0]), R.EgoRewardWeights()).item() == 0.0
+
+
+def test_attitude_penalty_wired_nonterminal_and_off_is_byte_identical():
+    n = 1
+    base = R.EgoRewardWeights()                                     # att weights 0 (default)
+    r_none, _, _ = R.compute_ego_reward(base, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                        **_spin_kw(n, [0.0]))
+    # passing extreme roll/pitch with weights 0 -> BYTE-identical (term is exactly 0)
+    r_off, _, _ = R.compute_ego_reward(base, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                       roll=_t([2.0]), pitch=_t([2.0]), **_spin_kw(n, [0.0]))
+    assert r_off.item() == r_none.item()
+    # ARMED: at -50deg the reward drops by EXACTLY the penalty (a smooth term, NOT a terminal cliff)
+    w = R.EgoRewardWeights(att_pitch=0.5, att_pitch_limit_rad=0.5235988)
+    r_in, c_in, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                         roll=_t([0.0]), pitch=_t([-0.31]), **_spin_kw(n, [0.0]))
+    r_out, c_out, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                           roll=_t([0.0]), pitch=_t([-0.873]), **_spin_kw(n, [0.0]))
+    pen = 0.5 * (0.873 - 0.5235988)
+    assert c_in["att_pen"] == pytest.approx(0.0)                    # in-band pays 0 (no hover reward, no kill)
+    assert c_out["att_pen"] == pytest.approx(pen, abs=1e-6)
+    assert (r_in.item() - r_out.item()) == pytest.approx(pen, abs=1e-6)
+
+
+def test_perception_next_off_by_default_and_farm_neutrality_bound():
+    assert R.EgoRewardWeights().perception_next == 0.0             # default OFF
+    R.EgoRewardWeights(perception=0.014, perception_next=0.004)    # sum 0.018 < time 0.02 -> OK
+    R.EgoRewardWeights(perception=0.015, perception_next=0.005)    # sum == time 0.02 -> allowed (<=)
+    with pytest.raises(AssertionError):                            # sum > time -> hover-stare farm guard FIRES
+        R.EgoRewardWeights(perception=0.02, perception_next=0.004)
+
+
+def test_perception_next_wired_and_detectability_gated():
+    n = 1
+    w = R.EgoRewardWeights(perception=0.0, perception_next=0.004, perception_exponent=4.0)
+    r_none, _, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                        **_spin_kw(n, [0.0]))       # no cos_view_next -> 0 (byte-identical)
+    # next gate dead-centre (cos=1) -> +perception_next
+    r_seen, c_seen, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                             cos_view_next=_t([1.0]), **_spin_kw(n, [0.0]))
+    assert c_seen["perception_next_reward"] == pytest.approx(0.004, abs=1e-6)
+    assert (r_seen.item() - r_none.item()) == pytest.approx(0.004, abs=1e-6)
+    # env feeds cos=-1 when the next gate is out of view / undetectable -> ~0 bonus (not farmable off-gate)
+    r_out, c_out, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                           cos_view_next=_t([-1.0]), **_spin_kw(n, [0.0]))
+    assert c_out["perception_next_reward"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_pefcap_reward_byte_identical_when_all_knobs_off():
+    """PARITY: with every pefcap reward knob at its default (OFF), passing the new inputs (roll/pitch/
+    cos_view_next) is BYTE-identical to the pre-pefcap reward -- the new terms contribute exactly 0."""
+    n = 3
+    w = R.EgoRewardWeights()                                        # all pefcap weights 0
+    kw = _spin_kw(n, [0.0, 5.0, 10.0])
+    r_ref, _, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool), **kw)
+    r_new, comps, _ = R.compute_ego_reward(
+        w, gate_collision=torch.zeros(n, dtype=torch.bool),
+        roll=_t([0.1, -0.9, 1.5]), pitch=_t([-0.3, 0.9, -1.2]),
+        cos_view_next=_t([0.9, -1.0, 0.2]), **kw)
+    assert torch.equal(r_ref, r_new)                               # BYTE-identical
+    assert comps["att_pen"] == 0.0 and comps["perception_next_reward"] == 0.0

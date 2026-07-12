@@ -158,3 +158,46 @@ def test_determinism_and_variability():
     assert not torch.equal(a["gate_pos"], c["gate_pos"])
     # courses genuinely differ from one another within a draw
     assert (a["gate_pos"][0] - a["gate_pos"][1]).abs().max() > 1.0
+
+
+# ---------------------------------------------------------------- gate-1 out-of-fov forcing (pefcap)
+def test_g1_out_of_fov_default_off_is_byte_identical():
+    """The new g1_out_of_fov_bearing_rad range key defaults None -> OFF. A draw WITHOUT it must be
+    byte-identical to the same-seed draw that passes it as None (the OFF branch adds no RNG)."""
+    assert DEFAULT_COURSE_RANGES["g1_out_of_fov_bearing_rad"] is None
+    a = sample_courses(32, generator=torch.Generator().manual_seed(11), n_gates=2)
+    b = sample_courses(32, generator=torch.Generator().manual_seed(11), n_gates=2,
+                       g1_out_of_fov_bearing_rad=None)
+    for k in a:
+        assert torch.equal(a[k], b[k]), k
+
+
+def test_g1_out_of_fov_on_forces_a_turn_from_sampled_distances():
+    """With the knob ON the segment-0->1 turn is REPLACED by the geometry-adaptive turn computed from
+    the sampled spawn distance + spacing: gate_pos changes, and the realized |turn[0]| lands in a sane
+    band (target bearing + a small parallax term), never a hairpin."""
+    on = sample_courses(2000, generator=torch.Generator().manual_seed(0), n_gates=2,
+                        seg_len_m=(10.0, 20.0), spawn_dist_m=(8.0, 15.0),
+                        spawn_heading=0.0, g1_out_of_fov_bearing_rad=(0.82, 0.95))
+    off = sample_courses(2000, generator=torch.Generator().manual_seed(0), n_gates=2,
+                         seg_len_m=(10.0, 20.0), spawn_dist_m=(8.0, 15.0), spawn_heading=0.0)
+    assert not torch.equal(on["gate_pos"], off["gate_pos"])
+    # realized turn at gate 0 = heading of (g1-g0) minus heading of (g0-spawn); |turn| past the FOV edge.
+    g0, g1, sp = on["gate_pos"][:, 0], on["gate_pos"][:, 1], on["spawn_pos"]
+    h_in = torch.atan2((g0 - sp)[:, 1], (g0 - sp)[:, 0])
+    h_out = torch.atan2((g1 - g0)[:, 1], (g1 - g0)[:, 0])
+    turn = torch.atan2(torch.sin(h_out - h_in), torch.cos(h_out - h_in)).abs()
+    assert float(turn.min()) > 0.785, float(turn.min())            # every turn past the ~45deg half-HFOV edge
+    assert float(turn.max()) < 1.6, float(turn.max())              # never a hairpin (well under 90deg+parallax)
+    # BOTH signs present (left/right), not a one-sided bias.
+    signed = torch.atan2(torch.sin(h_out - h_in), torch.cos(h_out - h_in))
+    assert float((signed > 0).float().mean()) > 0.3 and float((signed < 0).float().mean()) > 0.3
+
+
+def test_g1_out_of_fov_inert_on_single_gate():
+    """Needs a segment 1 (n_gates>=2). On a 1-gate course the knob is inert (no turn[0] to force) and
+    the draw is byte-identical to the OFF draw."""
+    a = sample_courses(16, generator=torch.Generator().manual_seed(2), n_gates=1)
+    b = sample_courses(16, generator=torch.Generator().manual_seed(2), n_gates=1,
+                       g1_out_of_fov_bearing_rad=(0.82, 0.95))
+    assert torch.equal(a["gate_pos"], b["gate_pos"])

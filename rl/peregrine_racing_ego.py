@@ -125,6 +125,13 @@ def resolve_course_overrides(cfg) -> dict:
       course_seg_len_lo,   course_seg_len_hi      -> seg_len_m    (lo, hi)   [both must be set together]
       course_drop_lo,      course_drop_hi         -> drop_m       (lo, hi)   [both must be set together]
       course_spawn_dist_lo,course_spawn_dist_hi   -> spawn_dist_m (lo, hi)   [both must be set together]
+      course_g1_out_of_fov_lo, course_g1_out_of_fov_hi -> g1_out_of_fov_bearing_rad (lo, hi) [target gate-1
+                                                    CENTRE bearing (rad) just past the camera FOV edge; the
+                                                    sampler solves the segment-0->1 turn PER-ENV from the
+                                                    actual spawn dist + spacing (random sign) so gate 1 lands
+                                                    out of FOV on the gate-0 approach and the coarse-map turn
+                                                    prior becomes load-bearing. Both halves set together;
+                                                    unset -> normal sampler turn.]
       course_spawn_below_g0_lo, course_spawn_below_g0_hi -> spawn_below_g0_m (lo, hi) [gate-0 HEIGHT band;
                                                     +ve == gate ABOVE the pad. Vary it to un-bury the
                                                     vertical signal geometrically -- a gate at varying
@@ -160,6 +167,12 @@ def resolve_course_overrides(cfg) -> dict:
     out.update(_resolve_pair(cfg, "course_spawn_dist_lo", "course_spawn_dist_hi", "spawn_dist_m"))
     out.update(_resolve_pair(cfg, "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
                              "spawn_below_g0_m"))
+    # GATE-1 OUT-OF-FOV target-bearing band (pefcap 2026-07-12): the sampler REPLACES the segment-0->1 turn
+    # with the geometry-adaptive turn (computed per-env from the sampled spawn dist + spacing) that puts gate
+    # 1 at a bearing in [lo, hi] just past the camera FOV edge on the gate-0 approach -> the coarse-map turn
+    # prior becomes load-bearing. Both halves set together; unset -> the sampler's normal turn.
+    out.update(_resolve_pair(cfg, "course_g1_out_of_fov_lo", "course_g1_out_of_fov_hi",
+                             "g1_out_of_fov_bearing_rad"))
     # course_spawn_heading (scalar): pin the segment-0 world heading so the egocentric courses do not fan
     # into a redundant circle (the obs is heading-invariant). Unset -> the sampler's random heading.
     spawn_heading = getattr(cfg, "course_spawn_heading", None)
@@ -170,6 +183,17 @@ def resolve_course_overrides(cfg) -> dict:
     spawn_yaw_jitter = getattr(cfg, "course_spawn_yaw_jitter", None)
     if spawn_yaw_jitter is not None:
         out["spawn_yaw_jitter_rad"] = float(spawn_yaw_jitter)
+    # course_min_pair_dist_m (scalar, pefcap 2026-07-12): the sampler's min-separation REJECTION floor
+    # (peregrine_course.min_pair_dist_m; default 10 m). MUST be lowered BELOW the target gate spacing for a
+    # tight seg_len_lo to actually be realized -- otherwise sample_courses redraws every course whose g0->g1
+    # (or pad->g0) horizontal distance < 10 m, so course_seg_len_lo=8 is silently truncated back to 10. The
+    # _pefcap fullstack sets ~7 m so the 8 m spacing survives. Unset -> the sampler default (10 m).
+    min_pair = getattr(cfg, "course_min_pair_dist_m", None)
+    if min_pair is not None:
+        mp = float(min_pair)
+        if mp <= 0.0:
+            raise ValueError(f"course_min_pair_dist_m must be > 0, got {mp}")
+        out["min_pair_dist_m"] = mp
     # course_gates_above_spawn (scalar, A1 floor fix 2026-07-10): sampler-side floor -- every gate
     # centre z >= pad z + clearance (see peregrine_course.gates_above_spawn_m). Unset -> OFF (legacy).
     gates_above = getattr(cfg, "course_gates_above_spawn", None)
@@ -280,7 +304,7 @@ def ego_window_indices(target_gates: Tensor, n_gates: int):
 # ================================================================================================
 def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
                   last_collective: Tensor, sector: Tensor, n_gates: int,
-                  obs_coast: bool = False) -> Tensor:
+                  obs_coast: bool = False, slot_range_cap_m: float = float("inf")) -> Tensor:
     """Assemble the 21-dim (EGO_OBS_DIM) egocentric actor observation from the estimator outputs +
     visibility + the coarse map. POSITION-FREE (only body-frame velocity / attitude / rates / relative
     geometry + the heading-relative sector).
@@ -304,6 +328,14 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
                         gaps; mask past ~0.5-1 s stale" intent. Confidence already encodes staleness
                         (EgoEstimate masks it to 0 past the horizon), so conf>0 alone is the in-horizon
                         test; det is AND'd in ONLY for the legacy hard-mask.
+      slot_range_cap_m  MAX-RANGE SLOT-FILL CAP (pefcap 2026-07-12, ``+env.ego_obs_slot_range_cap_m``).
+                        Default +inf == OFF == byte-identical. When finite, a slot is ALSO masked when the
+                        ESTIMATED range ‖est.rel_pos[g]‖ exceeds the cap: a far downstream gate (e.g. a 50 m
+                        gate-4 seen through the openings) does NOT fill its slot. PINS train/deploy parity
+                        (deploy range-gates slot fills on the estimated range at the same value), so a
+                        far-gate-in-slot1 can never train the policy to skip near gates and dive at the far
+                        one; and it keeps slot1 GENUINELY EMPTY between gates so the coarse sector is the only
+                        remaining next-gate signal. ESTIMATED (deploy-observable) range, not GT. BOTH slots.
 
     Slot k (k=0 current, 1 next) reads gate g=clamp(tg+k). A slot is MASKED (rel_pos=0, confidence=0,
     visible_area=0) when the slot is past the last gate OR confidence==0 (stale past horizon) OR --
@@ -336,6 +368,13 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
         keep = valid[:, k] & (conf > 0.0)                             # (N,) in-horizon test
         if not obs_coast:
             keep = keep & det                                          # legacy hard-mask on this-step visibility
+        if slot_range_cap_m != float("inf"):
+            # MAX-RANGE SLOT-FILL CAP (pefcap 2026-07-12; OFF at +inf == byte-identical): a far downstream
+            # gate does NOT fill its slot. Gate on the ESTIMATED range (deploy-observable) so train matches
+            # the deploy slot-fill range gate -> slot1 stays empty for far gates and the coarse sector is the
+            # only next-gate signal between gates.
+            est_range = torch.linalg.norm(rel, dim=-1)                 # (N,) estimated body-frame range
+            keep = keep & (est_range <= slot_range_cap_m)
         keep_f = keep.to(dt)
         rel = rel * keep_f.unsqueeze(-1)
         conf = conf * keep_f
@@ -650,6 +689,13 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # term in ego_actor_obs so the coasted rel_pos + linearly-decaying confidence feed the obs during a
         # blackout, masking only past the estimator's stale horizon (conf==0) -- the DESIGN.md §5.A intent.
         self._ego_obs_coast = bool(getattr(cfg, "ego_obs_coast", False))
+        # MAX-RANGE SLOT-FILL CAP (pefcap 2026-07-12, +env.ego_obs_slot_range_cap_m; default +inf == OFF ==
+        # byte-identical). When finite, ego_actor_obs masks a window slot whose ESTIMATED range exceeds the
+        # cap so a far downstream gate (e.g. a 50 m gate seen through the openings) never fills slot1 -- PINS
+        # train/deploy parity (deploy range-gates slot fills at the same value) AND keeps slot1 genuinely
+        # empty between gates so the coarse sector is the only next-gate signal (the pefcap trust-the-map
+        # behaviour). Applied to BOTH the current (tg) and next (tg+1) slots.
+        self._ego_obs_slot_range_cap_m = float(getattr(cfg, "ego_obs_slot_range_cap_m", float("inf")))
         # ===== PERCEPTION-HONESTY / HARD NO-SPIN package (2026-07-10, DESIGN.md §P). ALL knobs
         # default-OFF == byte-identical (blur False, aborts 0.0, clamp 0.0). Armed only by the NEW
         # *_percept curriculum stages. NOTE the knob names are deliberately ego_spin_* / ego_blur_* /
@@ -1036,7 +1082,8 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         detectable = self._current_detectable()
         est = self._estimator.estimate()
         obs = ego_actor_obs(est, detectable, self.target_gates, self.last_action[..., 0],
-                            self._coarse_map, self.n_gates, obs_coast=self._ego_obs_coast)
+                            self._coarse_map, self.n_gates, obs_coast=self._ego_obs_coast,
+                            slot_range_cap_m=self._ego_obs_slot_range_cap_m)
         finite = torch.isfinite(obs)
         if not bool(finite.all()):
             obs = torch.where(finite, obs, torch.zeros_like(obs))
@@ -1237,6 +1284,25 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             if self._egorw.perception != 0.0:
                 cos_view = gate_center_view_cos(self._p, self._cam_R_wb(), self.gate_pos,
                                                 self.gate_yaw, is_quat=False)[ar, tg]   # (N,)
+            # NEXT-GATE perception cue (pefcap 2026-07-12; None unless rw_perception_next>0 -> byte-identical
+            # off): cos(optical-axis, drone->NEXT-gate-centre), GATED on the next gate being (a) REAL (not the
+            # clamped last-gate slot) AND (b) DETECTABLE this step (self._last_detectable, the blur/kp-gated
+            # mask the actor sees). Where either fails we feed cos=-1 so exp(-acos(-1)^exp)~0 -- the bonus pays
+            # NOTHING while the next gate is out of view/absent (no off-gate farm; no pull off the current gate
+            # during the approach). Same flipped camera as the detector/visible_area.
+            cos_view_next = None
+            if self._egorw.perception_next != 0.0:
+                cvn = gate_center_view_cos(self._p, self._cam_R_wb(), self.gate_pos,
+                                           self.gate_yaw, is_quat=False)[ar, next_idx]   # (N,)
+                next_ok = ((tg + 1) < G) & self._last_detectable[ar, next_idx]
+                cos_view_next = torch.where(next_ok, cvn, torch.full_like(cvn, -1.0))
+            # ATTITUDE-LIMIT inputs (pefcap 2026-07-12; None unless rw_att_pitch/rw_att_roll>0 -> byte-identical
+            # off): the TRUE gravity-leveled roll/pitch (GT is legal in the reward) -- same extraction as the
+            # critic's roll_pitch_true / the estimator-faithful diagnostics.
+            roll_att = pitch_att = None
+            if self._egorw.att_pitch != 0.0 or self._egorw.att_roll != 0.0:
+                rp_att = _euler_roll_pitch_from_R(quat_xyzw_to_matrix_torch(self._q))
+                roll_att, pitch_att = rp_att[:, 0], rp_att[:, 1]
             reward, loss_components, r_prog = compute_ego_reward(
                 self._egorw,
                 s_curr=s_curr, s_prev=self._seg_s_prev,
@@ -1278,7 +1344,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # Cleared below on a target ADVANCE and in reset_idx on every episode reset/truncation.
                 parabola_paid=self._parabola_paid,
                 # PERCEPTION reward (None unless rw_perception>0): cos(optical-axis, drone->gate-centre).
-                cos_view=cos_view)
+                cos_view=cos_view,
+                # NEXT-GATE perception (None unless rw_perception_next>0; detectability-gated) + ATTITUDE-LIMIT
+                # leveled roll/pitch (None unless a weight>0). All pefcap-package, byte-identical when OFF.
+                cos_view_next=cos_view_next, roll=roll_att, pitch=pitch_att)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious

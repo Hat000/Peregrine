@@ -181,7 +181,9 @@ def test_course_sampler_keys_documented():
                                      "course_spawn_dist_lo", "course_spawn_dist_hi",
                                      "course_spawn_below_g0_lo", "course_spawn_below_g0_hi",
                                      "course_spawn_heading", "course_spawn_yaw_jitter",
-                                     "course_gates_above_spawn")
+                                     "course_gates_above_spawn",
+                                     "course_g1_out_of_fov_lo", "course_g1_out_of_fov_hi",
+                                     "course_min_pair_dist_m")
 
 
 def test_single_gate_varied_varies_position_and_height_offladder():
@@ -613,3 +615,104 @@ def test_percept_renders_valid_tokens():
     full_toks = C.render_overrides("dual_gate_fullstack_floor_percept")
     assert "+env.ego_blur_gate=true" in full_toks
     assert not any(t.startswith("+env.ego_noise_scale") for t in full_toks)   # real noise
+
+
+# ================================================================================================
+# BEHAVIORAL-CAP chain (_pefcap, 2026-07-12): _pef VERBATIM + the default-OFF behavioral package.
+# ================================================================================================
+_PEFCAP_STAGES = ("dual_gate_boot_floor_pefcap", "dual_gate_fullstack_floor_pefcap")
+_PEFCAP_NEW_KEYS = {"rw_att_pitch", "att_pitch_limit_rad", "rw_att_roll", "att_roll_limit_rad",
+                    "course_g1_out_of_fov_lo", "course_g1_out_of_fov_hi",
+                    "ego_obs_slot_range_cap_m", "rw_perception_next"}
+
+
+def test_pefcap_stages_exist_offladder_and_arm_the_package():
+    for s in _PEFCAP_STAGES:
+        assert s in C.STAGES
+        assert s not in C.STAGE_ORDER                              # off-ladder, chained only
+        d = C.STAGES[s]
+        # (A) soft attitude caps ARMED, pitch limit ABOVE the 17.8deg (0.31 rad) nose-down rest tilt.
+        assert d["rw_att_pitch"] == 0.5 and d["rw_att_roll"] == 0.3
+        assert d["att_pitch_limit_rad"] > 0.31 and d["att_pitch_limit_rad"] == pytest.approx(0.5235988)
+        assert d["att_roll_limit_rad"] == pytest.approx(0.6981317)
+        # (B) gate-1 out-of-fov target bearing past the ~45deg (0.785 rad) camera half-HFOV edge.
+        assert d["course_g1_out_of_fov_lo"] > 0.785
+        assert d["course_g1_out_of_fov_hi"] > d["course_g1_out_of_fov_lo"]
+        # (B') far-gate slot-fill cap 30 m (BOTH slots; train/deploy parity + empty slot1 between gates).
+        assert d["ego_obs_slot_range_cap_m"] == 30.0
+        # (D) perception SPLIT current+next STRICTLY below rw_time (0.02) -> farm-neutral hover-stare.
+        assert d["rw_perception"] == 0.014 and d["rw_perception_next"] == 0.004
+        assert d["rw_perception"] + d["rw_perception_next"] < 0.02
+
+
+def test_pefcap_seg_len_ramp_and_sharper_fullstack_band():
+    boot = C.STAGES["dual_gate_boot_floor_pefcap"]
+    full = C.STAGES["dual_gate_fullstack_floor_pefcap"]
+    # (C) seg-len ramp: boot GENTLE (10-20 m, protect the warm boot); fullstack TIGHTER min (8-20 m).
+    assert boot["course_seg_len_lo"] == 10.0 and boot["course_seg_len_hi"] == 20.0
+    assert full["course_seg_len_lo"] == 8.0 and full["course_seg_len_hi"] == 20.0
+    # the fullstack lowers the sampler rejection floor so 8 m spacing is ACTUALLY realized (default 10 m
+    # would redraw every <10 m course and silently truncate seg_len_lo=8 back to 10); boot keeps the default.
+    assert full["course_min_pair_dist_m"] == 7.0
+    assert "course_min_pair_dist_m" not in boot
+    # the out-of-fov band is SHARPER in the fullstack (gate 1 hidden earlier on the approach).
+    assert full["course_g1_out_of_fov_lo"] > boot["course_g1_out_of_fov_lo"]
+
+
+def test_pefcap_inherits_pef_verbatim_except_documented_deviations():
+    """_pefcap = its _pef base VERBATIM + exactly the ARMED behavioral knobs, with two DOCUMENTED
+    deviations: the perception re-split (rw_perception 0.02 -> 0.014) and the fullstack seg-len ramp
+    (course_seg_len_lo 10 -> 8). Everything else -- incl. the whole estimator-faithful + no-spin _raw
+    -- is byte-identical to _pef."""
+    for cap, pef in (("dual_gate_boot_floor_pefcap", "dual_gate_boot_floor_pef"),
+                     ("dual_gate_fullstack_floor_pefcap", "dual_gate_fullstack_floor_pef")):
+        c, p = C.STAGES[cap], C.STAGES[pef]
+        is_full = cap.endswith("fullstack_floor_pefcap")
+        for k, v in p.items():
+            if k == "rw_perception":
+                assert c[k] == 0.014                               # DEVIATION 1: re-split
+            elif k == "course_seg_len_lo" and is_full:
+                assert c[k] == 8.0                                 # DEVIATION 2: fullstack seg ramp
+            elif k == "_raw":
+                assert c["_raw"] == v                              # estimator-faithful plant knobs byte-identical
+            else:
+                assert c[k] == v, (cap, k)
+        extra = {k for k in c if k not in p}
+        expected = set(_PEFCAP_NEW_KEYS)
+        if is_full:
+            expected |= {"course_min_pair_dist_m"}                # DEVIATION 3: fullstack lowers reject floor
+        assert extra == expected, (cap, extra)
+
+
+def test_pefcap_farm_neutrality_current_plus_next_below_time():
+    from ego_reward import EgoRewardWeights
+    t = EgoRewardWeights().time
+    for s in _PEFCAP_STAGES:
+        d = C.STAGES[s]
+        assert d["rw_perception"] + d["rw_perception_next"] < t + 1e-12
+        # constructing the weights must NOT trip the farm-neutrality guard.
+        EgoRewardWeights(perception=d["rw_perception"], perception_next=d["rw_perception_next"])
+
+
+def test_pefcap_renders_valid_tokens():
+    for s in _PEFCAP_STAGES:
+        toks = C.render_overrides(s)
+        assert "+env.rw_att_pitch=0.5" in toks and "+env.rw_att_roll=0.3" in toks
+        assert "+env.ego_obs_slot_range_cap_m=30.0" in toks
+        assert "+env.rw_perception_next=0.004" in toks
+        assert "+env.rw_perception=0.014" in toks              # the re-split current lever
+        assert any(t.startswith("+env.course_g1_out_of_fov_lo=") for t in toks)
+        # the _pef estimator-faithful + hard-no-spin package rides along VERBATIM.
+        assert "+env.ego_faithful=true" in toks and "+env.ego_blur_gate=true" in toks
+        assert "++dynamics.n_substeps=5" in toks
+        assert "algo.gamma=0.9975" in toks
+
+
+def test_pefcap_no_sbatch_collision_and_no_init_from():
+    assert not any("init_from" in k for k in C.STAGES["dual_gate_fullstack_floor_pefcap"]["_raw"])
+    for s in _PEFCAP_STAGES:
+        for tok in C.render_overrides(s):
+            key = tok.split("=", 1)[0]
+            if key.startswith("++"):
+                continue
+            assert key not in _SBATCH_APPENDED_KEYS, (s, tok)

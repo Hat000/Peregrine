@@ -215,6 +215,29 @@ class EgoRewardWeights:
     # (default -> byte-identical). Geles uses λ₂=0.025, exponent 4; Swift ≈ same. Tune via +env.rw_perception.
     perception: float = 0.0          # rw_perception; 0 == OFF
     perception_exponent: float = 4.0 # δ_cam power inside the exp (Geles/Swift = 4)
+    # --- NEXT-GATE perception bonus (pefcap package, 2026-07-12; the coarse-map-load-bearing lever). The
+    # SAME Swift/Geles exp(−δ^exponent) form applied to the NEXT target gate's optical-axis angle, rewarding
+    # the policy for pointing at / acquiring the UPCOMING gate. The env GATES this on the next gate being
+    # DETECTABLE (it passes cos ≈ −1 -> term ~0 while the next gate is out of view / absent / behind), so it
+    # cannot pull the camera off the current gate during the approach and cannot be farmed by pointing at an
+    # unseen gate. FARM-NEUTRALITY: perception + perception_next must stay <= rw_time (a hover-and-stare nets
+    # <= 0/tick) -- enforced in __post_init__. 0 == OFF (byte-identical). Tune via +env.rw_perception_next.
+    perception_next: float = 0.0     # rw_perception_next; 0 == OFF
+    # --- ATTITUDE-LIMIT penalties (pefcap package, 2026-07-12; PERCEPTION-PRESERVATION, NOT energy). SOFT,
+    # NON-TERMINAL per-step penalties on EXCESS leveled body attitude beyond a free band, on the TRUE leveled
+    # attitude (GT legal in reward): −att_pitch·relu(|pitch|−att_pitch_limit_rad) − att_roll·relu(|roll|−
+    # att_roll_limit_rad). They target the diagnosed failure (the policy pitches head-down to ~−50deg -> the
+    # +20deg camera points at −30deg -> LOSES the gate; high-g banks break perception the same way) by pushing
+    # a self-limit INTO the trained policy so it does not need a deploy-side control clamp. Deliberately NOT an
+    # |omega|/thrust/jerk/effort penalty (fast flight is fine -- speed is NOT penalized); the penalty is ZERO
+    # inside the band, INCLUDING the airframe's ~17.8deg (0.31 rad) nose-down REST tilt which sits below the
+    # 30deg default pitch limit, so it never rewards hovering (hover pays 0 here, same as flying within the
+    # band) and never kills a flight (purely a reward term, never a termination). Grows linearly past the
+    # limit. 0 == OFF (byte-identical). Tune via +env.rw_att_pitch / +env.rw_att_roll.
+    att_pitch: float = 0.0           # rw_att_pitch; weight on the |leveled pitch| excess; 0 == OFF
+    att_pitch_limit_rad: float = 0.5235988   # 30 deg free band on |pitch| (ABOVE the 17.8deg rest nose-down)
+    att_roll: float = 0.0            # rw_att_roll; weight on the |leveled roll| excess; 0 == OFF
+    att_roll_limit_rad: float = 0.6981317    # 40 deg free band on |roll|
 
     # --- SMOOTH PARABOLIC CROSSING reward (Fengyou 2026-07-08 -- "policy reacts better to smooth things").
     # Replaces the DISCONTINUOUS {thread=+passage, clip=-100, miss=-100} cliff with one smooth downward
@@ -297,6 +320,17 @@ class EgoRewardWeights:
         catastrophic defect). Assert terminal_base (and terminal_miss/oob) EXCEED the max bankable
         progress return for the certified course; otherwise raise so a mis-set FIXED run fails loudly at
         construction instead of silently training a gate-clipper. progress-scaled -> no-op."""
+        # FARM-NEUTRALITY GUARD (perception_next, pefcap 2026-07-12): a POSITIVE next-gate perception bonus
+        # must keep perception + perception_next <= rw_time so a hover-and-stare (point at both gates, make
+        # no progress) nets <= 0/tick and is never a positive-return strategy (the same bound the existing
+        # rw_perception respects: rw_perception <= rw_time). Checked FIRST so it runs under the default
+        # terminal_progress_scaled=True (which returns early below). perception_next==0 -> no-op (byte-id).
+        if self.perception_next > 0.0:
+            assert self.perception + self.perception_next <= self.time + 1e-9, (
+                f"[ego-reward] rw_perception ({self.perception}) + rw_perception_next "
+                f"({self.perception_next}) = {self.perception + self.perception_next:.4g} EXCEEDS the farm-"
+                f"neutrality ceiling rw_time ({self.time}); a hover-and-stare would net > 0/tick. Split the "
+                "perception budget so perception + perception_next <= rw_time.")
         if self.terminal_progress_scaled:
             return
         max_bankable = self.progress * self.guard_max_course_gates * self.guard_max_seg_len_m
@@ -750,6 +784,26 @@ def perception_reward(cos_view: Tensor, rw_perception: float, exponent: float = 
     return rw_perception * torch.exp(-(delta ** exponent))
 
 
+def attitude_limit_penalty(roll: Tensor, pitch: Tensor, w: EgoRewardWeights) -> Tensor:
+    """SOFT, NON-TERMINAL attitude-limit penalty (pefcap 2026-07-12; PERCEPTION-preservation, not energy):
+        R_att = −rw_att_pitch·relu(|pitch| − att_pitch_limit_rad) − rw_att_roll·relu(|roll| − att_roll_limit_rad)
+    on the TRUE gravity-leveled body attitude (GT is legal in reward). ZERO inside the free band -- and the
+    band sits ABOVE the airframe's ~17.8deg (0.31 rad) nose-down REST tilt (default pitch limit 30deg), so a
+    hovering/resting drone pays ZERO here (this term never makes hovering better than flying-within-band) --
+    then grows LINEARLY once the excursion passes the limit. It caps only the OVER-AGGRESSIVE head-down /
+    high-bank attitudes that swing the +20deg-mounted camera off the gate and break the estimate; it is NOT
+    an |omega|/thrust/jerk penalty and does NOT penalise speed (a fast drone within the band pays 0). It is
+    a pure reward term -- it NEVER terminates a flight. rw_att_pitch==rw_att_roll==0 -> zeros (byte-identical).
+    roll/pitch (N,) leveled rad. Returns the (negative) penalty (N,)."""
+    assert torch is not None
+    pen = torch.zeros_like(pitch)
+    if w.att_pitch != 0.0:
+        pen = pen + w.att_pitch * torch.relu(pitch.abs() - w.att_pitch_limit_rad)
+    if w.att_roll != 0.0:
+        pen = pen + w.att_roll * torch.relu(roll.abs() - w.att_roll_limit_rad)
+    return -pen
+
+
 def compute_ego_reward(
     w: EgoRewardWeights, *,
     s_curr: Tensor, s_prev: Tensor,
@@ -775,6 +829,9 @@ def compute_ego_reward(
     parabola_paid: "Tensor | None" = None,
     floor_contact: "Tensor | None" = None,
     cos_view: "Tensor | None" = None,
+    cos_view_next: "Tensor | None" = None,
+    roll: "Tensor | None" = None,
+    pitch: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
@@ -831,6 +888,17 @@ def compute_ego_reward(
     # camera axis on the gate centre (cos_view from gate_center_view_cos) -> the field's centering lever.
     r_perc = (perception_reward(cos_view, w.perception, w.perception_exponent)
               if cos_view is not None else torch.zeros_like(r_prog))
+    # NEXT-GATE perception (pefcap 2026-07-12; OFF unless w.perception_next>0): the same exp(-δ^exp) bonus on
+    # the NEXT gate's optical-axis angle. The caller passes cos_view_next ALREADY GATED on next-gate
+    # detectability (cos ≈ -1 -> term ~0 while the next gate is out of view / absent), so it rewards
+    # ACQUIRING/centering the upcoming gate only once it is genuinely visible -- it cannot be farmed by
+    # pointing at an unseen gate, and current+next is bounded <= rw_time (EgoRewardWeights.__post_init__).
+    r_perc_next = (perception_reward(cos_view_next, w.perception_next, w.perception_exponent)
+                   if cos_view_next is not None else torch.zeros_like(r_prog))
+    # ATTITUDE-LIMIT penalty (pefcap 2026-07-12; OFF unless w.att_pitch/att_roll>0): soft, non-terminal
+    # perception-preservation penalty on the leveled attitude beyond the free band (see attitude_limit_penalty).
+    r_att = (attitude_limit_penalty(roll, pitch, w)
+             if (roll is not None and pitch is not None) else torch.zeros_like(r_prog))
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
@@ -854,8 +922,8 @@ def compute_ego_reward(
         term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w,
                                 forfeit_mask=forfeit_mask)
 
-    reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_corr + r_align + r_perc + r_fin + r_cone
-              + r_smooth + r_exit + r_time - term)
+    reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_corr + r_align + r_perc + r_perc_next
+              + r_att + r_fin + r_cone + r_smooth + r_exit + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
@@ -866,6 +934,8 @@ def compute_ego_reward(
         "corridor_reward": float(r_corr.mean()),
         "align_reward": float(r_align.mean()),
         "perception_reward": float(r_perc.mean()),
+        "perception_next_reward": float(r_perc_next.mean()),
+        "att_pen": float((-r_att).mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),
