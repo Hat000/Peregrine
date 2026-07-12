@@ -71,6 +71,10 @@ UPD_dual_gate_boot_floor_pef=${UPD_dual_gate_boot_floor_pef:-4000}
 UPD_dual_gate_fullstack_floor_pef=${UPD_dual_gate_fullstack_floor_pef:-12000}
 # NODITHER fine-tune default (2026-07-12): a SHORT warm-started (from vpeffs0) dither-removal fine-tune.
 UPD_dual_gate_fullstack_floor_pef_nodither=${UPD_dual_gate_fullstack_floor_pef_nodither:-3000}
+# TRACK B attcap fine-tune default (2026-07-12): a SHORT warm-started (from vpeffs0) annealed attitude-cap
+# fine-tune -- a gentler champion that flies natively within a pitch/roll band (att_cap_anneal ramps the
+# soft cap weights 0->target over the run, END-HOLD at full). Run STANDALONE; EXTRA wires vpeffs0.
+UPD_dual_gate_fullstack_floor_pef_attcap=${UPD_dual_gate_fullstack_floor_pef_attcap:-3000}
 ENT_WEIGHT=${ENT_WEIGHT:-0.01}   # APPO entropy bonus coeff (diffaero default)
 
 TRAIN=/scratch/network/fl3689/peregrine_repo/rl/peregrine_train_ego.py

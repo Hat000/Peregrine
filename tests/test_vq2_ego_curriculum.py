@@ -769,6 +769,103 @@ def test_nodither_offladder_no_init_from_no_sbatch_collision_renders():
 
 
 # ================================================================================================
+# TRACK B: ANNEALED ATTITUDE-CAP fine-tune (attcap, 2026-07-12): dual_gate_fullstack_floor_pef VERBATIM
+# + exactly the SOFT attitude caps (weights + limits) AND their per-update ramp knobs. Nothing else.
+# ================================================================================================
+_ATTCAP_STAGE = "dual_gate_fullstack_floor_pef_attcap"
+_ATTCAP_NEW_KEYS = {"rw_att_pitch", "att_pitch_limit_rad", "rw_att_roll", "att_roll_limit_rad",
+                    "att_cap_anneal", "att_cap_start", "att_cap_hold_frac"}
+
+
+def test_attcap_is_pef_fullstack_verbatim_plus_only_attitude_caps():
+    """The fine-tune stage = dual_gate_fullstack_floor_pef VERBATIM (course + reward + the no-spin
+    package + the estimator-faithful _raw all byte-identical) PLUS exactly the attitude-cap arm: the two
+    cap weights + two limits + the three anneal knobs. NOTHING else changes -> the flight skill + the HARD
+    no-spin guarantee are preserved, and none of the _pefcap package (out-of-fov spawn / range cap /
+    perception-next / seg ramp) nor the _nodither yaw-dither term leaks in."""
+    ac, pef = C.STAGES[_ATTCAP_STAGE], C.STAGES["dual_gate_fullstack_floor_pef"]
+    for k, v in pef.items():
+        if k == "_raw":
+            assert ac["_raw"] == v                                  # _raw byte-identical (noise + plant knobs)
+        else:
+            assert ac[k] == v, k                                    # every _pef key verbatim
+    extra = {k for k in ac if k not in pef}
+    assert extra == _ATTCAP_NEW_KEYS, extra
+
+
+def test_attcap_target_bands_and_weights_match_deploy_findings():
+    """PITCH band tight ~10-12 deg (BELOW the 17.8deg/0.31 rad pad-rest tilt on purpose -- the head-down
+    dive is the deploy killer), ROLL band generous 60 deg (roll is load-bearing for turns). Weights MILD."""
+    ac = C.STAGES[_ATTCAP_STAGE]
+    assert ac["rw_att_pitch"] == 0.3 and ac["rw_att_roll"] == 0.2               # MILD weights
+    # pitch band 10-12 deg (0.1745-0.2094 rad) -- DELIBERATELY below the 17.8 deg (0.31 rad) rest tilt.
+    assert 0.1745 <= ac["att_pitch_limit_rad"] <= 0.2095
+    assert ac["att_pitch_limit_rad"] < 0.31                                     # below the pad-rest tilt (intended)
+    assert ac["att_roll_limit_rad"] == pytest.approx(1.0471976)                 # 60 deg (generous, turns)
+
+
+def test_attcap_anneal_knobs_ramp_the_weight_in_from_zero():
+    """The anneal is armed on the stage: att_cap_anneal ON, start 0.0 (INERT at birth = vpeffs0 untouched),
+    END-HOLD hold_frac in (0,1). The launcher's _resolve_att_cap_anneal reads these off cfg.env."""
+    ac = C.STAGES[_ATTCAP_STAGE]
+    assert ac["att_cap_anneal"] is True
+    assert ac["att_cap_start"] == 0.0                                           # ramp IN from no cap
+    assert 0.0 < ac["att_cap_hold_frac"] < 1.0                                  # a real END-HOLD fraction
+
+
+def test_attcap_keeps_hard_no_spin_and_yaw_clamp_untouched():
+    """The no-spin guarantee stays BY CONSTRUCTION: the fatal spin abort (incl. the accumulated-rotation
+    trigger) + the realized-yaw clamp are EXACTLY the _pef values -- the soft caps ride ALONGSIDE them."""
+    ac = C.STAGES[_ATTCAP_STAGE]
+    assert ac["ego_spin_rate_abort"] == 3.5 and ac["ego_spin_time_abort"] == 0.4
+    assert ac["ego_spin_rev_abort"] == 1.5 and ac["ego_spin_rev_window_s"] == 4.0
+    assert ac["ego_yaw_cmd_clamp_rad_s"] == 0.35
+
+
+def test_attcap_does_not_leak_pefcap_or_nodither_knobs():
+    """Track B is ONLY the attitude caps -- none of the _pefcap package (gate-1 out-of-fov, range cap,
+    perception-next, seg-len ramp) nor the _nodither yaw-dither term may appear."""
+    ac = C.STAGES[_ATTCAP_STAGE]
+    for forbidden in ("course_g1_out_of_fov_lo", "course_g1_out_of_fov_hi", "ego_obs_slot_range_cap_m",
+                      "rw_perception_next", "course_min_pair_dist_m", "rw_yaw_dither", "rw_vel_smooth"):
+        assert forbidden not in ac, forbidden
+    # the perception lever stays the _pef current-gate 0.02 (NOT the _pefcap 0.014 re-split).
+    assert ac["rw_perception"] == 0.02
+    # the seg-len min stays the _pef 10 m (NOT the _pefcap 8 m tightening).
+    assert ac["course_seg_len_lo"] == 10.0
+
+
+def test_attcap_constructs_reward_weights_without_tripping_guards():
+    """The cap weights + limits build a valid EgoRewardWeights (no farm-neutrality / terminal guard trips)."""
+    from ego_reward import EgoRewardWeights
+    ac = C.STAGES[_ATTCAP_STAGE]
+    w = EgoRewardWeights(att_pitch=ac["rw_att_pitch"], att_roll=ac["rw_att_roll"],
+                         att_pitch_limit_rad=ac["att_pitch_limit_rad"],
+                         att_roll_limit_rad=ac["att_roll_limit_rad"])
+    assert w.att_pitch == 0.3 and w.att_roll == 0.2
+
+
+def test_attcap_offladder_no_init_from_no_sbatch_collision_renders():
+    ac = C.STAGES[_ATTCAP_STAGE]
+    assert _ATTCAP_STAGE not in C.STAGE_ORDER                       # off-ladder (standalone warm-start)
+    assert not any("init_from" in k for k in ac["_raw"])           # launcher/EXTRA wires vpeffs0 at run time
+    toks = C.render_overrides(_ATTCAP_STAGE)
+    assert "+env.rw_att_pitch=0.3" in toks and "+env.rw_att_roll=0.2" in toks   # the caps armed
+    assert "+env.att_cap_anneal=true" in toks                       # the weight ramp armed
+    assert "+env.att_cap_start=0.0" in toks
+    assert "+env.ego_faithful=true" in toks                         # the _pef estimator-faithful rides along
+    assert "+env.ego_yaw_cmd_clamp_rad_s=0.35" in toks             # the no-spin clamp preserved
+    assert "+env.ego_spin_rev_abort=1.5" in toks                    # the constant-drift spin closer preserved
+    assert "algo.gamma=0.9975" in toks
+    assert not any(t.startswith("+env.ego_noise_scale") for t in toks)   # real-noise fullstack regime
+    for tok in toks:                                               # no _pef/BASE-appended key collision
+        key = tok.split("=", 1)[0]
+        if key.startswith("++"):
+            continue
+        assert key not in _SBATCH_APPENDED_KEYS, tok
+
+
+# ================================================================================================
 # R0 STILL-YAW HOVER BOOT (hover_still_boot, 2026-07-12): the FIRST rung of a fresh lineage. A pure
 # altitude-hold hover (gate terms zeroed, == hover_hold) + the four R0 arms (yaw-dither, spin abort,
 # vel-jerk, altitude-hold) + the yaw clamp armed at the base + estimator-faithful at LOW noise.

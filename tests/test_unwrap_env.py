@@ -424,3 +424,56 @@ def test_progress_ramp_lifeline_wiring_source_pins():
     assert 'pr_sched["base"] = float(getattr(pr_env._egorw, "progress", 0.0))' in src
     assert 'raise RuntimeError' in src.split('pr_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
     assert 'pr_env._egorw.progress = pr_sched["base"] * prv' in src
+
+
+# ================================================================================================
+# (e) ATTITUDE-CAP penalty-WEIGHT RAMP-IN (Track B, 2026-07-12): the annealed soft attitude caps.
+#     A gentle reshape of the WORKING ego champion so it flies natively inside a pitch/roll band --
+#     the caps ramp IN from 0 (vpeffs0 untouched at birth) to the target weights, END-HOLD at full.
+#     Resolver gating + the ramp-in schedule reuse + the DUAL-weight lifeline wiring pins.
+# ================================================================================================
+def test_resolve_att_cap_anneal_off_by_default_and_parses_knobs():
+    """Unset / falsy gate -> None (byte-identical OFF); armed -> defaults start_scale=0.0 (INERT at
+    birth = the working flyer untouched) hold_frac=0.3 (full caps for the last 30% so the graduate's
+    converged regime IS the flown band); explicit knobs win."""
+    assert ego_launcher._resolve_att_cap_anneal(_Cfg(env=None)) is None
+    assert ego_launcher._resolve_att_cap_anneal(_Cfg(env=_Cfg())) is None
+    assert ego_launcher._resolve_att_cap_anneal(
+        _Cfg(env=_Cfg(att_cap_anneal=False))) is None
+    s = ego_launcher._resolve_att_cap_anneal(
+        _Cfg(env=_Cfg(att_cap_anneal=True), n_updates=3000))
+    assert s == {"start_scale": 0.0, "hold_frac": 0.3, "n_updates": 3000}
+    s = ego_launcher._resolve_att_cap_anneal(
+        _Cfg(env=_Cfg(att_cap_anneal=True, att_cap_start=0.1, att_cap_hold_frac=0.5), n_updates=100))
+    assert s == {"start_scale": 0.1, "hold_frac": 0.5, "n_updates": 100}
+
+
+def test_att_cap_anneal_is_a_ramp_in_via_spin_abort_schedule():
+    """start_scale=0 through _spin_abort_schedule ramps 0->1 over the front (1-hold_frac) then END-HOLDs
+    at 1.0 -- so both att_pitch/att_roll go 0 -> target and stay target for the last hold_frac. The caps
+    are INERT at birth (scale 0) so the warm-started champion is untouched, then reshape gradually."""
+    f = ego_launcher._spin_abort_schedule
+    N, hold = 3000, 0.3
+    ramp_end = int((1.0 - hold) * N)
+    assert f(0, N, 0.0, hold) == pytest.approx(0.0)              # caps INERT at birth (vpeffs0 untouched)
+    assert 0.0 < f(ramp_end // 2, N, 0.0, hold) < 1.0            # ramping in
+    assert f(ramp_end, N, 0.0, hold) == pytest.approx(1.0)       # full caps by (1-hold)*N
+    for i in (ramp_end + 1, N - 1, N):
+        assert f(i, N, 0.0, hold) == pytest.approx(1.0)          # END-HOLD at the full cap
+    vals = [f(i, N, 0.0, hold) for i in range(0, N + 1, 100)]
+    assert all(a <= b for a, b in zip(vals, vals[1:]))           # monotone non-decreasing (ramp IN)
+
+
+def test_att_cap_anneal_lifeline_wiring_source_pins():
+    """Source pins (cluster-only wiring): holder = '_egorw' (the exact object ego_reward reads); BOTH
+    cap-weight bases captured pre-mutation and a BOTH-OFF base RAISES (ramping scale*0 on both is an L16
+    silent no-op under an annealed run name); per-update mutation of BOTH _egorw.att_pitch AND
+    _egorw.att_roll via the shared ramp-in (start_scale=0) END-HOLD schedule."""
+    import inspect
+    src = inspect.getsource(ego_launcher._run_with_ego_lifelines)
+    assert '_require_anneal_holder(env, "_egorw", ac_sched' in src
+    assert 'ac_sched["base_pitch"] = float(getattr(ac_env._egorw, "att_pitch", 0.0))' in src
+    assert 'ac_sched["base_roll"] = float(getattr(ac_env._egorw, "att_roll", 0.0))' in src
+    assert 'raise RuntimeError' in src.split('ac_sched["base_roll"] = ', 1)[1].split("agent.step", 1)[0]
+    assert 'ac_env._egorw.att_pitch = ac_sched["base_pitch"] * acv' in src
+    assert 'ac_env._egorw.att_roll = ac_sched["base_roll"] * acv' in src

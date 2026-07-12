@@ -1422,6 +1422,88 @@ STAGES: dict[str, dict] = {
                  "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
     },
     # ================================================================================================
+    # TRACK B: ANNEALED ATTITUDE-CAP fine-tune (attcap, 2026-07-12) -- dual_gate_fullstack_floor_pef
+    # VERBATIM (course + reward + the HARD no-spin package + the estimator-faithful _raw ALL byte-identical,
+    # so the flight skill is preserved) PLUS exactly ONE added arm: the SOFT attitude caps
+    # (attitude_limit_penalty, ego_reward.py). A SHORT WARM-STARTED fine-tune of the working ego champion
+    # (vpeffs0) whose ONLY job is a GENTLER, deployable champion that flies NATIVELY inside a pitch/roll
+    # band (so it needs no deploy-side control clamp). OFF-LADDER, run as a SINGLE standalone stage
+    # warm-started from vpeffs0 (the launcher wires +init_from at run time via EXTRA -- NOT hardcoded):
+    #   sbatch --export=ALL,SEED=0,RUNTAG=vattcap0,\
+    #     STAGES="dual_gate_fullstack_floor_pef_attcap",\
+    #     UPD_dual_gate_fullstack_floor_pef_attcap=3000,PRECHECK=1,\
+    #     EXTRA="+init_from=/scratch/network/fl3689/diffaero/outputs/train/ego_dual_gate_fullstack_floor_pef_seed0_vpeffs0/checkpoints" \
+    #     rl/peregrine_vq2_ego.sbatch
+    # (confirm the vpeffs0 checkpoints dir before launch -- the RUNTAG that produced vpeffs0. A single-stage
+    # run leaves PREV_CKPT empty so the loop appends NO +init_from -> the EXTRA one does not collide.)
+    # THE ONE ADDED ARM -- SOFT, NON-TERMINAL attitude caps (perception-preservation, NOT energy):
+    #   R_att = -rw_att_pitch*relu(|pitch|-att_pitch_limit_rad) - rw_att_roll*relu(|roll|-att_roll_limit_rad)
+    # on the TRUE leveled body attitude (GT legal in reward), ZERO inside the band, linear ramp past it,
+    # NEVER a termination. TARGETS (Fengyou deploy findings 2026-07-12):
+    #   * PITCH band 12 deg (0.2094 rad), weight 0.3. DELIBERATELY tight and -- UNLIKE the _pefcap 30 deg
+    #     band -- BELOW the airframe's ~17.8 deg (0.31 rad) tilted-pad REST pitch and normal forward-cruise
+    #     pitch: the diagnosed deploy killer is the head-down DIVE (body pitch ~ -50 deg -> the +20 deg
+    #     camera points -30 deg -> LOSES the gate), and a HARD 10 deg pitch clamp is what threaded past 4
+    #     gates in deploy. A tight band taxes forward-cruise pitch too (it WILL slow the racer) -- ACCEPTED
+    #     under BANK-FIRST (complete gates at any speed); the SOFT annealed hinge NUDGES the nose up rather
+    #     than WALLING it, so it reshapes the flyer instead of breaking it. (Sweep 12 -> 10 deg via
+    #     EXTRA=++env.att_pitch_limit_rad=0.1745329 if the head-down behaviour persists.)
+    #   * ROLL band 60 deg (1.0472 rad), weight 0.2. GENEROUS: roll is LOAD-BEARING for turns, so the cap
+    #     only clips extreme high-g banks that swing the camera off the gate; normal turning banks pay 0.
+    # ANNEAL (the nodither lesson: a full-strength penalty HOT-APPLIED to a competent policy detonates it):
+    # the penalty WEIGHTS ramp IN from 0 -> target over the FRONT of the run, END-HOLD at the full caps for
+    # the last 30% (att_cap_anneal, peregrine_train_ego._resolve_att_cap_anneal, reusing the progress_ramp /
+    # spin-abort END-HOLD schedule). At update 0 the caps are INERT (scale 0) = the vpeffs0 behaviour
+    # UNTOUCHED; they grow gradually; the saved ckpt's converged regime IS the full cap. The LIMITS are
+    # FIXED from the start -- ONLY the weights ramp. NO mini-ladder needed (single stage, single ckpt pull).
+    # HARD no-spin stays BY CONSTRUCTION: the fatal spin abort (ego_spin_*) + yaw clamp are UNTOUCHED here;
+    # the caps are a pure reward term riding alongside. Everything else is BYTE-IDENTICAL to _pef (NO
+    # out-of-view spawn, NO 8 m spacing / range cap, NO perception-next, NO anti-dither -- those live only
+    # in _pefcap / _nodither). BUDGET: SHORT ~3000 updates (a warm RESHAPE of one behaviour). SUCCESS
+    # (training metrics; renders untrustworthy): DET box-exit thread must NOT collapse vs vpeffs0 ~0.969
+    # (caps are non-load-bearing so expected safe; a tight pitch cap SLOWS it -- fine, BANK-FIRST -- as long
+    # as it still threads), att_pitch/att_roll ramp visible in the [att-cap-anneal] logs, exit_spin ~0.
+    # ================================================================================================
+    "dual_gate_fullstack_floor_pef_attcap": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_fullstack_floor_pef
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime; the packages ride along.
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_blur_rate_hi_rad_s": 4.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_spin_rate_abort": 3.5,        # HARD no-spin package == _pef VERBATIM (UNTOUCHED)
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,         # the accumulated-rotation trigger (constant-drift closer) preserved
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,   # yaw clamp UNTOUCHED (the caps ride ALONGSIDE)
+        "rw_perception": 0.02,
+        "rw_perception_exponent": 4.0,
+        "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,          # measured choked-loop dt band (renewal over the pmf)
+        # ---- attcap ADDITION (the ONE added arm; SOFT annealed attitude caps; default-OFF elsewhere) ----
+        "rw_att_pitch": 0.3, "att_pitch_limit_rad": 0.2094395,   # 12 deg pitch band (below the 17.8deg pad-rest
+        #                                                          tilt on purpose: the head-down dive is the killer)
+        "rw_att_roll": 0.2, "att_roll_limit_rad": 1.0471976,     # 60 deg roll band (roll load-bearing for turns)
+        "att_cap_anneal": True, "att_cap_start": 0.0, "att_cap_hold_frac": 0.3,  # weight 0->target, END-HOLD last 30%
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here: run STANDALONE, the launcher wires vpeffs0 via EXTRA (single-stage
+                 # run -> PREV_CKPT empty -> no loop-appended +init_from to collide with).
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
+    # ================================================================================================
     # BEHAVIORAL-CAP chain (_pefcap, 2026-07-12) -- the _pef chain VERBATIM plus a DEFAULT-OFF package
     # that pushes the deployed behavioral limits INTO the trained policy so it self-limits WITHOUT any
     # deploy-side control clamp. Targets the two live-flight failures: (a) the coarse-map horiz turn prior

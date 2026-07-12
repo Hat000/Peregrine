@@ -389,6 +389,34 @@ def _resolve_progress_ramp(cfg):
     )
 
 
+def _resolve_att_cap_anneal(cfg):
+    """Parse the ATTITUDE-CAP penalty-WEIGHT RAMP-IN from cfg.env, or None when OFF (byte-identical
+    default). Gated by ``+env.att_cap_anneal`` (truthy); ``+env.att_cap_start/hold_frac`` optional.
+    THE GENTLE-CAP LEVER (Track B, 2026-07-12): a SHORT warm-started fine-tune whose ONLY job is to reshape
+    the WORKING ego champion (vpeffs0) so it flies natively inside a pitch/roll band. Hot-applying a
+    full-strength attitude penalty to a competent policy DETONATES it (the nodither lesson: a strong
+    penalty slammed onto a working flyer destroys it), so this ramps the SOFT attitude-cap WEIGHTS
+    (att_pitch AND att_roll) in from att_cap_start*base (default 0 -> the caps are INERT at birth = the
+    vpeffs0 behaviour untouched) UP to the configured target weights over the FRONT (1-hold_frac), then
+    END-HOLDs at the full caps for the last hold_frac -- so the drone reshapes GRADUALLY into the band and
+    the saved checkpoint's converged regime IS the full cap (END-HOLD, the same guarantee-at-the-end
+    argument as progress_ramp / spin-abort / yaw-clamp). The LIMITS (att_pitch_limit_rad /
+    att_roll_limit_rad) are FIXED from update 0; ONLY the penalty WEIGHTS ramp. REUSES _spin_abort_schedule
+    (start_scale=0 -> ramps 0->1 over the front, holds 1.0). Mutates env._egorw.att_pitch AND
+    env._egorw.att_roll (the exact object ego_reward reads). At least ONE base MUST be armed (>0): ramping
+    scale*0 on BOTH is a silent no-op under an annealed run name (footgun L16). start_scale=0 is INTENDED
+    (ramp in from no cap, unlike the clamp/perception hooks whose START is the loose extreme), so ONLY the
+    bases are guarded. PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "att_cap_anneal", False)):
+        return None
+    return dict(
+        start_scale=float(getattr(env, "att_cap_start", 0.0)),
+        hold_frac=float(getattr(env, "att_cap_hold_frac", 0.3)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
 def _run_det_eval(self, env, agent, cfg):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
@@ -590,6 +618,28 @@ def _run_with_ego_lifelines(self):
         else:
             pr_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # ATTITUDE-CAP RAMP-IN (Track B, 2026-07-12; see _resolve_att_cap_anneal's rationale). Mutates BOTH
+    # env._egorw.att_pitch AND env._egorw.att_roll from att_cap_start*base UP to base (END-HOLD) so the
+    # working flyer reshapes gradually into the pitch/roll band. Bases captured pre-mutation; at least ONE
+    # MUST be armed (>0): ramping 0->0 on both is a silent no-op under an annealed run name (L16).
+    # start_scale=0 is INTENDED (ramp in from no cap), so only the bases are guarded.
+    ac_sched = _resolve_att_cap_anneal(cfg)
+    ac_env = _require_anneal_holder(env, "_egorw", ac_sched, "att-cap-anneal", cfg)
+    if ac_sched is not None:
+        if ac_env is not None:
+            ac_sched["base_pitch"] = float(getattr(ac_env._egorw, "att_pitch", 0.0))
+            ac_sched["base_roll"] = float(getattr(ac_env._egorw, "att_roll", 0.0))
+            if ac_sched["base_pitch"] <= 0.0 and ac_sched["base_roll"] <= 0.0:
+                raise RuntimeError(
+                    "[att-cap-anneal] requested but BOTH attitude caps are OFF (base rw_att_pitch="
+                    f"{ac_sched['base_pitch']:.4f}, rw_att_roll={ac_sched['base_roll']:.4f}) -- ramping "
+                    "0->0 is a silent no-op under an annealed run name (footgun L16); arm rw_att_pitch "
+                    "and/or rw_att_roll (the full cap weights) or drop +env.att_cap_anneal.")
+            print(f"[att-cap-anneal] ON: {ac_sched} (RAMP-IN {ac_sched['start_scale']:.2f}*base -> "
+                  f"base, END-HOLD at full for the last {ac_sched['hold_frac']:.0%} of updates)")
+        else:
+            ac_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -651,6 +701,14 @@ def _run_with_ego_lifelines(self):
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[progress-ramp] update {counter['i']}: scale={prv:.3f} "
                       f"rw_progress={pr_env._egorw.progress:.3f}")
+        if ac_sched is not None:
+            acv = _spin_abort_schedule(counter["i"], ac_sched["n_updates"],
+                                       ac_sched["start_scale"], ac_sched["hold_frac"])
+            ac_env._egorw.att_pitch = ac_sched["base_pitch"] * acv
+            ac_env._egorw.att_roll = ac_sched["base_roll"] * acv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[att-cap-anneal] update {counter['i']}: scale={acv:.3f} "
+                      f"att_pitch={ac_env._egorw.att_pitch:.3f} att_roll={ac_env._egorw.att_roll:.3f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
