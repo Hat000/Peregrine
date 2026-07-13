@@ -445,6 +445,38 @@ def quat_xyzw_from_axis_angle(rotvec: Tensor) -> Tensor:
     return torch.cat([scale * rotvec, w], dim=-1)
 
 
+def spawn_velocity_toward_gate(to_gate: Tensor, sel_draw: Tensor, mag_draw: Tensor,
+                               spawn_vel_frac: float, spawn_vel_max: float) -> Tensor:
+    """SPAWN-VELOCITY RANDOMIZATION (anti-velocity-runaway 2026-07-13; default OFF -> all-zeros ==
+    byte-identical at-rest spawn).
+
+    Give a FRACTION of the reset envs an initial WORLD-frame velocity directed at their TARGET gate,
+    magnitude U[0, spawn_vel_max). The proven _pef path spawns every episode AT REST (spawn_vel_frac=0),
+    and an episode is too short for the policy to accelerate into the ~12 m/s runaway regime on its own,
+    so it never experiences (and never learns to respect) that regime; a fast spawn EXPOSES it -- pairs
+    with the velocity-cap reward.
+
+        moving = sel_draw < spawn_vel_frac                     # which envs get a moving start
+        mag    = clip(mag_draw, 0, 1) * spawn_vel_max          # U[0, spawn_vel_max)
+        dir    = normalize(to_gate)                            # spawn -> target gate centre (world)
+        v0     = dir * mag  on moving envs, ZERO elsewhere
+
+    ``to_gate`` (N,3) = the world spawn->target-gate-centre vector (== gate0 - spawn for the standing-start
+    _pef path, so the velocity points at the FIRST gate); ``sel_draw`` / ``mag_draw`` (N,) are U[0,1) draws.
+    A degenerate zero-length ``to_gate`` (spawn ON the gate) yields ZERO velocity for that env (safe
+    normalize). ``spawn_vel_frac`` <= 0 -> the WHOLE tensor is zeros (no env moves) so the caller leaves the
+    spawn velocity at 0 -- byte-identical. Returns v0 (N,3) world-frame velocity."""
+    assert torch is not None
+    if spawn_vel_frac <= 0.0:
+        return torch.zeros_like(to_gate)
+    moving = (sel_draw < float(spawn_vel_frac)).to(to_gate.dtype)            # (N,)
+    norm = torch.linalg.norm(to_gate, dim=-1, keepdim=True)                  # (N,1)
+    dirn = torch.where(norm > 1e-6, to_gate / norm.clamp(min=1e-6),
+                       torch.zeros_like(to_gate))                            # unit (0 where degenerate)
+    mag = mag_draw.clamp(0.0, 1.0) * float(spawn_vel_max) * moving           # (N,) 0 where not moving
+    return dirn * mag.unsqueeze(-1)                                          # (N,3)
+
+
 # ================================================================================================
 # FLOOR-AT-SPAWN knob resolution (A1 fix 2026-07-10) -- PURE (getattr-only), laptop-testable.
 # ================================================================================================
@@ -540,6 +572,14 @@ class PeregrineRacing(Racing):
         self.finished = torch.zeros(n, dtype=torch.bool, device=device)
         self.rw = RewardWeights.from_cfg(cfg)
         self.standing_start_frac = float(getattr(cfg, "standing_start_frac", 0.0))
+        # SPAWN-VELOCITY RANDOMIZATION (anti-velocity-runaway 2026-07-13; default OFF == byte-identical
+        # at-rest spawn). spawn_vel_frac>0 gives that FRACTION of reset envs an initial velocity directed at
+        # their target gate, magnitude U[0, spawn_vel_max). Episodes are too short for the policy to
+        # accelerate into the ~12 m/s runaway regime on its own, so a fast spawn EXPOSES it (pairs with the
+        # velocity-cap reward term). Consumed in reset_idx; spawn_vel_frac<=0 skips that block ENTIRELY (no
+        # RNG draw, velocity stays 0) so the RNG stream + spawn state are bit-identical to the legacy spawn.
+        self.spawn_vel_frac = float(getattr(cfg, "spawn_vel_frac", 0.0))
+        self.spawn_vel_max = float(getattr(cfg, "spawn_vel_max", 15.0))
         # per-episode diagnostics (running; pre-reset, so terminal poses are included)
         self._peak_tilt = torch.zeros(n, device=device)          # rad
         self._peak_roll = torch.zeros(n, device=device)          # rad (ZYX Euler |roll|)
@@ -844,6 +884,16 @@ class PeregrineRacing(Racing):
         state = torch.zeros(m, self.dynamics.state_dim, device=dev)
         state[:, 0:3] = pos
         state[:, 3:7] = q                              # XYZW; v = w = 0 (at rest)
+        # SPAWN-VELOCITY RANDOMIZATION (anti-velocity-runaway 2026-07-13; default OFF -> v stays 0, byte-
+        # identical). A FRACTION (spawn_vel_frac) of the reset envs get a WORLD-frame initial velocity
+        # directed at their target gate (gp, == gate 0 for the standing-start _pef path -> toward the FIRST
+        # gate), magnitude U[0, spawn_vel_max). spawn_vel_frac<=0 skips this block ENTIRELY (no RNG draw,
+        # v==0), so the RNG stream + spawn state stay bit-identical to the at-rest legacy spawn. On the ego
+        # path the estimator cold-init (ego reset_idx, after super()) reads self._v -> it sees this spawn.
+        if self.spawn_vel_frac > 0.0:
+            state[:, 7:10] = spawn_velocity_toward_gate(
+                gp - pos, torch.rand(m, device=dev), torch.rand(m, device=dev),
+                self.spawn_vel_frac, self.spawn_vel_max)
         mask = torch.zeros_like(self.dynamics._state, dtype=torch.bool)
         mask[env_idx] = True
         full = torch.zeros_like(self.dynamics._state)

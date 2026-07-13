@@ -357,6 +357,30 @@ class EgoRewardWeights:
     # is 0). 0 == OFF (byte-identical). Tune via +env.rw_vel_smooth.
     vel_smooth: float = 0.0          # rw_vel_smooth; weight on ||jerk||^2 [per (m/s^2)^2]; 0 == OFF
 
+    # --- VELOCITY-CAP soft-hinge (anti-velocity-runaway package, 2026-07-13; NOT a speed reward, NOT
+    # energy). The champion (_pef / vpeffs0) has a velocity RUNAWAY: its optimal speed is ~8-9 m/s but it
+    # accelerates to ~12 m/s where control fails. A ONE-SIDED SOFT-HINGE penalty on TOTAL SPEED ||v|| that
+    # is EXACTLY ZERO at/below a soft threshold and ramps up QUADRATICALLY above it, prohibitive near a hard
+    # threshold:
+    #   R_vcap = -v_cap * (relu(||v|| - v_cap_soft) / (v_cap_hard - v_cap_soft))^2
+    # so ``v_cap`` is the per-step penalty magnitude AT the hard cap (||v||==v_cap_hard -> normalised
+    # excess 1 -> -v_cap), growing > v_cap super-linearly BEYOND it (the runaway tail is prohibitive). This
+    # is DELIBERATELY NOT a speed reward and MUST NOT change the reward below v_cap_soft (owner Fengyou,
+    # explicit: "no speed term, don't lose rewards elsewhere") -- below the soft knee the relu is 0 so the
+    # term is EXACTLY 0 (byte-identical to the proven _pef reward across the whole useful speed band), and
+    # the quadratic makes it C^1 at the knee (value AND slope 0 -> no cliff; "the policy reacts better to
+    # smooth things"), MONOTONE increasing in magnitude above it. ONLY-OBSERVABLE-STATE (owner directive,
+    # non-negotiable): the penalised quantity is TOTAL SPEED ||v||, which the actor CAN reconstruct from its
+    # obs -- the 21-dim ego obs carries body velocity (FLU) at obs[0:3], and ||v_body|| == ||v_world|| (a
+    # rotation preserves the norm), so the cap prices ONLY a quantity the policy sees. The env computes ||v||
+    # from GT world velocity (GT is legal in the reward; the observability constraint is about what is
+    # PRICED, not what it is computed from). NOT an energy penalty -- it is 0 across the entire useful speed
+    # band and bites only the unphysical runaway tail. 0 == OFF (byte-identical). Tune via +env.rw_v_cap /
+    # +env.rw_v_cap_soft / +env.rw_v_cap_hard.
+    v_cap: float = 0.0               # rw_v_cap; per-step penalty magnitude AT the hard cap; 0 == OFF
+    v_cap_soft: float = 9.0          # (m/s) soft threshold; reward UNCHANGED at/below this (the relu knee)
+    v_cap_hard: float = 12.0         # (m/s) hard threshold; normalised excess==1 here (penalty == v_cap)
+
     # --- NEXT-GATE exit-line anticipation (dual_gate+ stage; small; on by curriculum) ---
     exit_align: float = 0.0          # R_exit weight; 0 == OFF (single_gate/handoff stages)
 
@@ -389,6 +413,14 @@ class EgoRewardWeights:
                 f"({self.perception_next}) = {self.perception + self.perception_next:.4g} EXCEEDS the farm-"
                 f"neutrality ceiling rw_time ({self.time}); a hover-and-stare would net > 0/tick. Split the "
                 "perception budget so perception + perception_next <= rw_time.")
+        # VELOCITY-CAP sanity (anti-velocity-runaway 2026-07-13): the hard cap must EXCEED the soft cap (the
+        # hinge span v_cap_hard - v_cap_soft is the quadratic normaliser). Checked BEFORE the early return so
+        # it runs under the default terminal_progress_scaled=True. v_cap==0 -> no-op (byte-identical).
+        if self.v_cap > 0.0:
+            assert self.v_cap_hard > self.v_cap_soft, (
+                f"[ego-reward] rw_v_cap_hard ({self.v_cap_hard}) must EXCEED rw_v_cap_soft "
+                f"({self.v_cap_soft}) -- the soft-hinge ramps quadratically over (soft, hard]. Set "
+                "rw_v_cap_hard > rw_v_cap_soft (defaults 12 > 9).")
         if self.terminal_progress_scaled:
             return
         max_bankable = self.progress * self.guard_max_course_gates * self.guard_max_seg_len_m
@@ -853,6 +885,30 @@ def velocity_jerk_penalty(accel_curr: Tensor, accel_prev: Tensor, rw_vel_smooth:
     return -rw_vel_smooth * (jerk ** 2).sum(dim=-1)
 
 
+def velocity_cap_penalty(speed: Tensor, rw_v_cap: float, v_cap_soft: float,
+                         v_cap_hard: float) -> Tensor:
+    """ONE-SIDED SOFT-HINGE velocity-cap penalty (anti-velocity-runaway 2026-07-13):
+        R_vcap = -rw_v_cap * (relu(speed - v_cap_soft) / (v_cap_hard - v_cap_soft))^2
+    on TOTAL SPEED ``speed`` = ||v|| (m/s). EXACTLY ZERO at/below ``v_cap_soft`` (relu -> 0, so the reward is
+    UNCHANGED across the whole useful speed band -- no speed term, no reward lost elsewhere), then ramps up
+    QUADRATICALLY: at speed == ``v_cap_hard`` the normalised excess is 1 so the penalty is -rw_v_cap
+    (rw_v_cap == the per-step penalty magnitude AT the hard cap), and it grows > rw_v_cap super-linearly
+    beyond it (prohibitive in the runaway tail). C^1 at the soft knee (value AND slope 0 -> smooth, no
+    cliff), MONOTONE increasing in magnitude above it.
+
+    OBSERVABLE-STATE ONLY (owner directive): ||v|| is reconstructable from the actor obs (body velocity at
+    obs[0:3]; ||v_body|| == ||v_world|| since a rotation preserves the norm), so the cap prices only what the
+    policy sees. NOT an energy penalty (0 below the soft cap). ``v_cap_hard`` > ``v_cap_soft`` is enforced by
+    EgoRewardWeights.__post_init__; the span is clamped to 1e-6 here as a defensive backstop. rw_v_cap==0 ->
+    OFF (zeros -> byte-identical). Returns the (<=0) penalty (N,)."""
+    assert torch is not None
+    if rw_v_cap == 0.0:
+        return torch.zeros_like(speed)
+    span = max(float(v_cap_hard) - float(v_cap_soft), 1e-6)
+    excess = torch.relu(speed - float(v_cap_soft)) / span
+    return -rw_v_cap * excess ** 2
+
+
 # ================================================================================================
 # R_exit: NEXT-GATE exit-line anticipation (dual_gate+ stage; small; on by curriculum).
 # ================================================================================================
@@ -1042,6 +1098,12 @@ def compute_ego_reward(
     # flip barely moves the CoM -> ~0 jerk), NOT a speed/energy penalty.
     r_velsmooth = (velocity_jerk_penalty(accel_curr, accel_prev, w.vel_smooth)
                    if (accel_curr is not None and accel_prev is not None) else torch.zeros_like(r_prog))
+    # VELOCITY-CAP soft-hinge (anti-velocity-runaway 2026-07-13; OFF unless w.v_cap>0 -> byte-identical):
+    # penalise TOTAL SPEED ||v|| above the soft cap (quadratic, prohibitive near the hard cap; EXACTLY 0
+    # at/below the soft cap so the useful speed band is unchanged). ||v|| is OBSERVABLE (body velocity at
+    # obs[0:3]; the norm is frame-invariant) -- computed here from vel_world (GT is legal in the reward;
+    # observability is about what is PRICED, not what it is computed from). vel_world is always supplied.
+    r_vcap = velocity_cap_penalty(torch.linalg.norm(vel_world, dim=-1), w.v_cap, w.v_cap_soft, w.v_cap_hard)
     r_fin = finish_reward(newly_finished, time_left_s, w)
     r_cone = free_cone_penalty(tilt_cos_r33, w)
     r_smooth = smoothness_penalty(omega, action_norm, last_action_norm, w)
@@ -1066,7 +1128,7 @@ def compute_ego_reward(
                                 forfeit_mask=forfeit_mask)
 
     reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_gvhold + r_corr + r_align + r_perc
-              + r_perc_next + r_att + r_yawdith + r_velsmooth + r_fin + r_cone + r_smooth + r_exit
+              + r_perc_next + r_att + r_yawdith + r_velsmooth + r_vcap + r_fin + r_cone + r_smooth + r_exit
               + r_time - term)
 
     components = {
@@ -1083,6 +1145,7 @@ def compute_ego_reward(
         "att_pen": float((-r_att).mean()),
         "yaw_dither_pen": float((-r_yawdith).mean()),
         "velsmooth_pen": float((-r_velsmooth).mean()),
+        "vcap_pen": float((-r_vcap).mean()),
         "finish_reward": float(r_fin.mean()),
         "cone_pen": float((-r_cone).mean()),
         "smooth_pen": float((-r_smooth).mean()),
