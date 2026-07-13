@@ -912,12 +912,13 @@ def test_r0_hover_still_boot_is_offladder_fresh_hover_with_the_four_arms():
     assert s["ego"] is True and s["_raw"]["algo.gamma"] == C._GAMMA
 
 
-def test_r0_yaw_clamped_to_zero_no_spin_by_construction():
-    """R0 NO-SPIN BY CONSTRUCTION (Fengyou 2026-07-12): the yaw command is CLAMPED TO 0 at the base so the
-    drone physically cannot spin -- replacing the unobservable rev-accumulator abort. rw_yaw_dither stays
-    armed (INERT while the clamp is 0) and becomes live when the yaw clamp opens at R0.5."""
+def test_r0_yaw_pinned_near_zero_no_spin_by_construction():
+    """R0 NO-SPIN BY CONSTRUCTION (Fengyou 2026-07-12): the yaw command is clamped to a TINY value (0.05
+    rad/s) so the drone effectively cannot spin. It is NOT 0.0 -- clamp_yaw_command treats clamp_rad_s<=0 as
+    DISABLED (full +-3.14 yaw authority), the opposite of the intent (R0-v2 spun 100% at 0.0). The clamp
+    opens at R0.5 to let the gate anchor hold heading."""
     s = C.STAGES[_R0_STAGE]
-    assert s["ego_yaw_cmd_clamp_rad_s"] == 0.0                      # yaw clamped to 0 -> no spin by construction
+    assert s["ego_yaw_cmd_clamp_rad_s"] == 0.05                     # tiny ACTIVE clamp (0.0 would DISABLE it)
 
 
 def test_r0_is_estimator_faithful_at_low_noise():
@@ -950,7 +951,7 @@ def test_r0_renders_valid_tokens():
     assert "+env.rw_yaw_dither=0.5" in toks
     assert "+env.rw_vel_smooth=0.0001" in toks                     # the NEW velocity-jerk prior
     assert "+env.ego_spin_rev_abort=0.0" in toks                    # rev-accumulator DISABLED (unobservable)
-    assert "+env.ego_yaw_cmd_clamp_rad_s=0.0" in toks              # yaw clamped to 0 -> no spin by construction
+    assert "+env.ego_yaw_cmd_clamp_rad_s=0.05" in toks             # tiny ACTIVE clamp (0.0 would DISABLE it)
     assert "+env.rw_perception=0.02" in toks                       # gate-anchor armed (station-keeping reference)
     assert "+env.ego_faithful=true" in toks
     assert "+env.ego_est_dt_ticks_hi=1" in toks

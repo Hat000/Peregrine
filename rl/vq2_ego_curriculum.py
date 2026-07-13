@@ -1725,7 +1725,8 @@ STAGES: dict[str, dict] = {
         # an unfair/unlearnable termination; the yaw clamp makes it unnecessary anyway).
         "ego_spin_rate_abort": 3.5, "ego_spin_time_abort": 0.4,
         "ego_spin_rev_abort": 0.0, "ego_spin_rev_window_s": 4.0,   # rev-accumulator DISABLED (unobservable state)
-        "ego_yaw_cmd_clamp_rad_s": 0.0,               # YAW CLAMPED TO 0 -> no spin by construction (R0 base)
+        "ego_yaw_cmd_clamp_rad_s": 0.05,              # yaw PINNED near 0 (tiny ACTIVE clamp). NOT 0.0 -- clamp<=0
+                                                      # DISABLES the clamp (full +-3.14 authority); R0-v2 spun 100%.
         # ESTIMATOR-FAITHFUL, LOW noise (R0): clean vision (0.0) + clean 30 Hz leveler (ticks_hi=1).
         "ego_noise_scale": 0.0,
         "ego_faithful": True, "ego_est_dt_ticks_hi": 1,
