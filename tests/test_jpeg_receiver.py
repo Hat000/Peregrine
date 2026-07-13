@@ -189,6 +189,57 @@ def test_frames_drains_buffer_in_one_wake():
     assert select_calls["n"] <= 5, select_calls          # drained many datagrams per wake, not 1/select
 
 
+def test_frames_fast_drops_completed_multichunk_resends():
+    """DUP FAST-PATH [2026-07-13]: once a frame completes, further datagrams for that frame_id are
+    rejected in the drain loop by 4-byte frame_id alone (recvfrom_into a reused buffer, no header
+    unpack) -- so the sim's ~33x re-send flood does not hold the GIL. Re-sends of a WHOLE multi-chunk
+    frame must not re-emit, must not create a partial, and must be counted as duplicates."""
+    img = np.full((360, 640, 3), 77, np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    jpeg = buf.tobytes()
+    half = len(jpeg) // 2
+    c0 = _datagram(5, 0, 2, len(jpeg), jpeg[:half], 42)
+    c1 = _datagram(5, 1, 2, len(jpeg), jpeg[half:], 42)
+    with JpegUdpReceiver(bind_host="127.0.0.1", port=0, stale_after_s=0.5) as rx:
+        port = rx._sock.getsockname()[1]
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sender.sendto(c0, ("127.0.0.1", port))
+            sender.sendto(c1, ("127.0.0.1", port))            # completes frame 5
+            for _ in range(3):                                 # the sim's re-sends of a whole frame
+                sender.sendto(c0, ("127.0.0.1", port))
+                sender.sendto(c1, ("127.0.0.1", port))
+            time.sleep(0.05)                                   # let all land in the kernel buffer
+            got = [fr.frame_id for fr in rx.frames(max_wait_s=0.15)]
+        finally:
+            sender.close()
+    assert got == [5]                                          # emitted exactly once
+    assert rx.metrics.duplicate_datagrams == 6                 # 3 re-sends x 2 chunks, all fast-dropped
+    assert rx._partials == {}                                  # re-sends never created a partial
+
+
+def test_frames_dedups_with_fastpath_off():
+    """dedup_fastpath=False routes EVERY datagram through _ingest (the pre-fix path); dups are still
+    dropped there and each frame is emitted once -- correctness is independent of the perf toggle."""
+    img = np.full((360, 640, 3), 100, np.uint8)
+    ok, buf = cv2.imencode(".jpg", img)
+    assert ok
+    jpeg = buf.tobytes()
+    with JpegUdpReceiver(bind_host="127.0.0.1", port=0, stale_after_s=0.5, dedup_fastpath=False) as rx:
+        port = rx._sock.getsockname()[1]
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for _ in range(3):                                 # original + 2 re-sends of one frame
+                sender.sendto(_datagram(9, 0, 1, len(jpeg), jpeg, 9), ("127.0.0.1", port))
+            time.sleep(0.05)
+            got = [fr.frame_id for fr in rx.frames(max_wait_s=0.15)]
+        finally:
+            sender.close()
+    assert got == [9]                                          # emitted once even with fast-path OFF
+    assert rx.metrics.duplicate_datagrams == 2                 # 2 re-sends deduped by _ingest
+
+
 # -- stream-health metrics (first-contact MTU / packet-loss diagnostics) [red-team] --------
 def test_metrics_track_datagrams_chunks_and_completion():
     rx = JpegUdpReceiver()

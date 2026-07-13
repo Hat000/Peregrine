@@ -158,3 +158,37 @@ def test_valid_poses_no_cap_by_default(monkeypatch):
     monkeypatch.setattr("racer.gate_seeker.estimate_gate_pose",
                         lambda obs, compute_covariance=False: obs.pose)
     assert len(s._valid_poses(_Frame(1))) == 1         # 40 m gate kept (no cap)
+
+
+# ---------------------------------------------------------------------------
+# PERCEIVED-GATE VERTICAL BIAS (2026-07-13): a constant added to camera +Y (down) of EVERY emitted
+# pose -- the vision-side "lower the gates" knob; applied AFTER the quality gates, x/z untouched.
+# ---------------------------------------------------------------------------
+class _Obs1:
+    def __init__(self, pose):
+        self.pose = pose
+        self.score = 1.0
+
+
+def test_valid_poses_applies_vision_down_bias(monkeypatch):
+    s = GateSeeker(config=GateSeekerConfig(perceived_gate_down_bias_m=0.3))
+    s.detector = object()
+    p = _pose(0.0, 0.0, 5.0)                            # gate dead ahead, y (down) = 0
+    monkeypatch.setattr("racer.gate_seeker.detect_cached", lambda det, frame: [_Obs1(p)])
+    monkeypatch.setattr("racer.gate_seeker.estimate_gate_pose",
+                        lambda obs, compute_covariance=False: obs.pose)
+    poses = s._valid_poses(_Frame(1))
+    assert len(poses) == 1
+    assert poses[0].t_cam_gate[1] == 0.3               # +Y (down) shifted -> gate perceived LOWER
+    assert poses[0].t_cam_gate[0] == 0.0 and poses[0].t_cam_gate[2] == 5.0   # x, z untouched
+    assert p.t_cam_gate[1] == 0.0                       # original pose not mutated (frozen replace)
+
+
+def test_valid_poses_no_down_bias_by_default(monkeypatch):
+    s = GateSeeker(config=GateSeekerConfig())          # default 0.0 -> byte-identical
+    s.detector = object()
+    p = _pose(0.0, 0.0, 5.0)
+    monkeypatch.setattr("racer.gate_seeker.detect_cached", lambda det, frame: [_Obs1(p)])
+    monkeypatch.setattr("racer.gate_seeker.estimate_gate_pose",
+                        lambda obs, compute_covariance=False: obs.pose)
+    assert s._valid_poses(_Frame(1))[0].t_cam_gate[1] == 0.0   # unchanged

@@ -86,7 +86,7 @@ tests (which use a consistent synthetic map); only the LIVE VQ2 deploy uses ``co
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -179,6 +179,14 @@ class GateSeekerConfig:
     # cap == byte-identical (classical slow-lap); fly_rl sets 30 m for the EGO deploy. (Fengyou: "we
     # throw away information after 30 m.")
     max_valid_range_m: float = float("inf")
+    # PERCEIVED-GATE VERTICAL BIAS (2026-07-13): metres added to the camera-frame +Y (DOWN) component of
+    # EVERY emitted candidate pose (both the active-gate and next-gate levers consume _valid_poses), so
+    # the whole vision stack reports the gate LOWER by this constant. + => gate perceived LOWER => the
+    # policy aims/passes LOWER; 0 = off (byte-identical). Applied AFTER the quality gates (range cap /
+    # reproj / in-front use the true pose) -- a pure aim shift, not a detection change. Camera +Y is the
+    # optical vertical (down); the +20 deg mount tilts it ~20 deg off world-vertical, close enough for a
+    # deploy aim knob.
+    perceived_gate_down_bias_m: float = 0.0
     # Cap the per-tick yaw-rate command in the visual-servo pursuit phase so a large bearing error
     # (gate at the edge of frame) is turned toward smoothly, never a saturated slew that would spin
     # the gate out of frame faster than the controller can track it.
@@ -666,6 +674,10 @@ class GateSeeker:
                 continue                        # beyond the hard range cap: unreliable PnP / far FP
             if pose.t_cam_gate[2] <= 0.05:      # gate behind / on the image plane -> unusable bearing
                 continue
+            # VISION-side vertical aim bias: lower EVERY emitted gate by a constant (camera +Y = down).
+            b = self.config.perceived_gate_down_bias_m
+            if b != 0.0:
+                pose = replace(pose, t_cam_gate=pose.t_cam_gate + np.array([0.0, b, 0.0]))
             out.append(pose)
         self._valid_poses_fid = fid
         self._valid_poses_cache = out

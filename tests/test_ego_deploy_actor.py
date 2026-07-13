@@ -227,3 +227,28 @@ def test_pitch_clamp_blocks_nose_down_past_cap(ego_bounds):
     assert ps(nu, past, cap) > 0
     # within cap: fence inactive (nose-down passes)
     assert ps(nd, within, cap) < 0
+
+
+def test_roll_clamp_blocks_deeper_bank_symmetric(ego_bounds):
+    """Attitude fence (--ego-roll-clamp): SYMMETRIC. Past +/-cap, block the command that banks
+    FURTHER from level, always pass the roll-back-to-level recovery; inactive within cap and when off.
+    obs[3] = leveled body roll. SIGN is EMPIRICAL (021824 crash): +rate_frd[0] deepens a LEFT bank
+    (obs[3] more negative), so past a LEFT bank +cmd is blocked and past a RIGHT bank -cmd is blocked."""
+    cap = float(np.radians(25.0))
+    pos = _StubActor([0.0, 50.0, 0.0, 0.0])    # -> rate_frd[0] > 0 at virtual_flip=False
+    neg = _StubActor([0.0, -50.0, 0.0, 0.0])   # -> rate_frd[0] < 0
+    left = np.zeros(EGO_OBS_DIM, np.float32); left[3] = -0.60    # -34 deg: banked LEFT past 25 cap
+    right = np.zeros(EGO_OBS_DIM, np.float32); right[3] = 0.60   # +34 deg: banked RIGHT past cap
+    within = np.zeros(EGO_OBS_DIM, np.float32); within[3] = 0.17  # +10 deg: legit turn, within cap
+    ps = lambda actor, obs, cap_: fly_rl.policy_step(
+        actor, obs, virtual_flip=False, roll_clamp_rad=cap_)[0][0]
+    # sanity: unfenced, the stubs really produce +/- roll-rate
+    assert ps(pos, left, 0.0) > 0 and ps(neg, left, 0.0) < 0
+    # LEFT bank: +cmd (deepens left) hard-blocked to 0; -cmd (recovery) passes untouched
+    assert ps(pos, left, cap) == pytest.approx(0.0, abs=1e-9)
+    assert ps(neg, left, cap) < 0
+    # RIGHT bank (mirror): -cmd (deepens right) hard-blocked to 0; +cmd (recovery) passes
+    assert ps(neg, right, cap) == pytest.approx(0.0, abs=1e-9)
+    assert ps(pos, right, cap) > 0
+    # within cap: fence inactive both directions
+    assert ps(pos, within, cap) > 0 and ps(neg, within, cap) < 0

@@ -10,6 +10,13 @@ ONCE — re-sends after a frame completes are dropped — so perception runs onc
 frame. Crucially the suppression triggers only AFTER completion, so re-sent copies that
 arrive *before* a frame is whole still fill chunks lost to UDP drops (free redundancy).
 
+PERF [2026-07-13]: the re-send multiple has grown to ~33x (~97% of drained datagrams are
+re-sends). frames() rejects a completed-frame re-send in the drain loop reading ONLY its
+4-byte frame_id (recvfrom_into a reused buffer, no copy, no header unpack) BEFORE it would
+reach _ingest -- the flood no longer holds the GIL long enough to starve the main control
+thread's nav/AHRS update (which had inflated nav_ms ~18 -> ~43 ms, dragging the loop to
+~17 Hz). Frame output is byte-identical; only wasted work on already-dropped copies is cut.
+
 Spec ref: VADR-TS-002 sec 4.6.
 """
 from __future__ import annotations
@@ -74,10 +81,16 @@ class JpegUdpReceiver:
         bind_host: str = "0.0.0.0",
         port: int = VIDEO_PORT,
         stale_after_s: float = 0.5,
+        dedup_fastpath: bool = True,
     ):
         self.bind_host = bind_host
         self.port = port
         self.stale_after_s = stale_after_s
+        # PERF toggle: reject the sim's ~33x re-send flood in the drain loop by 4-byte frame_id
+        # alone (see frames()). ON keeps the video thread off the GIL so nav_update is not starved
+        # (validated: loop 17 -> 30 Hz). OFF routes every datagram through the full _ingest unpack
+        # (the pre-2026-07-13 behavior) -- for an A/B, or if a future stream needs per-datagram work.
+        self._dedup_fastpath = dedup_fastpath
         self._sock: socket.socket | None = None
         self._partials: dict[int, _PartialFrame] = {}
         # FIFO set of recently-emitted frame_ids, to drop the sim's ~14x re-sends. Capped well
@@ -130,6 +143,19 @@ class JpegUdpReceiver:
         # ~23 ms, evicted 0). [workflow wf_03f4a6b8, 2026-07-01]
         _DRAIN_BATCH_CAP = 8192   # bound the inner loop so a permanently-saturated socket still returns
                                   # to select each batch (honours the idle deadline + the consumer's stop)
+        # DUP FAST-PATH (2026-07-13): the sim re-sends each frame's chunks ~33x now (was ~14x when the
+        # dedup was written) -> ~97% of drained datagrams are re-sends of an ALREADY-emitted frame_id.
+        # Draining them into a fresh `bytes` + a full 6-field struct.unpack (in _ingest) burns Python
+        # cycles that hold the GIL, starving the main control thread's nav/AHRS update (measured
+        # nav_ms 18 -> 43 ms => loop 40 -> 17 Hz). So here we recvfrom_into a REUSED buffer (no
+        # per-datagram allocation) and reject a completed-frame re-send reading ONLY its 4-byte
+        # frame_id -- no copy, no unpack. Non-dups (and short datagrams) fall through to _ingest
+        # UNCHANGED, so its accounting + unit tests are untouched (a dup never reaches it, so its own
+        # dedup branch is now a harmless never-taken safety net). Frame output is byte-identical; the
+        # size/chunk metrics are equivalent because a frame's FIRST (non-dup) copies already set them.
+        buf = bytearray(65535)
+        mv = memoryview(buf)
+        m = self.metrics
         while True:
             # Evict once per drained BATCH (not per datagram): a batch drains in ~ms (<< stale_after_s
             # = 0.5 s) and this still runs every outer iteration, so no partial leaks. [review 4A]
@@ -144,14 +170,21 @@ class JpegUdpReceiver:
             drained = 0
             while drained < _DRAIN_BATCH_CAP:
                 try:
-                    data, _ = self._sock.recvfrom(65535)
+                    nbytes, _ = self._sock.recvfrom_into(buf)
                 except BlockingIOError:
                     break        # socket drained (EWOULDBLOCK) -> back to select (other OSErrors
                                  # propagate to the caller's reconnect handler, as before)
                 drained += 1
                 if deadline is not None:
                     deadline = time.monotonic() + max_wait_s
-                frame = self._ingest(data)
+                # Cheap re-send rejection: 4-byte frame_id only, no copy / no unpack.
+                if self._dedup_fastpath and nbytes >= HEADER_SIZE:
+                    frame_id = int.from_bytes(mv[:4], "little")
+                    if frame_id in self._completed:
+                        m.datagrams += 1
+                        m.duplicate_datagrams += 1
+                        continue
+                frame = self._ingest(bytes(mv[:nbytes]))
                 if frame is not None:
                     yield frame
 
