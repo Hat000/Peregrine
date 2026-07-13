@@ -1347,6 +1347,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # HOVER-HOLD probe: GT altitude + spawn altitude for the give-up-resistant altitude-hold
                 # bonus (OFF unless rw_altitude_hold>0, i.e. only the hover_hold diagnostic stage).
                 z=curr_pos[:, 2], z_spawn=self.spawn_pos[:, 2],
+                # GATE-RELATIVE WORLD-VERTICAL hold (R0 floor-dive fix, 2026-07-12; OFF unless
+                # rw_gate_vhold>0): the CURRENT target gate-centre world-Z (curr_center = gate_pos[ar,tg],
+                # Z-up GT). The reward uses only Δz = gate_center_z - z (= R_wb[2,:]·rel_pos_body, observable);
+                # the OBSERVABLE gate-relative replacement for the unobservable absolute z/z_spawn above.
+                gate_center_z=curr_center[:, 2],
                 # MPCC CONTOURING: previous-step perp offset for the PBRS contouring potential (OFF unless
                 # rw_corridor>0). perp_dist above is the current-step offset from the same segment.
                 perp_prev=self._corr_perp_prev,

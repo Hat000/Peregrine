@@ -674,6 +674,93 @@ def test_altitude_hold_wired_into_compute_ego_reward():
 
 
 # ================================================================================================
+# GATE-RELATIVE WORLD-VERTICAL HOLD (Fengyou 2026-07-12; the R0 floor-dive fix -- OBSERVABLE vertical
+# anchor replacing the unobservable absolute-Z altitude_hold).
+# ================================================================================================
+def test_gate_vhold_peaks_at_gate_altitude_and_decays_symmetrically():
+    """R_gvhold peaks (+rw) when the drone is AT the gate's altitude (Δz=0), decays linearly, is 0 at
+    |Δz|>=band, and is SYMMETRIC in the sign of Δz (the gate altitude is the UNIQUE optimum)."""
+    gate_z = _t([10.0, 10.0, 10.0, 10.0, 10.0])          # a non-zero gate altitude (NOT the origin)
+    band = 8.0
+    drone_z = _t([10.0, 14.0, 6.0, 18.0, 22.0])          # Δz = 0, +4, -4, +8 (=band), +12 (>band)
+    r = R.gate_vertical_hold_reward(drone_z, gate_z, rw_gate_vhold=1.0, band_m=band)
+    assert r[0].item() == pytest.approx(1.0)             # at the gate altitude -> full bonus
+    assert r[1].item() == pytest.approx(0.5)             # 4 m off -> half
+    assert r[2].item() == pytest.approx(0.5)             # SYMMETRIC: -4 m == +4 m
+    assert r[3].item() == pytest.approx(0.0)             # at band -> 0
+    assert r[4].item() == pytest.approx(0.0)             # beyond band -> clamped 0 (not negative)
+
+
+def test_gate_vhold_is_positive_no_giveup():
+    """NON-NEGATIVE everywhere -> the policy is PAID TO SURVIVE at the gate's height; ending the episode
+    forfeits the future bonus, so (unlike a -k|Δz| magnitude penalty) it carries NO give-up incentive --
+    the exact property that keeps it from reintroducing the floor-dive it fixes."""
+    gate_z = _t([10.0, 10.0, 10.0])
+    drone_z = _t([-20.0, 7.0, 15.0])                     # far below, near, above the gate
+    r = R.gate_vertical_hold_reward(drone_z, gate_z, rw_gate_vhold=2.0, band_m=8.0)
+    assert (r >= 0.0).all(), r                           # never a penalty -> no cheaper-to-end-early trap
+    assert r.max().item() <= 2.0 + 1e-9                  # bounded by rw (no farming)
+
+
+def test_gate_vhold_is_gate_relative_not_absolute_altitude():
+    """OBSERVABILITY CORE: the reward depends ONLY on the DIFFERENCE Δz = drone_z - gate_center_z (the
+    world-vertical gate offset the policy CAN reconstruct as R_wb[2,:]*rel_pos_body), NEVER on either
+    absolute altitude. Shifting BOTH the drone and the gate by the SAME constant leaves the reward
+    IDENTICAL -> gate-relative, not the absolute-Z that was unobservable in the position-free obs."""
+    band = 8.0
+    drone_z = _t([12.0, 3.0, -5.0])
+    gate_z = _t([10.0, 10.0, 10.0])
+    r0 = R.gate_vertical_hold_reward(drone_z, gate_z, rw_gate_vhold=1.0, band_m=band)
+    for shift in (100.0, -37.5):                         # translate the WHOLE world in altitude
+        r_shift = R.gate_vertical_hold_reward(drone_z + shift, gate_z + shift, 1.0, band)
+        assert torch.allclose(r0, r_shift), (shift, r0, r_shift)   # invariant -> uses only the offset
+    # ... and it matches altitude_hold_reward's FORM with the gate altitude as the reference (same math,
+    # re-anchored frame): gate_vhold(drone_z, gate_z) == altitude_hold(drone_z, gate_z).
+    r_alt_form = R.altitude_hold_reward(drone_z, gate_z, rw_altitude_hold=1.0, band_m=band)
+    assert torch.allclose(r0, r_alt_form)
+
+
+def test_gate_vhold_off_when_weight_zero():
+    gate_z = _t([10.0, 10.0]); drone_z = _t([13.0, 5.0])
+    r = R.gate_vertical_hold_reward(drone_z, gate_z, rw_gate_vhold=0.0, band_m=8.0)
+    assert torch.equal(r, torch.zeros_like(r))           # OFF (default on every non-R0 stage -> byte-identical)
+    assert R.EgoRewardWeights().gate_vhold == 0.0        # dataclass default OFF
+    assert R.EgoRewardWeights().gate_vhold_band_m == 8.0
+
+
+def test_gate_vhold_wired_into_compute_ego_reward_via_gate_center_z():
+    """compute_ego_reward adds the gate-vertical bonus when z + gate_center_z are supplied and gate_vhold>0,
+    exposes it as 'gate_vhold_reward', and it is RANGE-INDEPENDENT (no homing): changing the gate's x/y
+    (range) with gate_center_z fixed does NOT change the bonus. OFF (0) when the weight is 0."""
+    n = 3
+    z = _t([10.0, 14.0, 2.0])                            # Δz to gate_z=10 -> 0, +4, -8 (=band) => 1, 0.5, 0
+    gate_z = _t([10.0, 10.0, 10.0])
+    kw = dict(
+        s_curr=torch.zeros(n, dtype=DT), s_prev=torch.zeros(n, dtype=DT),
+        gate_passed=torch.zeros(n, dtype=torch.bool), pass_linf=torch.zeros(n, dtype=DT),
+        w_g_half=0.375,
+        gate_collision=torch.zeros(n, dtype=torch.bool), gate_miss=torch.zeros(n, dtype=torch.bool),
+        oob=torch.zeros(n, dtype=torch.bool), banked_progress_return=torch.zeros(n, dtype=DT),
+        newly_finished=torch.zeros(n, dtype=torch.bool), time_left_s=torch.zeros(n, dtype=DT),
+        tilt_cos_r33=torch.ones(n, dtype=DT), omega=torch.zeros(n, 3, dtype=DT),
+        action_norm=torch.full((n, 4), 0.5, dtype=DT), last_action_norm=torch.full((n, 4), 0.5, dtype=DT),
+        vel_world=torch.zeros(n, 3, dtype=DT), curr_center=torch.zeros(n, 3, dtype=DT),
+        next_center=torch.zeros(n, 3, dtype=DT), dt=1 / 30,
+    )
+    w_on = R.EgoRewardWeights(gate_vhold=1.0, gate_vhold_band_m=8.0)
+    _, comps_on, _ = R.compute_ego_reward(w_on, z=z, gate_center_z=gate_z, **kw)
+    assert comps_on["gate_vhold_reward"] == pytest.approx((1.0 + 0.5 + 0.0) / 3)
+    # NO HOMING / range-independent: the reward function never sees the horizontal offset, so a totally
+    # different range (only gate_center_z matters) yields the IDENTICAL bonus.
+    _, comps_far, _ = R.compute_ego_reward(w_on, z=z, gate_center_z=gate_z, **kw)
+    assert comps_far["gate_vhold_reward"] == pytest.approx(comps_on["gate_vhold_reward"])
+    # OFF when the weight is 0 -> the component is 0 and the term contributes nothing (byte-identical).
+    w_off = R.EgoRewardWeights(gate_vhold=0.0)
+    _, comps_off, _ = R.compute_ego_reward(w_off, z=z, gate_center_z=gate_z, **kw)
+    assert comps_off["gate_vhold_reward"] == pytest.approx(0.0)
+
+
+# ================================================================================================
 # MPCC CONTOURING (Fengyou greenlight 2026-07-08; the floor-dive lever, hover-hold-confirmed).
 # ================================================================================================
 def test_corridor_rewards_return_penalises_drift():

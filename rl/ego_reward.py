@@ -174,6 +174,28 @@ class EgoRewardWeights:
     altitude_hold_band_m: float = 8.0  # (m) half-width over which the hold bonus decays to 0 (restoring
     #                                    gradient present over the whole reachable descent range)
 
+    # --- GATE-RELATIVE WORLD-VERTICAL HOLD (Fengyou 2026-07-12; the R0 floor-dive fix -- the OBSERVABLE
+    # replacement for altitude_hold's UNOBSERVABLE absolute-Z reference). SAME give-up-resistant POSITIVE
+    # form as altitude_hold, but the reference is the CURRENT target gate's world-Z, not the spawn altitude:
+    #   r = gate_vhold * (1 - clip(|drone_z - gate_center_z| / band, 0, 1))
+    # WHY OBSERVABLE (the whole point): the rewarded quantity is the WORLD-vertical gate offset
+    # Δz = gate_center_z - drone_z = R_wb[2,:] · rel_pos_body. The third row of R_wb (the map onto world-Z)
+    # is YAW-INVARIANT -> it depends only on roll & pitch, and BOTH the roll_pitch channel AND the body-frame
+    # slot0 rel_pos are in the 21-dim ego obs, so a sufficient policy CAN reconstruct Δz from its obs -- unlike
+    # absolute Z (altitude_hold's z/z_spawn), which is NOWHERE in the obs (the unlearnable-state bug that sank
+    # R0-v3, exit_floor 0.42). Gate-RELATIVE (a difference -> no world coordinate) and RANGE-INDEPENDENT (the
+    # pure vertical component) -> it pins altitude to the gate WITHOUT any homing gradient (zero pull along
+    # range -> it can NEVER fly the drone into the gate; the fly-into-gate crash the owner forbade cannot arise
+    # here). WHY a POSITIVE bonus, NOT a -k|Δz| penalty: the floor-dive was a GIVE-UP-and-end-episode failure;
+    # a magnitude penalty is minimized by TERMINATING (floor sooner to stop the bleed) -> it reintroduces
+    # exactly that. The positive "paid to survive" form (ending forfeits the future bonus) is give-up-RESISTANT
+    # -- the property that made altitude_hold's FORM right; only its reference FRAME was wrong. Lateral/heading
+    # is left to rw_perception + the yaw clamp (world-lateral needs YAW, which is NOT in the obs -> not
+    # reconstructable; vertical is the yaw-invariant axis that IS observable AND the axis that was failing).
+    # 0 == OFF (byte-identical). Tune via +env.rw_gate_vhold / +env.rw_gate_vhold_band_m.
+    gate_vhold: float = 0.0          # rw_gate_vhold; gate-relative world-vertical hold bonus; 0 == OFF
+    gate_vhold_band_m: float = 8.0   # (m) half-width over which the vertical-offset bonus decays to 0
+
     # --- MPCC CONTOURING (Fengyou greenlight 2026-07-08; the floor-dive lever, hover-hold-confirmed) ---
     # A give-up-RESISTANT PBRS (telescoping potential) term on the PERPENDICULAR deviation from the current
     # gate-centre segment: phi_corr = -perp, reward = corridor * clip(perp_prev - perp_curr, band). Positive
@@ -529,6 +551,29 @@ def altitude_hold_reward(z: Tensor, z_spawn: Tensor, rw_altitude_hold: float,
         return torch.zeros_like(z)
     err = (z - z_spawn).abs() / max(band_m, 1e-9)
     return rw_altitude_hold * (1.0 - err.clamp(0.0, 1.0))
+
+
+def gate_vertical_hold_reward(drone_z: Tensor, gate_center_z: Tensor, rw_gate_vhold: float,
+                              band_m: float) -> Tensor:
+    """R_gvhold = rw_gate_vhold * (1 - clip(|drone_z - gate_center_z| / band, 0, 1)). The GATE-RELATIVE
+    WORLD-VERTICAL hold (Fengyou 2026-07-12; the R0 floor-dive fix) -- the OBSERVABLE replacement for
+    altitude_hold_reward. IDENTICAL give-up-resistant POSITIVE form, but the reference is the CURRENT target
+    gate's world-Z (``gate_center_z``) instead of the spawn altitude, so the rewarded quantity is the world-
+    vertical gate offset Δz = gate_center_z - drone_z, which a sufficient policy CAN reconstruct from its obs
+    (Δz = R_wb[2,:] · rel_pos_body; the third row of R_wb is YAW-INVARIANT, and roll_pitch + the body-frame
+    slot0 rel_pos are BOTH in the 21-dim ego obs). Peaks (+rw_gate_vhold) with the drone at the gate's
+    altitude and decays linearly to 0 at |Δz| >= band. POSITIVE + bounded -> ending the episode FORFEITS the
+    future bonus == paid to survive at the gate's height (give-up-RESISTANT, unlike a -k|Δz| magnitude
+    penalty, which is minimized by TERMINATING sooner and would REINTRODUCE the floor-dive). RANGE-INDEPENDENT
+    (the vertical component only) -> NO homing: zero gradient along range, so it can never pull the drone into
+    the gate. Only the DIFFERENCE (drone_z - gate_center_z) enters the reward -> no absolute coordinate is
+    used (both are GT world Z-up (N,) altitudes; GT is legal in the reward, and the difference is observable).
+    rw_gate_vhold==0 -> OFF (zeros -> byte-identical). Returns (N,)."""
+    assert torch is not None
+    if rw_gate_vhold == 0.0:
+        return torch.zeros_like(drone_z)
+    err = (drone_z - gate_center_z).abs() / max(band_m, 1e-9)
+    return rw_gate_vhold * (1.0 - err.clamp(0.0, 1.0))
 
 
 def corridor_progress_reward(perp_curr: Tensor, perp_prev: Tensor, rw_corridor: float,
@@ -895,6 +940,7 @@ def compute_ego_reward(
     perp_dist: "Tensor | None" = None,
     z: "Tensor | None" = None,
     z_spawn: "Tensor | None" = None,
+    gate_center_z: "Tensor | None" = None,
     perp_prev: "Tensor | None" = None,
     forfeit_mask: "Tensor | None" = None,
     line_tangent: "Tensor | None" = None,
@@ -951,6 +997,12 @@ def compute_ego_reward(
     # give-up-resistant positive pull to the spawn altitude with no competing forward objective.
     r_alt = (altitude_hold_reward(z, z_spawn, w.altitude_hold, w.altitude_hold_band_m)
              if (z is not None and z_spawn is not None) else torch.zeros_like(r_prog))
+    # GATE-RELATIVE WORLD-VERTICAL hold (Fengyou 2026-07-12; OFF unless w.gate_vhold>0): the OBSERVABLE
+    # replacement for altitude_hold -- a give-up-resistant positive bonus on the world-vertical offset to the
+    # CURRENT target gate (Δz = gate_center_z - drone_z), reconstructable from the obs (yaw-invariant
+    # R_wb[2,:]·rel_pos_body). Range-independent -> NO homing. ``z`` is the drone world-Z already passed above.
+    r_gvhold = (gate_vertical_hold_reward(z, gate_center_z, w.gate_vhold, w.gate_vhold_band_m)
+                if (z is not None and gate_center_z is not None) else torch.zeros_like(r_prog))
     # MPCC CONTOURING (OFF unless w.corridor>0): PBRS potential on the perpendicular offset from the gate-
     # centre segment -- the vertical+lateral homing that pairs with the along-track lag progress. Like
     # r_corr it is NOT banked (only r_prog is), so a contact terminal does not forfeit accumulated contouring.
@@ -1013,8 +1065,9 @@ def compute_ego_reward(
         term = terminal_penalty(gate_collision, gate_miss, oob, banked_progress_return, w,
                                 forfeit_mask=forfeit_mask)
 
-    reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_corr + r_align + r_perc + r_perc_next
-              + r_att + r_yawdith + r_velsmooth + r_fin + r_cone + r_smooth + r_exit + r_time - term)
+    reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_gvhold + r_corr + r_align + r_perc
+              + r_perc_next + r_att + r_yawdith + r_velsmooth + r_fin + r_cone + r_smooth + r_exit
+              + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
@@ -1022,6 +1075,7 @@ def compute_ego_reward(
         "cross_parabola_reward": float(r_cross.mean()),
         "center_pen": float((-r_center).mean()),
         "alt_hold_reward": float(r_alt.mean()),
+        "gate_vhold_reward": float(r_gvhold.mean()),
         "corridor_reward": float(r_corr.mean()),
         "align_reward": float(r_align.mean()),
         "perception_reward": float(r_perc.mean()),

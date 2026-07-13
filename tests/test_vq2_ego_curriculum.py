@@ -883,9 +883,20 @@ def test_common_vel_smooth_default_off_on_every_ladder_stage():
     assert EgoRewardWeights().vel_smooth == 0.0
 
 
+def test_common_gate_vhold_default_off_on_every_ladder_stage():
+    # the gate-relative world-vertical hold is default-OFF (never in _COMMON); no ordered ladder stage arms
+    # it (it is the R0-only OBSERVABLE vertical anchor). Byte-identical on the ladder.
+    assert "rw_gate_vhold" not in C._COMMON
+    for s in C.STAGE_ORDER:
+        assert C.STAGES[s].get("rw_gate_vhold", 0.0) == 0.0, s
+    from ego_reward import EgoRewardWeights
+    assert EgoRewardWeights().gate_vhold == 0.0 and EgoRewardWeights().gate_vhold_band_m == 8.0
+
+
 def test_r0_hover_still_boot_is_offladder_fresh_hover_with_the_four_arms():
-    """R0 = a GATE-ANCHORED station-keeping hover (gate-homing PULL zeroed, but the front gate is a VISUAL
-    ANCHOR via rw_perception) with the arms armed from update 0, FRESH-START (no init_from), off-ladder."""
+    """R0 = a GATE-ANCHORED station-keeping hover (gate-homing PULL zeroed, but the front gate anchors
+    position: rw_gate_vhold owns the OBSERVABLE vertical (Δz to the gate), rw_perception the lateral/heading)
+    with the arms armed from update 0, FRESH-START (no init_from), off-ladder."""
     assert _R0_STAGE not in C.STAGE_ORDER                          # off-ladder, standalone only
     s = C.STAGES[_R0_STAGE]
     # BASE == hover_hold scoping: fixed 15 m level gate IGNORED by the reward (all gate-homing zeroed).
@@ -895,8 +906,11 @@ def test_r0_hover_still_boot_is_offladder_fresh_hover_with_the_four_arms():
     for k in ("rw_progress", "rw_passage", "rw_passage_increment", "rw_area_dist_ref_m",
               "rw_centering", "rw_exit_align"):
         assert s[k] == 0.0, k
-    # (iv) altitude-hold ON (the give-up-resistant spawn-altitude bonus).
-    assert s["rw_altitude_hold"] == 1.0 and s["rw_altitude_hold_band_m"] == 8.0
+    # (iv) VERTICAL ANCHOR = GATE-RELATIVE WORLD-VERTICAL hold ON (the OBSERVABLE give-up-resistant bonus on
+    # Δz = gate_center_z - drone_z). Absolute-Z altitude_hold DROPPED (-> 0.0 via _COMMON): its z/z_spawn
+    # reference is nowhere in the position-free obs -> unlearnable (the R0-v3 floor-dive root).
+    assert s["rw_gate_vhold"] == 1.0 and s["rw_gate_vhold_band_m"] == 8.0
+    assert s["rw_altitude_hold"] == 0.0                            # DROPPED (unobservable absolute-Z reference)
     # (i) anti-dither yaw-jerk penalty ARMED, calibrated for the clamped regime.
     assert s["rw_yaw_dither"] == 0.5
     # (iii) the NEW velocity-jerk prior ARMED and VERY gentle.
@@ -905,7 +919,8 @@ def test_r0_hover_still_boot_is_offladder_fresh_hover_with_the_four_arms():
     # accumulated rotation, Fengyou 2026-07-12).
     assert s["ego_spin_rate_abort"] == 3.5 and s["ego_spin_time_abort"] == 0.4
     assert s["ego_spin_rev_abort"] == 0.0
-    # GATE-ANCHOR: rw_perception armed -> keep the front gate centred = OBSERVABLE station-keeping reference.
+    # LATERAL/HEADING ANCHOR: rw_perception armed -> keep the front gate centred (OBSERVABLE); NOT the
+    # vertical anchor (attitude-coupled, under-determines altitude) -- gate_vhold owns vertical.
     assert s["rw_perception"] == 0.02 and s["rw_perception_exponent"] == 4.0
     # FRESH (no init_from) + appo/gamma.
     assert not any("init_from" in k for k in s["_raw"])
@@ -947,7 +962,9 @@ def test_r0_keeps_ground_intact_and_no_free_exit():
 
 def test_r0_renders_valid_tokens():
     toks = C.render_overrides(_R0_STAGE)
-    assert "+env.rw_altitude_hold=1.0" in toks
+    assert "+env.rw_gate_vhold=1.0" in toks                         # OBSERVABLE gate-relative vertical anchor
+    assert "+env.rw_gate_vhold_band_m=8.0" in toks
+    assert "+env.rw_altitude_hold=0.0" in toks                      # absolute-Z altitude_hold DROPPED (from _COMMON)
     assert "+env.rw_yaw_dither=0.5" in toks
     assert "+env.rw_vel_smooth=0.0001" in toks                     # the NEW velocity-jerk prior
     assert "+env.ego_spin_rev_abort=0.0" in toks                    # rev-accumulator DISABLED (unobservable)

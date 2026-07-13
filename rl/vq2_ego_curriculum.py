@@ -1657,13 +1657,15 @@ STAGES: dict[str, dict] = {
     #   sbatch --export=ALL,SEED=0,RUNTAG=vr0h0,STAGES="hover_still_boot",\
     #     UPD_hover_still_boot=4000,PRECHECK=1 rl/peregrine_vq2_ego.sbatch
     # PRECHECK=1 MANDATORY on the first launch + the L16 guard: the precheck log must show the NEW per-step
-    # loss_components keys emitting -- velsmooth_pen + yaw_dither_pen + spin_abort_rate + the estimator-
-    # faithful keys (eskf_tilt_err_deg_mean / kf_vel_err_mean / sf_mag_g_mean); absent keys == a knob did
-    # not arm.
-    # BASE = the hover_hold probe: a fixed 15 m LEVEL gate that is IGNORED by the reward (every gate-homing
-    # term -- progress/passage/increment/area/centering/exit -- is ZEROED), so there is NO forward objective
-    # and holding the spawn position/altitude is the UNIQUE optimum (no gates to chase -> no coarse map, no
-    # parabola crossing, no perception term). ARMED FROM UPDATE 0 (the four R0 arms):
+    # loss_components keys emitting -- gate_vhold_reward + velsmooth_pen + yaw_dither_pen + perception_reward +
+    # spin_abort_rate + the estimator-faithful keys (eskf_tilt_err_deg_mean / kf_vel_err_mean / sf_mag_g_mean);
+    # absent keys == a knob did not arm (in particular gate_vhold_reward absent == the vertical anchor is OFF).
+    # BASE = a fixed 15 m LEVEL gate whose FORWARD-HOMING terms are IGNORED by the reward (progress/passage/
+    # increment/area/centering/exit -- ZEROED, no coarse map, no parabola crossing), so there is NO forward
+    # objective. But the gate is NOT invisible to the reward: it is the STATION-KEEPING ANCHOR -- the drone
+    # holds position by keeping the front gate CENTRED (rw_perception, lateral/heading) and at its own altitude
+    # (rw_gate_vhold, the world-vertical offset). Both anchors are OBSERVABLE in the position-free obs (the
+    # unique optimum is the gate-relative hold, NOT an absolute spawn pose). ARMED FROM UPDATE 0 (the four R0 arms):
     #   (i)   rw_yaw_dither=0.5 -- the anti-dither yaw-jerk penalty (yaw-stillness; ego_reward.yaw_dither_penalty).
     #   (ii)  the FATAL SPIN ABORT package (ego_spin_rate/time/rev aborts) -- REQUIRED to close the slow
     #         CONSTANT-yaw-drift escape the jerk penalty alone leaves (a steady drift has ~0 jerk); the
@@ -1672,7 +1674,10 @@ STAGES: dict[str, dict] = {
     #   (iii) rw_vel_smooth=1e-4 -- the NEW velocity-jerk prior (VERY gentle; clips only extreme snappy CoM-accel
     #         spikes; steady speed AND smooth hard accel both pay ~0; orthogonal to yaw/roll -- a flip barely
     #         moves the CoM). SWEEPABLE via EXTRA=++env.rw_vel_smooth=...
-    #   (iv)  rw_altitude_hold=1.0 -- the give-up-resistant POSITIVE spawn-altitude bonus (from hover_hold).
+    #   (iv)  rw_gate_vhold=1.0 -- the give-up-resistant POSITIVE GATE-RELATIVE world-vertical hold (the
+    #         OBSERVABLE vertical anchor; REPLACES altitude_hold, whose absolute-Z reference was unobservable ->
+    #         R0-v3 sank). Δz = gate_center_z - drone_z = R_wb[2,:]*rel_pos_body -> reconstructable from the obs;
+    #         range-independent -> NO homing. Paired with rw_perception=0.02 (the lateral/heading anchor).
     # YAW-CLAMP CALIBRATION FOOTGUN: the yaw-dither penalty prices the APPLIED (post-clamp) yaw-rate delta. So
     # the yaw clamp is ARMED AT THE BASE too -- ego_yaw_cmd_clamp_rad_s=0.35 (== the _pef/nodither lineage) --
     # and rw_yaw_dither stays calibrated FOR THE CLAMPED regime: a rail-FLIP delta = 0.35-(-0.35) = 0.70 rad/s
@@ -1693,7 +1698,8 @@ STAGES: dict[str, dict] = {
     # banked forfeit) -> NEVER a free reward exit (rw_parabola_crossing stays OFF so the terminal fires on the
     # non-parabola path where the lethal mask is already inside gate_collision). algo=appo, gamma=0.9975 (both
     # MANDATORY -- ppo leaves the privileged critic disconnected = seed collapse). BUDGET ~4000 upd (fresh
-    # discovery of a hover). SUCCESS (training metrics; renders untrustworthy): alt_err_m sub-metre,
+    # discovery of a hover). SUCCESS (training metrics; renders untrustworthy): the GATE-RELATIVE vertical
+    # offset |drone_z - gate_center_z| sub-metre (gate_vhold_reward -> ~its 1.0 ceiling), exit_floor ~0,
     # exit_spin/spin_abort_rate ~0 (NON-spinning), exit_timeout dominant, yaw_dither_pen + velsmooth_pen -> ~0
     # by convergence.
     # ================================================================================================
@@ -1708,12 +1714,23 @@ STAGES: dict[str, dict] = {
         # therefore stays a VISUAL ANCHOR only (rw_perception below), NOT a target to fly at.
         "rw_progress": 0.0, "rw_passage": 0.0, "rw_passage_increment": 0.0,
         "rw_area_dist_ref_m": 0.0, "rw_centering": 0.0, "rw_exit_align": 0.0,
-        # (iv) give-up-resistant POSITIVE spawn-altitude bonus (spawn altitude = the unique optimum).
-        "rw_altitude_hold": 1.0, "rw_altitude_hold_band_m": 8.0,
-        # GATE-ANCHOR (Fengyou 2026-07-12): reward keeping the front gate CENTRED in view -> an OBSERVABLE
-        # lateral+vertical reference (slot0 bearing, GT view-angle legal in reward) so station-keeping is
-        # LEARNABLE. Dense gradient (centred > off-centre); no farm risk (no progress to farm against at a
-        # hover). Becomes the YAW anchor at R0.5 when the yaw clamp opens.
+        # (iv) VERTICAL ANCHOR = GATE-RELATIVE WORLD-VERTICAL HOLD (Fengyou 2026-07-12; the R0 floor-dive fix).
+        # altitude_hold DROPPED (-> 0.0 via _COMMON): its |z - z_spawn| targets ABSOLUTE world-Z, which is
+        # NOWHERE in the 21-dim position-free obs -> unlearnable -> R0-v3 sank into the floor (exit_floor 0.42,
+        # alt_err 2.2) WITH perception=0.02 already active (perception alone does NOT pin altitude -- it is
+        # attitude-coupled: a sinking, pitched-up drone keeps the camera on the gate at ANY altitude). REPLACED
+        # by the give-up-resistant POSITIVE bonus on the world-vertical offset to the front gate: r = w * (1 -
+        # clip(|drone_z - gate_center_z|/band)). WHY OBSERVABLE: Δz = gate_center_z - drone_z = R_wb[2,:] *
+        # rel_pos_body; the third row of R_wb (onto world-Z) is YAW-INVARIANT so it depends only on roll & pitch,
+        # and roll_pitch + the body-frame slot0 rel_pos are BOTH in the obs -> the policy CAN reconstruct Δz.
+        # RANGE-INDEPENDENT (vertical component only) -> NO homing (zero pull along range; it can never fly the
+        # drone into the gate). weight 1.0 mirrors the old altitude_hold magnitude so give-up-resistance holds.
+        "rw_gate_vhold": 1.0, "rw_gate_vhold_band_m": 8.0,
+        # LATERAL/HEADING ANCHOR (Fengyou 2026-07-12): rw_perception keeps the front gate CENTRED in view ->
+        # an OBSERVABLE lateral/heading reference (GT view-angle legal in reward). It is NOT the vertical anchor
+        # (it is attitude-coupled and under-determines altitude -- gate_vhold owns vertical); world-lateral
+        # needs YAW, which is NOT in the obs, so perception + the yaw clamp are the right lateral tools. Dense
+        # (centred > off-centre); no farm risk at a hover. Becomes the YAW anchor at R0.5 when the clamp opens.
         "rw_perception": 0.02, "rw_perception_exponent": 4.0,
         # (i) anti-dither yaw-jerk penalty, calibrated for the CLAMPED regime (see the block comment).
         "rw_yaw_dither": 0.5,
