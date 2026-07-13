@@ -1039,6 +1039,21 @@ def test_attitude_limit_penalty_zero_in_band_grows_past_correct_sign():
     assert R.attitude_limit_penalty(_t([2.0]), _t([2.0]), R.EgoRewardWeights()).item() == 0.0
 
 
+def test_attitude_cap_default_limits_are_60_deg_both_axes_and_off_is_reward_neutral():
+    """DEFAULT cap angles = 60 deg on BOTH axes (owner Fengyou, Track A 2026-07-13: roll self-limited ~60
+    deg; pitch a LOOSE backstop -- pitch's real lever is rw_perception, so its cap is deliberately generous).
+    Changing the DEFAULT limits is reward-NEUTRAL while the weights are 0 (relu*0 -> 0): the byte-identical
+    OFF guarantee prices ONLY the excess beyond the limit TIMES the (zero) weight, so the limit angle is
+    invisible when OFF -- pinned here so a future limit retune can never silently break the OFF parity."""
+    import math
+    w = R.EgoRewardWeights()
+    assert w.att_pitch_limit_rad == pytest.approx(math.radians(60.0), abs=1e-6)
+    assert w.att_roll_limit_rad == pytest.approx(math.radians(60.0), abs=1e-6)
+    assert w.att_pitch == 0.0 and w.att_roll == 0.0                # weights still default-OFF
+    # OFF is reward-neutral REGARDLESS of the limit: a beyond-cap attitude with weight 0 pays exactly 0.
+    assert R.attitude_limit_penalty(_t([1.2]), _t([1.2]), w).item() == 0.0
+
+
 def test_attitude_penalty_wired_nonterminal_and_off_is_byte_identical():
     n = 1
     base = R.EgoRewardWeights()                                     # att weights 0 (default)

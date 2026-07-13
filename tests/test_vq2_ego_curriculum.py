@@ -866,6 +866,118 @@ def test_attcap_offladder_no_init_from_no_sbatch_collision_renders():
 
 
 # ================================================================================================
+# TRACK A: FULL-LINEAGE RETRAIN (dual_gate_fullstack_floor_pef_trackA, 2026-07-13). The _pef FULLSTACK
+# VERBATIM + TWO annealed arms: (A) the SOFT attitude cap (60deg roll owner cap + 60deg pitch loose
+# backstop) and (B) the anti-dither yaw-jerk penalty -- BOTH annealed 0->target. Warm-CHAINED from the
+# _pef boot (NO init_from in _raw -> the sbatch auto-appends it on stage 2), NOT a warm-from-vpeffs0
+# fine-tune -- the two terms are LEARNED IN over the fullstack rather than slammed onto the champion
+# (the nodither/Track-B hot-apply collapse). Nothing else changes.
+# ================================================================================================
+_TRACKA_STAGE = "dual_gate_fullstack_floor_pef_trackA"
+_TRACKA_NEW_KEYS = {
+    # arm (A): the SOFT annealed attitude cap
+    "rw_att_pitch", "att_pitch_limit_rad", "rw_att_roll", "att_roll_limit_rad",
+    "att_cap_anneal", "att_cap_start", "att_cap_hold_frac",
+    # arm (B): the annealed anti-dither yaw-jerk penalty
+    "rw_yaw_dither", "yaw_dither_anneal", "yaw_dither_start", "yaw_dither_hold_frac",
+}
+
+
+def test_trackA_is_pef_fullstack_verbatim_plus_only_the_two_annealed_arms():
+    """Track A = dual_gate_fullstack_floor_pef VERBATIM (course + reward + the no-spin package + the
+    estimator-faithful _raw -- INCLUDING the NO-init_from _raw, so it warm-CHAINS from the boot) PLUS
+    exactly the two arms: the attitude-cap keys AND the yaw-dither keys. NOTHING else changes -> the
+    flight skill + the HARD no-spin guarantee are preserved, and none of the _pefcap package leaks in."""
+    ta, pef = C.STAGES[_TRACKA_STAGE], C.STAGES["dual_gate_fullstack_floor_pef"]
+    for k, v in pef.items():
+        if k == "_raw":
+            assert ta["_raw"] == v                                  # _raw byte-identical (incl. NO init_from -> chains from boot)
+        else:
+            assert ta[k] == v, k                                    # every _pef key verbatim
+    extra = {k for k in ta if k not in pef}
+    assert extra == _TRACKA_NEW_KEYS, extra
+
+
+def test_trackA_attitude_cap_is_60_deg_both_axes_annealed_from_zero():
+    """Owner Fengyou: roll self-limited ~60 deg. Pitch band ALSO 60 deg = a LOOSE backstop (pitch's real
+    lever is rw_perception; a tighter band is a per-run EXTRA). Weights MILD; weight annealed 0->target."""
+    ta = C.STAGES[_TRACKA_STAGE]
+    assert ta["rw_att_pitch"] == 0.2 and ta["rw_att_roll"] == 0.2               # MILD weights
+    assert ta["att_roll_limit_rad"] == pytest.approx(1.0471976)                 # 60 deg roll (owner cap)
+    assert ta["att_pitch_limit_rad"] == pytest.approx(1.0471976)               # 60 deg pitch (loose backstop)
+    assert ta["att_cap_anneal"] is True
+    assert ta["att_cap_start"] == 0.0                                           # ramp IN from no cap
+    assert 0.0 < ta["att_cap_hold_frac"] < 1.0                                  # a real END-HOLD fraction
+    # rw_perception stays the _pef current-gate 0.02 (pitch leans on THIS, not a tight cap).
+    assert ta["rw_perception"] == 0.02
+
+
+def test_trackA_yaw_dither_is_armed_and_annealed_from_zero_calibrated_for_the_clamp():
+    """The anti-dither yaw-jerk penalty is armed at the target base (0.5, calibrated for the 0.35 yaw
+    clamp: a rail-flip delta 0.70 -> -0.245/step) and annealed 0->target so it is never hot-applied."""
+    ta = C.STAGES[_TRACKA_STAGE]
+    assert ta["rw_yaw_dither"] == 0.5                                           # the TARGET base weight
+    assert ta["yaw_dither_anneal"] is True
+    assert ta["yaw_dither_start"] == 0.0                                        # ramp IN from no penalty
+    assert 0.0 < ta["yaw_dither_hold_frac"] < 1.0                               # a real END-HOLD fraction
+    assert ta["ego_yaw_cmd_clamp_rad_s"] == 0.35                                # clamp the weight is calibrated for
+
+
+def test_trackA_keeps_hard_no_spin_untouched():
+    """The no-spin guarantee stays BY CONSTRUCTION: the fatal spin abort (incl. the accumulated-rotation
+    rev trigger, the constant-drift closer the yaw-dither term needs) + the realized-yaw clamp are EXACTLY
+    the _pef values -- both arms ride ALONGSIDE them."""
+    ta = C.STAGES[_TRACKA_STAGE]
+    assert ta["ego_spin_rate_abort"] == 3.5 and ta["ego_spin_time_abort"] == 0.4
+    assert ta["ego_spin_rev_abort"] == 1.5 and ta["ego_spin_rev_window_s"] == 4.0
+    assert ta["ego_yaw_cmd_clamp_rad_s"] == 0.35
+
+
+def test_trackA_does_not_leak_pefcap_knobs():
+    """Track A is ONLY the two arms -- none of the _pefcap package (gate-1 out-of-fov, range cap,
+    perception-next, seg-len tightening) may appear."""
+    ta = C.STAGES[_TRACKA_STAGE]
+    for forbidden in ("course_g1_out_of_fov_lo", "course_g1_out_of_fov_hi", "ego_obs_slot_range_cap_m",
+                      "rw_perception_next", "course_min_pair_dist_m"):
+        assert forbidden not in ta, forbidden
+    assert ta["course_seg_len_lo"] == 10.0                                      # the _pef 10 m (not _pefcap 8 m)
+
+
+def test_trackA_constructs_reward_weights_without_tripping_guards():
+    """The two arms build a valid EgoRewardWeights (no farm-neutrality / terminal guard trips)."""
+    from ego_reward import EgoRewardWeights
+    ta = C.STAGES[_TRACKA_STAGE]
+    w = EgoRewardWeights(att_pitch=ta["rw_att_pitch"], att_roll=ta["rw_att_roll"],
+                         att_pitch_limit_rad=ta["att_pitch_limit_rad"],
+                         att_roll_limit_rad=ta["att_roll_limit_rad"],
+                         yaw_dither=ta["rw_yaw_dither"])
+    assert w.att_pitch == 0.2 and w.att_roll == 0.2 and w.yaw_dither == 0.5
+
+
+def test_trackA_offladder_warm_chains_from_boot_renders_no_collision():
+    ta = C.STAGES[_TRACKA_STAGE]
+    assert _TRACKA_STAGE not in C.STAGE_ORDER                       # off-ladder (run as the boot->trackA chain)
+    assert not any("init_from" in k for k in ta["_raw"])           # NO init_from -> the sbatch appends it on stage 2
+    toks = C.render_overrides(_TRACKA_STAGE)
+    assert "+env.rw_att_pitch=0.2" in toks and "+env.rw_att_roll=0.2" in toks   # arm (A) armed
+    assert "+env.att_cap_anneal=true" in toks                       # (A) weight ramp armed
+    assert "+env.att_cap_start=0.0" in toks
+    assert "+env.rw_yaw_dither=0.5" in toks                         # arm (B) armed
+    assert "+env.yaw_dither_anneal=true" in toks                    # (B) weight ramp armed
+    assert "+env.yaw_dither_start=0.0" in toks
+    assert "+env.ego_faithful=true" in toks                         # the _pef estimator-faithful rides along
+    assert "+env.ego_yaw_cmd_clamp_rad_s=0.35" in toks             # the no-spin clamp preserved
+    assert "+env.ego_spin_rev_abort=1.5" in toks                    # the constant-drift spin closer preserved
+    assert "algo.gamma=0.9975" in toks
+    assert not any(t.startswith("+env.ego_noise_scale") for t in toks)   # real-noise fullstack regime
+    for tok in toks:                                               # no _pef/BASE-appended key collision
+        key = tok.split("=", 1)[0]
+        if key.startswith("++"):
+            continue
+        assert key not in _SBATCH_APPENDED_KEYS, tok
+
+
+# ================================================================================================
 # R0 STILL-YAW HOVER BOOT (hover_still_boot, 2026-07-12): the FIRST rung of a fresh lineage. A pure
 # altitude-hold hover (gate terms zeroed, == hover_hold) + the four R0 arms (yaw-dither, spin abort,
 # vel-jerk, altitude-hold) + the yaw clamp armed at the base + estimator-faithful at LOW noise.

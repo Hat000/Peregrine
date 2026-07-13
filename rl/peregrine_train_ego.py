@@ -417,6 +417,33 @@ def _resolve_att_cap_anneal(cfg):
     )
 
 
+def _resolve_yaw_dither_anneal(cfg):
+    """Parse the ANTI-DITHER yaw-jerk penalty-WEIGHT RAMP-IN from cfg.env, or None when OFF (byte-identical
+    default). Gated by ``+env.yaw_dither_anneal`` (truthy); ``+env.yaw_dither_start/hold_frac`` optional.
+    THE ANTI-DITHER LEVER (Track A, 2026-07-13): the anti-dither yaw-jerk penalty (ego_reward.yaw_dither_
+    penalty, R_yawdith = -rw_yaw_dither*(yaw_cmd_t - yaw_cmd_{t-1})^2) removes the yaw command's +-clamp rail-
+    flip oscillation the position-free obs leaves unpriced. HOT-applying it at full strength to a competent
+    champion DETONATES the policy (the 'nodither' fine-tune collapsed the 96.9% flyer to 0.16% -- a strong
+    penalty slammed onto a working flyer destroys it, the SAME failure mode the att-cap anneal exists for).
+    This ramps the yaw-dither WEIGHT in from yaw_dither_start*base (default 0 -> the term is INERT at birth =
+    the champion behaviour untouched) UP to the configured target weight over the FRONT (1-hold_frac), then
+    END-HOLDs at the full weight for the last hold_frac -- so the policy grows the still-yaw skill GRADUALLY
+    and the saved checkpoint's converged regime IS the full anti-dither penalty (END-HOLD, the same guarantee-
+    at-the-end argument as att_cap_anneal / progress_ramp / spin-abort / yaw-clamp). REUSES _spin_abort_schedule
+    (start_scale=0 -> ramps 0->1 over the front, holds 1.0). Mutates env._egorw.yaw_dither (the exact object
+    ego_reward reads). Base MUST be armed (>0): ramping scale*0 is a silent no-op under an annealed run name
+    (footgun L16). start_scale=0 is INTENDED (ramp in from no penalty, unlike the clamp/perception hooks whose
+    START is the loose extreme), so ONLY the base is guarded. PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "yaw_dither_anneal", False)):
+        return None
+    return dict(
+        start_scale=float(getattr(env, "yaw_dither_start", 0.0)),
+        hold_frac=float(getattr(env, "yaw_dither_hold_frac", 0.3)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
 def _run_det_eval(self, env, agent, cfg):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
@@ -640,6 +667,27 @@ def _run_with_ego_lifelines(self):
         else:
             ac_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # ANTI-DITHER YAW-JERK RAMP-IN (Track A, 2026-07-13; see _resolve_yaw_dither_anneal's rationale). Mutates
+    # env._egorw.yaw_dither from yaw_dither_start*base UP to base (END-HOLD) so the working flyer grows the
+    # still-yaw skill gradually rather than being detonated by a hot full-strength penalty (the nodither
+    # collapse). Base captured pre-mutation and MUST be armed (>0): ramping 0->0 is a silent no-op under an
+    # annealed run name (L16). start_scale=0 is INTENDED (ramp in from no penalty), so only the base is guarded.
+    yd_sched = _resolve_yaw_dither_anneal(cfg)
+    yd_env = _require_anneal_holder(env, "_egorw", yd_sched, "yaw-dither-anneal", cfg)
+    if yd_sched is not None:
+        if yd_env is not None:
+            yd_sched["base"] = float(getattr(yd_env._egorw, "yaw_dither", 0.0))
+            if yd_sched["base"] <= 0.0:
+                raise RuntimeError(
+                    "[yaw-dither-anneal] requested but the anti-dither penalty is OFF (base rw_yaw_dither="
+                    f"{yd_sched['base']:.4f}) -- ramping 0->0 is a silent no-op under an annealed run name "
+                    "(footgun L16); arm rw_yaw_dither (the full anti-dither weight, e.g. 0.5) or drop "
+                    "+env.yaw_dither_anneal.")
+            print(f"[yaw-dither-anneal] ON: {yd_sched} (RAMP-IN {yd_sched['start_scale']:.2f}*base -> "
+                  f"base, END-HOLD at full for the last {yd_sched['hold_frac']:.0%} of updates)")
+        else:
+            yd_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -709,6 +757,13 @@ def _run_with_ego_lifelines(self):
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[att-cap-anneal] update {counter['i']}: scale={acv:.3f} "
                       f"att_pitch={ac_env._egorw.att_pitch:.3f} att_roll={ac_env._egorw.att_roll:.3f}")
+        if yd_sched is not None:
+            ydv = _spin_abort_schedule(counter["i"], yd_sched["n_updates"],
+                                       yd_sched["start_scale"], yd_sched["hold_frac"])
+            yd_env._egorw.yaw_dither = yd_sched["base"] * ydv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[yaw-dither-anneal] update {counter['i']}: scale={ydv:.3f} "
+                      f"rw_yaw_dither={yd_env._egorw.yaw_dither:.3f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:

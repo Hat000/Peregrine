@@ -252,14 +252,25 @@ class EgoRewardWeights:
     # +20deg camera points at −30deg -> LOSES the gate; high-g banks break perception the same way) by pushing
     # a self-limit INTO the trained policy so it does not need a deploy-side control clamp. Deliberately NOT an
     # |omega|/thrust/jerk/effort penalty (fast flight is fine -- speed is NOT penalized); the penalty is ZERO
-    # inside the band, INCLUDING the airframe's ~17.8deg (0.31 rad) nose-down REST tilt which sits below the
-    # 30deg default pitch limit, so it never rewards hovering (hover pays 0 here, same as flying within the
+    # inside the band, INCLUDING the airframe's ~17.8deg (0.31 rad) nose-down REST tilt which sits far below the
+    # 60deg default pitch limit, so it never rewards hovering (hover pays 0 here, same as flying within the
     # band) and never kills a flight (purely a reward term, never a termination). Grows linearly past the
     # limit. 0 == OFF (byte-identical). Tune via +env.rw_att_pitch / +env.rw_att_roll.
+    #
+    # DEFAULT CAP ANGLES = 60 deg for BOTH axes (owner Fengyou, 2026-07-13 Track A): the deploy roll/pitch
+    # clamps this term REPLACES were ~60 deg, and the owner wants ROLL self-limited at ~60 deg. The PITCH
+    # default is deliberately LOOSE (also 60 deg, up from the old 30 deg) because pitch's real failure lever is
+    # NOT the attitude cap: the head-down dive that lost gates was ~-50deg -- INSIDE any 60deg cone -- and is a
+    # PERCEPTION loss (the +20deg camera points at the floor), addressed by rw_perception, NOT by a tighter
+    # pitch cap. So a stage that wants head-down pressure should lean on rw_perception and leave this pitch cap
+    # as a loose >60deg BACKSTOP (a tighter pitch band is still available per-stage via +env.att_pitch_limit_rad,
+    # e.g. the _pefcap 30deg / _attcap 12deg experiments, which set it explicitly). Both limits are per-axis and
+    # independently tunable. Changing these DEFAULTS is reward-neutral while the weights are 0 (relu*0 -> 0), so
+    # the byte-identical OFF guarantee is untouched.
     att_pitch: float = 0.0           # rw_att_pitch; weight on the |leveled pitch| excess; 0 == OFF
-    att_pitch_limit_rad: float = 0.5235988   # 30 deg free band on |pitch| (ABOVE the 17.8deg rest nose-down)
+    att_pitch_limit_rad: float = 1.0471976   # 60 deg free band on |pitch| (LOOSE backstop; pitch's lever is rw_perception)
     att_roll: float = 0.0            # rw_att_roll; weight on the |leveled roll| excess; 0 == OFF
-    att_roll_limit_rad: float = 0.6981317    # 40 deg free band on |roll|
+    att_roll_limit_rad: float = 1.0471976    # 60 deg free band on |roll| (owner Fengyou: roll capped ~60 deg)
 
     # --- SMOOTH PARABOLIC CROSSING reward (Fengyou 2026-07-08 -- "policy reacts better to smooth things").
     # Replaces the DISCONTINUOUS {thread=+passage, clip=-100, miss=-100} cliff with one smooth downward
@@ -964,7 +975,7 @@ def attitude_limit_penalty(roll: Tensor, pitch: Tensor, w: EgoRewardWeights) -> 
     """SOFT, NON-TERMINAL attitude-limit penalty (pefcap 2026-07-12; PERCEPTION-preservation, not energy):
         R_att = −rw_att_pitch·relu(|pitch| − att_pitch_limit_rad) − rw_att_roll·relu(|roll| − att_roll_limit_rad)
     on the TRUE gravity-leveled body attitude (GT is legal in reward). ZERO inside the free band -- and the
-    band sits ABOVE the airframe's ~17.8deg (0.31 rad) nose-down REST tilt (default pitch limit 30deg), so a
+    band sits ABOVE the airframe's ~17.8deg (0.31 rad) nose-down REST tilt (default pitch limit 60deg), so a
     hovering/resting drone pays ZERO here (this term never makes hovering better than flying-within-band) --
     then grows LINEARLY once the excursion passes the limit. It caps only the OVER-AGGRESSIVE head-down /
     high-bank attitudes that swing the +20deg-mounted camera off the gate and break the estimate; it is NOT

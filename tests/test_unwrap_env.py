@@ -477,3 +477,53 @@ def test_att_cap_anneal_lifeline_wiring_source_pins():
     assert 'raise RuntimeError' in src.split('ac_sched["base_roll"] = ', 1)[1].split("agent.step", 1)[0]
     assert 'ac_env._egorw.att_pitch = ac_sched["base_pitch"] * acv' in src
     assert 'ac_env._egorw.att_roll = ac_sched["base_roll"] * acv' in src
+
+
+# ================================================================================================
+# ANTI-DITHER yaw-jerk penalty-WEIGHT RAMP-IN (Track A, 2026-07-13): the yaw_dither term annealed 0->target
+# so a hot full-strength penalty never detonates the champion (the nodither collapse). Same RAMP-IN shape
+# as the att-cap anneal (start_scale=0 through _spin_abort_schedule -> 0->1 END-HOLD).
+# ================================================================================================
+def test_resolve_yaw_dither_anneal_off_by_default_and_parses_knobs():
+    """Unset / falsy gate -> None (byte-identical OFF); armed -> defaults start_scale=0.0 (INERT at birth =
+    the working flyer untouched) hold_frac=0.3 (full penalty for the last 30% so the graduate's converged
+    regime IS the flown anti-dither); explicit knobs win."""
+    assert ego_launcher._resolve_yaw_dither_anneal(_Cfg(env=None)) is None
+    assert ego_launcher._resolve_yaw_dither_anneal(_Cfg(env=_Cfg())) is None
+    assert ego_launcher._resolve_yaw_dither_anneal(
+        _Cfg(env=_Cfg(yaw_dither_anneal=False))) is None
+    s = ego_launcher._resolve_yaw_dither_anneal(
+        _Cfg(env=_Cfg(yaw_dither_anneal=True), n_updates=12000))
+    assert s == {"start_scale": 0.0, "hold_frac": 0.3, "n_updates": 12000}
+    s = ego_launcher._resolve_yaw_dither_anneal(
+        _Cfg(env=_Cfg(yaw_dither_anneal=True, yaw_dither_start=0.1, yaw_dither_hold_frac=0.5), n_updates=100))
+    assert s == {"start_scale": 0.1, "hold_frac": 0.5, "n_updates": 100}
+
+
+def test_yaw_dither_anneal_is_a_ramp_in_via_spin_abort_schedule():
+    """start_scale=0 through _spin_abort_schedule ramps 0->1 over the front (1-hold_frac) then END-HOLDs at
+    1.0 -- so rw_yaw_dither goes 0 -> target and stays target for the last hold_frac. The penalty is INERT
+    at birth (scale 0) so the warm-started champion is untouched, then grows the still-yaw skill gradually."""
+    f = ego_launcher._spin_abort_schedule
+    N, hold = 12000, 0.3
+    ramp_end = int((1.0 - hold) * N)
+    assert f(0, N, 0.0, hold) == pytest.approx(0.0)              # penalty INERT at birth (champion untouched)
+    assert 0.0 < f(ramp_end // 2, N, 0.0, hold) < 1.0            # ramping in
+    assert f(ramp_end, N, 0.0, hold) == pytest.approx(1.0)       # full penalty by (1-hold)*N
+    for i in (ramp_end + 1, N - 1, N):
+        assert f(i, N, 0.0, hold) == pytest.approx(1.0)          # END-HOLD at the full penalty
+    vals = [f(i, N, 0.0, hold) for i in range(0, N + 1, 100)]
+    assert all(a <= b for a, b in zip(vals, vals[1:]))           # monotone non-decreasing (ramp IN)
+
+
+def test_yaw_dither_anneal_lifeline_wiring_source_pins():
+    """Source pins (cluster-only wiring): holder = '_egorw' (the exact object ego_reward reads); the base
+    captured pre-mutation and a <=0 base RAISES (ramping scale*0 is an L16 silent no-op under an annealed
+    run name); per-update mutation of _egorw.yaw_dither via the shared ramp-in (start_scale=0) END-HOLD
+    schedule."""
+    import inspect
+    src = inspect.getsource(ego_launcher._run_with_ego_lifelines)
+    assert '_require_anneal_holder(env, "_egorw", yd_sched' in src
+    assert 'yd_sched["base"] = float(getattr(yd_env._egorw, "yaw_dither", 0.0))' in src
+    assert 'raise RuntimeError' in src.split('yd_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
+    assert 'yd_env._egorw.yaw_dither = yd_sched["base"] * ydv' in src

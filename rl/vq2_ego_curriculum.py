@@ -1504,6 +1504,96 @@ STAGES: dict[str, dict] = {
                  "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
     },
     # ================================================================================================
+    # TRACK A: FULL-LINEAGE RETRAIN with BOTH behaviours annealed IN (2026-07-13) -- dual_gate_fullstack_
+    # floor_pef VERBATIM (course + reward + the HARD no-spin package + the estimator-faithful _raw all byte-
+    # identical) PLUS exactly TWO default-OFF-elsewhere arms, BOTH ANNEALED from 0: (A) the SOFT attitude
+    # cap (rw_att_pitch/rw_att_roll + att_cap_anneal) and (B) the anti-dither yaw-jerk penalty (rw_yaw_dither
+    # + yaw_dither_anneal). GOAL: bake the two deploy-side walls -- the roll/pitch control clamp and the yaw
+    # rail-flip clamp -- INTO the trained policy so the deployed ckpt needs NO external clamps.
+    #
+    # WHY A FULL-LINEAGE RETRAIN, NOT A WARM FINE-TUNE (the load-bearing lesson): hot-applying EITHER term at
+    # full strength to the finished champion (vpeffs0, 96.9% DET) DETONATED it -- the 'nodither' hot yaw-jerk
+    # fine-tune collapsed it 96.9% -> 0.16%, and a hot attitude cap collapsed the Track-B fine-tune 96.9% ->
+    # 9.6%. A short warm-start fine-tune is still fundamentally re-shaping a CONVERGED policy. The fix is to
+    # run the WHOLE _pef lineage (fresh boot -> fullstack) with the two terms ANNEALED IN from 0 over the
+    # fullstack's updates, so the policy LEARNS to fly inside the band / with a still yaw from the start rather
+    # than being slammed with a strong penalty after convergence. Run as the TWO-STAGE _pef chain (fresh boot,
+    # then THIS fullstack -- the sbatch auto-appends +init_from on stage 2, exactly like plain _pef/_pefcap):
+    #     sbatch --export=ALL,SEED=0,RUNTAG=vtrackA0,\
+    #       STAGES="dual_gate_boot_floor_pef dual_gate_fullstack_floor_pef_trackA",\
+    #       UPD_dual_gate_boot_floor_pef=4000,UPD_dual_gate_fullstack_floor_pef_trackA=12000,PRECHECK=1 \
+    #       rl/peregrine_vq2_ego.sbatch
+    #
+    # THE TWO ARMS (each a NEW default-OFF append; the _pef stages + every existing stage stay byte-identical):
+    #   (A) SOFT ATTITUDE CAP (perception-preservation, NOT energy): -rw_att_pitch*relu(|pitch|-att_pitch_limit)
+    #       -rw_att_roll*relu(|roll|-att_roll_limit) on the TRUE leveled attitude (GT legal in reward; PRICES
+    #       only obs[3:5] roll/pitch). ROLL band 60 deg (owner Fengyou: roll self-limited ~60 deg -> REPLACES
+    #       the deploy roll clamp). PITCH band 60 deg = a LOOSE BACKSTOP: pitch's real failure lever is NOT the
+    #       cap -- the gate-losing head-down dive is ~-50deg (INSIDE 60 deg) and is a PERCEPTION loss (camera
+    #       sees floor), owned by rw_perception=0.02 (already in _pef), NOT a tighter pitch cap. So we LEAN ON
+    #       PERCEPTION for pitch and keep the pitch cap only as a >60deg safety limit (a tighter pitch band is a
+    #       one-line EXTRA=++env.att_pitch_limit_rad=... if head-down persists, the _attcap 12deg precedent).
+    #       Weights MILD (0.2/0.2). ANNEALED: att_cap_anneal, weight 0->target over the front, END-HOLD last 30%.
+    #   (B) ANTI-DITHER yaw-jerk penalty: -rw_yaw_dither*(yaw_cmd_t - yaw_cmd_{t-1})^2 on the APPLIED (post-
+    #       clamp) yaw-rate action (channel 3) -> prices YAW-COMMAND JERK, which the policy OBSERVES (yaw rate =
+    #       obs[7]) and CONTROLS (the yaw action). A steady turn pays ~0 (turns are FREE -- speed is NOT
+    #       penalised); only the +-clamp rail-flip oscillation pays. rw_yaw_dither=0.5 is CALIBRATED FOR THE
+    #       CLAMPED regime: the yaw clamp stays ARMED at 0.35 (== _pef VERBATIM) so a rail-FLIP delta =
+    #       0.35-(-0.35) = 0.70 rad/s -> -0.5*0.70^2 = -0.245/step (arming the clamp rather than retuning the
+    #       weight for the +-3.14 rail keeps the still-yaw skill calibrated to the SAME clamp the lineage flies).
+    #       The slow CONSTANT-drift escape (steady yaw = ~0 jerk) is closed BY CONSTRUCTION by the RETAINED
+    #       fatal spin abort (ego_spin_rev_abort=1.5 rev accumulator) + the yaw clamp. ANNEALED: yaw_dither_
+    #       anneal, weight 0->target over the front, END-HOLD last 30%.
+    # NO-SPIN stays HARD / BY CONSTRUCTION (the fatal abort package + realized-yaw clamp EXACTLY the _pef values,
+    # UNTOUCHED); the two arms are pure reward terms riding alongside. NO GT added to the actor obs (roll/pitch =
+    # obs[3:5], yaw rate = obs[7] already observable; the reward reads GT internally but prices only observable
+    # state). algo=appo, gamma=0.9975 (both MANDATORY). BUDGET: full 4000 boot + 12000 fullstack. SUCCESS
+    # (training metrics; renders untrustworthy): DET-thread ~ the _pef champion (>=~0.9) with att_pen ->
+    # bounded + yaw_dither_pen -> ~0 by convergence, roll |leveled| <= ~60 deg, exit_spin ~0 (NON-spinning),
+    # and the [att-cap-anneal] + [yaw-dither-anneal] ramp visible in the precheck log.
+    # ================================================================================================
+    "dual_gate_fullstack_floor_pef_trackA": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_fullstack_floor_pef
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime; the arms ride along.
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_blur_rate_hi_rad_s": 4.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_spin_rate_abort": 3.5,        # HARD no-spin package == _pef VERBATIM (UNTOUCHED)
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,         # the accumulated-rotation trigger (constant-drift closer) preserved
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,   # yaw clamp UNTOUCHED (both arms ride ALONGSIDE; yaw-dither calibrated for it)
+        "rw_perception": 0.02,
+        "rw_perception_exponent": 4.0,
+        "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,          # measured choked-loop dt band (renewal over the pmf)
+        # ---- ARM (A): SOFT ANNEALED ATTITUDE CAP (roll 60deg owner cap; pitch 60deg LOOSE backstop, leans on perception) ----
+        "rw_att_pitch": 0.2, "att_pitch_limit_rad": 1.0471976,   # 60 deg pitch band (LOOSE backstop; rw_perception owns head-down)
+        "rw_att_roll": 0.2, "att_roll_limit_rad": 1.0471976,     # 60 deg roll band (owner Fengyou: roll capped ~60 deg)
+        "att_cap_anneal": True, "att_cap_start": 0.0, "att_cap_hold_frac": 0.3,     # weight 0->target, END-HOLD last 30%
+        # ---- ARM (B): ANTI-DITHER ANNEALED YAW-JERK penalty (calibrated for the 0.35 clamp above) ----
+        "rw_yaw_dither": 0.5,
+        "yaw_dither_anneal": True, "yaw_dither_start": 0.0, "yaw_dither_hold_frac": 0.3,  # weight 0->target, END-HOLD last 30%
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here (LOAD-BEARING, == plain _pef fullstack): the sbatch ladder auto-appends it
+                 # on stage 2 of the boot->trackA chain (a full-lineage retrain, NOT a warm-from-vpeffs0 fine-tune).
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
+    # ================================================================================================
     # BEHAVIORAL-CAP chain (_pefcap, 2026-07-12) -- the _pef chain VERBATIM plus a DEFAULT-OFF package
     # that pushes the deployed behavioral limits INTO the trained policy so it self-limits WITHOUT any
     # deploy-side control clamp. Targets the two live-flight failures: (a) the coarse-map horiz turn prior
