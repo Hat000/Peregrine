@@ -78,3 +78,6 @@ handoff/vq2-blender-render-2026-06-15/throughput*/
 handoff/vq2-blender-render-2026-06-15/*_overlay/
 handoff/vq2-blender-render-2026-06-15/sets_overlay_*/
 handoff/vq2-blender-render-2026-06-15/validate8kp*/
+
+# pilot control panel runtime logs + state (tools/pilot_panel.py)
+tools/pilot_panel_logs/
