@@ -807,6 +807,94 @@ class EgoTakeoffAssist:
         return None
 
 
+class EgoFloorClamp:
+    """Deploy-side FLOOR / descent fence for the low gates [ego-deploy 2026-07-12].
+
+    THE PROBLEM: VQ2 gates 4/5/6 sit very close to the pad. The policy dives to reach them and
+    OVERSHOOTS into the ground — gate contact is an INVALID run and the drone crashes. This
+    one-sided fence arrests a NEAR-GROUND descent by flooring the EMITTED collective, so the
+    drone stops sinking instead of slamming the floor, WITHOUT pinning altitude (above the fence
+    line the drone still descends freely toward a low gate).
+
+    ONE-SIDED, arrest-only — it NEVER forces a climb when high and NEVER touches roll/pitch/yaw:
+      * fires ONLY when (height above pad) < clamp_m AND the drone is descending;
+      * raises the collective to the takeoff-assist thrust floor (>= hover) so the sink is
+        arrested — a policy thrust already at/above that floor passes through untouched (max());
+      * above the clamp height it is a bit-identical passthrough, so the drone descends toward
+        the gate unimpeded. The PILOT sets clamp_m BELOW the low gates and ABOVE the ground, so
+        every gate stays reachable and only a ground-bound overshoot is caught.
+
+    DESCENT DETECTION: primary = the estimated NED down-velocity (vel_down > 0 == sinking);
+    fallback when velocity is missing/non-finite = the policy commanding below hover
+    (policy_normed < 1.0 g). An ASCENDING drone (vel_down < 0) is therefore NEVER fenced.
+
+    WARNING — ALTITUDE SOURCE = the VISION-derived nav estimate (nav_state.position_ned[2]). On
+    the VQ2 wire this is DEAD-RECKONED and carries a KNOWN, still-being-characterized VERTICAL
+    BIAS (owned by the vision stack). If the estimate is off, the fence fires at the WRONG TRUE
+    height — it is a MITIGATION, NOT a cure. The pilot MUST sweep clamp_m empirically against
+    observed flights, not trust a single nominal number.
+
+    Pad datum: the FIRST finite nav z seen (the first-armed position on the pad), latched once
+    and never moved — independent of the takeoff-assist (works under --no-ego-takeoff-assist).
+    Height above pad = pad_z - current_z (NED z is DOWN, so a climb makes z more negative ->
+    positive height), the SAME convention the takeoff-assist climb trigger uses.
+
+    Units mirror the takeoff-assist: normed thrust is g-units (hover == 1.0 g); the wire
+    collective is normed * hover_collective (=_HOVER_THRUST) clipped to [0,1]. floor_g is the
+    arrest target in g-units — it REUSES the takeoff-assist thrust floor (--ego-assist-thrust,
+    default 1.10 g) for a single, consistent over-hover reference that both unloads the pad and
+    (being above hover) actually decelerates a sink."""
+
+    def __init__(self, *, clamp_m: float, hover_collective: float, floor_g: float,
+                 hover_g: float = 1.0):
+        self.clamp_m = float(clamp_m)                    # arrest below this height above pad (m); 0 = OFF
+        self.hover_collective = float(hover_collective)  # _HOVER_THRUST: g-units -> [0,1] collective
+        self.floor_g = float(floor_g)                    # arrest target, g-units (reuses the assist floor)
+        self.hover_g = float(hover_g)                    # 'descending' thrust threshold (hover = 1.0 g)
+        self._z0: float | None = None                    # pad datum: first finite nav z (NED, down +)
+        self._arresting = False                          # rising-edge latch for the once-per-arrest log
+
+    @property
+    def enabled(self) -> bool:
+        """True iff a positive clamp height was requested (0 == OFF == bit-identical passthrough)."""
+        return self.clamp_m > 0.0
+
+    def apply(self, policy_normed: float, *, nav_z, vel_down,
+              log=None) -> tuple[float, float, bool]:
+        """One command tick. Returns (emitted_normed_g, emitted_collective_01, floor_on).
+
+          emitted_normed_g       -> feed back as obs[8] next tick (the ACTUALLY emitted g-units value)
+          emitted_collective_01  -> ControlCommand.thrust (the [0,1] wire collective)
+          floor_on               -> did the fence RAISE thrust this tick (forensics)
+
+        Passthrough (bit-identical to policy_step's own collective) when disabled, before the pad
+        datum latches, when the altitude estimate is missing, when at/above the clamp height, when
+        not descending, or when the policy already commands at/above the arrest floor. Only a
+        below-clamp DESCENDING sub-floor tick is arrested."""
+        policy_normed = float(policy_normed)
+        arrest = False
+        emitted = policy_normed
+        height = None
+        if self.enabled:
+            if self._z0 is None and nav_z is not None and np.isfinite(nav_z):
+                self._z0 = float(nav_z)                       # latch pad datum (first finite nav z)
+            if self._z0 is not None and nav_z is not None and np.isfinite(nav_z):
+                height = self._z0 - float(nav_z)              # NED z DOWN: climb -> z more negative -> >0
+                if height < self.clamp_m:
+                    have_v = vel_down is not None and np.isfinite(vel_down)
+                    descending = (float(vel_down) > 0.0) if have_v else (policy_normed < self.hover_g)
+                    if descending and policy_normed < self.floor_g:
+                        emitted = self.floor_g                # ARREST: raise to the (over-hover) floor
+                        arrest = True
+        if log is not None and arrest and not self._arresting:
+            vtxt = ("n/a" if (vel_down is None or not np.isfinite(vel_down))
+                    else f"{float(vel_down):+.2f}")
+            log(f"[ego-floor] ARREST height={height:.2f}m < clamp {self.clamp_m:.2f}m "
+                f"(vel_down={vtxt} m/s): thrust {policy_normed:.3f}->{emitted:.3f} g")
+        self._arresting = arrest
+        return emitted, _clip01(emitted * self.hover_collective), arrest
+
+
 def _kp_persist_step(streak: int, pose, n_required: int):
     """KEYPOINT-PERSISTENCE debounce -- deploy twin of training ego_kp_persist_frames
     (Fengyou 2026-07-11: gate info transmits only after the detectability condition
@@ -1820,6 +1908,22 @@ def _fly_ego(client, actor, args, flight_idx: int,
         print("[ego] takeoff-assist OFF (--no-ego-takeoff-assist): raw policy thrust from tick 0 "
               "(A1 ground-freeze risk).", file=sys.stderr)
 
+    # --- deploy-side floor / descent fence for the low gates (see EgoFloorClamp). Reuses the
+    # takeoff-assist thrust floor (--ego-assist-thrust, >= hover) as the arrest target so the two
+    # fences share one over-hover reference. Default OFF (--ego-floor-clamp 0) -> byte-identical. ---
+    floor_clamp = EgoFloorClamp(
+        clamp_m=args.ego_floor_clamp,
+        hover_collective=_HOVER_THRUST,
+        floor_g=args.ego_assist_thrust,
+    )
+    if floor_clamp.enabled:
+        print(f"[ego] floor-clamp ON: below {args.ego_floor_clamp:g} m above the pad, arrest a "
+              f"descent to the {args.ego_assist_thrust:g} g assist floor "
+              f"(collective {_clip01(args.ego_assist_thrust * _HOVER_THRUST):.3f}); one-sided "
+              f"(only RAISES thrust vs a sink, never forces a climb, never touches rate); passthrough "
+              f"above the clamp so a low gate stays reachable. WARNING: keys off the (biased) VISION "
+              f"altitude estimate -- MITIGATION not cure, sweep the threshold empirically.")
+
     tick        = 1.0 / args.rate
     deadline    = time.monotonic() + args.max_seconds
     next_t      = time.monotonic()
@@ -1992,6 +2096,17 @@ def _fly_ego(client, actor, args, flight_idx: int,
             nav_z=(float(nav_state.position_ned[2])
                    if nav_state.position_ned is not None else None),
             log=lambda m: print("\n  " + m, flush=True))
+        # --- floor / descent fence: after the assist, arrest a near-ground sink (low gates 4/5/6)
+        # by flooring the EMITTED collective; one-sided, never touches rate; last_normed carries the
+        # actually-emitted g-units so obs[8] next tick reflects it. No-op (bit-identical) under the
+        # default --ego-floor-clamp 0 or whenever the drone is above the clamp / not descending. ---
+        last_normed, collective, floor_on = floor_clamp.apply(
+            last_normed,
+            nav_z=(float(nav_state.position_ned[2])
+                   if nav_state.position_ned is not None else None),
+            vel_down=(float(nav_state.velocity_ned[2])
+                      if nav_state.velocity_ned is not None else None),
+            log=lambda m: print("\n  " + m, flush=True))
         client.send_command(ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=st,
@@ -2014,6 +2129,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     "collective": round(collective, 5),
                     "normed_thrust": round(last_normed, 5),
                     "assist": bool(assist_on),
+                    "floor": bool(floor_on),
                     "kf_pos_ned": np.asarray(nav_state.position_ned).round(3).tolist(),
                     "tsv": (None if not np.isfinite(nav_state.time_since_vision_update_s)
                             else round(nav_state.time_since_vision_update_s, 3)),
@@ -2544,6 +2660,20 @@ def build_parser() -> argparse.ArgumentParser:
                          "in the offending direction (only roll-toward-level passes), so an aggressive "
                          "bank can't tip the +20 deg camera off the gate / drive the drone off-line. "
                          "Try 45. Two-sided => virtual_flip-agnostic by construction.")
+    ap.add_argument("--ego-floor-clamp", type=float, default=0.0,
+                    help="EGO floor / descent fence in METERS above the pad (0 = off). VQ2 gates 4/5/6 "
+                         "sit near the ground; the policy dives to reach them and can OVERSHOOT into "
+                         "the floor (gate contact = INVALID run + crash). When the ESTIMATED height "
+                         "above the pad drops below this AND the drone is descending (nav "
+                         "down-velocity > 0, or -- if velocity is unavailable -- the policy commanding "
+                         "below hover), the EMITTED collective is floored to the --ego-assist-thrust "
+                         "value (>= hover) so the sink is arrested. ONE-SIDED: only ever RAISES thrust "
+                         "(never forces a climb when high), never touches roll/pitch/yaw, and is a "
+                         "bit-identical passthrough above the clamp height -- so the drone still "
+                         "descends toward a low gate. Set it BELOW the low gates and ABOVE the ground. "
+                         "WARNING: keys off the VISION altitude estimate, which carries a known "
+                         "(still-being-characterized) vertical BIAS -- a MITIGATION not a cure; sweep "
+                         "the threshold empirically. Try 0.4.")
     ap.add_argument("--ego-slot1", action="store_true",
                     help="Activate the WINDOW=2 next-gate obs slot (slot1 = active_gate_index+1) for "
                          "the MULTI-gate _pef champions (trained with slot1 populated). Wires the "
@@ -2919,6 +3049,7 @@ def main() -> int:
                     "ego_coarse_map": args.ego_coarse_map,
                     "ego_pitch_clamp": args.ego_pitch_clamp,
                     "ego_roll_clamp": args.ego_roll_clamp,
+                    "ego_floor_clamp": args.ego_floor_clamp,
                     "ego_yaw_clamp": args.ego_yaw_clamp,
                     "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist}
