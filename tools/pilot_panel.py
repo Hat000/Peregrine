@@ -1054,7 +1054,7 @@ async function doGit(){
 // ---- coarse-map editor: a 3x3 spatial grid per gate (the arrow points AT the next gate) ----
 const MAP_NAME={'0,1':'up','-1,1':'upper-right','1,1':'upper-left','1,0':'left','0,0':'straight / level','-1,0':'right','1,-1':'lower-left','0,-1':'down','-1,-1':'lower-right'};
 const MAP_GLYPH={'0,1':'↑','-1,1':'↗','1,1':'↖','1,0':'←','0,0':'•','-1,0':'→','1,-1':'↙','0,-1':'↓','-1,-1':'↘'};
-const MAP_LEGEND=`<b>Click where gate g+1 is</b> as you arrive at gate g (gravity-leveled approach frame) — the arrow points AT the next gate.<br>`+
+const MAP_LEGEND=`<b>Row 0 = gate 0</b> (where the start gate is from spawn). Each next row is the leg <b>gate g-1 → gate g</b>: click where that gate is as you arrive (gravity-leveled approach frame) — the arrow points AT it.<br>`+
   `↖ upper-left · ↑ up · ↗ upper-right &nbsp;/&nbsp; ← left · • straight+level · → right &nbsp;/&nbsp; ↙ lower-left · ↓ down · ↘ lower-right<br>`+
   `encodes <b>[horiz, vert]</b> — horiz: <b>RIGHT=-1</b>, <b>LEFT=+1</b>, straight=0 &nbsp;·&nbsp; vert: <b>UP=+1</b>, <b>DOWN=-1</b>, level=0.&nbsp; 1-bit fly-check: if the drone banks the WRONG way, flip left↔right.`;
 async function loadMap(){
@@ -1070,7 +1070,8 @@ function renderMap(){
   if(!MAP){$('mapbody').innerHTML='<span class="mut">(no map loaded)</span>';return;}
   let html='';
   MAP.sector.forEach((hv,gi)=>{
-    html+=`<div class="mapgate"><span class="lbl">gate ${gi} → ${gi+1}</span><div class="grid3">`;
+    const lbl = gi===0 ? 'gate 0' : `gate ${gi-1} → ${gi}`;   // row 0 = current gate; rest = legs
+    html+=`<div class="mapgate"><span class="lbl">${lbl}</span><div class="grid3">`;
     for(let r=0;r<3;r++)for(let c=0;c<3;c++){
       const h=1-c,v=1-r,k=h+','+v,on=(hv[0]===h&&hv[1]===v);
       html+=`<button class="gc${on?' on':''}" title="${MAP_NAME[k]}  [${h}, ${v}]" onclick="setCell(${gi},${h},${v})">${MAP_GLYPH[k]}</button>`;
