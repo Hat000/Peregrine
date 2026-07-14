@@ -119,6 +119,11 @@ SCHEMA = [
          group="Vision", default=True,
          help="Fast-drop the sim's ~33x UDP video re-send flood in the receiver (4-byte frame_id, no "
               "unpack) so it doesn't GIL-starve nav_update. ON = smooth (loop 17->30 Hz); OFF = pre-fix (A/B)."),
+    dict(key="video_async_detect", flag="--video-async-detect", action="boolopt", ui="bool",
+         group="Vision", default=False,
+         help="Run the detector on a WORKER thread so the GPU-contended YOLO inference (the p99 loop "
+              "JITTER, hidden in nav_ms) stops blocking the paced loop. EXPERIMENTAL -- costs ~1 frame "
+              "detection staleness; fly-test + check p99 work_ms + infer_ms before trusting."),
 
     # ---- Ego perception ---------------------------------------------------
     dict(key="ego_sector_mode", flag="--ego-sector-mode", action="value", ui="select",

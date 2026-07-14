@@ -36,6 +36,7 @@ Wiring: this is the SENSE step behind ``Mission.run``'s navigator —
 """
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 import numpy as np
@@ -186,6 +187,7 @@ def observations_from_results(
 # with a leading underscore so they cannot collide with a detector's own fields.
 _CACHE_FID_ATTR = "_detect_cache_frame_id"
 _CACHE_OBS_ATTR = "_detect_cache_obs"
+_CACHE_MS_ATTR  = "_detect_cache_last_ms"   # [DIAG] wall-time of the LAST real detect() (0.0 on a cache hit)
 
 
 def detect_cached(detector, frame: Frame) -> list[GateObservation]:
@@ -209,14 +211,19 @@ def detect_cached(detector, frame: Frame) -> list[GateObservation]:
     if fid is not None:
         try:
             if getattr(detector, _CACHE_FID_ATTR, object()) == fid:
+                try: setattr(detector, _CACHE_MS_ATTR, 0.0)     # [DIAG] cache hit -> no inference paid here
+                except Exception: pass
                 return getattr(detector, _CACHE_OBS_ATTR)
         except Exception:
             pass
+    _t0 = time.perf_counter()
     obs = detector.detect(frame)
+    _ms = (time.perf_counter() - _t0) * 1e3                     # [DIAG] the REAL YOLO/TRT inference wall-time
     if fid is not None:
         try:
             setattr(detector, _CACHE_FID_ATTR, fid)
             setattr(detector, _CACHE_OBS_ATTR, obs)
+            setattr(detector, _CACHE_MS_ATTR, _ms)
         except Exception:
             pass
     return obs

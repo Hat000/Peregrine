@@ -1938,6 +1938,32 @@ def _fly_ego(client, actor, args, flight_idx: int,
               f"above the clamp so a low gate stays reachable. WARNING: keys off the (biased) VISION "
               f"altitude estimate -- MITIGATION not cure, sweep the threshold empirically.")
 
+    # --- async detector decouple (--video-async-detect): run detect_cached on a WORKER thread so the
+    # paced control loop never blocks on the GPU-contended YOLO/TRT inference (today it runs INSIDE
+    # nav.update -> it IS the p99 nav_ms jitter). The loop then reads the latest ALREADY-DETECTED frame
+    # (detect_cached is a cache hit). Default OFF -> _adet stays empty and the loop uses
+    # client._latest_frame (byte-identical sync path). +~1 frame detection staleness when ON. ---
+    _adet = {"frame": None, "stop": False}
+    _adet_thread = None
+    if args.video_async_detect and getattr(nav, "detector", None) is not None:
+        from racer.vision.detector import detect_cached as _detect_cached_worker
+        def _detector_worker():
+            seen = None
+            while not _adet["stop"]:
+                fr = getattr(client, "_latest_frame", None)
+                fid = getattr(fr, "frame_id", None) if fr is not None else None
+                if fr is not None and fid is not None and fid != seen:
+                    try: _detect_cached_worker(nav.detector, fr)   # GPU inference OFF the main thread
+                    except Exception: pass
+                    seen = fid
+                    _adet["frame"] = fr                            # publish the just-detected frame
+                else:
+                    time.sleep(0.001)
+        _adet_thread = threading.Thread(target=_detector_worker, name="ego-detect", daemon=True)
+        _adet_thread.start()
+        print("[ego] async-detect ON: detector on a worker thread; the loop consumes the latest DETECTED "
+              "frame (decoupled from the GPU-contention jitter). +~1 frame detection staleness.")
+
     tick        = 1.0 / args.rate
     deadline    = time.monotonic() + args.max_seconds
     next_t      = time.monotonic()
@@ -2038,10 +2064,18 @@ def _fly_ego(client, actor, args, flight_idx: int,
             gate_index = max(gi_now, 0)
 
         # --- perception + estimation (case-C, all self-localized) ---
-        frame: Frame | None = getattr(client, "_latest_frame", None)
+        # async-detect ON -> the latest ALREADY-DETECTED frame (worker pre-ran the inference, so
+        # nav.update's detect_cached is a cache hit); OFF -> the newest received frame, detected
+        # inline in nav.update (sync default).
+        frame: Frame | None = (_adet["frame"] if args.video_async_detect
+                               else getattr(client, "_latest_frame", None))
+        try: setattr(nav.detector, "_detect_cache_last_ms", 0.0)  # [DIAG] reset; nav.update sets it iff it infers
+        except Exception: pass
         _t_nav = time.perf_counter()                             # [DIAG]
         nav_state = nav.update(s, frame)
         _nav_ms = (time.perf_counter() - _t_nav) * 1e3           # [DIAG] AHRS/ESKF + nav-vision
+        _infer_ms = float(getattr(getattr(nav, "detector", None),  # [DIAG] the REAL YOLO/TRT inference
+                                  "_detect_cache_last_ms", 0.0))    #        (~0 when async-detect ON)
         ods = nav.obs_drone_state(s)
 
         # --- IMU/AHRS-liveness gate (NOT the RL loop's odo-staleness gate: ODOMETRY is blocked
@@ -2183,7 +2217,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
             n_over_budget += 1
         if session_dir is not None:                              # [DIAG] additive per-phase timing
             _timing_log.append({"k": n_ticks - 1, "work_ms": round(work_ms, 2),
-                                "nav_ms": round(_nav_ms, 2), "detect_ms": round(_detect_ms, 2),
+                                "nav_ms": round(_nav_ms, 2), "infer_ms": round(_infer_ms, 2),
+                                "detect_ms": round(_detect_ms, 2),
                                 "fresh_detect": bool(_fresh_frame)})
 
         if now - last_p >= 1.0:
@@ -2194,6 +2229,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
                   f"{rate_frd[2]:+.2f}]   ", end="\r", flush=True)
             last_p = now
 
+    _adet["stop"] = True                        # stop the async-detect worker (daemon; also dies with the proc)
     if final_state == "IDLE":
         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
         print(f"\n  ({final_state.lower()})")
@@ -2593,6 +2629,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "does not GIL-starve the nav/AHRS update. DEFAULT ON (validated: loop 17->30 Hz, "
                          "nav_ms 43->21). --no-video-dedup-fastpath routes every datagram through the "
                          "full unpack -- the pre-fix path, for an A/B.")
+    ap.add_argument("--video-async-detect", action=argparse.BooleanOptionalAction, default=False,
+                    help="Run the gate detector on a WORKER thread (EGO path). The paced control loop then "
+                         "consumes the latest ALREADY-DETECTED frame (detect_cached is a guaranteed hit), so "
+                         "the ~15-84 ms GPU-contended YOLO/TRT inference -- which today runs INSIDE "
+                         "nav.update and is the p99 loop-rate jitter -- no longer blocks the loop. DEFAULT "
+                         "OFF (byte-identical sync path). Costs ~1 frame of extra detection staleness (the "
+                         "obs builder ego-propagates it). NEEDS a fly-test before trusting.")
     ap.add_argument("--label",        default="rl_s1")
     ap.add_argument("--rate",         type=float, default=30.0,
                     help="control loop Hz; default 30 = the TRAINING dt 0.0333 "
