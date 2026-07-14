@@ -81,3 +81,7 @@ handoff/vq2-blender-render-2026-06-15/validate8kp*/
 
 # pilot control panel runtime logs + state (tools/pilot_panel.py)
 tools/pilot_panel_logs/
+
+# stray local flight/debug artifacts (renders + one-off diagnostics; never tracked)
+*.mp4
+wedge_check.png
