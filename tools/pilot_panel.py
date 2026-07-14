@@ -173,10 +173,10 @@ SCHEMA = [
               "misses a fast dive raise ego_assist_thrust (shared w/ takeoff floor). NEEDS commit c851802."),
     dict(key="ego_speed_gov", flag="--ego-speed-gov", action="value", ui="text",
          group="Ego control", default="",
-         help="Speed governor \"SOFT,HARD\" m/s of horizontal body speed (blank=off). Caps the OVER-hover "
+         help="Speed governor \"SOFT,HARD\" m/s -- or a single number = hard cap at that speed (blank or 0 = off). Caps the OVER-hover "
               "thrust as speed runs SOFT->HARD (hard-clamps to hover at/above HARD); altitude-neutral -- "
               "only ever caps TOWARD hover, never forces a sink. Universal ~5 m/s cap on ANY model, no "
-              "retrain: try 5,6.5. Watch gov / gov_engaged in ego_obs.jsonl (is it braking? altitude "
+              "retrain: try 5,6.5 (smooth ramp) or 5 (abrupt hard cap). Watch gov / gov_engaged in ego_obs.jsonl (is it braking? altitude "
               "hold through the band?). NEEDS commit 293ffee."),
     dict(key="ego_yaw_clamp", flag="--ego-yaw-clamp", action="value", ui="number",
          group="Ego control", default=0.7, step=0.05,

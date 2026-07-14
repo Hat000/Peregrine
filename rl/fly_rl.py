@@ -1880,12 +1880,19 @@ def _fly_ego(client, actor, args, flight_idx: int,
     # --- deploy speed governor thresholds (--ego-speed-gov "soft,hard" m/s horizontal; EMPTY =
     #     off). Parsed ONCE here and threaded into policy_step; 0.0,0.0 => byte-identical. ---
     v_gov_soft, v_gov_hard = 0.0, 0.0
-    if getattr(args, "ego_speed_gov", ""):
+    _sg = str(getattr(args, "ego_speed_gov", "") or "").strip()
+    if _sg:
         try:
-            v_gov_soft, v_gov_hard = (float(x) for x in str(args.ego_speed_gov).split(","))
+            _sgp = [float(x) for x in _sg.split(",")]
         except (ValueError, TypeError):
-            print(f"  [ego] --ego-speed-gov {args.ego_speed_gov!r} is not 'soft,hard' floats. abort.",
-                  file=sys.stderr)
+            _sgp = None
+        if _sgp is not None and len(_sgp) == 1:
+            _sgp = [_sgp[0], _sgp[0]]        # single value => hard cap at that speed (soft == hard, no ramp band)
+        if _sgp is not None and len(_sgp) == 2 and all(v >= 0.0 for v in _sgp):
+            v_gov_soft, v_gov_hard = _sgp    # 0 / 0,0 / single 0 => stays OFF (the governor block gates on soft > 0)
+        else:
+            print(f"  [ego] --ego-speed-gov {args.ego_speed_gov!r} must be 'SOFT,HARD' or a single HARD "
+                  f"cap in m/s (non-negative). abort.", file=sys.stderr)
             result["final_state"] = "BAD_SPEED_GOV"
             return result
 
@@ -2864,8 +2871,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "OOD) and NOT --yaw-scale (multiplicative, mis-scales the transfer function). "
                          "Leave 0 for pre-despin checkpoints (vn16/vcz16) -- they trained unclamped.")
     ap.add_argument("--ego-speed-gov", type=str, default="",
-                    help="EGO deploy speed governor \"SOFT,HARD\" (m/s of OBSERVED HORIZONTAL body "
-                         "speed; EMPTY = off, byte-identical). Bounds kinetic energy by capping the "
+                    help="EGO deploy speed governor \"SOFT,HARD\" -- or a single number = HARD cap at that "
+                         "speed (m/s of OBSERVED HORIZONTAL body speed; EMPTY or 0 = off, byte-identical). "
+                         "Bounds kinetic energy by capping the "
                          "OVER-hover thrust when the drone runs hot: at/above HARD the emitted thrust "
                          "is hard-clamped to hover (adds NO kinetic energy); between SOFT and HARD the "
                          "over-hover excess ramps linearly toward hover. ALTITUDE-NEUTRAL -- it only "
