@@ -18,6 +18,7 @@ Coverage (prompt task 4):
 Run from repo ROOT:
     .venv\\Scripts\\python.exe -m pytest tests/test_ego_reward.py -q
 """
+import math
 import sys
 from pathlib import Path
 
@@ -1293,3 +1294,173 @@ def test_from_cfg_finish_time_uses_rw_prefix_key():
     assert R.EgoRewardWeights.from_cfg(types.SimpleNamespace()).finish_time == 1.0     # dataclass default
     assert R.EgoRewardWeights.from_cfg(
         types.SimpleNamespace(rw_finish_time=0.25)).finish_time == 0.25
+
+
+# ================================================================================================
+# RECOVERY / DAMPING (2026-07-14; the RECOVERY-FAILURE lever). bank-hard-then-LEVEL: two forms.
+#   (A) recovery_roll_penalty   dense bearing-weighted roll^2 (level when lined up, free while turning).
+#   (B) cross_level_penalty     sparse per-crossing roll^2 (pass THROUGH each gate ~level).
+# Prompt task coverage: (1) legit off-axis 60deg turn ~unpunished under (A); (2) sustained lined-up bank
+# IS punished under (A); (3) (B) banked-vs-level crossing + fires once per gate; (4) weight 0 ==
+# byte-identical; (5) farm-neutrality assert unaffected (penalties are not farmable gains).
+# ================================================================================================
+_DEG = math.pi / 180.0
+
+
+def test_leveled_horizontal_bearing_travel_relative():
+    """theta = leveled horizontal (world-XY) angle between the drone's TRAVEL (velocity) direction and the
+    drone->gate direction. 0 == gate dead-ahead of travel (lined up); ~+-pi/2 == off to the side; a pure
+    vertical offset (gate straight overhead) does NOT change the horizontal bearing (roll, not pitch, is the
+    banked axis)."""
+    vel = _t([[5.0, 0.0, 0.0]])                             # travelling along +x
+    # gate dead-ahead of travel (los along +x) -> theta ~ 0.
+    assert R.leveled_horizontal_bearing(vel, _t([[10.0, 0.0, 0.0]])).item() == pytest.approx(0.0, abs=1e-9)
+    # gate 90 deg to the LEFT (los along +y) -> |theta| == pi/2.
+    assert R.leveled_horizontal_bearing(vel, _t([[0.0, 10.0, 0.0]])).item() == pytest.approx(math.pi / 2)
+    # gate 90 deg to the RIGHT (los along -y) -> theta == -pi/2 (sign encodes side; the weight uses |theta|).
+    assert R.leveled_horizontal_bearing(vel, _t([[0.0, -10.0, 0.0]])).item() == pytest.approx(-math.pi / 2)
+    # gate 60 deg off to the side -> |theta| == 60 deg.
+    los60 = _t([[math.cos(60 * _DEG), math.sin(60 * _DEG), 0.0]]) * 10.0
+    assert R.leveled_horizontal_bearing(vel, los60).item() == pytest.approx(60 * _DEG)
+    # a gate straight OVERHEAD (pure +z offset, dead-ahead horizontally) is still theta ~ 0 (HORIZONTAL only)
+    assert R.leveled_horizontal_bearing(vel, _t([[8.0, 0.0, 20.0]])).item() == pytest.approx(0.0, abs=1e-9)
+    # near-stationary drone -> travel direction ill-defined -> theta 0 (treated as lined-up, level is safe)
+    assert R.leveled_horizontal_bearing(_t([[0.0, 0.0, 0.0]]), _t([[0.0, 10.0, 0.0]])).item() == 0.0
+
+
+def test_recovery_A_frees_the_offaxis_turn():
+    """PROMPT TASK 1: a LEGITIMATE hard turn -- the gate OFF-AXIS (large |theta|) with a 50-61 deg bank --
+    incurs ~0 penalty under (A). The ~61 deg g2->g3 turn the course NEEDS is NOT punished."""
+    import math as _m
+    theta0 = 0.5235988                                     # 30 deg gaussian half-width
+    for roll_deg in (50.0, 55.0, 61.0):
+        roll = _t([roll_deg * _DEG])
+        # gate 60 deg off the travel direction (the drone is mid-turn, banking toward it) -> w tiny.
+        bearing = _t([60.0 * _DEG])
+        pen = -R.recovery_roll_penalty(roll, bearing, rw_roll_recover=0.05, theta0_rad=theta0)  # magnitude
+        w_edge = _m.exp(-(60.0 / 30.0) ** 2)               # exp(-4) ~ 0.018
+        assert pen.item() == pytest.approx(0.05 * roll.item() ** 2 * w_edge)
+        # and it is a SMALL fraction of the same bank's penalty were it lined up (theta 0) -> the turn is freed.
+        pen_lined = -R.recovery_roll_penalty(roll, _t([0.0]), 0.05, theta0)
+        assert pen.item() < 0.05 * pen_lined.item()        # >20x cheaper off-axis than lined-up
+        assert pen.item() < 0.01                            # ~0 in absolute terms
+
+
+def test_recovery_A_punishes_sustained_lined_up_bank():
+    """PROMPT TASK 2: a SUSTAINED bank while the gate is CENTERED AHEAD (|theta| ~ 0) DOES incur penalty
+    under (A) -- the accumulation case (peak roll climbing 22->70 deg on the straight legs). The penalty is
+    MONOTONE increasing in |roll| (quadratic) so it fights the accumulation with growing force, and w~1
+    when lined up so the full roll^2 is priced."""
+    theta0 = 0.5235988
+    bearing = _t([0.0])                                    # gate dead-ahead of travel -> lined up
+    rolls = _t([22.0, 45.0, 70.0]) * _DEG           # the accumulation ladder
+    pen = -R.recovery_roll_penalty(rolls, bearing.expand_as(rolls), 0.05, theta0)   # magnitudes
+    # w == 1 at theta 0 -> penalty == 0.05 * roll^2 exactly, strictly increasing.
+    assert pen[0].item() == pytest.approx(0.05 * (22.0 * _DEG) ** 2)
+    assert pen[2].item() == pytest.approx(0.05 * (70.0 * _DEG) ** 2)
+    assert pen[0].item() < pen[1].item() < pen[2].item()   # MONOTONE: bigger accumulated bank costs more
+    assert pen[2].item() > 5.0 * pen[0].item()             # quadratic -> 70 deg costs ~10x the 22 deg
+    # a LEVEL lined-up drone pays ~0 (vanishes at convergence -> non-farmable).
+    assert -R.recovery_roll_penalty(_t([0.0]), bearing, 0.05, theta0).item() == pytest.approx(0.0)
+
+
+def test_recovery_B_cross_level_penalizes_banked_crossing_and_fires_once():
+    """PROMPT TASK 3: under (B) a BANKED crossing is penalized, a LEVEL crossing pays ~0, and it fires
+    EXACTLY once per gate (hooked on ``gate_passed``, the same idempotent event as the passage term)."""
+    # banked (60 deg) crossing vs level (0 deg) crossing, both passing this step.
+    passed = _t([1.0, 1.0]).bool()
+    roll = _t([60.0 * _DEG, 0.0])
+    pen = -R.cross_level_penalty(roll, passed, rw_cross_level=0.5)      # magnitudes
+    assert pen[0].item() == pytest.approx(0.5 * (60.0 * _DEG) ** 2)   # banked crossing pays
+    assert pen[1].item() == pytest.approx(0.0)                               # level crossing ~0
+    # NOT crossing this step -> 0 (silent between gates: mid-leg bank is entirely free under (B)).
+    assert -R.cross_level_penalty(roll, _t([0.0, 0.0]).bool(), 0.5)[0].item() == pytest.approx(0.0)
+    # FIRES ONCE PER GATE: the env marks gate_passed true for exactly the pass step (target then advances),
+    # so a weaving re-cross of an already-passed gate is not the target -> gate_passed False -> pays nothing
+    # again (identical idempotency to test_passage_idempotent_weaving_recross_pays_once).
+    banked_roll = _t([60.0 * _DEG])
+    p1 = -R.cross_level_penalty(banked_roll, _t([1.0]).bool(), 0.5)    # first (target) crossing -> pays
+    p2 = -R.cross_level_penalty(banked_roll, _t([0.0]).bool(), 0.5)    # re-cross of the now non-target -> 0
+    assert p1.item() > 0.0 and p2.item() == pytest.approx(0.0)
+
+
+# shared kwargs for the compute_ego_reward integration tests below (N=2).
+def _recover_common(n=2):
+    seg_b = torch.tensor([[10.0, 0.0, 0.0]] * n, dtype=DT)
+    return dict(
+        s_curr=torch.zeros(n, dtype=DT), s_prev=torch.zeros(n, dtype=DT),
+        gate_passed=torch.zeros(n, dtype=torch.bool), pass_linf=torch.zeros(n, dtype=DT), w_g_half=0.75,
+        gate_collision=torch.zeros(n, dtype=torch.bool), gate_miss=torch.zeros(n, dtype=torch.bool),
+        oob=torch.zeros(n, dtype=torch.bool), banked_progress_return=torch.zeros(n, dtype=DT),
+        newly_finished=torch.zeros(n, dtype=torch.bool), time_left_s=torch.zeros(n, dtype=DT),
+        tilt_cos_r33=torch.ones(n, dtype=DT), omega=torch.zeros(n, 3, dtype=DT),
+        action_norm=torch.full((n, 4), 0.5, dtype=DT), last_action_norm=torch.full((n, 4), 0.5, dtype=DT),
+        vel_world=torch.tensor([[5.0, 0.0, 0.0]] * n, dtype=DT),
+        curr_center=seg_b, next_center=seg_b, dt=1 / 30,
+    )
+
+
+def test_recovery_A_wired_into_compute_ego_reward():
+    """compute_ego_reward applies (A) when roll + los_world are supplied and roll_recover>0, exposes it as
+    'roll_recover_pen', and lowers the total reward for a lined-up bank vs an off-axis bank of the SAME
+    roll -- confirming the env-level integration frees the turn and prices the accumulation."""
+    kw = _recover_common(n=2)
+    w = R.EgoRewardWeights(roll_recover=0.05, roll_recover_theta0_rad=0.5235988)
+    roll = _t([45.0 * _DEG, 45.0 * _DEG])                 # SAME 45 deg bank on both envs
+    pitch = torch.zeros(2, dtype=DT)
+    # env 0: gate dead-ahead of travel (lined up). env 1: gate 60 deg off to the side (turning).
+    los = _t([[10.0, 0.0, 0.0], [math.cos(60 * _DEG) * 10, math.sin(60 * _DEG) * 10, 0.0]])
+    rew, comps, _ = R.compute_ego_reward(w, roll=roll, pitch=pitch, los_world=los, **kw)
+    assert comps["roll_recover_pen"] > 0.0                              # the term is live
+    # the lined-up env pays MORE penalty -> a LOWER reward than the turning env (same bank).
+    assert rew[0].item() < rew[1].item()
+    # OFF (weight 0) -> the component is 0 and the term contributes nothing.
+    w_off = R.EgoRewardWeights(roll_recover=0.0)
+    _, comps_off, _ = R.compute_ego_reward(w_off, roll=roll, pitch=pitch, los_world=los, **kw)
+    assert comps_off["roll_recover_pen"] == pytest.approx(0.0)
+
+
+def test_recovery_weight_zero_is_byte_identical():
+    """PROMPT TASK 4: with BOTH recovery weights 0 the total reward is byte-for-byte identical whether or
+    not the new inputs (roll / los_world) are supplied -- the default-off byte-identical guarantee. (The
+    existing suite is the regression guard that the rest of the reward is unchanged.)"""
+    kw = _recover_common(n=2)
+    w0 = R.EgoRewardWeights()                                           # defaults: roll_recover=cross_level=0
+    assert w0.roll_recover == 0.0 and w0.cross_level == 0.0
+    base, _, _ = R.compute_ego_reward(w0, **kw)                         # no roll / los_world at all
+    roll = _t([40.0 * _DEG, 20.0 * _DEG])
+    pitch = _t([10.0 * _DEG, 5.0 * _DEG])
+    los = _t([[3.0, 7.0, 2.0], [10.0, 0.0, 0.0]])
+    with_inputs, _, _ = R.compute_ego_reward(w0, roll=roll, pitch=pitch, los_world=los, **kw)
+    assert torch.allclose(base, with_inputs, atol=0.0, rtol=0.0)        # BIT-identical: weights 0 -> no effect
+
+
+def test_recovery_penalties_do_not_break_farm_neutrality_assert():
+    """PROMPT TASK 5: the recovery terms are pure PENALTIES (<=0, roll^2-scaled) -> non-farmable, so they
+    are EXEMPT from the perception/time farm-neutrality budget in __post_init__ and construct freely at any
+    weight (they never add a positive per-tick gain). Only the (A) gaussian half-width is guarded (>0)."""
+    R.EgoRewardWeights(roll_recover=10.0)                              # large penalty weight -> no raise
+    R.EgoRewardWeights(cross_level=10.0)                               # large penalty weight -> no raise
+    R.EgoRewardWeights(roll_recover=0.5, cross_level=0.5)              # both armed -> no raise
+    # a NON-POSITIVE gaussian half-width for (A) is the one sanity error (w(theta) ill-defined).
+    with pytest.raises(AssertionError):
+        R.EgoRewardWeights(roll_recover=0.05, roll_recover_theta0_rad=0.0)
+    # the perception/time farm-neutrality assert still fires independently (recovery does not mask it).
+    with pytest.raises(AssertionError):
+        R.EgoRewardWeights(perception=0.05, time=0.02, roll_recover=0.05)
+
+
+def test_recovery_from_cfg_reads_rw_prefixed_keys():
+    """from_cfg maps the recovery knobs via the ``rw_``-prefixed cfg keys the curriculum emits
+    (rw_roll_recover / rw_cross_level) and the bearing half-width via rw_roll_recover_theta0_rad; defaults
+    are 0 / 0 / 30 deg (byte-identical off)."""
+    import types
+    d = R.EgoRewardWeights.from_cfg(types.SimpleNamespace())
+    assert d.roll_recover == 0.0 and d.cross_level == 0.0
+    assert d.roll_recover_theta0_rad == pytest.approx(0.5235988)
+    cfg = types.SimpleNamespace(rw_roll_recover=0.05, rw_cross_level=0.3,
+                                rw_roll_recover_theta0_rad=0.6)
+    got = R.EgoRewardWeights.from_cfg(cfg)
+    assert got.roll_recover == pytest.approx(0.05)
+    assert got.cross_level == pytest.approx(0.3)
+    assert got.roll_recover_theta0_rad == pytest.approx(0.6)

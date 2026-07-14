@@ -1339,10 +1339,19 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # ATTITUDE-LIMIT inputs (pefcap 2026-07-12; None unless rw_att_pitch/rw_att_roll>0 -> byte-identical
             # off): the TRUE gravity-leveled roll/pitch (GT is legal in the reward) -- same extraction as the
             # critic's roll_pitch_true / the estimator-faithful diagnostics.
+            # RECOVERY / DAMPING (2026-07-14) ALSO needs the leveled roll -> extract whenever the att caps
+            # OR either recovery term is armed (all read the SAME TRUE gravity-leveled roll/pitch; still
+            # None -> byte-identical when every weight is 0).
             roll_att = pitch_att = None
-            if self._egorw.att_pitch != 0.0 or self._egorw.att_roll != 0.0:
+            if (self._egorw.att_pitch != 0.0 or self._egorw.att_roll != 0.0
+                    or self._egorw.roll_recover != 0.0 or self._egorw.cross_level != 0.0):
                 rp_att = _euler_roll_pitch_from_R(quat_xyzw_to_matrix_torch(self._q))
                 roll_att, pitch_att = rp_att[:, 0], rp_att[:, 1]
+            # RECOVERY / DAMPING form (A) needs the drone->current-gate world vector to build the leveled
+            # TRAVEL-relative horizontal bearing (None unless rw_roll_recover>0 -> byte-identical off).
+            # ``los`` is the SAME Z-up drone->gate vector already computed for dist_to_gate above; the
+            # reward levels it (world XY) against the drone's horizontal velocity.
+            los_world = los if self._egorw.roll_recover != 0.0 else None
             # ANTI-DITHER yaw smoothness input (nodither fine-tune 2026-07-12; None unless rw_yaw_dither>0 ->
             # byte-identical off): the temporal change of the APPLIED (post-clamp) yaw-rate command (channel 3,
             # rad/s) -- the SAME clamped ``action`` / ``self.last_action`` the smoothness reward + obs feed see.
@@ -1414,7 +1423,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # ANTI-DITHER yaw smoothness (None unless rw_yaw_dither>0): the applied yaw-command jerk.
                 yaw_cmd_delta=yaw_cmd_delta,
                 # VELOCITY-JERK smoothness (None unless rw_vel_smooth>0): current + previous world CoM accel.
-                accel_curr=accel_curr, accel_prev=accel_prev)
+                accel_curr=accel_curr, accel_prev=accel_prev,
+                # RECOVERY / DAMPING form (A) (None unless rw_roll_recover>0): the drone->current-gate world
+                # vector, leveled (XY) vs the drone's horizontal velocity into the travel-relative bearing.
+                los_world=los_world)
             # accumulate the (undiscounted) banked progress return for the progress-scaled terminal,
             # then roll the progress potential forward: on an ADVANCE (gate pass) re-seed s_prev onto
             # the NEW current segment (the drone's projection there) so the handoff adds no spurious

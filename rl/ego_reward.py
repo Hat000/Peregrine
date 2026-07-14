@@ -272,6 +272,41 @@ class EgoRewardWeights:
     att_roll: float = 0.0            # rw_att_roll; weight on the |leveled roll| excess; 0 == OFF
     att_roll_limit_rad: float = 1.0471976    # 60 deg free band on |roll| (owner Fengyou: roll capped ~60 deg)
 
+    # --- RECOVERY / DAMPING reward (2026-07-14; the RECOVERY-FAILURE lever, from the 386-flight forensic).
+    # The diagnosed failure is NOT a speed/tuning problem: bank/speed/altitude ACCUMULATE gate-over-gate
+    # (peak roll ~22deg@gate1 -> ~70deg@gate5, never damping) until the trajectory diverges into a wall
+    # (100% eventual collide; "reached gate N" == accumulated less before diverging). But the course
+    # GENUINELY needs aggressive banks -- the g2->g3 turn needs a ~61deg bank (p90 71deg), up-legs a hard
+    # climb -- so a roll/speed CAP or deploy FENCE backfires (a 20-25deg roll cap makes the 60deg turn
+    # impossible; flights die exactly at that turn). The instability lives in the SAME regime as the
+    # maneuvers the course needs. The lever must therefore be a TRAINING reward that teaches
+    # bank-hard-then-LEVEL / climb-then-HOLD -- RECOVER to neutral BETWEEN maneuvers -- WITHOUT penalizing
+    # the aggressive turn-bank itself ("fence only the axis/moment the course does not use"). GT-legal:
+    # both forms read the TRUE gravity-leveled roll (the SAME source rw_att_roll uses) + GT gate geometry;
+    # NEVER the position-free actor obs. Two INDEPENDENTLY-GATED formulations (default 0 == byte-identical):
+    #
+    #  (A) BEARING-WEIGHTED ROLL PENALTY (dense): R = -rw_roll_recover * roll^2 * w(theta), where theta is
+    #      the leveled HORIZONTAL bearing of the CURRENT target gate relative to the drone's horizontal
+    #      TRAVEL direction (0 == the gate is dead-ahead of travel; the drone is LINED UP -> it should fly
+    #      LEVEL) and w(theta) = exp(-(theta/roll_recover_theta0_rad)^2) -> 1 lined-up, -> 0 as the gate
+    #      moves off-axis (banking toward an off-axis gate is a legitimate TURN, freed). It penalizes a
+    #      SUSTAINED bank ONLY while the gate is centred ahead (the accumulation case) and is HORIZONTAL-only
+    #      (an up-leg with the gate straight ahead keeps w~1 and prices only ROLL, never the climb-pitch).
+    #      roll_recover_theta0_rad is the free-turn gaussian half-width. 0 == OFF (byte-identical).
+    #  (B) CROSS-LEVEL PENALTY (sparse): R = -rw_cross_level * roll^2 fired ONCE per gate on the valid
+    #      forward crossing (``gate_passed`` -- the SAME idempotent event the passage term hooks). The drone
+    #      should pass THROUGH each gate ~level, directly attacking the 22->70deg accumulation WITHOUT
+    #      touching mid-leg turn-bank (silent except at the crossing instant). 0 == OFF (byte-identical).
+    # Both are pure PENALTIES (<=0, roll^2-scaled) -> NON-farmable (a policy can only drive them to 0 by
+    # flying level when lined-up / crossing level) and vanish at convergence. See recovery_roll_penalty /
+    # cross_level_penalty / leveled_horizontal_bearing. Tune via +env.rw_roll_recover / +env.rw_cross_level
+    # / +env.rw_roll_recover_theta0_rad; anneal via +env.recovery_anneal (start/hold_frac, like att_cap).
+    roll_recover: float = 0.0        # (A) rw_roll_recover; dense bearing-weighted roll^2 penalty; 0 == OFF
+    roll_recover_theta0_rad: float = 0.5235988  # (A) gaussian half-width (rad); 30 deg -> a gate within
+    #                                             ~30 deg of travel is "lined up" (roll penalized); beyond
+    #                                             it the turn is freed (w decays smoothly to 0)
+    cross_level: float = 0.0         # (B) rw_cross_level; sparse per-crossing roll^2 penalty; 0 == OFF
+
     # --- SMOOTH PARABOLIC CROSSING reward (Fengyou 2026-07-08 -- "policy reacts better to smooth things").
     # Replaces the DISCONTINUOUS {thread=+passage, clip=-100, miss=-100} cliff with one smooth downward
     # parabola of the crossing offset e (L-inf): r = clamp(cross_center * (1 - (e/cross_zero_m)^2), -cross_neg_
@@ -447,6 +482,19 @@ class EgoRewardWeights:
                 f"[ego-reward] rw_v_cap_hard ({self.v_cap_hard}) must EXCEED rw_v_cap_soft "
                 f"({self.v_cap_soft}) -- the soft-hinge ramps quadratically over (soft, hard]. Set "
                 "rw_v_cap_hard > rw_v_cap_soft (defaults 12 > 9).")
+        # RECOVERY / DAMPING sanity (2026-07-14): the two recovery terms are pure PENALTIES (<=0,
+        # roll^2-scaled) -- a policy can only ever REDUCE them (to 0, by flying level when lined up /
+        # crossing each gate level); there is NO positive per-tick gain to farm. They are therefore
+        # EXEMPT (by construction) from the perception/time farm-neutrality budget asserted above, which
+        # bounds only POSITIVE carrots (r_perc + r_perc_next). The only sanity requirement is a positive
+        # gaussian half-width for form (A) so w(theta)=exp(-(theta/theta0)^2) is well-defined. Checked
+        # only when (A) is armed; roll_recover==cross_level==0 -> no-op (byte-identical). Runs BEFORE the
+        # terminal_progress_scaled early-return below so it fires under the default (True).
+        if self.roll_recover > 0.0:
+            assert self.roll_recover_theta0_rad > 0.0, (
+                f"[ego-reward] rw_roll_recover_theta0_rad ({self.roll_recover_theta0_rad}) must be > 0 -- "
+                "it is the gaussian half-width of the bearing weight w(theta)=exp(-(theta/theta0)^2) that "
+                "frees the turn-bank. Set a positive free-turn half-width (default 0.524 rad = 30 deg).")
         if self.terminal_progress_scaled:
             return
         max_bankable = self.progress * self.guard_max_course_gates * self.guard_max_seg_len_m
@@ -1006,6 +1054,81 @@ def attitude_limit_penalty(roll: Tensor, pitch: Tensor, w: EgoRewardWeights) -> 
     return -pen
 
 
+# ================================================================================================
+# RECOVERY / DAMPING (2026-07-14): bank-hard-then-LEVEL. Two independently-gated formulations.
+# ================================================================================================
+def leveled_horizontal_bearing(vel_world: Tensor, los_world: Tensor) -> Tensor:
+    """Signed leveled HORIZONTAL bearing (rad) of the current target gate relative to the drone's
+    horizontal TRAVEL direction: the angle in the world XY plane (Z-up, gravity-leveled) between the
+    drone's horizontal velocity (its travel heading) and the drone->gate-centre horizontal direction
+    (``los_world`` = gate_centre - drone_pos). 0 == the gate is dead-ahead of travel (the drone is LINED
+    UP -> it should be level); +-pi == directly behind. Sign encodes left/right (irrelevant to the
+    symmetric roll weight, which uses only |theta| via the gaussian).
+
+    WHY TRAVEL (velocity) rather than the nose/heading the naive reading of "bearing" suggests: with the
+    perception-yaw coupling this stack keeps the gate CENTRED IN VIEW (the camera/nose TRACKS the gate),
+    so a nose-relative bearing reads ~0 EVEN mid-turn -- and a roll weight w(nose_bearing) would then
+    penalize the legitimate ~61deg turn-bank (the exact maneuver the course needs and we must NOT punish).
+    The TRAVEL-relative bearing is instead LARGE precisely WHILE the drone is redirecting its velocity onto
+    the new leg (banking through a turn) and shrinks to 0 once it flies straight at the gate -- so w(theta)
+    FREES the turn and clamps only the lined-up (should-be-level) bank. It is also convention-ROBUST: world
+    velocity + world positions carry no body-axis / tail-first / camera-flip ambiguity (this lineage flies
+    tail-first, so a body-x bearing would read ~pi for a dead-ahead gate). A near-stationary drone
+    (|vel_xy| ~ 0) has an ill-defined travel direction -> returns 0 (treated as lined-up: a still drone has
+    no legitimate turn, and level is the correct/safe pose). vel_world / los_world (N,3) world Z-up.
+    Returns theta (N,) in (-pi, pi]."""
+    assert torch is not None
+    vx, vy = vel_world[..., 0], vel_world[..., 1]
+    lx, ly = los_world[..., 0], los_world[..., 1]
+    # signed angle from the velocity-XY heading to the los-XY heading via atan2(cross, dot) (wrapped, robust)
+    cross = vx * ly - vy * lx
+    dot = vx * lx + vy * ly
+    theta = torch.atan2(cross, dot)
+    # ill-defined when EITHER horizontal vector ~ 0 -> treat as lined-up (theta 0). The gate los is ~never
+    # zero, but guard both for safety (a stationary drone / a gate straight overhead).
+    v_h = torch.hypot(vx, vy)
+    l_h = torch.hypot(lx, ly)
+    return torch.where((v_h < 1e-6) | (l_h < 1e-9), torch.zeros_like(theta), theta)
+
+
+def recovery_roll_penalty(roll: Tensor, gate_bearing: Tensor, rw_roll_recover: float,
+                          theta0_rad: float) -> Tensor:
+    """(A) BEARING-WEIGHTED ROLL RECOVERY penalty (dense): R = -rw_roll_recover * roll^2 * w(theta),
+        w(theta) = exp(-(theta / theta0)^2)   in (0, 1]
+    ``roll`` = the TRUE gravity-leveled body roll (bank, rad; the SAME source rw_att_roll reads).
+    ``gate_bearing`` = the leveled horizontal bearing of the current target gate relative to travel
+    (leveled_horizontal_bearing; 0 == dead-ahead). w -> 1 when the gate is centred ahead (|theta| ~ 0 ->
+    the drone is LINED UP and should fly LEVEL, so a sustained bank is penalized -- the accumulation case)
+    and w -> 0 as the gate moves off-axis (|theta| large -> banking toward it is a legitimate TURN, freed).
+    ``theta0_rad`` is the gaussian half-width (the free-turn threshold). SMOOTH + magnitude-aware (roll^2):
+    a small residual roll pays ~0, a big lined-up bank pays the most, and it vanishes at convergence (level
+    lined-up flight -> 0, NON-farmable). Does NOT penalize the turn-bank itself (w~0 off-axis) nor the
+    climb-pitch (the bearing is HORIZONTAL only -> an up-leg with the gate straight ahead keeps w~1 and
+    prices ONLY the roll). Sign NEGATIVE. rw_roll_recover==0 -> OFF (zeros -> byte-identical). (N,)."""
+    assert torch is not None
+    if rw_roll_recover == 0.0:
+        return torch.zeros_like(roll)
+    t0 = max(float(theta0_rad), 1e-6)
+    weight = torch.exp(-(gate_bearing / t0) ** 2)
+    return -rw_roll_recover * roll ** 2 * weight
+
+
+def cross_level_penalty(roll: Tensor, gate_passed: Tensor, rw_cross_level: float) -> Tensor:
+    """(B) CROSS-LEVEL RECOVERY penalty (sparse): R = -rw_cross_level * roll^2 fired ONCE per gate on the
+    valid forward crossing. ``gate_passed`` (N,) bool is the SAME idempotent event the passage term hooks
+    (true for exactly the one step the target gate is passed; the env's target index strictly increments so
+    a weaving re-cross of an already-passed gate does NOT re-fire). ``roll`` = the TRUE gravity-leveled body
+    roll (bank, rad). This prices passing THROUGH a gate BANKED -> the drone learns to cross each gate
+    ~level, directly attacking the gate-over-gate roll ACCUMULATION (22deg -> 70deg) WITHOUT touching
+    mid-leg bank (silent except at the crossing instant, so the turn-bank between gates is entirely free).
+    Sparse + roll^2 (a level crossing pays ~0 -> NON-farmable). Sign NEGATIVE. rw_cross_level==0 -> OFF
+    (zeros -> byte-identical). Returns the (<=0) penalty (N,)."""
+    assert torch is not None
+    if rw_cross_level == 0.0:
+        return torch.zeros_like(roll)
+    return -rw_cross_level * roll ** 2 * gate_passed.to(roll.dtype)
+
+
 def compute_ego_reward(
     w: EgoRewardWeights, *,
     s_curr: Tensor, s_prev: Tensor,
@@ -1038,6 +1161,7 @@ def compute_ego_reward(
     yaw_cmd_delta: "Tensor | None" = None,
     accel_curr: "Tensor | None" = None,
     accel_prev: "Tensor | None" = None,
+    los_world: "Tensor | None" = None,
 ):
     """Assemble the refined-B step reward from GT event/state tensors (all (N,) or (N,k)). Returns
     (reward (N,), components dict, r_prog (N,)) -- r_prog is returned so the env can ACCUMULATE the
@@ -1111,6 +1235,18 @@ def compute_ego_reward(
     # perception-preservation penalty on the leveled attitude beyond the free band (see attitude_limit_penalty).
     r_att = (attitude_limit_penalty(roll, pitch, w)
              if (roll is not None and pitch is not None) else torch.zeros_like(r_prog))
+    # RECOVERY / DAMPING (2026-07-14; OFF unless w.roll_recover/w.cross_level>0 -> byte-identical). Teach
+    # bank-hard-then-LEVEL: (A) a DENSE bearing-weighted roll^2 penalty that bites ONLY while the gate is
+    # lined up ahead (level expected) and is ~0 while turning toward an off-axis gate; (B) a SPARSE
+    # per-crossing roll^2 penalty attacking the gate-over-gate bank accumulation. Both read the TRUE
+    # leveled ``roll`` (the SAME source as r_att) + GT geometry. (A) also needs the drone->current-gate
+    # world vector ``los_world`` to form the leveled TRAVEL-relative horizontal bearing (see
+    # leveled_horizontal_bearing: travel-relative, NOT nose-relative, so a legitimate banked turn is freed).
+    r_roll_recover = (recovery_roll_penalty(roll, leveled_horizontal_bearing(vel_world, los_world),
+                                            w.roll_recover, w.roll_recover_theta0_rad)
+                      if (roll is not None and los_world is not None) else torch.zeros_like(r_prog))
+    r_cross_level = (cross_level_penalty(roll, gate_passed, w.cross_level)
+                     if roll is not None else torch.zeros_like(r_prog))
     # ANTI-DITHER yaw smoothness (nodither fine-tune 2026-07-12; OFF unless w.yaw_dither>0 -> byte-identical):
     # penalise the temporal CHANGE of the applied yaw-rate command (a +-clamp rail-flip pays heavy; a steady
     # turn pays ~0). The env passes yaw_cmd_delta = applied_yaw_t - applied_yaw_{t-1} (channel 3, post-clamp)
@@ -1154,8 +1290,8 @@ def compute_ego_reward(
                                 forfeit_mask=forfeit_mask)
 
     reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_gvhold + r_corr + r_align + r_perc
-              + r_perc_next + r_att + r_yawdith + r_velsmooth + r_vcap + r_fin + r_cone + r_smooth + r_exit
-              + r_time - term)
+              + r_perc_next + r_att + r_roll_recover + r_cross_level + r_yawdith + r_velsmooth + r_vcap
+              + r_fin + r_cone + r_smooth + r_exit + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
@@ -1169,6 +1305,8 @@ def compute_ego_reward(
         "perception_reward": float(r_perc.mean()),
         "perception_next_reward": float(r_perc_next.mean()),
         "att_pen": float((-r_att).mean()),
+        "roll_recover_pen": float((-r_roll_recover).mean()),
+        "cross_level_pen": float((-r_cross_level).mean()),
         "yaw_dither_pen": float((-r_yawdith).mean()),
         "velsmooth_pen": float((-r_velsmooth).mean()),
         "vcap_pen": float((-r_vcap).mean()),

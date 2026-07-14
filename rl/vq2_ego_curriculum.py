@@ -1594,6 +1594,95 @@ STAGES: dict[str, dict] = {
                  "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
     },
     # ================================================================================================
+    # RECOVERY / DAMPING chain (_recover, 2026-07-14) -- dual_gate_fullstack_floor_pef_trackA VERBATIM
+    # (course + reward + HARD no-spin package + estimator-faithful _raw all byte-identical, INCLUDING the
+    # trackA att-cap + anti-dither arms) PLUS one MORE default-OFF arm: the RECOVERY / DAMPING roll term,
+    # ANNEALED from 0. The 386-flight forensic diagnosed the live failure as a RECOVERY failure, NOT a
+    # speed/tuning one: bank/speed/altitude ACCUMULATE gate-over-gate (peak roll ~22deg@g1 -> ~70deg@g5,
+    # never damping) until the trajectory diverges into a wall (100% eventual collide). The course GENUINELY
+    # needs aggressive banks (the g2->g3 turn needs ~61deg, p90 71deg), so a roll CAP or deploy FENCE
+    # backfires (a 20-25deg cap makes the turn impossible; flights die exactly at that turn -- the
+    # instability lives in the SAME regime as the maneuver). The lever is therefore a TRAINING reward that
+    # teaches bank-hard-then-LEVEL: RECOVER to neutral BETWEEN maneuvers WITHOUT penalizing the turn-bank
+    # itself. OFF-LADDER; run as the two-stage _pef chain (fresh boot, then THIS fullstack -- the sbatch
+    # auto-appends +init_from on stage 2, exactly like _pef / trackA):
+    #     sbatch --export=ALL,SEED=0,RUNTAG=vtrackR0,\
+    #       STAGES="dual_gate_boot_floor_pef dual_gate_fullstack_floor_pef_recover",\
+    #       UPD_dual_gate_boot_floor_pef=4000,UPD_dual_gate_fullstack_floor_pef_recover=12000,PRECHECK=1 \
+    #       rl/peregrine_vq2_ego.sbatch
+    #
+    # THE RECOVERY ARM (a NEW default-OFF append; the trackA/_pef stages + every existing stage stay
+    # byte-identical). Form (A) is ARMED here (the recommended primary -- it damps the accumulation on the
+    # STRAIGHT legs where it builds, and its bearing weight FREES the turn); form (B) is a one-line
+    # alternative (add "rw_cross_level": <w>, the recovery_anneal ramps BOTH weights):
+    #   (A) BEARING-WEIGHTED ROLL PENALTY (dense; ego_reward.recovery_roll_penalty): -rw_roll_recover *
+    #       roll^2 * w(theta), theta = the leveled HORIZONTAL bearing of the current target gate relative to
+    #       the drone's horizontal TRAVEL direction (0 == dead-ahead of travel -> LINED UP -> should be
+    #       LEVEL), w = exp(-(theta/rw_roll_recover_theta0_rad)^2). It penalizes a SUSTAINED bank ONLY while
+    #       the gate is centred ahead (the accumulation case) and w -> 0 as the gate moves off-axis (banking
+    #       toward it is a legitimate TURN -> freed). HORIZONTAL-only -> an up-leg with the gate straight
+    #       ahead keeps w~1 and prices ONLY roll, never the climb-pitch. WHY TRAVEL-relative and NOT
+    #       nose-relative: the perception-yaw coupling keeps the gate CENTRED IN VIEW (nose tracks the gate)
+    #       so a nose-relative bearing reads ~0 even mid-turn and would wrongly punish the ~61deg turn --
+    #       travel-relative is large precisely WHILE redirecting velocity onto the new leg (banking through
+    #       the turn) and shrinks to 0 once flying straight at the gate (see leveled_horizontal_bearing).
+    #       GT-legal (TRUE leveled roll + GT gate geometry; NOT the actor obs). Weight MILD (0.05); theta0
+    #       30deg (lined-up zone |theta|<~30deg, turn freed beyond). ANNEALED: recovery_anneal, weight
+    #       0->target over the front, END-HOLD last 30% (hot-applying a strong roll penalty to a competent
+    #       flyer risks the att-cap/nodither DETONATION; ramp it in so the level-out skill grows gradually).
+    # NO-SPIN stays HARD / BY CONSTRUCTION (the fatal abort package + realized-yaw clamp == trackA/_pef
+    # VERBATIM, UNTOUCHED); the recovery arm is a pure reward term riding alongside. NO deploy-side roll
+    # clamp/governor is added (the whole point: fence the moment, not the axis). algo=appo, gamma=0.9975.
+    # SUCCESS (training metrics; renders untrustworthy): DET-thread ~ the trackA champion with peak/mean
+    # leveled |roll| DAMPING gate-over-gate (the 22->70deg accumulation flattened) + roll_recover_pen ->
+    # bounded and shrinking by convergence (the drone flies legs level and banks only through the turn),
+    # exit_spin ~0, and the [recovery-anneal] ramp visible in the precheck log.
+    # ================================================================================================
+    "dual_gate_fullstack_floor_pef_recover": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == trackA / _pef fullstack
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,
+        "ego_blur_rate_hi_rad_s": 4.0,
+        "ego_spin_rate_abort": 3.5,        # HARD no-spin package == trackA / _pef VERBATIM (UNTOUCHED)
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,
+        "rw_perception": 0.02,
+        "rw_perception_exponent": 4.0,
+        "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,
+        # ---- trackA arms preserved VERBATIM (att cap + anti-dither, both annealed) ----
+        "rw_att_pitch": 0.2, "att_pitch_limit_rad": 1.0471976,
+        "rw_att_roll": 0.2, "att_roll_limit_rad": 1.0471976,
+        "att_cap_anneal": True, "att_cap_start": 0.0, "att_cap_hold_frac": 0.3,
+        "rw_yaw_dither": 0.5,
+        "yaw_dither_anneal": True, "yaw_dither_start": 0.0, "yaw_dither_hold_frac": 0.3,
+        # ---- NEW ARM: RECOVERY / DAMPING form (A), bearing-weighted roll^2, ANNEALED from 0 ----
+        # (form (B) alternative: add "rw_cross_level": <w>; recovery_anneal ramps BOTH weights together)
+        "rw_roll_recover": 0.05,           # (A) dense bearing-weighted roll^2 penalty (lined-up bank only)
+        "rw_roll_recover_theta0_rad": 0.5235988,  # 30 deg free-turn half-width (turn freed beyond ~30 deg)
+        "rw_cross_level": 0.0,             # (B) sparse per-crossing roll^2 (OFF here; one-line to A/B it)
+        "recovery_anneal": True, "recovery_start": 0.0, "recovery_hold_frac": 0.3,  # weight 0->target, END-HOLD last 30%
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here (== trackA / _pef fullstack): the sbatch ladder auto-appends it on stage 2.
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
+    # ================================================================================================
     # BEHAVIORAL-CAP chain (_pefcap, 2026-07-12) -- the _pef chain VERBATIM plus a DEFAULT-OFF package
     # that pushes the deployed behavioral limits INTO the trained policy so it self-limits WITHOUT any
     # deploy-side control clamp. Targets the two live-flight failures: (a) the coarse-map horiz turn prior

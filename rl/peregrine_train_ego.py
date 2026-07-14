@@ -444,6 +444,37 @@ def _resolve_yaw_dither_anneal(cfg):
     )
 
 
+def _resolve_recovery_anneal(cfg):
+    """Parse the RECOVERY / DAMPING penalty-WEIGHT RAMP-IN from cfg.env, or None when OFF (byte-identical
+    default). Gated by ``+env.recovery_anneal`` (truthy); ``+env.recovery_start/hold_frac`` optional.
+    THE RECOVERY LEVER (2026-07-14): the recovery reward (ego_reward.recovery_roll_penalty (A) and/or
+    cross_level_penalty (B)) teaches bank-hard-then-LEVEL -- it prices a SUSTAINED bank while the gate is
+    lined up ahead (A) and/or a BANKED gate-crossing (B) so the gate-over-gate roll ACCUMULATION (22deg ->
+    70deg) damps, WITHOUT penalizing the ~61deg turn-bank the course needs (form A frees an off-axis gate;
+    form B is silent between gates). HOT-applying a roll penalty at full strength to a competent champion
+    risks the same DETONATION the att-cap / yaw-dither anneals exist for (a strong penalty slammed onto a
+    working flyer destroys it), so this ramps BOTH recovery WEIGHTS (roll_recover AND cross_level) in from
+    recovery_start*base (default 0 -> the terms are INERT at birth = the base behaviour untouched) UP to the
+    configured target weights over the FRONT (1-hold_frac), then END-HOLDs at the full weights for the last
+    hold_frac -- so the policy grows the level-out / level-cross skill GRADUALLY and the saved checkpoint's
+    converged regime IS the full recovery penalty (END-HOLD, the same guarantee-at-the-end argument as
+    att_cap_anneal / yaw_dither_anneal / progress_ramp / spin-abort / yaw-clamp). The bearing half-width
+    (roll_recover_theta0_rad) is FIXED from update 0; ONLY the penalty WEIGHTS ramp. REUSES
+    _spin_abort_schedule (start_scale=0 -> ramps 0->1 over the front, holds 1.0). Mutates env._egorw.
+    roll_recover AND env._egorw.cross_level (the exact object ego_reward reads). At least ONE base MUST be
+    armed (>0): ramping scale*0 on BOTH is a silent no-op under an annealed run name (footgun L16).
+    start_scale=0 is INTENDED (ramp in from no penalty, unlike the clamp/perception hooks whose START is the
+    loose extreme), so ONLY the bases are guarded. PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "recovery_anneal", False)):
+        return None
+    return dict(
+        start_scale=float(getattr(env, "recovery_start", 0.0)),
+        hold_frac=float(getattr(env, "recovery_hold_frac", 0.3)),
+        n_updates=int(getattr(cfg, "n_updates", 0) or 0),
+    )
+
+
 _DET_EVAL_KEYS = ("success_rate", "collision_rate", "miss_rate", "oob_rate", "n_passed_gates")
 
 
@@ -805,6 +836,30 @@ def _run_with_ego_lifelines(self):
         else:
             yd_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # RECOVERY / DAMPING RAMP-IN (2026-07-14; see _resolve_recovery_anneal's rationale). Mutates BOTH
+    # env._egorw.roll_recover AND env._egorw.cross_level from recovery_start*base UP to base (END-HOLD) so
+    # the flyer grows the level-out / level-cross skill gradually rather than being detonated by a hot
+    # full-strength roll penalty. Bases captured pre-mutation; at least ONE MUST be armed (>0): ramping
+    # 0->0 on both is a silent no-op under an annealed run name (L16). start_scale=0 is INTENDED (ramp in
+    # from no penalty), so only the bases are guarded.
+    rc_sched = _resolve_recovery_anneal(cfg)
+    rc_env = _require_anneal_holder(env, "_egorw", rc_sched, "recovery-anneal", cfg)
+    if rc_sched is not None:
+        if rc_env is not None:
+            rc_sched["base_roll_recover"] = float(getattr(rc_env._egorw, "roll_recover", 0.0))
+            rc_sched["base_cross_level"] = float(getattr(rc_env._egorw, "cross_level", 0.0))
+            if rc_sched["base_roll_recover"] <= 0.0 and rc_sched["base_cross_level"] <= 0.0:
+                raise RuntimeError(
+                    "[recovery-anneal] requested but BOTH recovery weights are OFF (base rw_roll_recover="
+                    f"{rc_sched['base_roll_recover']:.4f}, rw_cross_level={rc_sched['base_cross_level']:.4f}) "
+                    "-- ramping 0->0 is a silent no-op under an annealed run name (footgun L16); arm "
+                    "rw_roll_recover and/or rw_cross_level (the full recovery weights) or drop "
+                    "+env.recovery_anneal.")
+            print(f"[recovery-anneal] ON: {rc_sched} (RAMP-IN {rc_sched['start_scale']:.2f}*base -> "
+                  f"base, END-HOLD at full for the last {rc_sched['hold_frac']:.0%} of updates)")
+        else:
+            rc_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # CHECKPOINT SELECTION ON n_passed_gates (Stage-1 vtrackAr5). Gated on ++ckpt_select_metric=
     # n_passed_gates (unset -> byte-identical: no harvest wrapper, no best_npg/, no promotion). BANK-FIRST:
     # every 8-gate run PEAKS then regresses 24-42% and otherwise ships its degraded FINAL; selecting on the
@@ -900,6 +955,15 @@ def _run_with_ego_lifelines(self):
             if counter["i"] % max(int(cfg.log_freq), 1) == 0:
                 print(f"[yaw-dither-anneal] update {counter['i']}: scale={ydv:.3f} "
                       f"rw_yaw_dither={yd_env._egorw.yaw_dither:.3f}")
+        if rc_sched is not None:
+            rcv = _spin_abort_schedule(counter["i"], rc_sched["n_updates"],
+                                       rc_sched["start_scale"], rc_sched["hold_frac"])
+            rc_env._egorw.roll_recover = rc_sched["base_roll_recover"] * rcv
+            rc_env._egorw.cross_level = rc_sched["base_cross_level"] * rcv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[recovery-anneal] update {counter['i']}: scale={rcv:.3f} "
+                      f"rw_roll_recover={rc_env._egorw.roll_recover:.3f} "
+                      f"rw_cross_level={rc_env._egorw.cross_level:.3f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
