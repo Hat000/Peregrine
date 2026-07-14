@@ -927,3 +927,43 @@ def test_package_adds_no_per_step_penalty_at_defaults():
         w, gate_collision=torch.zeros(n, dtype=torch.bool), **_spin_kw(n, [0.0]))
     assert reward[0].item() == pytest.approx(-w.time)
     assert comps["perception_reward"] == pytest.approx(0.0)
+
+
+# ================================================================================================
+# STAGE-1 (vtrackAr5) reward-config guards.
+# ================================================================================================
+def test_farm_neutrality_perception_assert_fires_on_detonated_weight():
+    """UNCONDITIONAL construction guard: rw_perception must be <= rw_time (else hover-and-stare farms a
+    positive per-tick return). Passes at the vetted 0.02==0.02 and at the default (perception 0); a
+    DETONATED 0.05 raises AT CONSTRUCTION -- even in the default progress-scaled mode (i.e. BEFORE the
+    terminal_progress_scaled early-return)."""
+    R.EgoRewardWeights()                                   # default perception 0 <= time 0.02
+    R.EgoRewardWeights(perception=0.02, time=0.02)         # vetted farm-neutral bound (equality allowed)
+    with pytest.raises(AssertionError):
+        R.EgoRewardWeights(perception=0.05)                # detonated (the rs0 class of bug)
+    with pytest.raises(AssertionError):                    # fires before the FIXED-terminal guard too
+        R.EgoRewardWeights(perception=0.05, terminal_progress_scaled=True)
+
+
+def test_from_cfg_cross_zero_m_rw_prefix_takes_precedence():
+    """cross_zero_m footgun: from_cfg reads ``rw_cross_zero_m`` with PRECEDENCE over ``cross_zero_m``. The
+    curriculum stages set rw_cross_zero_m=4.0, so the effective value is 4.0 and a bare ``++env.cross_zero_m
+    =0.75`` override is INERT -- the trackA path must set ``++env.rw_cross_zero_m=0.75`` to reach the 0.75
+    gate half-opening. Dataclass default is 0.75."""
+    import types
+    assert R.EgoRewardWeights.from_cfg(types.SimpleNamespace()).cross_zero_m == 0.75   # dataclass default
+    # rw_cross_zero_m (the curriculum key) wins; a bare cross_zero_m is ignored when rw_ is present
+    both = types.SimpleNamespace(rw_cross_zero_m=4.0, cross_zero_m=0.75)
+    assert R.EgoRewardWeights.from_cfg(both).cross_zero_m == 4.0
+    # the CORRECT trackA override forces the aperture-edge value
+    assert R.EgoRewardWeights.from_cfg(
+        types.SimpleNamespace(rw_cross_zero_m=0.75)).cross_zero_m == 0.75
+
+
+def test_from_cfg_finish_time_uses_rw_prefix_key():
+    """finish_time is consumed by the T4 finish term (rw_finish + rw_finish_time * t_left); from_cfg maps
+    it via the ``rw_finish_time`` key (NOT ``finish_time``). The trackA hinge sets ++env.rw_finish_time."""
+    import types
+    assert R.EgoRewardWeights.from_cfg(types.SimpleNamespace()).finish_time == 1.0     # dataclass default
+    assert R.EgoRewardWeights.from_cfg(
+        types.SimpleNamespace(rw_finish_time=0.25)).finish_time == 0.25
