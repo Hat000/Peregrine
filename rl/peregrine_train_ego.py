@@ -444,7 +444,10 @@ def _resolve_yaw_dither_anneal(cfg):
     )
 
 
-def _run_det_eval(self, env, agent, cfg):
+_DET_EVAL_KEYS = ("success_rate", "collision_rate", "miss_rate", "oob_rate", "n_passed_gates")
+
+
+def _run_det_eval(self, env, agent, cfg, tag=""):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
     Motivation: the training box-exit is STOCHASTIC, and the standalone offline harness
@@ -453,11 +456,18 @@ def _run_det_eval(self, env, agent, cfg):
     policy with test=True on ``self.env`` -- the exact env instance that produced the trusted training
     metrics -- so it is faithful by construction. It runs post-training (checkpoint already saved), so
     it cannot affect the result. Prints a greppable ``DET_EVAL[...]`` line. ``+eval_det_steps=0`` skips.
-    """
+
+    Aggregates ``n_passed_gates`` (mean gates threaded per completed episode -- the env exposes it in
+    stats_raw at peregrine_racing_ego.py) alongside success/collision/miss/oob: at 8 gates episode
+    success collapses toward 0, so n_passed_gates is the DISCRIMINATING BANK-FIRST metric that drives
+    the rolling-best checkpoint selection + the seed-selection tiebreak. ``tag`` decorates the runname in
+    the print (e.g. ``/best``) so the best-vs-final promotion evals stay greppable apart. RETURNS the
+    per-episode-mean metrics dict (or None), consumed by _promote_best_on_npg."""
     steps = int(getattr(cfg, "eval_det_steps", 300) or 0)
     if steps <= 0 or env is None or agent is None:
-        return
+        return None
     import torch
+    label = f"{getattr(cfg, 'runname', '?')}{tag}"
     try:
         agg, n_ep = {}, 0
         obs = env.reset()
@@ -473,18 +483,112 @@ def _run_det_eval(self, env, agent, cfg):
                 if not n:
                     continue
                 n_ep += n
-                for k in ("success_rate", "collision_rate", "miss_rate", "oob_rate"):
+                for k in _DET_EVAL_KEYS:
                     if k in sr:
                         agg[k] = agg.get(k, 0.0) + float(sr[k].sum().item())
         if n_ep:
-            r = {k: agg.get(k, 0.0) / n_ep for k in ("success_rate", "collision_rate", "miss_rate", "oob_rate")}
-            print(f"DET_EVAL[{getattr(cfg, 'runname', '?')}] n_ep={n_ep} "
+            r = {k: agg.get(k, 0.0) / n_ep for k in _DET_EVAL_KEYS}
+            print(f"DET_EVAL[{label}] n_ep={n_ep} "
                   f"thread={r['success_rate']:.4f} collision={r['collision_rate']:.4f} "
-                  f"miss={r['miss_rate']:.4f} oob={r['oob_rate']:.4f}  (test=True, LIVE env, {steps} steps)")
-        else:
-            print(f"DET_EVAL[{getattr(cfg, 'runname', '?')}] no episodes completed in {steps} steps")
+                  f"miss={r['miss_rate']:.4f} oob={r['oob_rate']:.4f} "
+                  f"n_passed_gates={r['n_passed_gates']:.4f}  (test=True, LIVE env, {steps} steps)")
+            return r
+        print(f"DET_EVAL[{label}] no episodes completed in {steps} steps")
+        return None
     except Exception as e:  # never let the post-hoc eval fail a completed run
         print(f"DET_EVAL: FAILED ({type(e).__name__}: {e})")
+        return None
+
+
+# ================================================================================================
+# STAGE-1 (vtrackAr5) checkpoint-selection + critic-grad-clip helpers. All gated OFF by default so the
+# non-select path is byte-identical.
+# ================================================================================================
+def _harvest_npg(info, buf):
+    """PASSIVE read of the per-completed-episode ``n_passed_gates`` tensor from a step ``info`` dict into
+    the recent-window ``buf`` (a deque). The env already materializes ``stats_raw['n_passed_gates']`` (a
+    reset-masked, already-synced tensor of the episodes that terminated THIS step -- the same tensor
+    DET_EVAL reads) on every step, so this is a PURE read: no extra env.step/reset, no new device sync, no
+    desync. Returns the count harvested. No-op (0) when ``buf`` is None, ``info`` is not a dict, or the key
+    is absent/empty."""
+    if buf is None or not isinstance(info, dict):
+        return 0
+    sr = info.get("stats_raw")
+    if not isinstance(sr, dict):
+        return 0
+    npg = sr.get("n_passed_gates")
+    if npg is None:
+        return 0
+    try:
+        if hasattr(npg, "numel"):
+            if int(npg.numel()) == 0:
+                return 0
+            vals = npg.detach().flatten().cpu().tolist()
+        else:
+            vals = list(npg)
+    except Exception:                                   # pragma: no cover - never fail a training step
+        return 0
+    buf.extend(vals)
+    return len(vals)
+
+
+def _select_critic_params(agent):
+    """The CRITIC-ONLY parameter set for the Stage-1 critic-grad-clip: every named parameter whose name
+    contains ``'critic'`` and currently carries a grad. Selecting by NAME keeps the actor untouched --
+    actor_grad_norm is a healthy ~3, while the 8-gate critic_grad spikes to ~1519 (m8)/918 (m8b); we clip
+    ONLY the critic so a value-net spike cannot smear the healthy policy gradient."""
+    return [p for n, p in agent.agent.named_parameters() if "critic" in n and p.grad is not None]
+
+
+def _find_runner_checkpoints(logger):
+    """Locate the runner's end-of-run ``checkpoints/`` dir (the dir the deploy pull + the next stage's
+    ``+init_from`` consume). Per rl/peregrine_vq2_ego.sbatch it lands at ``${RUNDIR}/checkpoints`` -- a
+    SIBLING of the hydra-decorated ``logger.logdir``, NOT inside it -- but a different runner layout could
+    place it inside. Check BOTH the in-logdir and the parent-of-logdir candidates; return the first that
+    exists, else None (promotion then FLAGS + skips rather than guessing)."""
+    logdir = getattr(logger, "logdir", None)
+    if not logdir:
+        return None
+    cands = [os.path.join(logdir, "checkpoints"),
+             os.path.join(os.path.dirname(os.path.normpath(logdir)), "checkpoints")]
+    for c in cands:
+        if os.path.isdir(c):
+            return c
+    return None
+
+
+def _promote_best_on_npg(self, env, agent, cfg, npg_state, final_metrics, logger):
+    """After training: DET-eval the rolling ``best_npg/`` snapshot vs the runner's ``checkpoints/`` (the
+    FINAL == the in-memory agent, already DET-eval'd into ``final_metrics``), and if best's DETERMINISTIC
+    n_passed_gates >= final's, copy ``best_npg/`` over ``checkpoints/`` so ``+init_from`` and the deploy
+    pull consume the PEAK (every 8-gate run peaks then regresses 24-42% and otherwise ships its degraded
+    final). Loads best_npg/ into the agent to eval it (post-run: harmless). No-op if best_npg/ was never
+    saved (never crossed a save boundary). NEVER selects on value/reward -- only deterministic gates."""
+    best_dir = npg_state.get("best_dir")
+    if not best_dir or not os.path.isdir(best_dir):
+        print("[ckpt-select] no best_npg/ snapshot to promote (never crossed a save boundary) -- "
+              "checkpoints/ (the final) ships unchanged.")
+        return
+    ckpt_dir = _find_runner_checkpoints(logger)
+    if ckpt_dir is None:
+        print(f"[ckpt-select] FLAG: runner checkpoints/ dir not found near {getattr(logger,'logdir','?')} "
+              f"-- cannot promote. best_npg/ is at {best_dir}; point +init_from / the deploy pull there "
+              f"manually if it out-scored the final.")
+        return
+    final_npg = float(final_metrics.get("n_passed_gates", float("-inf"))) if final_metrics else float("-inf")
+    agent.load(best_dir)                                # load the peak snapshot to DET-eval it
+    best_metrics = _run_det_eval(self, env, agent, cfg, tag="/best")
+    best_npg = float(best_metrics.get("n_passed_gates", float("-inf"))) if best_metrics else float("-inf")
+    print(f"[ckpt-select] DET n_passed_gates: best_npg={best_npg:.4f} vs final={final_npg:.4f}")
+    if best_npg > float("-inf") and best_npg >= final_npg:
+        import shutil
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
+        shutil.copytree(best_dir, ckpt_dir)
+        print(f"BEST_CKPT_PROMOTED[{getattr(cfg,'runname','?')}] best_npg/ -> checkpoints/ "
+              f"(best {best_npg:.4f} >= final {final_npg:.4f}) -- deploy + init_from now consume the PEAK.")
+    else:
+        print(f"[ckpt-select] KEEP final (final {final_npg:.4f} > best {best_npg:.4f}); checkpoints/ "
+              f"left as the runner saved it.")
 
 
 def _run_with_ego_lifelines(self):
@@ -688,6 +792,25 @@ def _run_with_ego_lifelines(self):
         else:
             yd_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # CHECKPOINT SELECTION ON n_passed_gates (Stage-1 vtrackAr5). Gated on ++ckpt_select_metric=
+    # n_passed_gates (unset -> byte-identical: no harvest wrapper, no best_npg/, no promotion). BANK-FIRST:
+    # every 8-gate run PEAKS then regresses 24-42% and otherwise ships its degraded FINAL; selecting on the
+    # deterministic n_passed_gates ships the PEAK down the warm chain. A PASSIVE env.step wrapper (installed
+    # just after agent.step below) reads stats_raw['n_passed_gates'] into a recent-window deque; at each
+    # save boundary we save best_npg/ on rolling-mean improvement (BEST_CKPT line), and after training the
+    # promotion DET-evals best_npg/ vs the final and copies the winner over checkpoints/.
+    select_on_npg = str(getattr(cfg, "ckpt_select_metric", "") or "").strip() == "n_passed_gates"
+    npg_state = {"buf": None, "best": float("-inf"),
+                 "best_dir": os.path.join(logger.logdir, "best_npg")}
+    if select_on_npg:
+        from collections import deque
+        _nenvs = int(getattr(cfg, "n_envs", 0) or 0)
+        _sf = int(getattr(cfg, "save_freq", 0) or 0)
+        _maxlen = max(_nenvs * _sf * 2, 20000)          # recent-window ~ episodes over ~save_freq updates
+        npg_state["buf"] = deque(maxlen=_maxlen)
+        print(f"[ckpt-select] ON (++ckpt_select_metric=n_passed_gates): rolling-best -> "
+              f"{npg_state['best_dir']} (recent-window deque maxlen={_maxlen}).")
+
     # PERIODIC SAVE every save_freq updates -> <logdir>/periodic (+ periodic_prev). This is the
     # crash-resilience save; the runner ALSO writes its own <rundir>/checkpoints end-of-run save (the
     # dir the NEXT stage's +init_from points at). Wrap agent.step (the same hook inc8 uses).
@@ -778,9 +901,40 @@ def _run_with_ego_lifelines(self):
             else:
                 print("[lifeline] weights non-finite at update %d -- periodic save SKIPPED"
                       % counter["i"])
+            # ROLLING-BEST on deterministic n_passed_gates (Stage-1): at the SAME save boundary, if the
+            # recent-window rolling mean improved, snapshot best_npg/. Passive read of the harvest buffer
+            # (no env.step/reset). Guarded on _weights_finite (already checked in the branch above) and a
+            # non-empty buffer. NEVER selects on value/reward.
+            if select_on_npg and npg_state["buf"] is not None and _weights_finite(agent) \
+                    and len(npg_state["buf"]) > 0:
+                roll = sum(npg_state["buf"]) / len(npg_state["buf"])
+                if roll > npg_state["best"]:
+                    npg_state["best"] = roll
+                    agent.save(npg_state["best_dir"])
+                    print(f"BEST_CKPT[{getattr(cfg, 'runname', '?')}] upd={counter['i']} "
+                          f"n_passed_gates_roll={roll:.4f}")
         return out
 
     agent.step = step_with_periodic_save
+
+    # PASSIVE env.step HARVEST (Stage-1 ckpt-select): wrap env.step to read stats_raw['n_passed_gates']
+    # into the recent-window deque -- installed right after agent.step per the recipe, OFF-path untouched.
+    # The runner calls self.env.step each rollout tick; env IS self.env, so this instance-attribute shadow
+    # intercepts it (same mechanism as the agent.step wrap). PRECHECK must confirm the buffer POPULATES
+    # (the harvest is seen by the real runner loop).
+    if select_on_npg and npg_state["buf"] is not None:
+        _orig_env_step = env.step
+
+        def _env_step_harvest(*a, **k):
+            out = _orig_env_step(*a, **k)
+            try:
+                info = out[3] if isinstance(out, (tuple, list)) and len(out) > 3 else None
+                _harvest_npg(info, npg_state["buf"])
+            except Exception:                           # pragma: no cover - never fail a training step
+                pass
+            return out
+
+        env.step = _env_step_harvest
 
     # WARM-START: load actor+critic from cfg.init_from into the freshly-built agent (weights-only;
     # optimizer + rollout buffer stay fresh). UNSET => no-op, BYTE-IDENTICAL fresh init. The ego env has
@@ -801,29 +955,52 @@ def _run_with_ego_lifelines(self):
     # updates so ONLY the critic adapts to the new stage's return scale before the policy moves (the
     # audit-A1 boundary-divergence fix). Unset/0 => byte-identical. Applies to fresh starts too (a
     # random critic's advantages are equally garbage). counter["i"] is the same 0-based PPO-update index.
+    #
+    # CRITIC-ONLY GRAD CLIP (Stage-1 vtrackAr5, ++critic_grad_clip=C, unset/<=0 -> no-op): at this SAME
+    # agent.optim.step monkeypatch, BEFORE the wrapped step, clip_grad_norm over ONLY the critic-named
+    # params. The 8-gate critic_grad spikes to ~1519 (m8)/918 (m8b) (~7x the healthy 2-gate regime); a
+    # 10-norm cut removes the spikes WITHOUT touching the actor (actor_grad_norm is a healthy ~3). Training
+    # -only, zero deploy footprint. Wrap when EITHER warmup or clip is armed so the clip works even without
+    # a critic_warmup (both unset -> the wrapper is not installed -> byte-identical).
     critic_warmup = int(getattr(cfg, "critic_warmup_updates", 0) or 0)
-    if critic_warmup > 0:
+    critic_grad_clip = float(getattr(cfg, "critic_grad_clip", 0.0) or 0.0)
+    if critic_warmup > 0 or critic_grad_clip > 0.0:
         _cw_state = {"released": False}
         _pre_cw_step = agent.optim.step
 
         def _critic_warmup_step(*a, **k):
-            if counter["i"] < critic_warmup:
-                for _n, _p in agent.agent.named_parameters():
-                    if "actor" in _n and _p.grad is not None:
-                        _p.grad.zero_()
-            elif not _cw_state["released"]:
-                _cw_state["released"] = True
-                print(f"[critic-warmup] RELEASED at update {counter['i']}: actor learning resumes "
-                      f"(critic adapted alone for the first {critic_warmup} updates).")
+            # (1) critic-only grad clip -- BEFORE the optim step, actor grads untouched.
+            if critic_grad_clip > 0.0:
+                crit = _select_critic_params(agent)
+                if crit:
+                    torch.nn.utils.clip_grad_norm_(crit, max_norm=critic_grad_clip)
+            # (2) critic warmup -- zero actor grads for the first N updates.
+            if critic_warmup > 0:
+                if counter["i"] < critic_warmup:
+                    for _n, _p in agent.agent.named_parameters():
+                        if "actor" in _n and _p.grad is not None:
+                            _p.grad.zero_()
+                elif not _cw_state["released"]:
+                    _cw_state["released"] = True
+                    print(f"[critic-warmup] RELEASED at update {counter['i']}: actor learning resumes "
+                          f"(critic adapted alone for the first {critic_warmup} updates).")
             return _pre_cw_step(*a, **k)
 
         agent.optim.step = _critic_warmup_step
-        print(f"[critic-warmup] ON: actor gradients ZEROED for the first {critic_warmup} PPO updates "
-              f"(critic-only adaptation to the new return scale).")
+        if critic_warmup > 0:
+            print(f"[critic-warmup] ON: actor gradients ZEROED for the first {critic_warmup} PPO updates "
+                  f"(critic-only adaptation to the new return scale).")
+        if critic_grad_clip > 0.0:
+            print(f"[critic-grad-clip] ON: critic-only grad-norm clip at {critic_grad_clip} "
+                  f"(actor grads untouched).")
 
     try:
         result = _orig_run(self)
-        _run_det_eval(self, env, agent, cfg)   # faithful deterministic box-exit on the live env
+        # FINAL == the in-memory agent == the runner's checkpoints/ save; DET-eval it first.
+        final_metrics = _run_det_eval(self, env, agent, cfg)   # faithful deterministic box-exit, live env
+        # CHECKPOINT SELECTION (Stage-1): DET-eval best_npg/ and promote it over checkpoints/ if it >= final.
+        if select_on_npg:
+            _promote_best_on_npg(self, env, agent, cfg, npg_state, final_metrics, logger)
         return result
     except Exception:
         traceback.print_exc()

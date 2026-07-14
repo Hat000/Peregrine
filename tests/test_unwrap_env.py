@@ -527,3 +527,99 @@ def test_yaw_dither_anneal_lifeline_wiring_source_pins():
     assert 'yd_sched["base"] = float(getattr(yd_env._egorw, "yaw_dither", 0.0))' in src
     assert 'raise RuntimeError' in src.split('yd_sched["base"] = ', 1)[1].split("agent.step", 1)[0]
     assert 'yd_env._egorw.yaw_dither = yd_sched["base"] * ydv' in src
+
+
+# ================================================================================================
+# STAGE-1 (vtrackAr5) helpers: n_passed_gates harvest, DET_EVAL metric, critic-only grad clip.
+# ================================================================================================
+def test_harvest_npg_reads_completed_episode_gates_into_buffer():
+    """_harvest_npg is a PURE read of stats_raw['n_passed_gates'] (already reset-masked by the env) into
+    the recent-window deque -- the passive rolling-best harvest. Empty tensor / missing key -> no-op."""
+    from collections import deque
+    buf = deque()
+    info = {"stats_raw": {"n_passed_gates": torch.tensor([2.0, 4.0, 1.0])}, "reset": torch.tensor([True])}
+    assert ego_launcher._harvest_npg(info, buf) == 3
+    assert list(buf) == [2.0, 4.0, 1.0]
+    # empty (no episode terminated this step) -> no-op
+    assert ego_launcher._harvest_npg({"stats_raw": {"n_passed_gates": torch.tensor([])}}, buf) == 0
+    # missing key / non-dict info -> no-op, buffer unchanged
+    assert ego_launcher._harvest_npg({"stats_raw": {}}, buf) == 0
+    assert ego_launcher._harvest_npg(None, buf) == 0
+    assert list(buf) == [2.0, 4.0, 1.0]
+
+
+class _FakeDetEnv:
+    """Minimal env for _run_det_eval: every step terminates 2 episodes (reset both True) with a known
+    n_passed_gates so the aggregation + per-episode mean is checkable."""
+    def reset(self):
+        return torch.zeros(2)
+
+    def rescale_action(self, a):
+        return a
+
+    def step(self, a):
+        sr = {"success_rate": torch.tensor([1.0, 0.0]),
+              "collision_rate": torch.tensor([0.0, 1.0]),
+              "miss_rate": torch.tensor([0.0, 0.0]),
+              "oob_rate": torch.tensor([0.0, 0.0]),
+              "n_passed_gates": torch.tensor([2.0, 4.0])}
+        return torch.zeros(2), None, None, {"stats_raw": sr, "reset": torch.tensor([True, True])}
+
+
+class _FakeDetAgent:
+    def act(self, obs, test=False):
+        return obs, None
+
+
+def test_run_det_eval_aggregates_n_passed_gates():
+    """_run_det_eval returns the per-completed-episode mean metrics INCLUDING n_passed_gates (the
+    BANK-FIRST discriminator): with 2 episodes/step of [2,4] gates, mean = 3.0; success = 0.5."""
+    cfg = _Cfg(eval_det_steps=1, runname="detmetric")
+    r = ego_launcher._run_det_eval(None, _FakeDetEnv(), _FakeDetAgent(), cfg)
+    assert r is not None
+    assert r["n_passed_gates"] == pytest.approx(3.0)
+    assert r["success_rate"] == pytest.approx(0.5)
+    # eval_det_steps=0 -> skip -> None
+    assert ego_launcher._run_det_eval(None, _FakeDetEnv(), _FakeDetAgent(),
+                                      _Cfg(eval_det_steps=0, runname="x")) is None
+
+
+def test_select_critic_params_picks_only_critic_and_leaves_actor_untouched():
+    """The Stage-1 critic-only grad clip must select ONLY critic-named params (actor_grad_norm is healthy;
+    the critic is the one that spikes). Clipping the selection must not touch actor grads."""
+    import torch.nn as nn
+
+    class _M(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.critic = nn.Linear(3, 1)
+            self.actor = nn.Linear(3, 2)
+
+    class _Agent:
+        def __init__(self, m):
+            self.agent = m
+
+    m = _M()
+    (m.critic(torch.ones(1, 3)).sum() + m.actor(torch.ones(1, 3)).sum()).backward()
+    sel_ids = {id(p) for p in ego_launcher._select_critic_params(_Agent(m))}
+    assert sel_ids == {id(p) for p in m.critic.parameters()}
+    assert sel_ids.isdisjoint({id(p) for p in m.actor.parameters()})
+    # clipping the critic selection hard leaves the actor grad bit-identical
+    actor_grad_before = m.actor.weight.grad.clone()
+    torch.nn.utils.clip_grad_norm_(ego_launcher._select_critic_params(_Agent(m)), max_norm=1e-6)
+    assert torch.equal(m.actor.weight.grad, actor_grad_before)
+    assert float(m.critic.weight.grad.norm()) <= 1e-6 + 1e-9
+
+
+def test_find_runner_checkpoints_prefers_sibling_then_child():
+    """The runner's checkpoints/ lands as a SIBLING of the decorated logdir (${RUNDIR}/checkpoints per the
+    sbatch), but a child layout is also tolerated; None when neither exists."""
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        logdir = os.path.join(d, "run__stamp")
+        os.makedirs(logdir)
+        assert ego_launcher._find_runner_checkpoints(_Cfg(logdir=logdir)) is None
+        sib = os.path.join(d, "checkpoints")
+        os.makedirs(sib)
+        assert ego_launcher._find_runner_checkpoints(_Cfg(logdir=logdir)) == sib

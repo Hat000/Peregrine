@@ -412,7 +412,22 @@ class EgoRewardWeights:
         progress return lets sprint-and-clip-at-the-last-gate out-earn a clean pass (the critics'
         catastrophic defect). Assert terminal_base (and terminal_miss/oob) EXCEED the max bankable
         progress return for the certified course; otherwise raise so a mis-set FIXED run fails loudly at
-        construction instead of silently training a gate-clipper. progress-scaled -> no-op."""
+        construction instead of silently training a gate-clipper. progress-scaled -> no-op.
+
+        FARM-NEUTRALITY GUARD (Stage-1 vtrackAr5): additionally, UNCONDITIONALLY assert rw_perception <=
+        rw_time. r_perc (the pointing carrot) must never out-earn the per-step time cost, else
+        hover-and-stare at the gate nets a POSITIVE per-tick return and the policy farms the carrot
+        instead of racing (the exact class of mis-set positive weight rs0 shipped). Checked FIRST, before
+        the perception_next / v_cap guards and the terminal_progress_scaled early-return, so it fires for
+        every stage. Byte-identical at the vetted trackA weights (rw_perception 0.02 == rw_time 0.02);
+        only a DETONATED rw_perception (e.g. 0.05) raises. Mirrors the curriculum's stage-level rule
+        (tests/test_vq2_ego_curriculum.py); a deliberate perception-dose-response study must lower
+        rw_perception to <= rw_time or is blocked."""
+        assert self.perception <= self.time + 1e-9, (
+            f"[ego-reward] FARM-NEUTRALITY VIOLATION: rw_perception ({self.perception}) exceeds rw_time "
+            f"({self.time}). The pointing carrot must be <= the per-step time cost, else hover-and-stare "
+            f"nets a positive per-tick return (a reward FARM). Lower rw_perception to <= rw_time (0.02 is "
+            f"the vetted value) or, for a deliberate dose-response study, run it knowing this guard fires.")
         # FARM-NEUTRALITY GUARD (perception_next, pefcap 2026-07-12): a POSITIVE next-gate perception bonus
         # must keep perception + perception_next <= rw_time so a hover-and-stare (point at both gates, make
         # no progress) nets <= 0/tick and is never a positive-return strategy (the same bound the existing
