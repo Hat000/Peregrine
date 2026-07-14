@@ -788,8 +788,21 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._estimator = BatchedEgoEstimator(
             self.n_envs, self.gate_pos, self.gate_yaw, config=ecfg,
             device=dev, dtype=self._ego_dtype)
-        # STATIC coarse map, auto-filled from the course geometry; settable/overridable via set_coarse_map
-        self._coarse_map = build_coarse_map(self.gate_pos, self.spawn_pos)   # (N,G,2) long
+        # Per-gate coarse map, auto-filled from the course geometry; settable/overridable via set_coarse_map.
+        # Deadbands come from cfg (default 0.20 == the build_coarse_map default -> BYTE-IDENTICAL when the keys
+        # are absent, which they are in every current config). STORED on the instance so reset_idx can rebuild
+        # with the IDENTICAL thresholds after each episode's course resample -- otherwise the map keeps the
+        # INITIAL (episode-1) geometry's turn hints forever (STALE-MAP bug; the map is a DERIVED copy, not a
+        # view of gate_pos, so in-place gate_pos[env_idx] updates never reach it).
+        self._coarse_horiz_thresh = float(getattr(cfg, "ego_coarse_horiz_thresh_rad", 0.20))
+        self._coarse_vert_thresh = float(getattr(cfg, "ego_coarse_vert_thresh_rad", 0.20))
+        # External-override latch: set_coarse_map flips this True so a hand-authored deploy map is NOT clobbered
+        # by the reset rebuild. False in every training path (set_coarse_map has no training-path caller), so
+        # the reset rebuild always fires there and the stale-map fix is unconditional in training.
+        self._coarse_map_overridden = False
+        self._coarse_map = build_coarse_map(self.gate_pos, self.spawn_pos,
+                                            horiz_thresh_rad=self._coarse_horiz_thresh,
+                                            vert_thresh_rad=self._coarse_vert_thresh)   # (N,G,2) long
         self._prev_q = self._q.clone()
         # GT apparent opening area (normalized, square-on==1) for ALL gates, refreshed every _step_estimator
         # (the reward's area-distance coupling reads the current target's). Zeros until the first step.
@@ -891,6 +904,8 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             s = s.unsqueeze(0).expand(self.n_envs, -1, -1)
         assert s.shape == self._coarse_map.shape, (s.shape, self._coarse_map.shape)
         self._coarse_map = s.long().clone()
+        # latch the override so reset_idx's per-episode rebuild leaves this hand-authored map alone.
+        self._coarse_map_overridden = True
 
     # ---- estimator reset (cold-init at truth spawn) -------------------------------------------
     def _reset_estimator(self, env_idx) -> None:
@@ -916,6 +931,21 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # point -- a latch surviving a truncation would silently suppress the NEXT episode's first
             # crossing payment (the stale-latch bug the latch contract calls out).
             self._parabola_paid[env_idx] = False
+            # STALE-MAP FIX (Bug 1): the base reset_idx just resampled this episode's per-env course geometry
+            # (base reset_idx -> _assign_courses -> in-place gate_pos[env_idx]/spawn_pos[env_idx]). self._coarse_map
+            # is a DERIVED copy (not a view of gate_pos), so without this rebuild it would keep the __init__
+            # (episode-1) geometry's turn hints for every reset env -- wrong acquisition/anticipation prior for
+            # the resampled course. Rebuild the reset rows to match the CURRENT geometry, using the SAME
+            # thresholds as the __init__ build. build_coarse_map operates on ALL N envs (deterministic in the
+            # geometry), so we build full-N once and assign ONLY the reset rows: non-reset envs keep byte-
+            # identical rows (unchanged geometry -> idempotent) and any set_coarse_map override on them is left
+            # untouched. Skipped entirely when an external override is latched (deploy hand-authored map). Placed
+            # OUTSIDE the _use_refined_b gate because the coarse sector feeds the actor obs unconditionally.
+            if not getattr(self, "_coarse_map_overridden", False):
+                full_map = build_coarse_map(self.gate_pos, self.spawn_pos,
+                                            horiz_thresh_rad=self._coarse_horiz_thresh,
+                                            vert_thresh_rad=self._coarse_vert_thresh)
+                self._coarse_map[env_idx] = full_map[env_idx]
             if getattr(self, "_use_refined_b", False):
                 # rebuild the racing line for the reset envs on their FRESH geometry, THEN re-seed the
                 # progress potential on the (post-reset) current segment / line so the first step's

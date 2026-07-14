@@ -540,17 +540,30 @@ def _select_critic_params(agent):
     return [p for n, p in agent.agent.named_parameters() if "critic" in n and p.grad is not None]
 
 
-def _find_runner_checkpoints(logger):
+def _find_runner_checkpoints(logger, best_dir=None):
     """Locate the runner's end-of-run ``checkpoints/`` dir (the dir the deploy pull + the next stage's
-    ``+init_from`` consume). Per rl/peregrine_vq2_ego.sbatch it lands at ``${RUNDIR}/checkpoints`` -- a
-    SIBLING of the hydra-decorated ``logger.logdir``, NOT inside it -- but a different runner layout could
-    place it inside. Check BOTH the in-logdir and the parent-of-logdir candidates; return the first that
-    exists, else None (promotion then FLAGS + skips rather than guessing)."""
+    ``+init_from`` consume). The runner writes ``best_npg/``, ``best/``, ``checkpoints/``, ``periodic/``
+    side by side under the SAME logdir, so ``checkpoints/`` is a SIBLING of ``best_npg/``.
+
+    PRIMARY resolution (Bug 2 fix): when the ACTUAL ``best_npg/`` path is known (``best_dir``, already
+    verified to exist by the caller), resolve ``checkpoints/`` as its SIBLING -- ``dirname(best_dir)/
+    checkpoints``. This pins the exact filesystem root the runner really saved into, and is immune to
+    ``logger.logdir`` re-resolving to a DIFFERENT root at promotion time (the observed failure: best_npg/
+    lived under ``.../diffaero_repo/outputs/train/<date>/<time>/`` while the logdir-based guess pointed at
+    ``.../diffaero/outputs/train/<runname>/`` -- a path-root mismatch, so the ``near RUNDIR`` heuristic
+    could not see the checkpoints/ dir that DID exist next to best_npg/).
+
+    FALLBACK: if the sibling-of-best_dir is absent (or best_dir was not supplied), fall back to the old
+    ``logger.logdir`` candidates (in-logdir and parent-of-logdir). Return the first that exists, else None
+    (promotion then FLAGS + skips rather than guessing)."""
+    cands = []
+    if best_dir:
+        # SIBLING of the real best_npg/ -- same root the runner actually saved to. Tried FIRST.
+        cands.append(os.path.join(os.path.dirname(os.path.normpath(best_dir)), "checkpoints"))
     logdir = getattr(logger, "logdir", None)
-    if not logdir:
-        return None
-    cands = [os.path.join(logdir, "checkpoints"),
-             os.path.join(os.path.dirname(os.path.normpath(logdir)), "checkpoints")]
+    if logdir:
+        cands.append(os.path.join(logdir, "checkpoints"))
+        cands.append(os.path.join(os.path.dirname(os.path.normpath(logdir)), "checkpoints"))
     for c in cands:
         if os.path.isdir(c):
             return c
@@ -569,7 +582,7 @@ def _promote_best_on_npg(self, env, agent, cfg, npg_state, final_metrics, logger
         print("[ckpt-select] no best_npg/ snapshot to promote (never crossed a save boundary) -- "
               "checkpoints/ (the final) ships unchanged.")
         return
-    ckpt_dir = _find_runner_checkpoints(logger)
+    ckpt_dir = _find_runner_checkpoints(logger, best_dir=best_dir)
     if ckpt_dir is None:
         print(f"[ckpt-select] FLAG: runner checkpoints/ dir not found near {getattr(logger,'logdir','?')} "
               f"-- cannot promote. best_npg/ is at {best_dir}; point +init_from / the deploy pull there "
