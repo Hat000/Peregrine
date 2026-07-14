@@ -235,6 +235,24 @@ SCHEMA = [
 GROUP_ORDER = ["Flight stack", "Vision", "Ego perception", "Ego control", "Run", "Advanced"]
 BY_KEY = {s["key"]: s for s in SCHEMA}
 
+# Per-model deploy DEFAULTS -- auto-applied in the panel when a checkpoint is picked (keyed by
+# .pth basename). The yaw clamp is TRAINING-matched and per-RELEASE: 0.7 for everything EXCEPT
+# the ego-ckpts-tracka-2026-07-13 arm (w0 + m8) at 0.35. MIXING THE TWO = OOD (Fengyou 2026-07-13).
+# NOTE: only the yaw clamp is encoded so far -- whether the vtrackA lineage also needs the vpef
+# recipe (slot1 / sector=map / tight pitch) is UNCONFIRMED; extend per model once known.
+MODEL_DEFAULTS = {
+    # ego-ckpts-vpef-2026-07-12  -- yaw 0.7
+    "vpefwh2_actor.pth":    {"ego_yaw_clamp": 0.7},
+    "vpeffs0_actor.pth":    {"ego_yaw_clamp": 0.7},
+    # ego-ckpts-tracka-yaw07-2026-07-13  -- yaw 0.7
+    "vtrackAm8b_actor.pth": {"ego_yaw_clamp": 0.7},
+    "vtrackArs0_actor.pth": {"ego_yaw_clamp": 0.7},
+    "vtrackAw1_actor.pth":  {"ego_yaw_clamp": 0.7},
+    # ego-ckpts-tracka-2026-07-13  -- yaw 0.35 (DO NOT mix with the 0.7 lineage)
+    "vtrackAw0_actor.pth":  {"ego_yaw_clamp": 0.35},
+    "vtrackAm8_actor.pth":  {"ego_yaw_clamp": 0.35},
+}
+
 # --------------------------------------------------------------------------- #
 # Command building
 # --------------------------------------------------------------------------- #
@@ -633,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, HTML, "text/html; charset=utf-8")
         if u.path == "/api/schema":
             return self._send(200, {"schema": SCHEMA, "groups": GROUP_ORDER,
-                                    "assets": discover()})
+                                    "assets": discover(), "model_defaults": MODEL_DEFAULTS})
         if u.path == "/api/pilots":
             return self._send(200, {"pilots": refresh_pilots(), "sys_flyrl": sys_flyrl_count()})
         if u.path == "/api/sessions":
@@ -776,11 +794,11 @@ small.k{color:var(--mut)}
   </div>
 </div>
 <script>
-let SCHEMA=[], GROUPS=[], ASSETS={}, curLog=null, PBID={}, PBSESS={};
+let SCHEMA=[], GROUPS=[], ASSETS={}, curLog=null, PBID={}, PBSESS={}, MODEL_DEFAULTS={};
 const $=id=>document.getElementById(id);
 async function boot(){
   const r=await (await fetch('/api/schema')).json();
-  SCHEMA=r.schema; GROUPS=r.groups; ASSETS=r.assets;
+  SCHEMA=r.schema; GROUPS=r.groups; ASSETS=r.assets; MODEL_DEFAULTS=r.model_defaults||{};
   renderForm(); preview(); loadPilots(); loadSessions();
   setInterval(loadPilots,2000);
 }
@@ -802,7 +820,7 @@ function renderForm(){
         let opts=(s.choices?s.choices:optList(s.opts)).slice();
         // ensure the default is present in THIS select's own option list (no global replace)
         if(s.default && !s.choices && !opts.includes(s.default)) opts.unshift(s.default);
-        html+=`<select id="f_${s.key}" onchange="preview()">`;
+        html+=`<select id="f_${s.key}" onchange="${s.key==='ego_ckpt'?'onCkptChange()':'preview()'}">`;
         if(s.allow_blank) html+=`<option value="">(none)</option>`;
         opts.forEach(o=>{const label=o.split('/').pop();html+=`<option value="${o}" ${o==s.default?'selected':''}>${label}</option>`});
         html+=`</select>`;
@@ -830,6 +848,18 @@ async function preview(){
   const r=await (await fetch('/api/preview',{method:'POST',body:JSON.stringify(collect())})).json();
   $('cmd').textContent=r.cmd;
   $('lwarn').textContent=(r.warnings||[]).join('  •  ');
+}
+async function onCkptChange(){
+  // apply the picked model's per-release defaults (yaw clamp is training-matched -- mixing = OOD)
+  const el=$('f_ego_ckpt');
+  const base=el?(el.value||'').split('/').pop():'';
+  const d=MODEL_DEFAULTS[base]; const applied=[];
+  if(d){for(const k in d){const f=$('f_'+k); if(!f)continue;
+    if(f.type==='checkbox')f.checked=!!d[k]; else f.value=d[k];
+    applied.push(k.replace(/^ego_/,'').replace(/_/g,' ')+'='+d[k]);}}
+  await preview();
+  if(applied.length){const w=$('lwarn').textContent;
+    $('lwarn').textContent='✓ '+base+' defaults ('+applied.join(', ')+')'+(w?'  •  '+w:'');}
 }
 function loadRecord(){
   // the known-good 4-gate config
