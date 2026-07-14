@@ -119,11 +119,10 @@ SCHEMA = [
          group="Vision", default=True,
          help="Fast-drop the sim's ~33x UDP video re-send flood in the receiver (4-byte frame_id, no "
               "unpack) so it doesn't GIL-starve nav_update. ON = smooth (loop 17->30 Hz); OFF = pre-fix (A/B)."),
-    dict(key="video_async_detect", flag="--video-async-detect", action="boolopt", ui="bool",
-         group="Vision", default=False,
-         help="Run the detector on a WORKER thread so the GPU-contended YOLO inference (the p99 loop "
-              "JITTER, hidden in nav_ms) stops blocking the paced loop. EXPERIMENTAL -- costs ~1 frame "
-              "detection staleness; fly-test + check p99 work_ms + infer_ms before trusting."),
+    # (--video-async-detect toggle REMOVED 2026-07-14: fly-tested net-negative -- no loop-tail fix
+    #  and LOWER gates on every model; the p99 tail is a ~56ms non-inference nav GPU-sync, not the
+    #  detect() call, and the tail doesn't correlate with gates anyway. The flag still exists in
+    #  fly_rl.py, defaults OFF; the infer_ms instrument stays.)
 
     # ---- Ego perception ---------------------------------------------------
     dict(key="ego_sector_mode", flag="--ego-sector-mode", action="value", ui="select",
