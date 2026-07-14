@@ -450,6 +450,13 @@ class BatchedEgoEstimator:
         m = int(idx.numel())
         if m == 0:
             return
+        # STALE-GEOMETRY FIX (same root-cause class as the coarse-map rebuild): R_world_gate is derived
+        # from gate_yaw at __init__ and is otherwise NEVER rebuilt, but the env resamples gate_yaw
+        # in-place every episode (peregrine_racing_ego reset -> gate_yaw[env_idx] = ...). gate_yaw is a
+        # LIVE reference here (already fresh: env resamples BEFORE _reset_estimator), so refresh the reset
+        # envs' gate frames from the CURRENT yaw. Feeds the downrange normal (line below) + the vel-KF
+        # datum rotation (_R_datum_gate). RNG-neutral: a pure deterministic rotation of fresh yaw, no draw.
+        self.R_world_gate[idx] = zup_gate_frame_torch(self.gate_yaw[idx])   # (m,G,3,3)
         R_wb = self._R_wb(drone_quat)                                       # (m,3,3)
         # per-gate truth relative vector (body frame) for these envs
         lever = self.gate_pos[idx] - drone_pos.unsqueeze(1)                 # (m,G,3)
