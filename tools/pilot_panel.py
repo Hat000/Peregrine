@@ -545,7 +545,10 @@ def git_commit(sessions, include_heavy, do_push):
     if not files:
         return {"ok": False, "error": "no matching files found for the selected sessions"}
     try:
-        subprocess.run(["git", "-C", str(REPO), "add", "--", *files],
+        # the selected sessions live under the gitignored data/runs (+ the panel .log under the
+        # gitignored pilot_panel_logs); the user is EXPLICITLY choosing them, so force-add the
+        # specific files. -f + an explicit file list never pulls in pilots.json / other ignored cruft.
+        subprocess.run(["git", "-C", str(REPO), "add", "-f", "--", *files],
                        check=True, capture_output=True, text=True)
         msg = f"logs(panel): {len(sessions)} session(s) -- " + ", ".join(sessions[:4]) + \
               (" ..." if len(sessions) > 4 else "")
