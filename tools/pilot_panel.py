@@ -602,6 +602,46 @@ def render_status(session):
         return {"state": "ready", "size": out.stat().st_size}
     return {"state": "none"}
 
+
+# --------------------------------------------------------------------------- #
+# Coarse-map editor  --  read/write a configs/*.json sector map from the panel.
+# One [horiz, vert] per gate; row g answers "arriving at gate g, where is gate
+# g+1?" in the drone's gravity-leveled approach frame. SPATIAL notation (the
+# arrow points AT the next gate):  UP-LEFT UP UP-RIGHT / LEFT . RIGHT / DOWN...
+#   horiz: RIGHT = -1, LEFT = +1, straight = 0   (fly-check: banks wrong -> flip)
+#   vert : UP = +1, DOWN = -1, level = 0
+# --------------------------------------------------------------------------- #
+def _map_path(rel):
+    """Resolve a map path SAFELY -- repo-relative, under configs/, .json only."""
+    rel = (rel or "configs/vq2_coarse_map.json").replace("\\", "/")
+    p = (REPO / rel).resolve()
+    if p.suffix != ".json" or (REPO / "configs").resolve() not in p.parents:
+        raise ValueError("map must be a .json under configs/")
+    return p
+
+def read_coarse_map(rel):
+    p = _map_path(rel)
+    m = json.loads(p.read_text())
+    return {"path": os.path.relpath(p, REPO).replace("\\", "/"),
+            "sector": m.get("sector", []), "doc": m.get("_doc", "")}
+
+def write_coarse_map(rel, sector):
+    p = _map_path(rel)
+    sec = []
+    for row in sector:
+        if not (isinstance(row, (list, tuple)) and len(row) == 2):
+            raise ValueError("each gate must be [horiz, vert]")
+        h, v = int(row[0]), int(row[1])
+        if h not in (-1, 0, 1) or v not in (-1, 0, 1):
+            raise ValueError("horiz/vert must each be -1, 0, or 1")
+        sec.append([h, v])
+    m = json.loads(p.read_text()) if p.exists() else {}
+    m["sector"] = sec                                    # preserves _doc + key order
+    m["_provenance"] = f"Edited via panel map editor ({len(sec)} gates)."
+    txt = re.sub(r"\[\s+(-?\d),\s+(-?\d)\s+\]", r"[\1, \2]", json.dumps(m, indent=2))
+    p.write_text(txt)
+    return {"ok": True, "path": os.path.relpath(p, REPO).replace("\\", "/"), "rows": len(sec)}
+
 # --------------------------------------------------------------------------- #
 # HTTP
 # --------------------------------------------------------------------------- #
@@ -670,6 +710,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, render_status(q.get("session", [""])[0]))
         if u.path == "/api/video":
             return self._serve_video(q.get("session", [""])[0])
+        if u.path == "/api/coarse_map":
+            try:
+                return self._send(200, read_coarse_map(q.get("path", [""])[0]))
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -697,6 +742,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, clear_finished())
         if u.path == "/api/render":
             return self._send(200, start_render(data.get("session", "")))
+        if u.path == "/api/coarse_map":
+            try:
+                return self._send(200, write_coarse_map(data.get("path", ""), data.get("sector", [])))
+            except Exception as e:
+                return self._send(400, {"error": str(e)})
         return self._send(404, {"error": "not found"})
 
 # --------------------------------------------------------------------------- #
@@ -742,6 +792,14 @@ th{color:var(--mut);font-weight:600}
 .sess{display:flex;gap:8px;align-items:center;padding:3px 4px;border-bottom:1px solid var(--line)}
 .sess input{width:auto}
 small.k{color:var(--mut)}
+.maplegend{background:#0b0e13;border:1px solid var(--line);border-radius:5px;padding:8px 10px;color:var(--mut);font-size:11px;margin-bottom:10px;line-height:1.7}
+.maplegend b{color:var(--fg)}
+.mapgate{display:flex;gap:12px;align-items:center;padding:5px 2px;border-bottom:1px solid var(--line)}
+.mapgate .lbl{width:92px;color:var(--fg);font-size:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,30px);grid-template-rows:repeat(3,26px);gap:2px;flex:none}
+.gc{background:#0b0e13;border:1px solid var(--line);color:var(--mut);border-radius:3px;cursor:pointer;font-size:14px;padding:0;line-height:1}
+.gc:hover{border-color:var(--acc);color:var(--fg)}
+.gc.on{background:var(--acc);color:#04121f;border-color:var(--acc);font-weight:700}
 </style></head><body>
 <h1>🚁 VQ2 Pilot Control Panel <span class="sub" id="sub">launch pilots in the background · logs local · commit to git on demand</span></h1>
 <div class="wrap">
@@ -762,6 +820,7 @@ small.k{color:var(--mut)}
       <button id="tab-git" onclick="tab('git')">Logs → git</button>
       <button id="tab-log" onclick="tab('log')">Log viewer</button>
       <button id="tab-video" onclick="tab('video')">🎬 Video</button>
+      <button id="tab-map" onclick="tab('map')">🗺 Map</button>
     </div>
     <div id="view-pilots">
       <div class="bar">
@@ -791,10 +850,22 @@ small.k{color:var(--mut)}
       <div class="bar"><span id="vidstatus" class="mut">pick a flight's 🎬 (Pilots or Logs→git) to render its onboard video + detector overlay</span></div>
       <video id="player" controls playsinline style="width:100%;max-height:72vh;background:#000;border:1px solid var(--line);border-radius:6px"></video>
     </div>
+    <div id="view-map" style="display:none">
+      <div class="bar">
+        <button onclick="saveMap()">💾 Save map</button>
+        <button class="sec" onclick="loadMap()">↻ Reload</button>
+        <button class="sec" onclick="addGate()">+ gate</button>
+        <button class="sec" onclick="delGate()">− gate</button>
+        <span class="mut">editing <b id="mappath">—</b></span>
+        <span id="mapmsg"></span>
+      </div>
+      <div class="maplegend" id="maplegend"></div>
+      <div id="mapbody"></div>
+    </div>
   </div>
 </div>
 <script>
-let SCHEMA=[], GROUPS=[], ASSETS={}, curLog=null, PBID={}, PBSESS={}, MODEL_DEFAULTS={};
+let SCHEMA=[], GROUPS=[], ASSETS={}, curLog=null, PBID={}, PBSESS={}, MODEL_DEFAULTS={}, MAP=null;
 const $=id=>document.getElementById(id);
 async function boot(){
   const r=await (await fetch('/api/schema')).json();
@@ -935,7 +1006,7 @@ async function killAll(){
   loadPilots();
 }
 async function clearFinished(){await fetch('/api/clear',{method:'POST',body:'{}'});loadPilots();}
-function tab(t){['pilots','git','log','video'].forEach(x=>{$('view-'+x).style.display=x==t?'':'none';$('tab-'+x).className=x==t?'on':'';});if(t=='git')loadSessions();}
+function tab(t){['pilots','git','log','video','map'].forEach(x=>{$('view-'+x).style.display=x==t?'':'none';$('tab-'+x).className=x==t?'on':'';});if(t=='git')loadSessions();if(t=='map')loadMap();}
 async function renderVid(session){
   if(!session||session=='—'){alert('no recorded session for this flight yet');return;}
   tab('video'); const st=$('vidstatus'); $('player').removeAttribute('src'); $('player').load();
@@ -979,6 +1050,42 @@ async function doGit(){
   if(r.ok){$('gitmsg').innerHTML=`<span class="ok">✔ ${r.committed} (${r.files} files${r.include_heavy?' +heavy':''})`+
       (r.pushed?(r.pushed=='ok'?' · pushed':' · <span class=bad>push: '+r.pushed+'</span>'):'')+`</span>`;}
   else{$('gitmsg').innerHTML='<span class="bad">&#10007;  '+(r.error||'failed')+'</span>';}
+}
+// ---- coarse-map editor: a 3x3 spatial grid per gate (the arrow points AT the next gate) ----
+const MAP_NAME={'0,1':'up','-1,1':'upper-right','1,1':'upper-left','1,0':'left','0,0':'straight / level','-1,0':'right','1,-1':'lower-left','0,-1':'down','-1,-1':'lower-right'};
+const MAP_GLYPH={'0,1':'↑','-1,1':'↗','1,1':'↖','1,0':'←','0,0':'•','-1,0':'→','1,-1':'↙','0,-1':'↓','-1,-1':'↘'};
+const MAP_LEGEND=`<b>Click where gate g+1 is</b> as you arrive at gate g (gravity-leveled approach frame) — the arrow points AT the next gate.<br>`+
+  `↖ upper-left · ↑ up · ↗ upper-right &nbsp;/&nbsp; ← left · • straight+level · → right &nbsp;/&nbsp; ↙ lower-left · ↓ down · ↘ lower-right<br>`+
+  `encodes <b>[horiz, vert]</b> — horiz: <b>RIGHT=-1</b>, <b>LEFT=+1</b>, straight=0 &nbsp;·&nbsp; vert: <b>UP=+1</b>, <b>DOWN=-1</b>, level=0.&nbsp; 1-bit fly-check: if the drone banks the WRONG way, flip left↔right.`;
+async function loadMap(){
+  const path=($('f_ego_coarse_map')&&$('f_ego_coarse_map').value)||'configs/vq2_coarse_map.json';
+  $('maplegend').innerHTML=MAP_LEGEND;
+  const r=await (await fetch('/api/coarse_map?path='+encodeURIComponent(path))).json();
+  if(r.error){$('mapbody').innerHTML='<span class="bad">'+r.error+'</span>';MAP=null;return;}
+  MAP={path:r.path, sector:(r.sector||[]).map(x=>[x[0]|0,x[1]|0])};
+  $('mappath').textContent=r.path; $('mapmsg').textContent='';
+  renderMap();
+}
+function renderMap(){
+  if(!MAP){$('mapbody').innerHTML='<span class="mut">(no map loaded)</span>';return;}
+  let html='';
+  MAP.sector.forEach((hv,gi)=>{
+    html+=`<div class="mapgate"><span class="lbl">gate ${gi} → ${gi+1}</span><div class="grid3">`;
+    for(let r=0;r<3;r++)for(let c=0;c<3;c++){
+      const h=1-c,v=1-r,k=h+','+v,on=(hv[0]===h&&hv[1]===v);
+      html+=`<button class="gc${on?' on':''}" title="${MAP_NAME[k]}  [${h}, ${v}]" onclick="setCell(${gi},${h},${v})">${MAP_GLYPH[k]}</button>`;
+    }
+    html+=`</div><span class="mut" style="font-size:11px">[${hv[0]}, ${hv[1]}] &nbsp;${MAP_NAME[hv[0]+','+hv[1]]||'?'}</span></div>`;
+  });
+  $('mapbody').innerHTML=html;
+}
+function setCell(gi,h,v){if(MAP){MAP.sector[gi]=[h,v];renderMap();}}
+function addGate(){if(MAP){MAP.sector.push([0,0]);renderMap();}}
+function delGate(){if(MAP&&MAP.sector.length>1){MAP.sector.pop();renderMap();}}
+async function saveMap(){
+  if(!MAP)return;
+  const r=await (await fetch('/api/coarse_map',{method:'POST',body:JSON.stringify({path:MAP.path,sector:MAP.sector})})).json();
+  $('mapmsg').innerHTML=r.ok?`<span class="ok">✔ saved ${r.path} (${r.rows} gates)</span>`:`<span class="bad">${r.error||'save failed'}</span>`;
 }
 boot();
 </script></body></html>"""
