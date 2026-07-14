@@ -598,7 +598,8 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
                 virtual_flip: bool = False, max_thrust: float = 0.0,
                 debug: dict | None = None, yaw_scale: float = 1.0,
                 yaw_clamp: float = 0.0, pitch_clamp_rad: float = 0.0,
-                roll_clamp_rad: float = 0.0
+                roll_clamp_rad: float = 0.0,
+                v_gov_soft: float = 0.0, v_gov_hard: float = 0.0
                 ) -> tuple[np.ndarray, float, float]:
     """One forward pass, replicating the TRAINING action pipeline exactly:
     test-mode action = tanh(actor_mean(obs)), then env.rescale_action onto
@@ -647,6 +648,19 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     roll) and the final FRD roll-rate command rate_frd[0]. Being two-sided it is virtual_flip-
     agnostic BY CONSTRUCTION (the flip negates obs[3] and rate_frd[0] together and the symmetric
     |roll| <= cap is invariant) — no empirical sign pin needed, unlike the one-sided pitch fence.
+
+    ``v_gov_soft`` / ``v_gov_hard``: deploy speed governor (m/s, EGO obs only; 0 = off, byte-
+    identical). Caps the OVER-hover thrust when the observed HORIZONTAL body speed runs hot, to
+    bound kinetic energy WITHOUT ever pushing thrust below hover — altitude-neutral, so the gate-
+    holds-altitude coupling is preserved (a hard thrust cap only removes the ACCELERATING excess;
+    it never commands a sink). obs[0:3] is body-FLU velocity (fwd, left, up); the governor uses
+    ONLY the horizontal magnitude hypot(obs[0], obs[1]) so a vertical reacquisition climb (obs[2])
+    never trips it. normed_thrust is g-units with hover == 1.0 g: at/above v_gov_hard the thrust is
+    hard-clamped to hover (add NO kinetic energy); between v_gov_soft and v_gov_hard the over-hover
+    excess is linearly ramped toward hover. Being magnitude-only (sign-agnostic, squared) it is
+    virtual_flip-agnostic. CAVEAT: a thrust cap acts along the body axis, so while pitched forward
+    by theta a little vertical lift (cos theta deficit) is also lost — a small accepted altitude
+    cost, NOT corrected here.
     """
     obs_t = torch.as_tensor(obs_np[None], dtype=torch.float32)   # (1, 17)
     mean  = actor(obs_t)[0].cpu().numpy().astype(np.float64)     # (4,) raw mean
@@ -656,6 +670,22 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     normed_thrust = float(act[0])
     if max_thrust > 0.0:
         normed_thrust = min(normed_thrust, max_thrust)           # OOD start cap
+    if v_gov_soft > 0.0:
+        # DEPLOY SPEED GOVERNOR (EGO obs only): cap the OVER-hover thrust when the observed
+        # HORIZONTAL body speed runs hot, to bound kinetic energy — altitude-neutral (cap TOWARD
+        # hover, NEVER below, so gate-holds-altitude is preserved). obs[0:3] = body-FLU velocity
+        # (fwd, left, up); use ONLY hypot(obs[0], obs[1]) so a vertical reacquisition climb
+        # (obs[2]) never trips it. hover == 1.0 g in normed_thrust units.
+        hover = 1.0
+        obs_speed = float(np.hypot(obs_np[0], obs_np[1]))
+        if obs_speed >= v_gov_hard:
+            normed_thrust = min(normed_thrust, hover)            # hard clamp to hover: add NO kinetic energy
+        elif obs_speed > v_gov_soft and normed_thrust > hover:
+            # ramp ONLY the OVER-hover excess toward hover; the ``and normed_thrust > hover`` guard
+            # keeps an at/below-hover (descent) command UNTOUCHED, so the governor can only ever
+            # REMOVE accelerating thrust, never raise a command up to hover (strictly altitude-neutral).
+            frac = (obs_speed - v_gov_soft) / max(v_gov_hard - v_gov_soft, 1e-6)
+            normed_thrust = hover + (1.0 - frac) * (normed_thrust - hover)   # -> hover as speed -> hard
     rate_flu = act[1:4]
     if max_rate > 0.0:
         rate_flu = np.clip(rate_flu, -max_rate, max_rate)        # OOD diagnostic cap
@@ -1833,6 +1863,18 @@ def _fly_ego(client, actor, args, flight_idx: int,
 
     profile = get_profile(args.deploy_profile)
 
+    # --- deploy speed governor thresholds (--ego-speed-gov "soft,hard" m/s horizontal; EMPTY =
+    #     off). Parsed ONCE here and threaded into policy_step; 0.0,0.0 => byte-identical. ---
+    v_gov_soft, v_gov_hard = 0.0, 0.0
+    if getattr(args, "ego_speed_gov", ""):
+        try:
+            v_gov_soft, v_gov_hard = (float(x) for x in str(args.ego_speed_gov).split(","))
+        except (ValueError, TypeError):
+            print(f"  [ego] --ego-speed-gov {args.ego_speed_gov!r} is not 'soft,hard' floats. abort.",
+                  file=sys.stderr)
+            result["final_state"] = "BAD_SPEED_GOV"
+            return result
+
     # --- gate map: mirrors _fly_gate_seeker (live TRACK_INFO > map-free for self-localizing) ---
     if client.track_gates:
         gates = gates_from_track_records(client.track_gates, corner_to_center=True)
@@ -1890,6 +1932,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"slot1={args.ego_slot1}{' (next_pose SOURCE not yet wired -> slot1 MASKED to zero)' if args.ego_slot1 else ''} "
           f"pitch_clamp={args.ego_pitch_clamp:g}deg roll_clamp={args.ego_roll_clamp:g}deg "
           f"yaw_clamp={args.ego_yaw_clamp:g} "
+          f"speed_gov={'off' if v_gov_soft <= 0.0 else f'{v_gov_soft:g}/{v_gov_hard:g} m/s'} "
           f"virtual_flip={args.virtual_flip} rate={args.rate:g}Hz max={args.max_seconds:g}s ...")
 
     # --- autonomous takeoff assist (A2 ground-unstick; see EgoTakeoffAssist) ---
@@ -2087,7 +2130,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
             actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
             yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp,
             pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)),
-            roll_clamp_rad=float(np.radians(args.ego_roll_clamp)))
+            roll_clamp_rad=float(np.radians(args.ego_roll_clamp)),
+            v_gov_soft=v_gov_soft, v_gov_hard=v_gov_hard)
         # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
         # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
         # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
@@ -2118,9 +2162,15 @@ def _fly_ego(client, actor, args, flight_idx: int,
         if session_dir is not None:
             try:
                 d = builder.last_diag
+                # governor telemetry: the HORIZONTAL obs speed the governor keys off (hypot of
+                # obs[0:2], EXCLUDING the vertical obs[2]) + whether it crossed the soft knee this
+                # tick. Lets the pilot confirm observed-vs-true speed (k) and spot porpoising.
+                _gov_speed = float(np.hypot(obs[0], obs[1]))
                 _ego_log.append({
                     "k": n_ticks, "sim_time_ns": st, "gate_index": gate_index,
                     "obs": np.asarray(obs, dtype=np.float64).round(5).tolist(),
+                    "gov": round(_gov_speed, 4),
+                    "gov_engaged": bool(v_gov_soft > 0.0 and _gov_speed > v_gov_soft),
                     "pose_seen": d.get("pose_seen"), "age_s": d.get("age_s"),
                     "conf": round(float(d.get("conf", 0.0)), 4),
                     "area": round(float(d.get("area", 0.0)), 4),
@@ -2709,6 +2759,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "re-opens the spin door. NOT --max-rate (clips all 3 axes, ~9x roll/pitch "
                          "OOD) and NOT --yaw-scale (multiplicative, mis-scales the transfer function). "
                          "Leave 0 for pre-despin checkpoints (vn16/vcz16) -- they trained unclamped.")
+    ap.add_argument("--ego-speed-gov", type=str, default="",
+                    help="EGO deploy speed governor \"SOFT,HARD\" (m/s of OBSERVED HORIZONTAL body "
+                         "speed; EMPTY = off, byte-identical). Bounds kinetic energy by capping the "
+                         "OVER-hover thrust when the drone runs hot: at/above HARD the emitted thrust "
+                         "is hard-clamped to hover (adds NO kinetic energy); between SOFT and HARD the "
+                         "over-hover excess ramps linearly toward hover. ALTITUDE-NEUTRAL -- it only "
+                         "ever caps TOWARD hover, never below, so the gate-holds-altitude coupling is "
+                         "preserved (never forces a sink). Keys off hypot(obs[0],obs[1]) only, so a "
+                         "vertical reacquisition climb never trips it. Per-ckpt; try 5,6.5.")
     ap.add_argument("--ego-kp-persist", type=int, default=0,
                     help="EGO keypoint-persistence debounce: the gate lever transmits to the "
                          "obs builder only after N CONSECUTIVE fresh camera frames returned an "
@@ -3051,6 +3110,7 @@ def main() -> int:
                     "ego_roll_clamp": args.ego_roll_clamp,
                     "ego_floor_clamp": args.ego_floor_clamp,
                     "ego_yaw_clamp": args.ego_yaw_clamp,
+                    "ego_speed_gov": args.ego_speed_gov,
                     "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist}
                    if getattr(args, "ego_ckpt", None) else {}),
