@@ -252,3 +252,71 @@ def test_roll_clamp_blocks_deeper_bank_symmetric(ego_bounds):
     assert ps(pos, right, cap) > 0
     # within cap: fence inactive both directions
     assert ps(pos, within, cap) > 0 and ps(neg, within, cap) < 0
+
+
+def _obs_with_vel(vx: float, vy: float, vz: float = 0.0) -> np.ndarray:
+    """Zero ego obs with body-FLU velocity slot [0:3] = (fwd, left, up) set."""
+    obs = np.zeros(EGO_OBS_DIM, dtype=np.float32)
+    obs[0], obs[1], obs[2] = vx, vy, vz
+    return obs
+
+
+def test_ego_speed_gov(ego_bounds):
+    """--ego-speed-gov (deploy speed governor): caps the OVER-hover thrust as the observed
+    HORIZONTAL body speed runs from soft->hard, hard-clamps to hover at/above hard, is altitude-
+    neutral (never drives thrust below hover), keys off ONLY hypot(obs[0],obs[1]) (vertical obs[2]
+    excluded), and is bit-identical off (soft=0). hover == 1.0 g in normed_thrust units."""
+    HOVER = 1.0
+    hot = _StubActor([50.0, 0.0, 0.0, 0.0])       # thrust rail -> raw normed_thrust = 3.765 g (> hover)
+    raw = 3.765
+
+    # (1) OFF (soft=0) => byte-identical to no-governor, even at a scorching obs speed.
+    fast = _obs_with_vel(20.0, 0.0)
+    _, _, n_plain = fly_rl.policy_step(hot, fast, virtual_flip=False)
+    _, _, n_off = fly_rl.policy_step(hot, fast, virtual_flip=False, v_gov_soft=0.0, v_gov_hard=0.0)
+    assert n_off == n_plain                                     # exact: the whole block is skipped
+    assert n_off == pytest.approx(raw, abs=1e-4)
+
+    # (2) at/above HARD => hard-clamped to hover (the raw policy wanted 3.765 >> hover).
+    _, _, n_hard = fly_rl.policy_step(hot, _obs_with_vel(10.0, 0.0),
+                                      virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+    assert n_hard == pytest.approx(HOVER, abs=1e-6)
+    assert n_hard <= HOVER + 1e-9
+    # exactly AT hard is the same clamp (>= boundary).
+    _, _, n_at = fly_rl.policy_step(hot, _obs_with_vel(6.5, 0.0),
+                                    virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+    assert n_at == pytest.approx(HOVER, abs=1e-6)
+
+    # (3) between SOFT and HARD => linear ramp of the over-hover excess, strictly between hover&raw.
+    #     obs_speed 5.75 = midpoint(5,6.5) => frac 0.5 => hover + 0.5*(3.765-1) = 2.3825.
+    _, _, n_mid = fly_rl.policy_step(hot, _obs_with_vel(5.75, 0.0),
+                                     virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+    assert n_mid == pytest.approx(HOVER + 0.5 * (raw - HOVER), abs=1e-4)
+    assert HOVER < n_mid < raw
+    # below SOFT => governor inactive => untouched.
+    _, _, n_lo = fly_rl.policy_step(hot, _obs_with_vel(4.0, 0.0),
+                                    virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+    assert n_lo == pytest.approx(raw, abs=1e-4)
+
+    # (4) NEVER drives thrust below hover, and NEVER raises an at/below-hover (descent) command.
+    #     Sweep the whole speed range with an over-hover policy: floor is hover.
+    for v in (5.0, 5.5, 6.0, 6.5, 8.0, 15.0):
+        _, _, n = fly_rl.policy_step(hot, _obs_with_vel(v, 0.0),
+                                     virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+        assert n >= HOVER - 1e-9 and n <= raw + 1e-9
+    cold = _StubActor([-1.0, 0.0, 0.0, 0.0])       # raw normed_thrust ~0.449 g (BELOW hover)
+    _, _, n_cold_raw = fly_rl.policy_step(cold, _obs_with_vel(0.0, 0.0), virtual_flip=False)
+    assert n_cold_raw < HOVER                                   # sanity: this policy wants a descent
+    for v in (5.75, 10.0):                                      # ramp band AND past hard
+        _, _, n_cold = fly_rl.policy_step(cold, _obs_with_vel(v, 0.0),
+                                          virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+        assert n_cold == pytest.approx(n_cold_raw, abs=1e-6)    # untouched: not reduced AND not raised
+
+    # (5) vertical speed alone (obs[2]) does NOT trip the governor: huge climb, zero horizontal.
+    _, _, n_vert = fly_rl.policy_step(hot, _obs_with_vel(0.0, 0.0, 30.0),
+                                      virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+    assert n_vert == pytest.approx(raw, abs=1e-4)               # forward+left = 0 => obs_speed 0 < soft
+    # horizontal magnitude combines fwd AND left (a pure-lateral fast slide trips it too).
+    _, _, n_lat = fly_rl.policy_step(hot, _obs_with_vel(0.0, 10.0),
+                                     virtual_flip=False, v_gov_soft=5.0, v_gov_hard=6.5)
+    assert n_lat == pytest.approx(HOVER, abs=1e-6)
