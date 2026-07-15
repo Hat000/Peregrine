@@ -520,7 +520,7 @@ def clear_finished():
 SMALL_FILES = ["meta.json", "ego_obs.jsonl", "ego_timing.jsonl", "video_index.jsonl"]
 HEAVY_FILES = ["video.bin", "mavlink.tlog"]
 
-def list_sessions(limit=60):
+def list_sessions(limit=200):
     out = []
     if not RUNS_DIR.exists():
         return out
@@ -853,6 +853,13 @@ small.k{color:var(--mut)}
         <button onclick="doGit(false)">Commit selected</button>
         <label class="mut"><input type="checkbox" id="incl_heavy"> include video.bin/tlog (heavy)</label>
         <label class="mut"><input type="checkbox" id="do_push"> push to origin</label>
+        <label class="mut" style="margin-left:auto">sort <select id="sess_sort" onchange="renderSessions()">
+          <option value="time">newest</option>
+          <option value="gates">gates &#9660;</option>
+          <option value="gates_asc">gates &#9650;</option>
+          <option value="dur">longest</option>
+          <option value="state">state</option>
+        </select></label>
         <button class="sec" onclick="loadSessions()">↻</button>
       </div>
       <div id="gitmsg" class="mut"></div>
@@ -1044,9 +1051,23 @@ async function showLog(){
   const r=await (await fetch('/api/log?id='+id)).json();
   const b=$('logbox'); b.textContent=r.log||'(empty)'; b.scrollTop=b.scrollHeight;
 }
+let SESSIONS=[];
 async function loadSessions(){
   const r=await (await fetch('/api/sessions')).json();
-  $('sesslist').innerHTML=(r.sessions||[]).map(s=>{
+  SESSIONS=r.sessions||[];
+  renderSessions();
+}
+function renderSessions(){
+  const mode=($('sess_sort')||{}).value||'time';
+  const checked=new Set([...document.querySelectorAll('.sc:checked')].map(c=>c.value));
+  const g=s=>(s.gates==null?-1:s.gates), nm=(a,b)=>(a.name<b.name?1:-1);  // name desc = newest first
+  const arr=SESSIONS.slice();
+  if(mode==='gates')          arr.sort((a,b)=> g(b)-g(a) || nm(a,b));
+  else if(mode==='gates_asc') arr.sort((a,b)=> g(a)-g(b) || nm(a,b));
+  else if(mode==='dur')       arr.sort((a,b)=> (b.dur||0)-(a.dur||0) || nm(a,b));
+  else if(mode==='state')     arr.sort((a,b)=> String(a.state).localeCompare(String(b.state)) || nm(a,b));
+  else                        arr.sort(nm);
+  $('sesslist').innerHTML=arr.map(s=>{
     const st=s.state||'—';
     const scfg=PBSESS[s.name]?`<button class="sec" style="padding:1px 7px;margin-left:auto" title="load this flight's config into the launch form" onclick="loadConfigSess('${s.name}')">⚙ cfg</button>`:'';
     const svid=s.has_video?`<button class="sec" style="padding:1px 7px;${scfg?'':'margin-left:auto'}" onclick="renderVid('${s.name}')">🎬 render</button>`:'';
@@ -1056,6 +1077,7 @@ async function loadSessions(){
       <small class="k">gates=${s.gates==null?'—':s.gates} · ${s.dur||'?'}s</small>
       ${scfg}${svid}</div>`;
   }).join('')||'<div class="mut">no sessions in data/runs</div>';
+  document.querySelectorAll('.sc').forEach(c=>{if(checked.has(c.value))c.checked=true;});
 }
 async function doGit(){
   const sel=[...document.querySelectorAll('.sc:checked')].map(c=>c.value);
