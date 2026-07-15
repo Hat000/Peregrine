@@ -255,6 +255,8 @@ MODEL_DEFAULTS = {
     # ego-ckpts-vpef-2026-07-12  -- yaw 0.7
     "vpefwh2_actor.pth":    {"ego_yaw_clamp": 0.7},
     "vpeffs0_actor.pth":    {"ego_yaw_clamp": 0.7},
+    # ego-ckpts-vpef8gate-2026-07-14 -- 8-gate champ (vpeffs0-lineage, natural ~9.5 m/s, no vel cap); yaw 0.7
+    "vpef8nc_actor.pth":    {"ego_yaw_clamp": 0.7},
     # ego-ckpts-tracka-yaw07-2026-07-13  -- yaw 0.7
     "vtrackAm8b_actor.pth": {"ego_yaw_clamp": 0.7},
     "vtrackArs0_actor.pth": {"ego_yaw_clamp": 0.7},
