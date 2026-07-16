@@ -153,3 +153,42 @@ Roll ≡ pitch across the whole range. **Flat ~2.46 at small signal (0.1–0.2),
 | `seg4_roll_fill` | `20260716_030723_sysid_roll_fill_f1` | 95/144 | roll ±0.2, ±0.4, +0.8 |
 | `seg4_pitch_fill` | `20260716_031011_sysid_pitch_fill_f1` | 89/144 | pitch ±0.2, ±0.4, +0.8 |
 | `seg4_thrust_hover3g` | `20260716_031128_sysid_thrust_hover3g_f1` | 85/85 FULL | static 3/2.5/2/1.5/1 g + velocity |
+
+> ⚠ **§6b static thrust superseded by §7** — the hover-3g "static" mids were measured while the drone was *climbing* (velocity-reduced), so they read LOW. The battery-5 vz-sweeps (below) pass through vz≈0 and give the TRUE static, which is higher.
+
+---
+
+## 7. Battery-5 (2026-07-16) — CLIMB-VELOCITY THRUST SWEEP (inflow lapse)
+
+The one unmodeled piece: thrust falls with climb-rate (1 g rest → ~0.4 g climbing). **vz is not on the wire** (ODOMETRY blocked) → reconstructed as **`vz(t) = −cumsum(accel_z + 9.81)·dt`** from vz≈0 at the post-arrest hover (clean: no roll/pitch → pure-vertical motion → no attitude coupling). Programs `sysid/seg5*.csv` hold a fixed collective while the drone accelerates through a vz range (free-fall reset between collectives to sweep through zero). seg-labeled.
+
+### 7a. Inflow lapse — thrust(g) vs climb-rate vz(m/s), by fixed collective
+| collective | @ vz≈0 (static) | mid vz | high vz | lapse slope |
+|---|---|---|---|---|
+| 0.266 (hover) | 1.0 | 0.47 @ +10 | 0.24 @ +13 | steep near hover |
+| 0.398 (1.5g) | ~2.0 | — (slow climb, vz≤+1) | — | — |
+| 0.531 (2g) | **3.15** | 2.99 @ +2.8 | 2.64 @ +7.2 | −0.07 g/(m/s) |
+| 0.664 (2.5g) | ~4.0 | 3.50 @ +9.8 | 2.60 @ +16 | −0.12 g/(m/s) |
+| 0.797 (3g) | ~5.2–5.6 | 3.30 @ +17 | 2.20 @ +22 | −0.17 g/(m/s) |
+
+Thrust peaks near vz≈0 and falls ~linearly with climb-rate; **the lapse slope steepens with collective** (higher disk loading → stronger inflow). The **hover-collective** curve reaches the commander's cited ~0.4 g (≈ vz +11) and keeps dropping — legacy lapse floor 0.78 badly under-models this. (Hover-col high-vz entry, vz +14–18, is spin-down-contaminated from the launch; use the +10–13 tail.)
+
+### 7b. CORRECTED static thrust curve (from the vz≈0 crossings — supersedes §6b)
+| collective | TRUE static (vz≈0) | §6b climbing-contaminated |
+|---|---|---|
+| 0 | ~0 | ~0 |
+| 0.266 | 1.0 | 1.0 |
+| 0.398 | **~2.0** | 1.2 |
+| 0.531 | **~3.15** | 2.2 |
+| 0.664 | **~4.0** | 3.6 |
+| 0.797 | ~5.2–5.6 | 5.2 |
+Convex **≈ collective^1.6** — steeper than §6b thought; the static full-stick over-delivery is *larger* (col 0.797 → ~5.2–5.6 g vs linear 3 g ≈ 1.8×). Fit thrust(collective, vz) = static(collective) · lapse(vz, collective) from the raw 117 Hz IMU across all vz-sweep runs (falling + climbing velocities bracket the range).
+
+### 7c. Battery-5 capture inventory
+| program | session | rows | landed |
+|---|---|---|---|
+| `seg5_thrust_vzsweep` | `20260716_032909_sysid_vzsweep_f1` | 131/131 FULL | 2/2.5/3 g lapse through vz≈0 |
+| `seg5b_hover_vzsweep` | `20260716_033817_sysid_hover_vzsweep_f1` | 70/112 | hover-col lapse to 0.4 g |
+| `seg5_thrust_vzsweep_lo` | `20260716_034013_sysid_vzsweep_lo_f1` | 52/88 | 1.5 g lapse + static |
+
+**Sim-ops note:** the hover-col sweep launches UP → hit the race gate at low climb (climb_s 0.7); climb_s 1.5 cleared it. Free-fall-first sweeps drop away from the gate → safe at climb_s 1.0.
