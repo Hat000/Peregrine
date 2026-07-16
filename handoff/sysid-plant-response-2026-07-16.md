@@ -1,7 +1,9 @@
 # VQ2 plant sysID — open-loop rate-response capture (2026-07-16)
 
 **For:** RL-commander (DiffAero plant tune / retrain).
-**Headline:** the live VQ2 sim's inner rate loop delivers **~2.7× the commanded body rate**, and the gain is **amplitude-progressive** (≈2.2× for small commands rising to ≈2.9× for large ones), **symmetric and consistent across roll/pitch/yaw**. Training assumed wire-scale **1.0×**. If DiffAero does not reproduce this, it is the strongest single explanation for the chronic deploy over-banking / roll-runaway.
+**Headline:** the live VQ2 sim's inner rate loop delivers **~2.7× the commanded body rate**, and the gain is **amplitude-progressive** (≈2.2× for small commands rising to ≈2.9× for large ones), **symmetric and consistent across roll/pitch/yaw**.
+
+> **FRAMING CORRECTED (commander overlay, 2026-07-16):** the gap is NOT "training assumed 1.0×." DiffAero already models the base over-delivery (flat ~2.50× roll/pitch, 2.23× yaw). **The real mismatch is FLAT (DiffAero) vs EXPANSIVE (VQ2)** — they agree at small/mid command and diverge at high command, which is exactly why aggressive banks (g2→g3) over-rotate in deploy but not in training. Battery-3 (below) directly measured the per-axis roll/pitch curves and a free-fall-first thrust curve to close this. Fix being wired: `super_rate_s=0.315` + small-signal `rate_gain=[2.222, 2.198, 2.164]` reproduces the curve to ±0.2%.
 
 ---
 
@@ -79,4 +81,34 @@ Battery-1 (earlier this cycle, `sysid/seg_*.csv` — single-level steps, corrobo
 2. If it's a mismatch: reproduce the **amplitude-progressive** curve (not a single scalar) in the DiffAero plant, or retrain against it.
 3. Reproduce/extend: tooling is on this branch — `rl/fly_rl.py --sysid-replay sysid/<prog>.csv ... --no-virtual-flip --seeker-detector red_glow`, extractor `scripts/sysid_tlog_to_imu_raw.py`. `--no-virtual-flip` is mandatory (the FLU→FRD map is sign-correct only with flip OFF).
 
-Tooling origin: `claude/ego-deploy-2026-07-09` (commits `0c07074`, `e3c5060`), merged onto this branch.
+Tooling origin: `claude/ego-deploy-2026-07-09` (commits `0c07074`, `e3c5060`, `a2f1bc8`), merged onto this branch.
+
+---
+
+## 5. Battery-3 (2026-07-16) — per-axis roll/pitch curves + free-fall-first thrust
+
+Programs `sysid/seg3_*.csv`, priority-ordered (0.1 & 0.6 first, sign-paired to bound drift). **Each row now carries an explicit `seg` label** (new `seg` column in `sysid_vq2_log.csv`; loader reads an optional 6th program column). Same footguns (raw-gyro A9 sign-flip, gyro+accel only, `--no-virtual-flip`, clamps off).
+
+### 5a. Roll & pitch rate-gain curves (directly measured, no longer inferred)
+| axis | \|a\|=0.1 (small-signal) | \|a\|=0.6 (high) | session |
+|---|---|---|---|
+| roll | **2.47×** (cmd_wx ±0.314) | **2.92×** (cmd_wx +1.884) | `20260716_024734_sysid_roll_sweep_f1` |
+| pitch | **2.47×** (cmd_wy ∓0.314) | **2.90×** (cmd_wy ∓1.884) | `20260716_025059_sysid_pitch_sweep_f1` |
+| yaw (battery-2) | 2.23× | 2.67× | `…_014656` |
+
+Roll & pitch are **identical** to each other, and their small-signal points (2.47) sit right on your DiffAero base (2.50). Both rise expansively to ~2.9 at \|a\|=0.6 — **flat-vs-expansive confirmed on all three axes, now with direct roll/pitch points** (previously one doublet each). Both crashed into the wall ~2.3 s in (roll/pitch translate); the front-loading captured the low + high priority points cleanly before impact. Missing 0.2/0.4/0.8/−0.6 — re-flyable if you want denser curvature, but the shape is established.
+
+### 5b. Free-fall-first thrust curve — session `20260716_025331_sysid_thrust_ff_f1` (96/112, both endpoints)
+Order: free-fall(0 g) → 3 g → 2.5/2/1.5 g. accel_z is body-frame specific force → thrust/weight in g.
+- **Free-fall (collective 0) → ≈0 g** (weightless ✓ — confirms 0 collective = 0 thrust).
+- **Full-ish stick (collective 0.797, my linear "3 g" label) → 4.6–5.6 g MEASURED.** The sim delivers far more than a linear collective→g map (which predicts 3 g). **This directly supports the ~2.1× full-stick under-prediction** — if training's map is the legacy under-scaled one, deploy gets ~1.5–1.9× more thrust than trained → a second contributor to deploy over-acceleration, on top of the rate expansion.
+- **NEW: thrust is climb-velocity dependent (inflow).** Holding collective 0.797 constant, accel_z ramps to −5.6 g (spin-up, low velocity) then **decays to −3.9 g over 0.4 s** as the drone accelerates upward. A static thrust map misses this ~30% falloff. Worth reproducing/checking in the DiffAero aero model.
+- Clean static-ish points: (col 0, 0 g), (col 0.2656 hover, 1 g — from the zero-velocity bootstrap hover), (col 0.797 peak, ~5.6 g) → a **convex** thrust curve.
+- **Caveat:** an open-loop drop-test can't isolate *static* thrust at high collective (the drone is always moving vertically), and the descending mids (2.5/2/1.5 g) are carryover+velocity muddied. Use battery-2's **ascending** `seg2_thrust_curve` (`…_015043`, clean 1/1.5/2/2.5 g) for the low/mid static points, and this run for the 0 g + full-stick endpoints and the velocity-dependence. Best fit = velocity-dependent thrust from the raw 117 Hz IMU.
+
+### 5c. Battery-3 capture inventory
+| program | session | rows | landed |
+|---|---|---|---|
+| `seg3_roll_ampsweep` | `20260716_024734_sysid_roll_sweep_f1` | 93/300 | roll ±0.1, +0.6 |
+| `seg3_pitch_ampsweep` | `20260716_025059_sysid_pitch_sweep_f1` | 90/300 | pitch ±0.1, +0.6 |
+| `seg3_thrust_curve_ff` | `20260716_025331_sysid_thrust_ff_f1` | 96/112 | 0 g + 3 g endpoints + mids |
