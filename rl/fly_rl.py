@@ -735,6 +735,30 @@ def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
     return rate_frd, collective, normed_thrust
 
 
+# --- open-loop plant sysID (--sysid-replay) --------------------------------------------------------
+# Bounds PINNED to the sysID program's act_min/max ([0,5] thrust, +-3.14 rate) so the replay matches
+# the DiffAero side regardless of any checkpoint bound mutation (the ego path can rewrite _ACT_MAX[0]
+# to the trained 3.765 g cap; the program was generated at 5.0 g, so we must NOT inherit that).
+_SYSID_ACT_MIN = np.array([0.0, -3.14, -3.14, -3.14], dtype=np.float64)
+_SYSID_ACT_MAX = np.array([5.0,  3.14,  3.14,  3.14], dtype=np.float64)
+
+def sysid_wire_from_action(a, virtual_flip: bool):
+    """Raw action a=[a_thrust,a_roll,a_pitch,a_yaw] in [-1,1] -> (rate_frd rad/s FRD, collective [0,1],
+    normed_thrust g). Byte-identical to policy_step's rescale/flip/collective path with ALL deploy
+    clamps OFF (yaw/pitch/roll fences, governor, max_rate) so the excitation reaches the plant
+    undistorted. The ONLY remaining cap is the PHYSICAL wire collective clip [0,1] == motor max
+    (3.765 g); normed_thrust is returned UNCLIPPED so saturation is visible in the log."""
+    a = np.asarray(a, dtype=np.float64)
+    act = _SYSID_ACT_MIN + (_SYSID_ACT_MAX - _SYSID_ACT_MIN) * (a + 1.0) / 2.0
+    normed_thrust = float(act[0])
+    rate_flu = act[1:4].copy()
+    if virtual_flip:
+        rate_flu = _RZ_PI_BODY @ rate_flu            # same virtual tail-first flip policy_step applies
+    rate_frd = rate_flu * _ACT_FLU_TO_FRD
+    collective = float(np.clip(normed_thrust * _HOVER_THRUST, 0.0, 1.0))   # physical motor cap
+    return rate_frd, collective, normed_thrust
+
+
 def _clip01(x: float) -> float:
     """Clip to the wire collective range [0,1] — the SAME clip policy_step applies to its
     own collective, so an inactive assist recomputes a bit-identical value."""
@@ -2025,6 +2049,22 @@ def _fly_ego(client, actor, args, flight_idx: int,
     gate_index  = 0
     final_state = "IDLE"
 
+    # --- open-loop plant sysID replay (--sysid-replay): load program + init state/log ---
+    _sysid_prog = None
+    _sysid_log: list = []
+    _sysid_k    = -1           # -1 => bootstrap (climb-then-hover) until settled; then 0..N-1 = program
+    _sysid_boot = 0
+    if getattr(args, "sysid_replay", ""):
+        import csv as _csvmod
+        with open(args.sysid_replay, newline="") as _sf:
+            _srows = [r for r in _csvmod.reader(_sf) if r]
+        _sysid_prog = np.array([[float(x) for x in r[1:5]] for r in _srows[1:]], dtype=np.float64)
+        print(f"  [sysid] replay: {len(_sysid_prog)} rows from {args.sysid_replay} -- policy BYPASSED, "
+              f"clamps/assist OFF, response=gyro+accel (ODOMETRY blocked on this wire).", flush=True)
+    _SYSID_SETTLE_TICKS = int(round(2.5 * args.rate))   # bootstrap length before program k=0
+    _SYSID_CLIMB_TICKS  = int(round(1.2 * args.rate))   # climb (above hover) sub-phase for altitude margin
+    _SYSID_CLIMB_G      = 1.35                           # climb thrust (g) during the climb sub-phase
+
     loop_t0       = time.monotonic()
     n_ticks       = 0
     worst_work_ms = 0.0
@@ -2100,6 +2140,48 @@ def _fly_ego(client, actor, args, flight_idx: int,
             break
         if s.position_ned is not None:
             prev_pos = np.asarray(s.position_ned, dtype=np.float64).copy()
+
+        # === OPEN-LOOP PLANT SYSID TICK (--sysid-replay): bypass the ENTIRE vision/obs/policy path;
+        #     use ONLY the raw wire state s (gyro/accel from HIGHRES_IMU via client.pump). Bootstrap =
+        #     open-loop climb-then-hover (ZERO rates, no attitude fb -> no sign-footgun); then inject the
+        #     program row-by-row through the exact action->wire map, ALL clamps off. One tick + continue. ===
+        if _sysid_prog is not None:
+            if s.gyro_body is None:
+                continue                                    # pre-first-IMU warmup
+            if _sysid_k < 0:                                # ---- bootstrap: climb-then-hover ----
+                _sysid_boot += 1
+                _normed = _SYSID_CLIMB_G if _sysid_boot <= _SYSID_CLIMB_TICKS else 1.0
+                _rate_frd = np.zeros(3, dtype=np.float64)
+                _coll = float(np.clip(_normed * _HOVER_THRUST, 0.0, 1.0))
+                _a = (None, None, None, None); _phase = "boot"; _krow = -1
+                if _sysid_boot >= _SYSID_SETTLE_TICKS:
+                    _sysid_k = 0
+                    print("  [sysid] bootstrap done -> PROGRAM START (k=0)", flush=True)
+            else:                                           # ---- program injection ----
+                if _sysid_k >= len(_sysid_prog):
+                    print(f"  [sysid] program COMPLETE through k={_sysid_k - 1} -> ending.", flush=True)
+                    final_state = "SYSID_DONE"
+                    break
+                _av = _sysid_prog[_sysid_k]
+                _rate_frd, _coll, _normed = sysid_wire_from_action(_av, args.virtual_flip)
+                _a = (float(_av[0]), float(_av[1]), float(_av[2]), float(_av[3]))
+                _phase = "prog"; _krow = _sysid_k
+            client.send_command(ControlCommand(mode=ControlMode.BODY_RATE, sim_time_ns=st,
+                                               body_rate=_rate_frd, thrust=_coll))
+            _g = s.gyro_body; _ac = s.accel_body
+            _sysid_log.append(dict(
+                k=_krow, phase=_phase, sim_time_ns=st,
+                a_thrust=_a[0], a_roll=_a[1], a_pitch=_a[2], a_yaw=_a[3],
+                cmd_wx=float(_rate_frd[0]), cmd_wy=float(_rate_frd[1]), cmd_wz=float(_rate_frd[2]),
+                cmd_thrust=float(_normed), collective=float(_coll),
+                gyro_x=float(_g[0]), gyro_y=float(_g[1]), gyro_z=float(_g[2]),
+                accel_x=(float(_ac[0]) if _ac is not None else None),
+                accel_y=(float(_ac[1]) if _ac is not None else None),
+                accel_z=(float(_ac[2]) if _ac is not None else None)))
+            if _sysid_k >= 0:
+                _sysid_k += 1
+            n_ticks += 1
+            continue
 
         # --- active gate from RACE_STATUS; on an advance drop the perception track + slot state
         # (the new slot0 starts cold/masked until first acquisition -- window-promotion analog) ---
@@ -2292,6 +2374,21 @@ def _fly_ego(client, actor, args, flight_idx: int,
         print(f"\n  ({final_state.lower()})")
 
     # --- ego forensics log: single write covering every exit path ---
+    if session_dir is not None and _sysid_log:
+        import csv as _csvmod
+        _scols = ["k", "phase", "sim_time_ns", "a_thrust", "a_roll", "a_pitch", "a_yaw",
+                  "cmd_wx", "cmd_wy", "cmd_wz", "cmd_thrust", "collective",
+                  "gyro_x", "gyro_y", "gyro_z", "accel_x", "accel_y", "accel_z"]
+        _sout = Path(session_dir) / "sysid_vq2_log.csv"
+        try:
+            with open(_sout, "w", newline="") as _sf:
+                _sw = _csvmod.DictWriter(_sf, fieldnames=_scols)
+                _sw.writeheader(); _sw.writerows(_sysid_log)
+            _nprog = sum(1 for r in _sysid_log if r.get("phase") == "prog")
+            print(f"  [sysid] wrote {len(_sysid_log)} rows ({_nprog} program) -> {_sout}")
+        except Exception as exc:
+            print(f"  [sysid] WARNING: failed to write sysid_vq2_log.csv: {exc}")
+
     if session_dir is not None and _ego_log:
         out = Path(session_dir) / "ego_obs.jsonl"
         try:
@@ -2693,6 +2790,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "nav.update and is the p99 loop-rate jitter -- no longer blocks the loop. DEFAULT "
                          "OFF (byte-identical sync path). Costs ~1 frame of extra detection staleness (the "
                          "obs builder ego-propagates it). NEEDS a fly-test before trusting.")
+    ap.add_argument("--sysid-replay", type=str, default="",
+                    help="OPEN-LOOP PLANT SYSID: replay a fixed action-program CSV (t,a_thrust,a_roll,"
+                         "a_pitch,a_yaw @ --rate Hz) INSTEAD of the policy. Bypasses the network, disables "
+                         "ALL deploy clamps/assist/floor/governor, injects each row through the exact "
+                         "action->wire map (sysid_wire_from_action), logs the plant response (gyro+accel; "
+                         "ODOMETRY blocked on this wire) to <session>/sysid_vq2_log.csv. A short open-loop "
+                         "climb-then-hover bootstrap (phase=boot rows) precedes program k=0. Run in open "
+                         "air; expect open-loop drift -> truncation on collision (partial data is useful).")
     ap.add_argument("--label",        default="rl_s1")
     ap.add_argument("--rate",         type=float, default=30.0,
                     help="control loop Hz; default 30 = the TRAINING dt 0.0333 "
