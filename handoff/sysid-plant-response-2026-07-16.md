@@ -192,3 +192,28 @@ Convex **≈ collective^1.6** — steeper than §6b thought; the static full-sti
 | `seg5_thrust_vzsweep_lo` | `20260716_034013_sysid_vzsweep_lo_f1` | 52/88 | 1.5 g lapse + static |
 
 **Sim-ops note:** the hover-col sweep launches UP → hit the race gate at low climb (climb_s 0.7); climb_s 1.5 cleared it. Free-fall-first sweeps drop away from the gate → safe at climb_s 1.0.
+
+---
+
+## 8. Battery-6 (2026-07-16) — ⚠ THE 17° START PITCH recontextualizes all thrust data
+
+**The race start block is 17° nose-down-forward, and the sysID commands zero rates → the drone HELD ~17° pitch through EVERY thrust test.** I was implicitly treating it as level. Pilot's direct visual is the ground truth here (this wire is pose-blocked — I can't see attitude in the IMU, and my gyro-integrated attitude estimate had the sign backward until the pilot corrected it).
+
+**What this does and doesn't change:**
+- **Rate curves (§1, §5a, §6a): unaffected.** Gyro reads body rate regardless of base attitude.
+- **Thrust MAGNITUDE (§6b, §7b): unaffected.** The accelerometer reads thrust along body-Z whatever the pitch, so thrust-vs-collective (convex ~coll^1.6, ~1.8× linear) stands.
+- **The inflow lapse (§7): recontextualized.** At 17°, sin17° = 0.29 of thrust is horizontal → the drone drifted **forward** through every "vertical" thrust hold. So the reconstructed `vz` was NOT pure axial climb — it mixed vertical + forward motion. **The lapse data is the pitched-with-forward-drift (racing-ish) regime, not clean vertical.** The lapse's existence + rough magnitude (thrust falls as speed rises) hold; the precise slope-vs-pitch comparison does not (all runs had forward velocity).
+
+**Pitch-controlled probe (open-loop pitch-rate → hold thrust; achieved pitch from gyro magnitude + pilot visual):**
+| session | cmd | actual pitch | note |
+|---|---|---|---|
+| `20260716_040219_sysid_pitch_trulevel_f1` | a_pitch −0.10 ×16t | **~0° (pilot: "levels out")** | but carries forward momentum from the 17° drift |
+| `20260716_035550_sysid_pitch_30_f1` | a_pitch −0.10 ×13t | ~4° (near level) | |
+| (`seg5` vz-sweeps) | — | 17° | the battery-5 lapse baseline |
+| `20260716_035325_sysid_pitch_level_f1` | a_pitch +0.10 ×14t | ~32° forward | forward-drift-contaminated vz |
+
+**Pitch sign (pilot-confirmed, use this):** `a_pitch = −0.10` pitches nose **UP/back toward level**; `+0.10` pitches **down/forward**; ~1.04°/tick at |a_pitch|=0.10; `θ = 17 − cumsum(−gyro_y_raw)·dt`.
+
+**Key limitation:** a clean **pure-vertical** thrust test is not achievable from the 17° start in this confined scene — the start imparts forward momentum that persists even after leveling (pilot: "carries forward momentum, flies up, hits the ceiling"). 
+
+**Recommendation:** model thrust as **f(collective, full 3-D velocity relative to the rotor disk)**, not f(collective, vertical-vz). The battery-3/4/5 lapse data is a valid sample of that function **at ~17° pitch with forward drift** — tag it as such. To isolate pure axial vs edgewise inflow you'd need either a velocity-nulling maneuver (pitch back to kill forward momentum before the hold) or a bench/tethered test; flag if you want me to attempt the former.
