@@ -18,6 +18,13 @@ metadata:
 > position so VQ1 passes are case-A / is our build the graded one" discrepancy below is now MOOT for VQ2.
 > 🆕 Training vs Competitive flight modes; code-audit on competitive submit. → `MEMORY.md` VQ2 marker · spec PDF `260624_Technical_Spec_0003.pdf`.
 
+> 🚩 **OPS FOOTGUN — `pos=NO` on the wire is NOT a VQ1/VQ2 discriminator (Fengyou, 2026-06-30).** BOTH
+> tracks deny position on the 3379 wire, so "no position" does not tell you which track loaded. A8's first
+> run accidentally flew **VQ1** because FLY was pressed on the **default event (R1 = VQ1)**. **VERIFY VQ2
+> VISUALLY from the onboard camera:** VQ1 = grey wireframe; VQ2 = lit warehouse, glowing RED gates, cyan
+> floor lead-in lines, ANDURIL wall (A8 red-glow px 4586/9105 = confirmed VQ2). **In the menu you must
+> deliberately select R2-TRAINING (ACTIVE EVENTS, orange border) before FLY — never Enter on the default.**
+
 The official sim shipped 2026-06-01 as `AI-GP Simulator v1.0.3364.zip` = an inner `AIGP_3364.zip`
 (`FlightSim.exe`, run + log in) + **`PyAIPilotExample`** (the official reference client) +
 README. Extracted on the dev laptop at `C:\Users\Fengy\Downloads\AIGP_sim\`. The README's system

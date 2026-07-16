@@ -1,6 +1,8 @@
 # Control, Sim Interface & Ops Sub-Index
 Mid-level index for sim wire facts, CTBR/legacy sign config, RL deployment recipe, true physical conventions, autonomy-hardening, and sim ops mechanics. Deep detail in topic files below.
 
+> 🚩 **VQ1-DEPRECATION SCOPE (2026-06-28, demoted from MEMORY.md 2026-06-29):** the **TRACK-coupled wire/sign sagas below are now VQ1-ONLY** — VQ2 (build 1.0.3379) BLOCKS `ATTITUDE`/`LOCAL_POSITION_NED`/`ODOMETRY`/`GATE_INFO`, so the ODOMETRY-quat `R_y(π)`-conjugation, the ATTITUDE.pitch sign-inversion, and the CTBR/VQ1 legacy sign alias are HISTORICAL (kept here, do NOT "fix", do NOT rely on for VQ2). The **PLANT-level** facts (drone dynamics, CTBR control mapping, RL deploy recipe, latency, sysid) remain track-agnostic and LIVE. → [[feedback-vq1-deprecated-track-agnostic]]
+
 ## Sim interface wire facts (all 5 RESOLVED)
 - pos+vel GIVEN (LPN 97 Hz + ODOMETRY 75 Hz).
 - 🚩 **ATTITUDE.pitch sign-inverted → use ODOMETRY quat.**
