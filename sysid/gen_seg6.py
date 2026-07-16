@@ -1,13 +1,25 @@
 #!/usr/bin/env python3
 """Battery-6 (2026-07-16): THRUST AT CONTROLLED PITCH -- the start block is 17deg
-nose-down-forward, and zero-rate sysID HELD that pitch, so all prior thrust tests were
-at 17deg (thrust 0.29 horizontal -> forward drift; lapse vz axis = axial-along-tilt, not
-vertical). Here: command a pitch RATE open-loop to rotate to a target attitude, settle,
-then hold thrust while vz builds -> lapse at a KNOWN pitch. Achieved pitch verified post
-by integrating gyro_y from the 17deg start. First fly targets LEVEL (calibrate sign).
+nose-down-forward, and zero-rate sysID HELD that pitch, so ALL prior thrust tests
+(batteries 3/4/5) were at ~17deg with forward drift -- NOT clean vertical.
+
+SIGN (CONFIRMED by the pilot's visual, NOT trustable from the pose-blind gyro integral):
+  a_pitch = +0.10  -> nose pitches DOWN / FORWARD (increases pitch angle)
+  a_pitch = -0.10  -> nose pitches UP / BACK (toward level)
+  rate ~1.04 deg/tick at |a_pitch|=0.10 (measured). theta_actual = 17 - rot_computed,
+  where rot_computed = cumsum(-gyro_y_raw)*dt.  <-- my first analysis had this BACKWARD;
+  the pilot's eyes corrected it (a_pitch=-0.10 was seen to level the drone).
+
+CAVEAT: even after leveling, the drone CARRIES FORWARD MOMENTUM from the 17deg-start
+drift -> the thrust hold is NOT pure-vertical (mixed axial+edgewise inflow). A clean
+pure-vertical lapse is not achievable from the 17deg start in this confined scene.
+
+FLOWN (actual pitch from gyro-mag + pilot visual):
+  20260716_035325 (a_pitch=+0.10,14t) ~= 32deg forward   (was mislabeled 'level')
+  20260716_035550 (a_pitch=-0.10,13t) ~=  4deg near-level (was mislabeled '30')
+  20260716_040219 (a_pitch=-0.10,16t) ~=  0deg level (pilot-confirmed roughly level)
+  20260716_035727 (a_pitch=-0.10,26t)  crashed mid-rotate (nose-up past level)
 Format: t,a_thrust,a_roll,a_pitch,a_yaw,seg   dt=0.025. hover a_thrust=-0.6.
-Pitch math: cmd_wy=3.14*a_pitch, actual rate ~2.7*cmd_wy; 17deg=0.297rad.
-a_pitch=0.10 -> ~0.85 rad/s -> ~0.35s (14t) per 17deg.
 """
 import csv
 DT = 0.025
@@ -26,17 +38,14 @@ def write(path, rows):
 
 
 def pitch_then_thrust(a_pitch, pitch_ticks, tag):
-    """rotate open-loop (hover thrust during the rotate to stay aloft), settle, then hold 2g."""
     return [
-        (HOVER, a_pitch, f"pitch_{tag}", pitch_ticks),   # rotate toward target attitude
-        (HOVER, 0.0, "settle", 6),                        # zero-rate: hold new attitude, null rate
-        (G2A(2.0), 0.0, f"thrust2g_{tag}", 44),           # 2g hold: vz builds -> lapse at this pitch
+        (HOVER, a_pitch, f"pitch_{tag}", pitch_ticks),
+        (HOVER, 0.0, "settle", 6),
+        (G2A(2.0), 0.0, f"thrust2g_{tag}", 44),
     ]
 
 
 if __name__ == "__main__":
-    # CALIBRATED (fly 20260716_035325): a_pitch=+0.10 -> nose UP ~1.0deg/tick; 14t leveled
-    # the 17deg start to ~2.4deg. So -a_pitch pitches nose DOWN (more forward tilt).
-    write("sysid/seg6_pitch_level.csv", pitch_then_thrust(+0.10, 14, "level"))   # 17 -> ~2deg
-    write("sysid/seg6_pitch_30.csv",    pitch_then_thrust(-0.10, 13, "30"))      # 17 +13 -> ~30deg
-    write("sysid/seg6_pitch_45.csv",    pitch_then_thrust(-0.10, 26, "45"))      # 17 +26 -> ~43deg
+    # corrected: -a_pitch levels the 17deg start; +a_pitch pitches further forward.
+    write("sysid/seg6_pitch_trulevel.csv", pitch_then_thrust(-0.10, 16, "trulevel"))  # 17 -> ~0deg
+    write("sysid/seg6_pitch_fwd30.csv",    pitch_then_thrust(+0.10, 13, "fwd30"))      # 17 +13 -> ~30deg fwd
