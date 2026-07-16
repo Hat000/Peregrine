@@ -102,6 +102,8 @@ __all__ = [
     "quat_conjugate",
     "quat_normalize",
     "SUPER_RATE_S_MEASURED",
+    "SUPER_RATE_S_FAITHFUL",
+    "RATE_GAIN_SMALLSIGNAL_MEASURED",
     "ALPHA_MAX_RPS2_MEASURED",
     "QUAD_DRAG_C2_MEASURED",
     "QUAD_DRAG_C2_POOLED",
@@ -124,6 +126,24 @@ _BODY_UP = np.array([0.0, 0.0, -1.0])   # thrust direction in body FRD (up = -Z)
 # roll/pitch, ~78 yaw (level). These are the DR centers and the values faithful map-ON configs use.
 SUPER_RATE_S_MEASURED = 0.30
 ALPHA_MAX_RPS2_MEASURED = np.array([260.0, 260.0, 80.0])
+
+# Faithful SMALL-SIGNAL rate-loop gains G0 + per-axis super-rate s -- refit to ShadowPC complete
+# 3-axis ampsweep 2026-07-16 (settled cmd->achieved rate gain, |a|=0.1/0.2/0.4/0.6/0.8, 0.3 s holds
+# roll/pitch + 0.5 s yaw). The round-1 roll/pitch base [2.222, 2.198] was inferred from a SINGLE
+# +-0.6 doublet and read ~6-7% low; the complete ampsweep corrects it. USE WITH ``super_rate_s``
+# (== SUPER_RATE_S_FAITHFUL below, now PER-AXIS (3,)): the VQ2 inner rate loop is amplitude-
+# progressive (EXPANSIVE), cmd->achieved body-rate gain rising ~2.5x->3.1x roll/pitch and
+# ~2.23x->2.89x yaw as |cmd| goes 0.1->0.8 of full stick (min(|cmd|,pi)/pi). These are the |cmd|->0
+# gains G0 in ``gain = G0 / (1 - s*min(|cmd|,pi)/pi)``; the fit reproduces yaw to +-0.2% and
+# roll/pitch to within ~2% (RMSE ~0.04 -- the flat 0.1-0.2 toe the single-pole model cannot match).
+# NOTE the plant rate also CREEPS +4-9% within a hold (a real 2nd-order dynamic the static-gain
+# model cannot capture -> ~5% residual, accepted, inside DR; deliberately NOT modeled here).
+# *** Do NOT pair the DEFAULT rate_gain [2.501, 2.504, 2.231] with the super-rate map: that vector
+# is a flat-MID fit and over-rotates roll/pitch by ~+6% at small |cmd| (and ~+4% at |a|=0.6) once s
+# is on. Use THIS small-signal vector instead. *** The pre-existing SUPER_RATE_S_MEASURED=0.30
+# (roll/pitch-only characterize-sweep) is SUPERSEDED here by the per-axis 3-axis ampsweep fit.
+RATE_GAIN_SMALLSIGNAL_MEASURED = np.array([2.359, 2.363, 2.163])
+SUPER_RATE_S_FAITHFUL = np.array([0.296, 0.284, 0.316])
 
 # Measured AERO nominals (twin-falsify campaign 2026-06-10/11, handoff/shadowpc-twin-falsify-
 # 2026-06-10/WRITEUP.md Sections 2-3 + 7; 40+ recordings, predictions committed pre-flight).

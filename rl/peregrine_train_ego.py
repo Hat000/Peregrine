@@ -57,6 +57,9 @@ These are exactly the keys rl/peregrine_vq2_ego.sbatch's BOUNDARY_OV passes
 (+warmstart_reset_logstd=true +warmstart_reset_logstd_std=0.18 +critic_warmup_updates=100).
 """
 import os
+import json
+import shutil
+import tempfile
 import traceback
 
 import torch
@@ -67,8 +70,10 @@ import diffaero.env as _env             # noqa: E402
 from diffaero.utils.runner import TrainRunner
 from diffaero_dynamics import PeregrinePlantDynamics
 from peregrine_racing import PeregrineRacing
-from peregrine_racing_ego import PeregrineRacingEgo
-from inc8_warmstart import maybe_warmstart
+from peregrine_racing_ego import (PeregrineRacingEgo, clamp_yaw_command,
+                                  EGO_OBS_DIM, EGO_OBS_DIM_V2, EGO_OBS_V2_EXTRA,
+                                  pad_actor_input_cols_zero)
+from inc8_warmstart import maybe_warmstart, resolve_init_from
 # NOISE-CEILING lever (RC2 fix): resolve_noise_anneal is a pure getattr (None when +algo.noise_anneal is
 # unset -> byte-identical off-path, no torch); apply_noise_schedule clamps actor_logstd to the scheduled
 # std ceiling BEFORE each rollout. Without this the constant entropy bonus drives actor_logstd to the
@@ -140,6 +145,84 @@ def _built_critic_input_dim(agent):
 
 def _weights_finite(agent) -> bool:
     return all(torch.isfinite(p).all() for p in agent.agent.parameters())
+
+
+# ================================================================================================
+# OBS-V2 WARM-PAD driver: bridge a 21-dim champion actor into the 23-dim obs_v2 net (zero-pad).
+# ================================================================================================
+def maybe_pad_ckpt_for_obs_v2(cfg, env):
+    """When +env.ego_obs_v2 is armed (env obs is the 23-dim APPEND-ONLY v2 layout) but +init_from points
+    at a 21-dim champion actor (vpeffs0), rewrite the checkpoint into a TEMP dir with the actor's
+    first-layer input matrix zero-padded by EGO_OBS_V2_EXTRA columns (the 2 appended next-gate coarse dims
+    contribute NOTHING at step 0 -> bit-for-bit champion behaviour), copy the critic verbatim (UNAFFECTED
+    -- the privileged critic state layout is unchanged), write an actor.json sidecar (obs_dim=23 so
+    maybe_warmstart's obs-dim gate passes 23==23 instead of tripping on 21!=23), and REPOINT cfg.init_from
+    at the padded copy so the subsequent maybe_warmstart(agent, env, cfg) loads the matching 23-dim actor.
+
+    Returns the padded dir, or None on the byte-identical no-op paths: knob OFF (a pure getattr BEFORE any
+    torch / I/O), no +init_from (a fresh v2 start with no warm base), env not v2, missing actor.pth (let
+    maybe_warmstart raise its own actionable message), or the ckpt already matches the env dim (a same-
+    layout 23-dim resume needs no pad). Called right BEFORE maybe_warmstart in the run wrapper."""
+    if not bool(getattr(cfg, "ego_obs_v2", False)):
+        return None                                          # OFF: byte-identical -- touch nothing.
+    init_from = resolve_init_from(getattr(cfg, "init_from", None))
+    if init_from is None:
+        return None                                          # fresh v2 start (no warm base) -> no pad.
+    env_obs_dim = int(getattr(env, "obs_dim", 0) or 0)
+    if env_obs_dim != EGO_OBS_DIM_V2:
+        return None                                          # defensive: only pad INTO the 23-dim v2 net.
+    actor_path = os.path.join(init_from, "actor.pth")
+    if not os.path.isfile(actor_path):
+        return None                                          # let maybe_warmstart raise the actionable msg.
+    ckpt = torch.load(actor_path, map_location="cpu")
+    if not (isinstance(ckpt, dict) and "actor_mean" in ckpt):
+        raise ValueError(
+            f"[obs-v2 warm-pad] {actor_path!r} is not the diffaero PPO actor.pth format "
+            f"({{'actor_mean': state_dict, 'actor_logstd': ...}}) -- cannot warm-pad.")
+    w0 = ckpt["actor_mean"].get("head.0.linear.weight")
+    ckpt_in = int(w0.shape[1]) if w0 is not None else 0
+    if ckpt_in == env_obs_dim:
+        return None                                          # already 23-dim -> same-layout resume, no pad.
+    if ckpt_in != EGO_OBS_DIM:
+        raise ValueError(
+            f"[obs-v2 warm-pad] +init_from actor is {ckpt_in}-dim; the obs_v2 warm-pad only bridges the "
+            f"{EGO_OBS_DIM}-dim champion -> {EGO_OBS_DIM_V2}-dim v2 net (append-only +{EGO_OBS_V2_EXTRA}-col "
+            f"zero pad). A {ckpt_in}-dim base is an unexpected layout -- reconcile before warm-starting.")
+
+    # pad the actor first layer with EGO_OBS_V2_EXTRA ZERO input columns; carry logstd + all deeper layers
+    # verbatim. The critic (critic.pth) is copied UNCHANGED -- obs_v2 is an ACTOR-obs-only change.
+    out_ckpt = dict(ckpt)
+    out_ckpt["actor_mean"] = pad_actor_input_cols_zero(ckpt["actor_mean"], EGO_OBS_V2_EXTRA)
+    pad_dir = tempfile.mkdtemp(prefix="ego_obs_v2_warmpad_")
+    torch.save(out_ckpt, os.path.join(pad_dir, "actor.pth"))
+    critic_src = os.path.join(init_from, "critic.pth")
+    if os.path.isfile(critic_src):
+        shutil.copyfile(critic_src, os.path.join(pad_dir, "critic.pth"))
+    # actor.json sidecar: obs_dim=23 so maybe_warmstart's obs-dim gate passes; carry forward any other
+    # source-sidecar fields (action bounds etc.) unchanged so nothing downstream regresses.
+    sidecar = {}
+    src_json = os.path.join(init_from, "actor.json")
+    if os.path.isfile(src_json):
+        try:
+            with open(src_json) as f:
+                sidecar = json.load(f)
+        except Exception:                                    # pragma: no cover - corrupt sidecar
+            sidecar = {}
+    sidecar["obs_dim"] = EGO_OBS_DIM_V2
+    with open(os.path.join(pad_dir, "actor.json"), "w") as f:
+        json.dump(sidecar, f)
+    # REPOINT init_from at the padded copy (existing root key -> assignable even under omegaconf struct
+    # mode; fall back to open_dict if a stricter container rejects the direct set).
+    try:
+        cfg.init_from = pad_dir
+    except Exception:                                        # pragma: no cover - stricter omegaconf struct
+        from omegaconf import open_dict
+        with open_dict(cfg):
+            cfg.init_from = pad_dir
+    print(f"[obs-v2 warm-pad] {init_from} (actor {ckpt_in}-dim) -> padded {pad_dir} "
+          f"({EGO_OBS_DIM_V2}-dim: +{EGO_OBS_V2_EXTRA} ZERO first-layer cols); critic + logstd verbatim. "
+          f"maybe_warmstart will load the padded 23-dim actor next.")
+    return pad_dir
 
 
 _orig_run = TrainRunner.run
@@ -478,7 +561,7 @@ def _resolve_recovery_anneal(cfg):
 _DET_EVAL_KEYS = ("success_rate", "collision_rate", "miss_rate", "oob_rate", "n_passed_gates")
 
 
-def _run_det_eval(self, env, agent, cfg, tag=""):
+def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
     """FAITHFUL deterministic box-exit on the LIVE training env, AFTER training completes.
 
     Motivation: the training box-exit is STOCHASTIC, and the standalone offline harness
@@ -501,13 +584,18 @@ def _run_det_eval(self, env, agent, cfg, tag=""):
     label = f"{getattr(cfg, 'runname', '?')}{tag}"
     try:
         agg, n_ep = {}, 0
+        ys = None                                          # yaw accumulators (lazy init; only when yaw_log)
+        roll_sum = 0.0                                      # sum of per-episode peak |roll| (deg); yaw_log
         obs = env.reset()
         with torch.no_grad():
             for _ in range(steps):
                 action, _ = agent.act(obs, test=True)          # DETERMINISTIC mean (deployed policy)
-                obs, _l, _t, info = env.step(env.rescale_action(action))
+                phys = env.rescale_action(action)              # PHYSICAL cmd; env re-clamps yaw internally
+                obs, _l, _t, info = env.step(phys)
                 sr = info.get("stats_raw", {})
                 m = info.get("reset")
+                if yaw_log:                                    # per-STEP yaw-hunting accumulation
+                    ys = _accum_yaw(env, phys, m, ys)
                 if m is None:
                     continue
                 n = int(m.sum().item())
@@ -517,18 +605,121 @@ def _run_det_eval(self, env, agent, cfg, tag=""):
                 for k in _DET_EVAL_KEYS:
                     if k in sr:
                         agg[k] = agg.get(k, 0.0) + float(sr[k].sum().item())
+                if yaw_log and "peak_roll_deg" in sr:
+                    roll_sum += float(sr["peak_roll_deg"].sum().item())
+        r = None
         if n_ep:
             r = {k: agg.get(k, 0.0) / n_ep for k in _DET_EVAL_KEYS}
             print(f"DET_EVAL[{label}] n_ep={n_ep} "
                   f"thread={r['success_rate']:.4f} collision={r['collision_rate']:.4f} "
                   f"miss={r['miss_rate']:.4f} oob={r['oob_rate']:.4f} "
                   f"n_passed_gates={r['n_passed_gates']:.4f}  (test=True, LIVE env, {steps} steps)")
-            return r
-        print(f"DET_EVAL[{label}] no episodes completed in {steps} steps")
-        return None
+        else:
+            print(f"DET_EVAL[{label}] no episodes completed in {steps} steps")
+        if yaw_log:                                        # single greppable YAW_EVAL[...] line
+            _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r)
+        return r
     except Exception as e:  # never let the post-hoc eval fail a completed run
         print(f"DET_EVAL: FAILED ({type(e).__name__}: {e})")
         return None
+
+
+def _accum_yaw(env, phys_action, reset_mask, ys):
+    """Per-STEP YAW accumulation for the latency-vs-hunting diagnostic (only under _run_det_eval's
+    ``yaw_log``). ``phys_action`` is the PHYSICAL action passed to env.step ([thrust, roll, pitch, yaw]
+    rad/s); the env clamps channel 3 internally, so we re-apply the SAME clamp_yaw_command(env._yaw_cmd_
+    clamp) to recover the APPLIED (post-clamp) yaw command. Achieved yaw = env._w[...,2] (realized FLU
+    body omega_z) read AFTER the step. Sign-flips use a 0.05 rad/s DEADBAND, per-env, matching deploy's
+    method: the committed sign only updates when |cmd|>deadband, and a flip is counted when that committed
+    sign reverses. ``reset_mask`` zeroes the committed sign at episode boundaries (no cross-episode flip)
+    and excludes just-reset envs from the ACHIEVED mean (env._w is re-seeded by reset_idx that step).
+    Returns the (lazily-initialised) accumulator dict."""
+    import torch
+    clamp = float(getattr(env, "_yaw_cmd_clamp", 0.0) or 0.0)
+    cmd_yaw = clamp_yaw_command(phys_action, clamp)[..., 3].reshape(-1)
+    ach_yaw = env._w[..., 2].reshape(-1)
+    if ys is None:
+        z = torch.zeros_like(cmd_yaw)
+        ys = {"last_sign": z.clone(), "flips": z.clone(),
+              "cmd_abs_sum": cmd_yaw.new_zeros(()), "cmd_n": 0,
+              "ach_abs_sum": cmd_yaw.new_zeros(()), "ach_n": cmd_yaw.new_zeros(())}
+    active = cmd_yaw.abs() > 0.05                           # DEADBAND (rad/s)
+    s = torch.sign(cmd_yaw)
+    prev = ys["last_sign"]
+    flip = active & (prev != 0) & (s != prev)
+    ys["flips"] = ys["flips"] + flip.to(cmd_yaw.dtype)
+    ys["last_sign"] = torch.where(active, s, prev)
+    ys["cmd_abs_sum"] = ys["cmd_abs_sum"] + cmd_yaw.abs().sum()
+    ys["cmd_n"] += int(cmd_yaw.numel())
+    if reset_mask is not None:
+        rm = reset_mask.reshape(-1).to(torch.bool)
+        valid = (~rm).to(cmd_yaw.dtype)
+        ys["last_sign"] = torch.where(rm, torch.zeros_like(ys["last_sign"]), ys["last_sign"])
+    else:
+        valid = torch.ones_like(cmd_yaw)
+    ys["ach_abs_sum"] = ys["ach_abs_sum"] + (ach_yaw.abs() * valid).sum()
+    ys["ach_n"] = ys["ach_n"] + valid.sum()
+    return ys
+
+
+def _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r):
+    """Compute + print the single greppable ``YAW_EVAL[...]`` line from the per-step accumulators.
+    dt = env.dt (control-step seconds). ``signflips_per_s`` is the MEAN per-env commanded-yaw sign-flip
+    rate = flip_total / (n_envs * steps * dt) -- directly comparable to deploy's ~8/s single-drone rate.
+    ``cmd_absmean`` / ``ach_absmean`` = mean |commanded| / |achieved| yaw rate (rad/s). ``roll_swing`` =
+    mean per-episode peak |roll| (deg) over completed episodes. ``n_passed`` from the DET episode
+    aggregation (nan if no episode completed)."""
+    dt = float(getattr(env, "dt", 0.0) or 0.0)
+    dstr = str(delay) if delay is not None else "?"
+    if ys is None or dt <= 0.0:
+        print(f"YAW_EVAL[{label}] delay={dstr} signflips_per_s=nan cmd_absmean=nan ach_absmean=nan "
+              f"roll_swing=nan n_passed=nan  (no steps accumulated or dt unavailable)")
+        return
+    n_envs = int(ys["last_sign"].numel())
+    flip_total = float(ys["flips"].sum().item())
+    total_env_s = n_envs * steps * dt
+    signflips_per_s = flip_total / total_env_s if total_env_s > 0 else float("nan")
+    cmd_absmean = float(ys["cmd_abs_sum"].item()) / max(int(ys["cmd_n"]), 1)
+    ach_n = float(ys["ach_n"].item())
+    ach_absmean = (float(ys["ach_abs_sum"].item()) / ach_n) if ach_n > 0 else float("nan")
+    roll_swing = (roll_sum / n_ep) if n_ep else float("nan")
+    n_passed = float(r.get("n_passed_gates", float("nan"))) if r else float("nan")
+    print(f"YAW_EVAL[{label}] delay={dstr} signflips_per_s={signflips_per_s:.3f} "
+          f"cmd_absmean={cmd_absmean:.4f} ach_absmean={ach_absmean:.4f} "
+          f"roll_swing={roll_swing:.2f} n_passed={n_passed:.4f}")
+
+
+def _run_rollout_only(self, env, agent, cfg):
+    """EVAL-ONLY (``++rollout_only=true``): load an actor+critic checkpoint into the freshly-built agent
+    and run ONE faithful deterministic det-eval WITH yaw logging on the live env, then EXIT -- no
+    training, no periodic/best saves, no promotion. Fully opt-in: the whole training path is untouched
+    when ``rollout_only`` is unset. The checkpoint (``++rollout_ckpt=<dir>``, or ``+init_from=<dir>`` as a
+    fallback) MUST be a full agent.save dir (actor.pth + critic.pth) -- the runner's ``checkpoints/`` dir;
+    ``agent.load`` is diffaero's PPO.load, the same call _promote_best_on_npg uses. The injected latency
+    (``++dynamics.transport_delay_steps=K``) is read back from the LIVE plant purely to decorate the
+    YAW_EVAL line. Returns None."""
+    import os
+    raw = getattr(cfg, "rollout_ckpt", None)
+    if raw in (None, "", "none", "null"):
+        raw = getattr(cfg, "init_from", None)
+    ckpt = None if raw in (None, "", "none", "null") else str(raw)
+    if ckpt is None or not os.path.isdir(ckpt):
+        raise FileNotFoundError(
+            f"[rollout-only] ++rollout_ckpt (or +init_from) must be a checkpoint DIR holding actor.pth + "
+            f"critic.pth (a runner checkpoints/ dir); got {ckpt!r}.")
+    agent.load(ckpt)
+    # applied latency = the LIVE plant's ring-buffer depth (source of truth), decorates YAW_EVAL.
+    delay = None
+    prm = getattr(getattr(env, "dynamics", None), "params", None)
+    if prm is not None:
+        delay = int(getattr(prm, "transport_delay_steps", 0) or 0)
+    tag = str(getattr(cfg, "rollout_tag", "") or "")
+    tag = f"/{tag}" if tag else ""
+    print(f"[rollout-only] LOADED {ckpt}; transport_delay_steps={delay}; running yaw det-eval "
+          f"(eval_det_steps={int(getattr(cfg, 'eval_det_steps', 300) or 0)}, "
+          f"n_envs={getattr(cfg, 'n_envs', '?')}, yaw_cmd_clamp={getattr(env, '_yaw_cmd_clamp', '?')}).")
+    _run_det_eval(self, env, agent, cfg, tag=tag, yaw_log=True, delay=delay)
+    return None
 
 
 # ================================================================================================
@@ -621,7 +812,8 @@ def _promote_best_on_npg(self, env, agent, cfg, npg_state, final_metrics, logger
         return
     final_npg = float(final_metrics.get("n_passed_gates", float("-inf"))) if final_metrics else float("-inf")
     agent.load(best_dir)                                # load the peak snapshot to DET-eval it
-    best_metrics = _run_det_eval(self, env, agent, cfg, tag="/best")
+    best_metrics = _run_det_eval(self, env, agent, cfg, tag="/best",
+                                 yaw_log=bool(getattr(cfg, "eval_yaw_log", False)))
     best_npg = float(best_metrics.get("n_passed_gates", float("-inf"))) if best_metrics else float("-inf")
     print(f"[ckpt-select] DET n_passed_gates: best_npg={best_npg:.4f} vs final={final_npg:.4f}")
     if best_npg > float("-inf") and best_npg >= final_npg:
@@ -646,6 +838,12 @@ def _run_with_ego_lifelines(self):
     Non-ego runs (``+env.ego`` unset/false) take the byte-identical fresh-init path (no lifeline)."""
     env, agent, cfg = getattr(self, "env", None), getattr(self, "agent", None), self.cfg
     ego_on = bool(getattr(getattr(cfg, "env", object()), "ego", False))
+
+    # ---- EVAL-ONLY yaw rollout (++rollout_only=true): load a checkpoint, run ONE yaw-logging det-eval
+    # on the live env, EXIT. Opt-in; unset -> this branch is skipped and the trainer stays byte-identical.
+    # Placed FIRST so eval-only needs neither the appo assert nor the warm-start lifeline machinery. ----
+    if env is not None and agent is not None and bool(getattr(cfg, "rollout_only", False)):
+        return _run_rollout_only(self, env, agent, cfg)
 
     # ---- FIX #1: appo / privileged-critic assert (only meaningful on the ego path) ----
     if env is not None and agent is not None and hasattr(env, "assert_appo_critic") and ego_on:
@@ -1013,6 +1211,11 @@ def _run_with_ego_lifelines(self):
 
         env.step = _env_step_harvest
 
+    # OBS-V2 WARM-PAD: when +env.ego_obs_v2 is armed and +init_from is a 21-dim champion actor, rewrite
+    # the checkpoint into a temp dir with 2 ZERO first-layer input columns appended (the appended next-gate
+    # coarse dims contribute nothing at step 0) and REPOINT cfg.init_from at it so the load below matches
+    # the 23-dim v2 net. No-op (byte-identical, no I/O) when the knob is off / no init_from / dims match.
+    maybe_pad_ckpt_for_obs_v2(cfg, env)
     # WARM-START: load actor+critic from cfg.init_from into the freshly-built agent (weights-only;
     # optimizer + rollout buffer stay fresh). UNSET => no-op, BYTE-IDENTICAL fresh init. The ego env has
     # no look-at gain-warmup, so the inc8 _force_lookat_warmup_off inside maybe_warmstart is a safe
@@ -1074,7 +1277,12 @@ def _run_with_ego_lifelines(self):
     try:
         result = _orig_run(self)
         # FINAL == the in-memory agent == the runner's checkpoints/ save; DET-eval it first.
-        final_metrics = _run_det_eval(self, env, agent, cfg)   # faithful deterministic box-exit, live env
+        # ++eval_yaw_log=true (default OFF -> byte-identical): also emit the greppable YAW_EVAL[...] line
+        # (signflips_per_s + roll_swing from peak_roll_deg) on THIS post-training eval, so a run's final +
+        # promoted-best checkpoints report their yaw-oscillation without a separate rollout_only pass. Pure
+        # read inside the SAME det-eval loop (no extra env steps / resets) -> training behaviour unchanged.
+        _yl = bool(getattr(cfg, "eval_yaw_log", False))
+        final_metrics = _run_det_eval(self, env, agent, cfg, yaw_log=_yl)   # faithful deterministic box-exit, live env
         # CHECKPOINT SELECTION (Stage-1): DET-eval best_npg/ and promote it over checkpoints/ if it >= final.
         if select_on_npg:
             _promote_best_on_npg(self, env, agent, cfg, npg_state, final_metrics, logger)

@@ -115,7 +115,8 @@ except Exception:                       # pragma: no cover - diffaero absent off
 # `pip install -e` of the Peregrine repo, or copy rl_plant.py next to this file. # RECONCILE path.
 try:
     from racer.rl_plant import (PlantParams, PlantState, step as rl_step,
-                                SUPER_RATE_S_MEASURED, ALPHA_MAX_RPS2_MEASURED,
+                                SUPER_RATE_S_MEASURED, SUPER_RATE_S_FAITHFUL,
+                                RATE_GAIN_SMALLSIGNAL_MEASURED, ALPHA_MAX_RPS2_MEASURED,
                                 QUAD_DRAG_C2_MEASURED, QUAD_DRAG_C2_POOLED,
                                 COLL_MAP_THR_MEASURED, COLL_MAP_ACCEL_MEASURED,
                                 LAPSE_SPEED_MEASURED, LAPSE_FACTOR_MEASURED,
@@ -126,6 +127,10 @@ except Exception:                       # pragma: no cover
     PlantParams = PlantState = None     # RECONCILE: ensure racer.rl_plant is on PYTHONPATH on Adroit
     SUPER_RATE_S_MEASURED = 0.30                                  # characterize-sweep nominals
     ALPHA_MAX_RPS2_MEASURED = np.array([260.0, 260.0, 80.0])
+    # faithful small-signal rate-loop fit (refit to ShadowPC complete 3-axis ampsweep 2026-07-16;
+    # per-axis super-rate s now; see racer.rl_plant for provenance)
+    SUPER_RATE_S_FAITHFUL = np.array([0.296, 0.284, 0.316])
+    RATE_GAIN_SMALLSIGNAL_MEASURED = np.array([2.359, 2.363, 2.163])
     # S17 motor-mixer nominals (live-deploy diag 2026-06-11; see racer.rl_plant for provenance)
     MIXER_IDLE_MEASURED = 0.05
     MIXER_KAPPA_ERR_MEASURED = 0.073
@@ -156,6 +161,18 @@ except Exception:                       # pragma: no cover
 # ================================================================================================
 _FLIP = np.array([1.0, -1.0, -1.0])         # world & body axis flip (NED<->Zup, FRD<->FLU)
 _QFLIP = np.array([1.0, 1.0, -1.0, -1.0])   # wxyz under that flip: w,x kept; y,z negated
+
+
+def _as_vec3(v) -> np.ndarray:
+    """cfg override -> (3,) float64. Accepts a scalar (broadcast to all axes) or a 3-sequence
+    (incl. an omegaconf ListConfig -- iterated element-wise so ``++dynamics.rate_gain=[..]`` works).
+    Off the hot path (init only); raises on any other shape."""
+    if np.isscalar(v) or (hasattr(v, "ndim") and getattr(v, "ndim", 1) == 0):
+        return np.full(3, float(v), dtype=np.float64)
+    a = np.asarray([float(x) for x in v], dtype=np.float64)
+    if a.shape != (3,):
+        raise ValueError(f"expected a scalar or 3-vector override; got shape {a.shape}")
+    return a
 
 
 def _ned_from_diffaero_np(p_d, q_xyzw_d, v_d, w_d):
@@ -320,6 +337,91 @@ class PeregrinePlantDynamics(BaseDynamics):
         # RECONCILE: optionally read overrides from cfg.peregrine_plant.* ; align g with cfg.g.
         self.params = params or PlantParams()
         self.params.g = float(getattr(cfg, "g", self.params.g))
+        # EVAL-TIME LATENCY KNOB (yaw-hunting-vs-latency diagnostic, 2026-07-15): read the params-level
+        # transport-delay ring-buffer depth from cfg (``++dynamics.transport_delay_steps=K``). Default =
+        # the existing params value (0 -> OFF) so an unset run is BYTE-IDENTICAL. Delay counts SUBSTEPS
+        # (mechanism #8b in the module docstring); with n_substeps=1 that equals control steps. Same
+        # getattr-with-default pattern as g / n_substeps -- a missing key returns the default (no wiring
+        # existed before, so ``++dynamics.transport_delay_steps`` was a DEAD key until this line).
+        self.params.transport_delay_steps = int(getattr(
+            cfg, "transport_delay_steps", self.params.transport_delay_steps))
+        # FAITHFUL-RATE PLANT (plant-sysID gate, 2026-07-16): the DiffAero inner rate loop defaults
+        # to a FLAT gain (super_rate_s=None), but the measured VQ2 plant is amplitude-progressive
+        # (EXPANSIVE): cmd->achieved body-rate gain rises ~2.23x->2.89x as |yaw cmd| goes 0.1->0.8 of
+        # full stick (ShadowPC ampsweep + roll/pitch doublets), shared across roll/pitch/yaw. On the
+        # flat plant the policy over-rotates at aggressive banks in deploy (the g2->g3 roll-runaway).
+        # ``++dynamics.faithful_rate=true`` installs the joint fit: the recalibrated SMALL-SIGNAL
+        # rate_gain (NOT the flat-mid default, which over-rotates ~+13% under the map) + super_rate_s
+        # + the measured per-axis slew clamp, so the trained plant matches the hardware curve.
+        # Explicit scalar/vector overrides (super_rate_s / rate_gain / alpha_max_rps2) win over the
+        # preset and are usable on their own. Set on self.params HERE -- before the torch-cache + DR
+        # nominal blocks below -- so every backend AND the DR path read the faithful values (under DR
+        # the super-rate map is always on; the small-signal G0 is what makes it expansive, not
+        # overshooting). Default OFF => params UNTOUCHED (flat legacy gain), byte-identical to every
+        # shipped ckpt and the check_against_rl_plant gate. Coerced to the exact field types
+        # PlantParams.__post_init__ produces (so the wired params == a directly-built faithful
+        # PlantParams); the mixer/aero fields are left alone (faithful_rate touches only the rate loop).
+        # ``++dynamics.faithful_plant=true`` is a convenience that enables BOTH faithful_rate and
+        # faithful_aero at once (the full measured plant, rate loop + static aero); each sub-flag can
+        # still be set alone. It does NOT enable the airspeed lapse (see faithful_lapse below).
+        _faithful_plant = bool(getattr(cfg, "faithful_plant", False))
+        if _faithful_plant or bool(getattr(cfg, "faithful_rate", False)):
+            self.params.rate_gain = np.asarray(RATE_GAIN_SMALLSIGNAL_MEASURED, dtype=np.float64)
+            self.params.super_rate_s = np.asarray(SUPER_RATE_S_FAITHFUL, dtype=np.float64)
+            self.params.alpha_max_rps2 = np.asarray(ALPHA_MAX_RPS2_MEASURED, dtype=np.float64)
+        # FAITHFUL-AERO PLANT (plant-sysID gate, 2026-07-16): ``++dynamics.faithful_aero=true``
+        # installs the measured CONVEX collective->accel map + the body-frame sign-split QUADRATIC
+        # drag and ZEROES linear_drag (the validated measured-aero config; see module docstring).
+        # The DiffAero default is the legacy LINEAR thrust map (a_up=g*coll/hover) + world linear
+        # drag, which under-brakes ~2.2x at 9 m/s and under-predicts full-stick climb thrust.
+        # Parallel to faithful_rate; touches ONLY the aero fields (rate loop untouched). Set on
+        # self.params HERE -- before the torch-cache + DR-nominal blocks below -- so every backend
+        # (and the DR nominals) read the faithful aero. Default OFF => params UNTOUCHED (legacy
+        # linear aero), byte-identical to every shipped ckpt and the check_against_rl_plant gate.
+        # The airspeed thrust LAPSE is deliberately EXCLUDED here (own sub-toggle faithful_lapse):
+        # the measured lapse under-models the fresh climb-inflow data and is unvalidated.
+        # *** COLL_MAP CAVEAT / faithful_aero HELD for retrain (2026-07-16): the shipped
+        # COLL_MAP_*_MEASURED does NOT match the fresh ShadowPC static-thrust curve, but the fresh
+        # curve itself is NOT yet clean, so DO NOT refit COLL_MAP_*_MEASURED yet:
+        #   - round-2's "static" capture was secretly CLIMBING (velocity/inflow-reduced -> read LOW);
+        #     round-3's corrected static is higher/steeper (~collective^1.6, not ^1.5: col 0.531
+        #     ~3.15 g, col 0.797 ~5.4 g, full-stick ~1.8x the legacy linear map), and its high points
+        #     (2.5/3 g) are still EXTRAPOLATED;
+        #   - every sysID flight launched from a 17deg-forward-tilted start platform (forward-
+        #     translation / inflow confound on the velocity axis, not yet resolved).
+        # Net: the old map over-predicts by roughly +10% (full-stick) to +18% (mid) vs the best
+        # current estimate -- materially off, but a clean tilt-corrected static must land before a
+        # refit. This gate wires whatever the named module constants hold (currently the ORIGINAL
+        # map), so a future clean refit is picked up automatically; the quadratic drag is unaffected.
+        # faithful_rate is unaffected and ready; faithful_aero's thrust map should stay HELD. ***
+        if _faithful_plant or bool(getattr(cfg, "faithful_aero", False)):
+            self.params.coll_map_thr = np.asarray(COLL_MAP_THR_MEASURED, dtype=np.float64)
+            self.params.coll_map_accel = np.asarray(COLL_MAP_ACCEL_MEASURED, dtype=np.float64)
+            self.params.quad_drag_c2 = np.asarray(QUAD_DRAG_C2_MEASURED, dtype=np.float64)   # (3, 2)
+            self.params.linear_drag = 0.0
+        # FAITHFUL-LAPSE sub-toggle (2026-07-16): ``++dynamics.faithful_lapse=true`` installs the
+        # measured airspeed thrust-lapse curve. DEFAULT OFF -- even under faithful_aero/faithful_plant
+        # -- because the legacy LAPSE_FACTOR only dips to ~0.78 while the fresh sysID shows ~0.4 g when
+        # climbing (the legacy curve UNDER-models the real inflow) AND the fresh data is only
+        # QUALITATIVE (no climb-velocity sweep). DO NOT enable for a retrain until a climb-velocity
+        # thrust sweep validates a curve. Requires the collective map (from faithful_aero, or passed
+        # coll_map params) so the lapse multiplies a measured a_up rather than the legacy linear map.
+        if bool(getattr(cfg, "faithful_lapse", False)):
+            if self.params.coll_map_thr is None:
+                raise ValueError("++dynamics.faithful_lapse=true requires the collective map "
+                                 "(set ++dynamics.faithful_aero=true or pass coll_map params): "
+                                 "the airspeed lapse multiplies the measured collective->accel map")
+            self.params.lapse_speed = np.asarray(LAPSE_SPEED_MEASURED, dtype=np.float64)
+            self.params.lapse_factor = np.asarray(LAPSE_FACTOR_MEASURED, dtype=np.float64)
+        _sr_override = getattr(cfg, "super_rate_s", None)
+        if _sr_override is not None:
+            self.params.super_rate_s = np.asarray(float(_sr_override), dtype=np.float64)
+        _rg_override = getattr(cfg, "rate_gain", None)
+        if _rg_override is not None:
+            self.params.rate_gain = _as_vec3(_rg_override)
+        _am_override = getattr(cfg, "alpha_max_rps2", None)
+        if _am_override is not None:
+            self.params.alpha_max_rps2 = _as_vec3(_am_override)
         # DR (mismatch #5) randomizes OUR params per-env (super_rate_s/rate_tau/alpha_max/hover/
         # drag), NOT DiffAero's m/J/D -- see the DR block below. rate_gain (G0) stays fixed.
 

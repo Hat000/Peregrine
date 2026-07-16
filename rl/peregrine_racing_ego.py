@@ -87,6 +87,15 @@ from racing_line import build_racing_line, RacingLine
 WINDOW = 2                              # [current, next]
 PER_SLOT = 5                            # rel_pos(3) + confidence(1) + visible_area(1)
 EGO_OBS_DIM = 9 + 2 + WINDOW * PER_SLOT # 9 (vel/rp/rates/coll) + 2 (sector) + 10 = 21
+# OBS-V2 APPEND-ONLY next-gate coarse sector (2026-07-15, +env.ego_obs_v2; default OFF == byte-identical).
+# obs[0:21] is BYTE-IDENTICAL to the 21-dim layout (incl. obs[9:11]=sector[tg], the CURRENT gate's hint the
+# champion learned) and obs[21:23] = the NEXT gate's coarse sector sector[clamp(tg+1)] (masked [0,0] past
+# the last gate). Two sliding coarse-direction hints (current + next) for gate anticipation before the next
+# gate is visible. APPEND-ONLY by commander decision (warm-transfer safety): the 21-dim champion warm-loads
+# via a first-layer zero-pad (peregrine_train_ego.maybe_pad_ckpt_for_obs_v2), so obs[0:21] is never
+# reindexed. The privileged critic is UNAFFECTED (its own GT builder, still EGO_CRITIC_DIM=16).
+EGO_OBS_V2_EXTRA = 2                    # next-gate coarse sector (horiz, vert)
+EGO_OBS_DIM_V2 = EGO_OBS_DIM + EGO_OBS_V2_EXTRA          # 23
 # critic: v(3) + roll_pitch(2) + body_rates(3) + 2*(rel_pos 3 + conf 1) = 8 + 8 = 16
 EGO_CRITIC_DIM = 3 + 2 + 3 + WINDOW * (3 + 1)
 
@@ -304,7 +313,8 @@ def ego_window_indices(target_gates: Tensor, n_gates: int):
 # ================================================================================================
 def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
                   last_collective: Tensor, sector: Tensor, n_gates: int,
-                  obs_coast: bool = False, slot_range_cap_m: float = float("inf")) -> Tensor:
+                  obs_coast: bool = False, slot_range_cap_m: float = float("inf"),
+                  obs_v2: bool = False) -> Tensor:
     """Assemble the 21-dim (EGO_OBS_DIM) egocentric actor observation from the estimator outputs +
     visibility + the coarse map. POSITION-FREE (only body-frame velocity / attitude / rates / relative
     geometry + the heading-relative sector).
@@ -336,12 +346,20 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
                         far-gate-in-slot1 can never train the policy to skip near gates and dive at the far
                         one; and it keeps slot1 GENUINELY EMPTY between gates so the coarse sector is the only
                         remaining next-gate signal. ESTIMATED (deploy-observable) range, not GT. BOTH slots.
+      obs_v2            OBS-V2 APPEND-ONLY next-gate coarse sector (2026-07-15, ``+env.ego_obs_v2``). Default
+                        False == BYTE-IDENTICAL 21-dim layout. When True the obs is 23-dim: obs[0:21] is the
+                        UNCHANGED 21-dim vector (incl. obs[9:11]=sector[tg], the CURRENT gate's hint) and
+                        obs[21:23] is APPENDED = the NEXT gate's coarse sector sector[clamp(tg+1)], MASKED to
+                        [0,0] when tg+1 >= n_gates (past the last gate) via the SAME valid[:,1] mask that
+                        gates the rel-pos slot1 -> the coarse next-gate hint masks in LOCKSTEP with slot1 and
+                        slides into place with no teleport as target_gates advances. Append-only (never
+                        reindexes obs[0:21]) so the 21-dim champion warm-loads by a first-layer zero-pad.
 
     Slot k (k=0 current, 1 next) reads gate g=clamp(tg+k). A slot is MASKED (rel_pos=0, confidence=0,
     visible_area=0) when the slot is past the last gate OR confidence==0 (stale past horizon) OR --
     UNLESS obs_coast -- the gate is not detectable this step. The coarse_sector fed is sector[tg].
 
-    Returns (N, 21)."""
+    Returns (N, 21), or (N, 23) when obs_v2 (the appended [21:23] = next-gate coarse sector)."""
     assert torch is not None
     N = est.rel_pos.shape[0]
     dev, dt = est.rel_pos.device, est.rel_pos.dtype
@@ -383,15 +401,59 @@ def ego_actor_obs(est: EgoEstimate, detectable: Tensor, target_gates: Tensor,
 
     coarse_sector = sector[ar, tg].to(dt)                              # (N,2) current target's sector
 
-    obs = torch.cat([
+    obs_parts = [
         est.velocity,                                                  # (N,3) body velocity
         est.roll_pitch,                                               # (N,2)
         est.body_rates,                                              # (N,3)
         last_collective,                                            # (N,1)
         coarse_sector,                                              # (N,2)
         *slots,                                                     # 2 x (N,5) = (N,10)
-    ], dim=-1)
-    return obs                                                        # (N,21)
+    ]                                                                  # obs[0:21] (byte-identical layout)
+    if obs_v2:
+        # OBS-V2 APPEND-ONLY: obs[21:23] = the NEXT gate's coarse sector sector[clamp(tg+1)], masked to
+        # [0,0] past the last gate. gidx[:,1]==clamp(tg+1) and valid[:,1]==(tg+1)<n_gates are exactly the
+        # index + mask the rel-pos slot1 already uses (from ego_window_indices above) -> this next-gate
+        # hint masks in LOCKSTEP with slot1 and slides in with no teleport as target_gates advances.
+        # obs[0:21] above is untouched, so the default-OFF concat is byte-identical.
+        next_sector = sector[ar, gidx[:, 1]].to(dt)                    # (N,2) sector[clamp(tg+1)]
+        next_sector = next_sector * valid[:, 1].to(dt).unsqueeze(-1)   # mask [0,0] past the last gate
+        obs_parts.append(next_sector)                                  # obs[21:23]
+    obs = torch.cat(obs_parts, dim=-1)
+    return obs                                                        # (N,21) or (N,23) when obs_v2
+
+
+# ================================================================================================
+# OBS-V2 WARM-PAD (pure) -- widen a 21-dim actor's first layer to 23 with ZERO new columns.
+# ================================================================================================
+def pad_actor_input_cols_zero(actor_mean_sd, n_new_cols: int,
+                              first_layer_key: str = "head.0.linear.weight"):
+    """Return a COPY of a diffaero ``actor_mean`` state_dict whose FIRST-layer input matrix has
+    ``n_new_cols`` extra input columns APPENDED, initialized to ZERO -- every other tensor (all deeper
+    layers, the first-layer bias, etc.) is carried through unchanged (same tensor objects).
+
+    This is the warm-transfer for the APPEND-ONLY obs_v2 extension (EGO_OBS_DIM 21 -> EGO_OBS_DIM_V2 23):
+    the champion's first layer is W:[H, 21]; the v2 net wants W':[H, 23]. With W' = [W | 0 0] and the
+    APPEND-ONLY obs' = [obs(21) | new0 new1], W' @ obs' == W @ obs for ANY value of the 2 appended dims,
+    so at warm-start the appended dims contribute NOTHING and the policy reproduces the champion
+    bit-for-bit on step 0; only subsequent training moves the new columns off zero. The diffaero MLP
+    first-layer key is ``head.0.linear.weight`` (verified by fly_rl.load_actor's strict load, where the
+    weight's column count IS the obs dim). Raises if that key is absent (L16: never silently no-op).
+
+    actor_mean_sd: the ``actor_mean`` sub-dict of a diffaero actor.pth. Returns a NEW dict (the input is
+    NOT mutated); the padded weight is a fresh tensor. n_new_cols <= 0 -> a shallow copy, unchanged."""
+    assert torch is not None, "pad_actor_input_cols_zero requires torch"
+    if first_layer_key not in actor_mean_sd:
+        raise KeyError(
+            f"pad_actor_input_cols_zero: first-layer key {first_layer_key!r} not in the actor_mean "
+            f"state_dict (keys={list(actor_mean_sd.keys())[:6]}). The diffaero MLP input-layer key has "
+            f"moved; reconcile the obs-v2 warm-pad before warm-starting.")
+    out = dict(actor_mean_sd)
+    if int(n_new_cols) <= 0:
+        return out
+    w = actor_mean_sd[first_layer_key]                                # (H, in_dim)
+    zeros = w.new_zeros(w.shape[0], int(n_new_cols))                  # ZERO -> appended dims contribute 0
+    out[first_layer_key] = torch.cat([w, zeros], dim=1)              # (H, in_dim + n_new_cols)
+    return out
 
 
 # ================================================================================================
@@ -573,6 +635,141 @@ def kp_persist_update(count, detectable, n_required):
 
 
 # ================================================================================================
+# VISION-CADENCE model (2026-07-15, +env.ego_vision_cadence; DEFAULT OFF == byte-identical).
+# ================================================================================================
+# Closes a MEASURED sim2sim gap by REUSING the estimator's OWN multi-rate machinery (ego-propagation +
+# confidence=staleness in rl/ego_estimator.py) instead of a separate output-delay path. DiffAero feeds
+# the estimator a fresh geometric fix EVERY 40 Hz control tick (its propagation stays dormant), but the
+# deploy detector lands VALID gate detections only ~7-15 Hz and goes DARK on the final approach. This
+# model reproduces that at the CONTROL POINT the estimator already exposes -- the ``detectable`` mask fed
+# to BatchedEgoEstimator.step: a gate gets a FRESH fix only when
+#     detectable_effective = geometric_detectable AND frame_tick(~30 Hz) AND detector_success(p)
+# On a non-frame tick detectable_effective is False for ALL gates, so the estimator EGO-PROPAGATES
+# (rotate by -body_rate*dt, translate by -v_body*dt) and DECAYS confidence -- the EXISTING code path.
+#   (1) FRAME CLOCK (ego_vision_frame_hz, default 30.0 Hz -- the 424-flight recorded stream rate, NOT
+#       28.8): a deterministic GLOBAL camera clock over the 40 Hz sim tick. Accumulate dt; fire a frame
+#       when the accumulator crosses the frame period (~33.3 ms) -> ~3 of every 4 ticks. NO RNG.
+#   (2) DETECTOR SUCCESS (ego_vision_detect_p, default 0.35): on a frame tick a geometrically-detectable
+#       gate yields a fresh fix with probability p (the detector misses most frames). Net valid fresh-fix
+#       rate over a visible approach ~ frame_hz * p = 30 * 0.35 ~ 10 Hz (in the measured 7-15 Hz band).
+#       The geometric dropout ALONE gives dark-near-gate (loss-onset ~4.7 m) -- NO separate near-gate rule.
+# The OBS slot masking is UNCHANGED: get_observations feeds ego_actor_obs the GEOMETRIC detectability
+# (_current_detectable) + confidence, so the ego-propagated estimate between fixes STILL fills the obs,
+# masked only when the gate is geometrically dark or stale past the horizon -- exactly the estimator's
+# "staleness is observed" (obs[14]/obs[19]=confidence) contract. Only the ESTIMATOR's fresh-fix mask is
+# gated; the obs geometric mask is a SUPERSET of it (propagation carries the between-frame gaps).
+#   (3) THIN frame->pose COMPUTE LATENCY (ego_vision_compute_latency, default True; SECOND-ORDER -- the
+#       ShadowPC brief measures corr(loop-tail, gates)~0). When a fresh fix is APPLIED, the pose it
+#       reflects is ~work_ms old (median 24.5 ms < one 33 ms frame), so we seed that gate's estimator
+#       t_since_fix to a sampled work_ms (from the MEASURED inverse-CDF) instead of exactly 0 -> its
+#       confidence starts slightly below 1 and ages from there (REUSES the estimator's confidence
+#       formula; NO rel_pos reach-back). Behind its own sub-knob.
+#
+# The pure functions below (build_work_ms_cdf / sample_work_ms) are torch-only (no diffaero), so the model
+# is unit-testable off-cluster driving the real BatchedEgoEstimator; the env just wires the frame clock +
+# success gate into _step_estimator (the fresh-fix mask) and the t_since_fix seed. RNG DISCIPLINE: the
+# frame clock is DETERMINISTIC; the detector-success + work_ms draws use a DEDICATED generator
+# (self._vc_gen) that NEVER touches the estimator's (global-default) draw stream --> with the knob ON the
+# estimator state stays BIT-IDENTICAL to OFF except for which ticks deliver a fresh fix. OFF allocates
+# nothing and draws nothing (every wire guarded by self._vc_on) -> byte-identical to today. NO-GT: only
+# the ``detectable`` mask is gated + the estimator (simulated sensors) reused; no ground-truth gate pose
+# ever reaches the actor obs.
+
+# MEASURED work_ms inverse-CDF anchors (ms): p50/p75/p90/p99/max from 11 vpef8nc 40 Hz deploy sessions
+# (scratchpad/vislag/work_ms_cdf.json when present). The sub-p50 tail below the lowest measured quantile
+# is interpolated from an ASSUMED 8 ms compute floor (documented: the low tail only sets which frames get
+# a sub-tick delay; p50..max are the exact measured quantiles).
+_VISLAG_WORK_MS_U = (0.0, 0.50, 0.75, 0.90, 0.99, 1.00)
+_VISLAG_WORK_MS_MS = (8.0, 24.5, 47.3, 62.4, 95.6, 120.8)
+
+
+def build_work_ms_cdf(path=None, n_points: int = 101):
+    """The 101-point empirical inverse-CDF (quantile function) of the deploy vision compute latency
+    ``work_ms`` in MILLISECONDS, sampled at u = linspace(0, 1, n_points).
+
+    If ``path`` is given AND exists, load it (JSON: a bare list, or a dict carrying the inverse-CDF under
+    one of a few recognized keys; resampled to n_points if a different length). Otherwise build a
+    piecewise-linear inverse-CDF from the MEASURED quantile anchors above. Returns numpy float64 (n_points,).
+    """
+    import json
+    import os
+    if path and os.path.exists(path):
+        with open(path) as f:
+            data = json.load(f)
+        arr = None
+        if isinstance(data, dict):
+            for k in ("inv_cdf_ms", "work_ms_inv_cdf", "inverse_cdf", "inv_cdf", "quantiles_ms",
+                      "quantiles"):
+                if k in data:
+                    arr = data[k]
+                    break
+            if arr is None:                             # fall back to the first list-valued entry
+                arr = next((v for v in data.values() if isinstance(v, (list, tuple))), None)
+        else:
+            arr = data
+        if arr is None:
+            raise ValueError(f"vislag CDF file {path!r} has no recognizable inverse-CDF array")
+        arr = np.asarray(arr, dtype=np.float64).reshape(-1)
+        if arr.shape[0] != n_points:
+            arr = np.interp(np.linspace(0.0, 1.0, n_points),
+                            np.linspace(0.0, 1.0, arr.shape[0]), arr)
+        return arr
+    u = np.linspace(0.0, 1.0, n_points)
+    return np.interp(u, np.asarray(_VISLAG_WORK_MS_U), np.asarray(_VISLAG_WORK_MS_MS))
+
+
+def sample_work_ms(u: Tensor, cdf_ms: Tensor) -> Tensor:
+    """Map uniforms ``u`` (..., in [0,1)) to a CONTINUOUS vision compute latency in MILLISECONDS via
+    linear interpolation of the inverse-CDF ``cdf_ms`` (K,) on its uniform u = k/(K-1) grid. PURE -- no
+    RNG (the caller draws u from the dedicated vision-cadence generator). Returned as float ms; the THIN
+    frame->pose compute-latency sub-effect divides by 1000 to seed a freshly-fixed gate's estimator
+    ``t_since_fix`` (so its confidence starts slightly below 1 -- see the module block above)."""
+    assert torch is not None
+    K = cdf_ms.shape[0]
+    x = u.clamp(0.0, 1.0 - 1e-9) * (K - 1)
+    lo = x.floor().long()
+    hi = (lo + 1).clamp(max=K - 1)
+    frac = x - lo.to(x.dtype)
+    return cdf_ms[lo] + frac * (cdf_ms[hi] - cdf_ms[lo])
+
+
+def cadence_effective_detectable(geometric_detectable: Tensor, frame_fired: bool, p: float,
+                                 gen, dtype=None) -> Tensor:
+    """The FRESH-FIX ``detectable`` mask fed to the estimator under the vision-cadence model:
+        det_eff = geometric_detectable AND frame_fired AND detector_success(p)
+    On a NON-frame tick (frame_fired False) NO gate gets a fresh fix -> all-False (the estimator
+    ego-propagates its held fix). On a frame tick each geometrically-detectable gate independently
+    succeeds with probability ``p`` (the per-gate detector-success draw). The draw uses the DEDICATED
+    generator ``gen`` so the estimator's own (global/default) draw stream is NEVER perturbed. PURE (no
+    self, inputs unmutated); returns a bool tensor of ``geometric_detectable``'s shape."""
+    assert torch is not None
+    if not frame_fired:
+        return torch.zeros_like(geometric_detectable)
+    fdt = dtype if dtype is not None else torch.float32
+    succ = torch.rand(geometric_detectable.shape, generator=gen,
+                      device=geometric_detectable.device, dtype=fdt) < float(p)
+    return geometric_detectable & succ
+
+
+def seed_fresh_fix_age_s(t_since_fix: Tensor, cdf_ms: Tensor, gen, dtype=None) -> Tensor:
+    """THIN frame->pose COMPUTE-LATENCY sub-effect: re-age the gates that just got a FRESH fix (their
+    ``t_since_fix`` == 0 right after the estimator step -- the estimator zeroes accepted gates, all others
+    are >= dt > 0) to a sampled ``work_ms`` in SECONDS (from the inverse-CDF ``cdf_ms``), so their
+    confidence starts slightly below 1 and ages from there (REUSES the estimator's confidence formula; no
+    rel_pos reach-back). Other gates are untouched. Returns the NEW ``t_since_fix`` tensor (the caller
+    assigns it back onto the estimator). The work_ms draw uses the DEDICATED generator ``gen``
+    (RNG-isolated); if NO gate is fresh it returns the input unchanged and draws NOTHING. PURE."""
+    assert torch is not None
+    fresh = t_since_fix == 0.0
+    if not bool(fresh.any()):
+        return t_since_fix
+    fdt = dtype if dtype is not None else t_since_fix.dtype
+    u = torch.rand(t_since_fix.shape, generator=gen, device=t_since_fix.device, dtype=fdt)
+    work_s = (sample_work_ms(u, cdf_ms) / 1000.0).to(t_since_fix.dtype)
+    return torch.where(fresh, work_s, t_since_fix)
+
+
+# ================================================================================================
 # The environment (requires diffaero -- training/eval cluster only).
 # ================================================================================================
 # The base import is deferred to class-body time so that the PURE functions above are importable on a
@@ -702,6 +899,16 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # empty between gates so the coarse sector is the only next-gate signal (the pefcap trust-the-map
         # behaviour). Applied to BOTH the current (tg) and next (tg+1) slots.
         self._ego_obs_slot_range_cap_m = float(getattr(cfg, "ego_obs_slot_range_cap_m", float("inf")))
+        # OBS-V2 APPEND-ONLY next-gate coarse sector (2026-07-15, +env.ego_obs_v2; default False == byte-
+        # identical). When True the actor obs is EGO_OBS_DIM_V2=23: obs[0:21] byte-identical to the 21-dim
+        # layout (incl. obs[9:11]=sector[tg], the CURRENT gate's hint the champion learned) + obs[21:23] =
+        # the NEXT gate's coarse sector sector[clamp(tg+1)] (masked [0,0] past the last gate) -- a second
+        # sliding coarse-direction hint for gate anticipation before the next gate is visible. APPEND-ONLY
+        # (warm-transfer safety): obs[0:21] is never reindexed, so the 21-dim champion (vpeffs0) warm-loads
+        # by a first-layer input zero-pad (peregrine_train_ego.maybe_pad_ckpt_for_obs_v2). The privileged
+        # critic is UNAFFECTED (its own GT builder, state_dim stays EGO_CRITIC_DIM=16). DEPLOY TWIN: fly_rl
+        # must ALSO emit obs[21:23]=map[active_gate_index+1] (masked [0,0] at the last gate) -- see report.
+        self._ego_obs_v2 = bool(getattr(cfg, "ego_obs_v2", False))
         # ===== PERCEPTION-HONESTY / HARD NO-SPIN package (2026-07-10, DESIGN.md §P). ALL knobs
         # default-OFF == byte-identical (blur False, aborts 0.0, clamp 0.0). Armed only by the NEW
         # *_percept curriculum stages. NOTE the knob names are deliberately ego_spin_* / ego_blur_* /
@@ -814,8 +1021,33 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # stateless function of the current truth, so it is recomputed where needed (cheap, no state).
         self._stepped = False               # has the estimator been stepped since the last reset?
 
-        # obs/critic dims (deploy/load gate on the sidecar obs-dim)
-        self.obs_dim = EGO_OBS_DIM                  # 21
+        # ===== VISION-CADENCE package (2026-07-15, +env.ego_vision_cadence; DEFAULT OFF == byte-
+        # identical). Gates the FRESH-FIX ``detectable`` mask fed to the estimator down to the deploy
+        # detector cadence (frame clock * per-frame success draw), REUSING the estimator's ego-propagation
+        # + confidence-decay for the between-frame gaps (see the module-level block above). ALL state is
+        # allocated + ALL draws happen ONLY when armed; OFF touches nothing (byte-identical). The success +
+        # work_ms draws use a DEDICATED generator so they never perturb the estimator's draw stream.
+        self._vc_on = bool(getattr(cfg, "ego_vision_cadence", False))
+        if self._vc_on:
+            self._vc_frame_hz = float(getattr(cfg, "ego_vision_frame_hz", 30.0))   # recorded stream rate
+            self._vc_dt_ms = float(self.dt) * 1000.0
+            self._vc_frame_period_ms = (1000.0 / self._vc_frame_hz) if self._vc_frame_hz > 0.0 else 0.0
+            self._vc_detect_p = float(getattr(cfg, "ego_vision_detect_p", 0.35))   # per-frame detect prob
+            self._vc_frame_accum = 0.0              # ms accumulated toward the next camera frame (GLOBAL)
+            self._vc_fired = False                  # did a camera frame land this tick (diagnostic)
+            # THIN frame->pose compute-latency sub-effect (default ON when the cadence is armed; SECOND-
+            # ORDER). When a fresh fix is applied, seed that gate's estimator t_since_fix to a sampled
+            # work_ms (the CDF below) instead of 0 -> confidence starts slightly below 1. OFF -> no CDF.
+            self._vc_work_ms_on = bool(getattr(cfg, "ego_vision_compute_latency", True))
+            self._vc_cdf_ms = (torch.as_tensor(
+                build_work_ms_cdf(getattr(cfg, "ego_vision_work_ms_cdf", None)),
+                device=dev, dtype=self._ego_dtype) if self._vc_work_ms_on else None)  # (101,) inv-CDF ms
+            self._vc_gen = torch.Generator(device=dev)                       # DEDICATED (RNG-isolated)
+            self._vc_gen.manual_seed(int(getattr(cfg, "ego_vision_cadence_seed", 20260715)))
+
+        # obs/critic dims (deploy/load gate on the sidecar obs-dim). OBS-V2 appends the next-gate coarse
+        # sector (2 dims) -> 23; default OFF -> 21 (byte-identical).
+        self.obs_dim = EGO_OBS_DIM_V2 if self._ego_obs_v2 else EGO_OBS_DIM   # 23 (v2) / 21 (default)
         # privileged critic state (GT god-view). Differs from obs_dim (a DIFFERENT layout, carrying GT
         # truth the actor cannot see); it is LOWER-dim only because the actor also carries noisy-obs-
         # only channels (visible_area, coarse sector, last_collective) the critic omits.
@@ -931,6 +1163,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # point -- a latch surviving a truncation would silently suppress the NEXT episode's first
             # crossing payment (the stale-latch bug the latch contract calls out).
             self._parabola_paid[env_idx] = False
+            # VISION-CADENCE needs NO per-env reset state: the estimator is cold-reset here
+            # (_reset_estimator -> t_since_fix=1e3 == masked until the first post-reset fresh fix), so no
+            # fix ever leaks across an episode boundary; the frame clock (_vc_frame_accum) is GLOBAL
+            # hardware and correctly free-runs across resets. (The old reach-back ring's per-env
+            # reset_tick/src bookkeeping is gone with the ring.)
             # STALE-MAP FIX (Bug 1): the base reset_idx just resampled this episode's per-env course geometry
             # (base reset_idx -> _assign_courses -> in-place gate_pos[env_idx]/spawn_pos[env_idx]). self._coarse_map
             # is a DERIVED copy (not a view of gate_pos), so without this rebuild it would keep the __init__
@@ -1072,25 +1309,62 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             if self._kp_persist_n >= 2:
                 self._kp_persist_count, detectable = kp_persist_update(
                     self._kp_persist_count, detectable, self._kp_persist_n)
-            self._last_detectable = detectable          # diagnostics (target_detectable_duty)
+            self._last_detectable = detectable          # diagnostics (target_detectable_duty); GEOMETRIC
             # APPARENT projected opening area (normalized, square-on==1), computed with the EMULATED
             # (flipped) camera so the obs matches what the detector sees. Stored (GT, noiseless) for the
             # reward's area-distance coupling; passed to the estimator which noises it for the obs.
             apparent_area = gate_apparent_area(self._p, cam_R, self.gate_pos, self.gate_yaw,
                                                is_quat=False)
             self._apparent_area_gt = apparent_area
+            # VISION-CADENCE (default OFF == byte-identical): gate the FRESH-FIX detectability down to the
+            # deploy detector cadence -- a gate gets a fresh estimator fix only on a ~30 Hz camera frame AND
+            # a per-frame detector-success draw (prob p). Off-frame ticks -> det_eff all-False -> the
+            # estimator EGO-PROPAGATES (its existing code path). The OBS mask (_current_detectable below,
+            # GEOMETRIC) is UNCHANGED and is a SUPERSET of det_eff, so the propagated estimate still fills
+            # the obs between fixes (confidence carries the staleness). The success draw uses the DEDICATED
+            # generator so the estimator's own draw stream is unperturbed (ON estimator state == OFF).
+            frame_fired = False
+            if getattr(self, "_vc_on", False):
+                frame_fired = self._vc_frame_tick()
+                det_eff = cadence_effective_detectable(detectable, frame_fired, self._vc_detect_p,
+                                                       self._vc_gen, dtype=self._ego_dtype)
+            else:
+                det_eff = detectable
             # ESTIMATOR-FAITHFUL inputs (None on the default path == byte-identical legacy):
             # sf_body = the plant's captured LAST-SUBSTEP specific force (the wire's newest-IMU-
             # sample semantics); gyro_sample defaults to body_rates (self._w IS the last substep's
             # rate) inside the estimator, so only sf needs threading.
             sf_body = self._dyn_sf_body_flu() if self._est_needs_sf else None
             est = self._estimator.step(self._p, self._v, self._q, self._w, float(self.dt),
-                                       detectable=detectable, prev_quat=prev_q,
+                                       detectable=det_eff, prev_quat=prev_q,
                                        apparent_area=apparent_area,
                                        blur_extra_miss=extra_miss,
                                        sf_body=sf_body)
+            # THIN frame->pose COMPUTE LATENCY (default ON when the cadence is armed; SECOND-ORDER): a fresh
+            # fix reflects state ~work_ms ago, so re-age the just-fixed gates' staleness clock to a sampled
+            # work_ms instead of exactly 0 -> confidence starts slightly below 1 (see seed_fresh_fix_age_s).
+            # Guarded + only on a frame tick -> OFF and off-frame ticks touch nothing and draw nothing.
+            if frame_fired and getattr(self, "_vc_work_ms_on", False):
+                self._estimator._t_since_fix = seed_fresh_fix_age_s(
+                    self._estimator._t_since_fix, self._vc_cdf_ms, self._vc_gen, dtype=self._ego_dtype)
         self._stepped = True
         return est, detectable
+
+    def _vc_frame_tick(self) -> bool:
+        """Advance the GLOBAL camera frame clock one control tick; return True when a camera frame lands
+        this tick (~ego_vision_frame_hz over the sim tick rate). DETERMINISTIC -- NO RNG. Called EXACTLY
+        once per control tick from _step_estimator (guarded by _vc_on). frame_hz<=0 -> fire EVERY tick
+        (ablation: cadence off, the detector-success gate alone). Assumes frame_hz <= loop_hz (period >=
+        dt) so at most one frame per tick."""
+        if self._vc_frame_period_ms <= 0.0:
+            self._vc_fired = True
+            return True
+        self._vc_frame_accum += self._vc_dt_ms
+        fired = self._vc_frame_accum >= self._vc_frame_period_ms
+        if fired:
+            self._vc_frame_accum -= self._vc_frame_period_ms
+        self._vc_fired = bool(fired)
+        return self._vc_fired
 
     def _current_detectable(self):
         with torch.no_grad():
@@ -1120,10 +1394,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self._step_estimator(self._prev_q)
             self._prev_q = self._q.clone()
         detectable = self._current_detectable()
+        # VISION-CADENCE: the multi-rate staleness is ALREADY in this estimate -- the fresh-fix mask was
+        # gated at detector cadence in _step_estimator, so between frames the estimator has ego-propagated
+        # rel_pos and decayed confidence. No output substitution here: the obs reads the estimator's
+        # current (possibly propagated) fix, masked by the GEOMETRIC detectability + confidence below.
         est = self._estimator.estimate()
         obs = ego_actor_obs(est, detectable, self.target_gates, self.last_action[..., 0],
                             self._coarse_map, self.n_gates, obs_coast=self._ego_obs_coast,
-                            slot_range_cap_m=self._ego_obs_slot_range_cap_m)
+                            slot_range_cap_m=self._ego_obs_slot_range_cap_m,
+                            obs_v2=self._ego_obs_v2)
         finite = torch.isfinite(obs)
         if not bool(finite.all()):
             obs = torch.where(finite, obs, torch.zeros_like(obs))
