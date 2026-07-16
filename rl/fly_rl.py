@@ -2059,6 +2059,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
         with open(args.sysid_replay, newline="") as _sf:
             _srows = [r for r in _csvmod.reader(_sf) if r]
         _sysid_prog = np.array([[float(x) for x in r[1:5]] for r in _srows[1:]], dtype=np.float64)
+        # optional 6th column = segment/amplitude label, passed through to the log (empty if absent)
+        _sysid_labels = [(r[5] if len(r) > 5 else "") for r in _srows[1:]]
         print(f"  [sysid] replay: {len(_sysid_prog)} rows from {args.sysid_replay} -- policy BYPASSED, "
               f"clamps/assist OFF, response=gyro+accel (ODOMETRY blocked on this wire).", flush=True)
     _SYSID_CLIMB_G      = float(getattr(args, "sysid_climb_g", 1.5))
@@ -2160,7 +2162,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     _normed = 1.0                            # hover-hold before the program
                 _rate_frd = np.zeros(3, dtype=np.float64)
                 _coll = float(np.clip(_normed * _HOVER_THRUST, 0.0, 1.0))
-                _a = (None, None, None, None); _phase = "boot"; _krow = -1
+                _a = (None, None, None, None); _phase = "boot"; _krow = -1; _seg = "boot"
                 if _sysid_boot >= _SYSID_SETTLE_TICKS:
                     _sysid_k = 0
                     print(f"  [sysid] bootstrap done ({_sysid_boot} ticks: climb {_SYSID_CLIMB_G}g / "
@@ -2174,11 +2176,12 @@ def _fly_ego(client, actor, args, flight_idx: int,
                 _rate_frd, _coll, _normed = sysid_wire_from_action(_av, args.virtual_flip)
                 _a = (float(_av[0]), float(_av[1]), float(_av[2]), float(_av[3]))
                 _phase = "prog"; _krow = _sysid_k
+                _seg = (_sysid_labels[_sysid_k] if _sysid_labels else "")
             client.send_command(ControlCommand(mode=ControlMode.BODY_RATE, sim_time_ns=st,
                                                body_rate=_rate_frd, thrust=_coll))
             _g = getattr(s, "gyro_body_raw", None); _ac = s.accel_body   # RAW wire gyro (PRE gyro_sign),
             _sysid_log.append(dict(                                       # consistent with sysid_vq2_imu_raw
-                k=_krow, phase=_phase, sim_time_ns=st,
+                k=_krow, phase=_phase, seg=_seg, sim_time_ns=st,
                 a_thrust=_a[0], a_roll=_a[1], a_pitch=_a[2], a_yaw=_a[3],
                 cmd_wx=float(_rate_frd[0]), cmd_wy=float(_rate_frd[1]), cmd_wz=float(_rate_frd[2]),
                 cmd_thrust=float(_normed), collective=float(_coll),
@@ -2386,7 +2389,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
     # --- ego forensics log: single write covering every exit path ---
     if session_dir is not None and _sysid_log:
         import csv as _csvmod
-        _scols = ["k", "phase", "sim_time_ns", "a_thrust", "a_roll", "a_pitch", "a_yaw",
+        _scols = ["k", "phase", "seg", "sim_time_ns", "a_thrust", "a_roll", "a_pitch", "a_yaw",
                   "cmd_wx", "cmd_wy", "cmd_wz", "cmd_thrust", "collective",
                   "gyro_x", "gyro_y", "gyro_z", "accel_x", "accel_y", "accel_z"]
         _sout = Path(session_dir) / "sysid_vq2_log.csv"
