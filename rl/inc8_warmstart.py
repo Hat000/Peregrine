@@ -110,8 +110,55 @@ def maybe_warmstart(agent, env, cfg) -> Optional[str]:
           f"env obs_dim={env_obs_dim or '?'}; optimizer + rollout buffer FRESH -- weights-only "
           f"transfer for the reward re-pilot).")
 
+    # LOGSTD RESET (2026-07-05 audit A3, rev 2 per the stack author): actor_logstd rides along in every
+    # weights-only warm-start, so each curriculum stage inherits the PREVIOUS stage's exploitation
+    # schedule -- three near-converged easy stages ground per-dim std 0.223 -> 0.050 before the only
+    # hard stage, which then collapsed and pinned at the tanh floor (entropy -13.68).
+    # ``+warmstart_reset_logstd=true`` resets the RAW logstd parameter after the load to an
+    # INTERMEDIATE exploration level (author-directed ~0.15-0.2; default target_std 0.18 via
+    # ``+warmstart_reset_logstd_std``) -- enough escape velocity to adapt to the new stage without
+    # re-randomizing a competent policy as hard as the full fresh 0.223. Means are KEPT: transfer the
+    # competence, never the exploitation schedule. Unset/false == byte-identical legacy carry-over.
+    if bool(getattr(cfg, "warmstart_reset_logstd", False)):
+        target = float(getattr(cfg, "warmstart_reset_logstd_std", 0.18))
+        reset_actor_logstd(agent, target_std=target)
+
     _force_lookat_warmup_off(env)
     return init_from
+
+
+# tanh-squash bounds -- PINNED to diffaero network/agents.py:63-64 (LOG_STD_MAX=2, LOG_STD_MIN=-5);
+# the squash is logstd = MIN + 0.5*(MAX-MIN)*(tanh(raw)+1).
+_LOG_STD_MIN, _LOG_STD_MAX = -5.0, 2.0
+
+
+def raw_logstd_for_std(target_std: float) -> float:
+    """Invert diffaero's tanh squash: the RAW actor_logstd value whose squashed per-dim std equals
+    ``target_std``. Clamped inside the open (-1, 1) tanh range so extreme targets stay finite."""
+    import math
+    x = (math.log(target_std) - _LOG_STD_MIN) / (0.5 * (_LOG_STD_MAX - _LOG_STD_MIN)) - 1.0
+    x = max(min(x, 1.0 - 1e-9), -1.0 + 1e-9)
+    return math.atanh(x)
+
+
+def reset_actor_logstd(agent, target_std: float = 0.18) -> int:
+    """Set every ``actor_logstd`` RAW parameter on the agent's module tree so the squashed per-dim std
+    equals ``target_std`` (default 0.18 -- the author-directed intermediate between the collapsed
+    ~0.05 carry-over and the fresh-init 0.223). Returns the number of parameters reset (0 -> loud
+    warning: the network layout changed and the reset silently missed -- fail visible, not silent)."""
+    raw = raw_logstd_for_std(target_std)
+    module = getattr(agent, "agent", agent)
+    n_reset = 0
+    for name, p in module.named_parameters():
+        if "actor_logstd" in name:
+            p.data.fill_(raw)
+            n_reset += 1
+            print(f"[warmstart] RESET exploration: {name} -> raw {raw:.4f} (squashed std "
+                  f"~{target_std:.3f}/dim -- intermediate exploration on transferred means).")
+    if n_reset == 0:
+        print("[warmstart] WARNING: warmstart_reset_logstd requested but NO actor_logstd parameter "
+              "found -- network layout changed? Exploration was NOT reset.")
+    return n_reset
 
 
 def _sidecar_obs_dim(sidecar_path: str) -> int:

@@ -38,7 +38,17 @@ COLUMNS = [
     ("band_az_abs_deg",   ["inc8_band_az_abs_deg", "band_az_abs_deg"]),   # look-at sign/efficacy (S0)
     ("band_el_abs_deg",   ["inc8_band_el_abs_deg", "band_el_abs_deg"]),   # vertical residual / S2 sign (g_pitch)
     ("estim_err_ip_m",    ["inc8_estim_err_inplane_m", "estim_err_inplane_m"]),  # sigma_p0 proxy (S1)
-    ("centering",         ["inc8_centering", "centering"]),               # dense centering reward (S1)
+    # B2 A2 (2026-07-06): the env scalar was renamed inc8_centering -> inc8_near_centering (it
+    # logs the deliberately-OFF near-gate rw_centering FUTURE arm; the ACTIVE configured term is
+    # rw_through_centering). Old tags stay as fallback candidates so pre-B2 event files still read.
+    ("near_centering",    ["inc8_near_centering", "inc8_centering", "centering"]),
+    ("through_centering", ["inc8_through_centering", "through_centering"]),  # ACTIVE lateral restoring reward
+    ("tcam_front",        ["inc8_tcam_front_frac"]),                   # camera-mount GO/NO-GO (B1)
+    ("gate_progress",     ["inc8_gate_progress"]),                     # dense along-track drive (B1)
+    ("succ_standing",     ["inc8_success_standing"]),                  # spawn-class success (B2/M2a) -- THE verdict signal
+    ("succ_near",         ["inc8_success_near"]),
+    ("succ_nearlast",     ["inc8_success_nearlast"]),                  # the RC1 trivial class
+    ("frac_nearlast",     ["inc8_frac_nearlast"]),                     # class-2 MASS -- the M1 proof (~0 post-M1, G>=2)
     ("entropy",           ["entropy_loss", "entropy"]),
     ("value_loss",        ["critic_loss", "value_loss"]),
 ]
@@ -74,6 +84,25 @@ def _value_at(series, step):
         return None
     nearest = min(series, key=lambda s: abs(s - step))
     return series[nearest]
+
+
+# B2/M2b: verdict window. The step-0 warm-start restore point inherits the PREVIOUS stage's policy
+# on the NEW stage's env (the dual_gate 0.64 artifact vs sustained max 0.343) -- exclude it, and the
+# whole warmup transient, from the verdict. 100 also == critic_warmup_updates (sbatch BOUNDARY_OV),
+# so the window starts exactly where the actor is released.
+FLIGHTCHECK_MIN_STEP = 100
+
+
+def _series_max_from(series_map, tag, min_step):
+    """Max scalar over steps >= min_step; (nan, False) for a missing/empty tag; SHORT-RUN fallback
+    to the full series (flagged False) when no step clears min_step (tiny smokes stay readable)."""
+    if not tag or not series_map.get(tag):
+        return float("nan"), False
+    pts = series_map[tag]
+    late = [v for s, v in pts.items() if s >= min_step]
+    if late:
+        return max(late), True
+    return max(pts.values()), False
 
 
 def main(argv):
@@ -162,17 +191,27 @@ def main(argv):
                 cells.append("%18s" % ("%.5f" % v if v is not None else "-"))
         print("  ".join(cells))
 
-    # FLIGHTCHECK: machine-greppable course-completion summary (recenter re-train early-stop gate). The
-    # recenter sbatch greps this after the FIRST seed to decide whether to burn the remaining seeds: if the
-    # restore did NOT recover flight (success_rate stays ~0, no gates passed), STOP rather than burn 2 more.
+    # FLIGHTCHECK: machine-greppable verdict summary (the curriculum sbatch awk-parses the fields
+    # `success_rate_max=` / `n_passed_gates_max=` -- KEEP those field names, exactly once each).
+    # B2/M2b: (1) the verdict VALUE gates on inc8_success_standing when the run logs it (the
+    # spawn-lottery-free standing-start success; RC1: near-last spawns scored a perception-free 1 m
+    # dash), falling back to raw success_rate for legacy runs; (2) max over updates >=
+    # FLIGHTCHECK_MIN_STEP so the step-0 warm-start restore artifact can never set the verdict.
     by_label = dict(resolved)
-    def _series_max(tag):
-        return max(series[tag].values()) if (tag and series.get(tag)) else float("nan")
-    sr_max = _series_max(by_label.get("success_rate"))
-    npg_max = _series_max(by_label.get("n_passed_gates"))
+    gate_tag = _resolve_tag(tags, ["inc8_success_standing"])
+    sr_tag = by_label.get("success_rate")
+    used_tag = gate_tag if gate_tag is not None else sr_tag
+    gate_max, in_window = _series_max_from(series, used_tag, FLIGHTCHECK_MIN_STEP)
+    raw_sr_max, _ = _series_max_from(series, sr_tag, FLIGHTCHECK_MIN_STEP)
+    npg_max, _ = _series_max_from(series, by_label.get("n_passed_gates"), FLIGHTCHECK_MIN_STEP)
     print("\n[inc8-tb-trace] FLIGHTCHECK success_rate_max=%.5f n_passed_gates_max=%.5f "
-          "(course-completion is the PRIMARY GO; ~0 => restore did NOT recover flight)"
-          % (sr_max, npg_max))
+          "gate_tag=%s raw_success_rate_max=%.5f min_step=%d%s "
+          "(B2/M2b: verdict value = STANDING-class success when inc8_success_standing is logged, "
+          "else raw success_rate; max over updates >= %d excludes the step-0 warm-start restore "
+          "artifact; ~0 => the stage did NOT fly)"
+          % (gate_max, npg_max, used_tag or "(none)", raw_sr_max, FLIGHTCHECK_MIN_STEP,
+             "" if in_window else " [SHORT-RUN: fewer than min_step updates, full-series fallback]",
+             FLIGHTCHECK_MIN_STEP))
     return 0
 
 

@@ -175,6 +175,21 @@ DEFAULT_COURSE_RANGES = dict(
                                   # training floor: spawn_below_g0_m only constrains gate 0 -- with the
                                   # default drop_m a LATER gate can sink below the pad, which would be
                                   # undivable-to with the floor on. None == OFF (byte-identical legacy).
+    lateral_offset_m=(0.0, 0.0),  # (Track-A course enrichment, 2026-07-13) per-gate NON-CUMULATIVE
+                                  # perpendicular JOG -- a slalom/chicane xy-plane shift that is DISTINCT
+                                  # from turn_rad's cumulative heading walk. For every gate g>=1 the gate
+                                  # centre is displaced by U(lo, hi) (random +/- sign) along the HORIZONTAL
+                                  # (Z-up) perpendicular of its BASE incoming leg, then gate_yaw is
+                                  # recomputed from the FINAL positions so the gate faces the true
+                                  # down-course bisector (and build_coarse_map, which reads the final
+                                  # positions, stays sign-correct BY CONSTRUCTION). Gate 0 is NEVER offset
+                                  # (its FOV placement is owned by spawn_dist / spawn_yaw_jitter). Because
+                                  # the jog is measured off the BASE (un-offset) cumsum walk it does NOT
+                                  # accumulate into the heading, so unlike a larger turn_rad it gives rich
+                                  # per-gate lateral variety at HIGH gate counts (20) WITHOUT the heading
+                                  # random-walk curling back on itself (which the min-separation reject
+                                  # loop otherwise collapses to a straight fallback). (0.0, 0.0) == OFF ==
+                                  # byte-identical (the ON branch is the ONLY new RNG; OFF draws nothing).
 )
 
 # VQ1 standing-start pad (Z-up), from the S1.2 live recordings (see peregrine_racing.py).
@@ -264,6 +279,27 @@ def sample_courses(n, device="cpu", generator=None, **overrides):
         seg = torch.stack([seg_len * torch.cos(headings),
                            seg_len * torch.sin(headings), dz], dim=-1)              # (m, G, 3)
         gate_pos = torch.cumsum(seg, dim=1)                                         # pad at origin
+        # LATERAL (xy) PER-GATE JOG (Track-A enrichment, 2026-07-13; OFF at (0,0) == byte-identical). A
+        # NON-cumulative perpendicular slalom shift: displace each gate g>=1 by U(lo,hi) * (+/- sign)
+        # along the HORIZONTAL perpendicular of its BASE incoming leg (gate[g]-prev[g], prev[0]=spawn=0).
+        # Measured off the BASE cumsum walk -> the jog does NOT propagate into later gates' base
+        # positions (no heading drift -> valid at high gate counts). Gate 0 is never offset. Only this ON
+        # branch draws extra RNG (mag then sign) -> the OFF path RNG stream is untouched. gate_yaw is
+        # recomputed from the FINAL (offset) positions below so the facing + build_coarse_map stay right.
+        lat_lo, lat_hi = R["lateral_offset_m"]
+        lat_on = not (float(lat_lo) == 0.0 and float(lat_hi) == 0.0)
+        if lat_on:
+            prev_base = torch.zeros_like(gate_pos)
+            prev_base[:, 1:, :] = gate_pos[:, :-1, :]                               # prev[0] = spawn (origin)
+            incoming = gate_pos - prev_base                                        # (m,G,3) base legs
+            hx, hy = incoming[..., 0], incoming[..., 1]
+            hnorm = torch.sqrt(hx * hx + hy * hy).clamp(min=1e-6)
+            perp = torch.stack([-hy / hnorm, hx / hnorm,                            # left-perp unit (Z-up)
+                                torch.zeros_like(hx)], dim=-1)                      # (m,G,3)
+            mag = U(float(lat_lo), float(lat_hi), m, G)                             # (m,G) jog magnitude
+            mag[:, 0] = 0.0                                                        # gate 0 anchored on the approach
+            sign = torch.where(torch.rand(m, G, device=device, generator=generator) < 0.5, -1.0, 1.0)
+            gate_pos = gate_pos + (mag * sign).unsqueeze(-1) * perp
         # GATES-ABOVE-SPAWN floor clamp (A1 floor fix, 2026-07-10; OFF when None == legacy). Sequential
         # so the walk continues from the clamped height (a post-dip climb actually climbs) instead of a
         # naive cumulative clamp that would pin every later gate to the floor. G <= ~8 -> loop is trivial.
@@ -273,10 +309,22 @@ def sample_courses(n, device="cpu", generator=None, **overrides):
             for g in range(G):
                 z_prev = torch.clamp(z_prev + dz[:, g], min=min_z)
                 gate_pos[:, g, 2] = z_prev
-        # gate yaw: bisector of incoming/outgoing headings; last gate = incoming heading
+        # gate yaw: bisector of incoming/outgoing headings; last gate = incoming heading. With the lateral
+        # jog ON the heading walk no longer describes the actual legs, so re-derive the arriving headings
+        # from the FINAL (offset) positions (prev[0]=spawn=origin) -- identical formula, but consistent
+        # with the flown geometry (and hence with build_coarse_map, which reads the same final positions).
+        # No RNG in the re-derivation, so the yaw-jitter draw below keeps its stream position.
         yaw = torch.empty(m, G, device=device)
-        yaw[:, :-1] = _circ_mean(headings[:, :-1], headings[:, 1:])
-        yaw[:, -1] = headings[:, -1]
+        if lat_on:
+            prev_f = torch.zeros_like(gate_pos)
+            prev_f[:, 1:, :] = gate_pos[:, :-1, :]
+            arr = gate_pos - prev_f                                                # arriving legs (final)
+            h_arr = torch.atan2(arr[..., 1], arr[..., 0])                          # (m,G)
+            yaw[:, :-1] = _circ_mean(h_arr[:, :-1], h_arr[:, 1:])
+            yaw[:, -1] = h_arr[:, -1]
+        else:
+            yaw[:, :-1] = _circ_mean(headings[:, :-1], headings[:, 1:])
+            yaw[:, -1] = headings[:, -1]
         yaw = yaw + U(-R["yaw_jitter_rad"], R["yaw_jitter_rad"], m, G)
         return gate_pos, yaw
 
