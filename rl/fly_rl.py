@@ -2061,9 +2061,11 @@ def _fly_ego(client, actor, args, flight_idx: int,
         _sysid_prog = np.array([[float(x) for x in r[1:5]] for r in _srows[1:]], dtype=np.float64)
         print(f"  [sysid] replay: {len(_sysid_prog)} rows from {args.sysid_replay} -- policy BYPASSED, "
               f"clamps/assist OFF, response=gyro+accel (ODOMETRY blocked on this wire).", flush=True)
-    _SYSID_SETTLE_TICKS = int(round(2.5 * args.rate))   # bootstrap length before program k=0
-    _SYSID_CLIMB_TICKS  = int(round(1.2 * args.rate))   # climb (above hover) sub-phase for altitude margin
-    _SYSID_CLIMB_G      = 1.35                           # climb thrust (g) during the climb sub-phase
+    _SYSID_CLIMB_G      = float(getattr(args, "sysid_climb_g", 1.5))
+    _SYSID_CLIMB_TICKS  = int(round(float(getattr(args, "sysid_climb_s", 1.5)) * args.rate))
+    _SYSID_ARREST_G     = max(0.0, 2.0 - _SYSID_CLIMB_G)   # symmetric decel nulls the climb velocity
+    _SYSID_HOVER_TICKS  = int(round(float(getattr(args, "sysid_settle_s", 1.0)) * args.rate))
+    _SYSID_SETTLE_TICKS = 2 * _SYSID_CLIMB_TICKS + _SYSID_HOVER_TICKS   # total bootstrap (climb+arrest+hover)
 
     loop_t0       = time.monotonic()
     n_ticks       = 0
@@ -2148,15 +2150,21 @@ def _fly_ego(client, actor, args, flight_idx: int,
         if _sysid_prog is not None:
             if s.gyro_body is None:
                 continue                                    # pre-first-IMU warmup
-            if _sysid_k < 0:                                # ---- bootstrap: climb-then-hover ----
+            if _sysid_k < 0:                                # ---- bootstrap: climb -> arrest -> hover ----
                 _sysid_boot += 1
-                _normed = _SYSID_CLIMB_G if _sysid_boot <= _SYSID_CLIMB_TICKS else 1.0
+                if _sysid_boot <= _SYSID_CLIMB_TICKS:
+                    _normed = _SYSID_CLIMB_G                  # climb: gain altitude
+                elif _sysid_boot <= 2 * _SYSID_CLIMB_TICKS:
+                    _normed = _SYSID_ARREST_G                 # arrest: null the climb velocity (symmetric)
+                else:
+                    _normed = 1.0                            # hover-hold before the program
                 _rate_frd = np.zeros(3, dtype=np.float64)
                 _coll = float(np.clip(_normed * _HOVER_THRUST, 0.0, 1.0))
                 _a = (None, None, None, None); _phase = "boot"; _krow = -1
                 if _sysid_boot >= _SYSID_SETTLE_TICKS:
                     _sysid_k = 0
-                    print("  [sysid] bootstrap done -> PROGRAM START (k=0)", flush=True)
+                    print(f"  [sysid] bootstrap done ({_sysid_boot} ticks: climb {_SYSID_CLIMB_G}g / "
+                          f"arrest {_SYSID_ARREST_G:.2f}g / hover) -> PROGRAM START (k=0)", flush=True)
             else:                                           # ---- program injection ----
                 if _sysid_k >= len(_sysid_prog):
                     print(f"  [sysid] program COMPLETE through k={_sysid_k - 1} -> ending.", flush=True)
@@ -2168,13 +2176,15 @@ def _fly_ego(client, actor, args, flight_idx: int,
                 _phase = "prog"; _krow = _sysid_k
             client.send_command(ControlCommand(mode=ControlMode.BODY_RATE, sim_time_ns=st,
                                                body_rate=_rate_frd, thrust=_coll))
-            _g = s.gyro_body; _ac = s.accel_body
-            _sysid_log.append(dict(
+            _g = getattr(s, "gyro_body_raw", None); _ac = s.accel_body   # RAW wire gyro (PRE gyro_sign),
+            _sysid_log.append(dict(                                       # consistent with sysid_vq2_imu_raw
                 k=_krow, phase=_phase, sim_time_ns=st,
                 a_thrust=_a[0], a_roll=_a[1], a_pitch=_a[2], a_yaw=_a[3],
                 cmd_wx=float(_rate_frd[0]), cmd_wy=float(_rate_frd[1]), cmd_wz=float(_rate_frd[2]),
                 cmd_thrust=float(_normed), collective=float(_coll),
-                gyro_x=float(_g[0]), gyro_y=float(_g[1]), gyro_z=float(_g[2]),
+                gyro_x=(float(_g[0]) if _g is not None else None),
+                gyro_y=(float(_g[1]) if _g is not None else None),
+                gyro_z=(float(_g[2]) if _g is not None else None),
                 accel_x=(float(_ac[0]) if _ac is not None else None),
                 accel_y=(float(_ac[1]) if _ac is not None else None),
                 accel_z=(float(_ac[2]) if _ac is not None else None)))
@@ -2798,6 +2808,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "ODOMETRY blocked on this wire) to <session>/sysid_vq2_log.csv. A short open-loop "
                          "climb-then-hover bootstrap (phase=boot rows) precedes program k=0. Run in open "
                          "air; expect open-loop drift -> truncation on collision (partial data is useful).")
+    ap.add_argument("--sysid-climb-g", type=float, default=1.5,
+                    help="sysID bootstrap climb thrust (g) to gain altitude before program k=0.")
+    ap.add_argument("--sysid-climb-s", type=float, default=1.5,
+                    help="sysID bootstrap climb duration (s). An ARREST phase of equal length at "
+                         "(2-climb_g) g follows to null the climb velocity -> stable HIGH hover start. "
+                         "Raise this to start higher (more drift margin before the excitation).")
+    ap.add_argument("--sysid-settle-s", type=float, default=1.0,
+                    help="sysID bootstrap hover-hold (s) after climb+arrest, before program k=0.")
     ap.add_argument("--label",        default="rl_s1")
     ap.add_argument("--rate",         type=float, default=30.0,
                     help="control loop Hz; default 30 = the TRAINING dt 0.0333 "

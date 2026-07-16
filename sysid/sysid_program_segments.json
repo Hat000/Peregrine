@@ -1,0 +1,246 @@
+{
+  "dt": 0.025,
+  "hz": 40.0,
+  "n_steps": 1092,
+  "hover_a_thrust": -0.6,
+  "act_min": [
+    0.0,
+    -3.14,
+    -3.14,
+    -3.14
+  ],
+  "act_max": [
+    5.0,
+    3.14,
+    3.14,
+    3.14
+  ],
+  "segments": [
+    {
+      "name": "hover_trim_init",
+      "chan": "none",
+      "kind": "trim",
+      "t0": 0.0,
+      "t1": 2.0
+    },
+    {
+      "name": "roll_step_pos",
+      "chan": "roll",
+      "action": 0.4,
+      "kind": "step",
+      "t0": 2.0,
+      "t1": 2.5
+    },
+    {
+      "name": "roll_trim_a",
+      "chan": "roll",
+      "kind": "trim",
+      "t0": 2.5,
+      "t1": 3.5
+    },
+    {
+      "name": "roll_step_neg",
+      "chan": "roll",
+      "action": -0.4,
+      "kind": "step",
+      "t0": 3.5,
+      "t1": 4.0
+    },
+    {
+      "name": "roll_trim_b",
+      "chan": "roll",
+      "kind": "trim",
+      "t0": 4.0,
+      "t1": 5.0
+    },
+    {
+      "name": "roll_doublet_pos",
+      "chan": "roll",
+      "action": 0.6,
+      "kind": "doublet",
+      "t0": 5.0,
+      "t1": 5.3
+    },
+    {
+      "name": "roll_doublet_neg",
+      "chan": "roll",
+      "action": -0.6,
+      "kind": "doublet",
+      "t0": 5.3,
+      "t1": 5.6
+    },
+    {
+      "name": "roll_chirp",
+      "chan": "roll",
+      "amp": 0.4,
+      "f0": 0.5,
+      "f1": 6.0,
+      "kind": "chirp",
+      "t0": 5.6,
+      "t1": 8.6
+    },
+    {
+      "name": "roll_trim_c",
+      "chan": "roll",
+      "kind": "trim",
+      "t0": 8.6,
+      "t1": 9.6
+    },
+    {
+      "name": "pitch_step_pos",
+      "chan": "pitch",
+      "action": 0.4,
+      "kind": "step",
+      "t0": 9.6,
+      "t1": 10.1
+    },
+    {
+      "name": "pitch_trim_a",
+      "chan": "pitch",
+      "kind": "trim",
+      "t0": 10.1,
+      "t1": 11.1
+    },
+    {
+      "name": "pitch_step_neg",
+      "chan": "pitch",
+      "action": -0.4,
+      "kind": "step",
+      "t0": 11.1,
+      "t1": 11.6
+    },
+    {
+      "name": "pitch_trim_b",
+      "chan": "pitch",
+      "kind": "trim",
+      "t0": 11.6,
+      "t1": 12.6
+    },
+    {
+      "name": "pitch_doublet_pos",
+      "chan": "pitch",
+      "action": 0.6,
+      "kind": "doublet",
+      "t0": 12.6,
+      "t1": 12.9
+    },
+    {
+      "name": "pitch_doublet_neg",
+      "chan": "pitch",
+      "action": -0.6,
+      "kind": "doublet",
+      "t0": 12.9,
+      "t1": 13.2
+    },
+    {
+      "name": "pitch_chirp",
+      "chan": "pitch",
+      "amp": 0.4,
+      "f0": 0.5,
+      "f1": 6.0,
+      "kind": "chirp",
+      "t0": 13.2,
+      "t1": 16.2
+    },
+    {
+      "name": "pitch_trim_c",
+      "chan": "pitch",
+      "kind": "trim",
+      "t0": 16.2,
+      "t1": 17.2
+    },
+    {
+      "name": "yaw_step_pos",
+      "chan": "yaw",
+      "action": 0.4,
+      "kind": "step",
+      "t0": 17.2,
+      "t1": 17.7
+    },
+    {
+      "name": "yaw_trim_a",
+      "chan": "yaw",
+      "kind": "trim",
+      "t0": 17.7,
+      "t1": 18.7
+    },
+    {
+      "name": "yaw_step_neg",
+      "chan": "yaw",
+      "action": -0.4,
+      "kind": "step",
+      "t0": 18.7,
+      "t1": 19.2
+    },
+    {
+      "name": "yaw_trim_b",
+      "chan": "yaw",
+      "kind": "trim",
+      "t0": 19.2,
+      "t1": 20.2
+    },
+    {
+      "name": "yaw_doublet_pos",
+      "chan": "yaw",
+      "action": 0.6,
+      "kind": "doublet",
+      "t0": 20.2,
+      "t1": 20.5
+    },
+    {
+      "name": "yaw_doublet_neg",
+      "chan": "yaw",
+      "action": -0.6,
+      "kind": "doublet",
+      "t0": 20.5,
+      "t1": 20.8
+    },
+    {
+      "name": "yaw_chirp",
+      "chan": "yaw",
+      "amp": 0.4,
+      "f0": 0.5,
+      "f1": 6.0,
+      "kind": "chirp",
+      "t0": 20.8,
+      "t1": 23.8
+    },
+    {
+      "name": "yaw_trim_c",
+      "chan": "yaw",
+      "kind": "trim",
+      "t0": 23.8,
+      "t1": 24.8
+    },
+    {
+      "name": "thrust_step_pos",
+      "chan": "thrust",
+      "action": -0.19999999999999996,
+      "kind": "thrust_step",
+      "t0": 24.8,
+      "t1": 25.3
+    },
+    {
+      "name": "thrust_hover_a",
+      "chan": "thrust",
+      "kind": "trim",
+      "t0": 25.3,
+      "t1": 25.8
+    },
+    {
+      "name": "thrust_step_neg",
+      "chan": "thrust",
+      "action": -1.0,
+      "kind": "thrust_step",
+      "t0": 25.8,
+      "t1": 26.3
+    },
+    {
+      "name": "thrust_hover_b",
+      "chan": "thrust",
+      "kind": "trim",
+      "t0": 26.3,
+      "t1": 27.3
+    }
+  ]
+}
