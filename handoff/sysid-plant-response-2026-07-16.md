@@ -112,3 +112,44 @@ Order: free-fall(0 g) → 3 g → 2.5/2/1.5 g. accel_z is body-frame specific fo
 | `seg3_roll_ampsweep` | `20260716_024734_sysid_roll_sweep_f1` | 93/300 | roll ±0.1, +0.6 |
 | `seg3_pitch_ampsweep` | `20260716_025059_sysid_pitch_sweep_f1` | 90/300 | pitch ±0.1, +0.6 |
 | `seg3_thrust_curve_ff` | `20260716_025331_sysid_thrust_ff_f1` | 96/112 | 0 g + 3 g endpoints + mids |
+
+---
+
+## 6. Battery-4 (2026-07-16) — FULL-RANGE coverage (fills the battery-3 gaps)
+
+Battery-3 sweeps only landed 0.1 & 0.6 (translate → wall ~2.3 s). Rate settles by ~tick 4 (0.1 s), so battery-4 uses **shorter 0.3 s holds** → less attitude windup → survives longer → covers more amplitudes. `sysid/seg4_*.csv`, seg-labeled. **Read window: gains measured on ticks 4–12 (~0.1–0.3 s plateau), skipping the 2–3-tick spin-up.**
+
+### 6a. COMPLETE roll & pitch rate-gain curves (both axes, both signs where landed)
+| \|a\| | cmd (rad/s) | roll \|gain\| | pitch \|gain\| |
+|---|---|---|---|
+| 0.1 | 0.314 | 2.47 | 2.47 |
+| 0.2 | 0.628 | 2.46 | 2.46 |
+| 0.4 | 1.256 | 2.65 | 2.64 |
+| 0.6 | 1.884 | 2.92 | 2.90 |
+| 0.8 | 2.512 | 3.07 | 3.04 |
+
+Roll ≡ pitch across the whole range. **Flat ~2.46 at small signal (0.1–0.2), rising expansively to ~3.05 at 0.8.** The small-signal plateau (2.46) sits right on your DiffAero base (2.50). Negatives captured for 0.1/0.2/0.4 (0.8 partial) — all within ~2% of the positive, confirming odd symmetry. (yaw, battery-2 ampsweep: 2.23→2.31→2.48→2.67→2.89 over 0.1→0.8.)
+
+> **Consistency note:** the rate has a slow ~4–9 % upward creep *within* a hold (e.g. roll +0.6: 2.71 @0.1 s → 2.96 @0.5 s). Battery-4 (0.3 s holds) reads the ~0.15–0.3 s plateau; battery-3 (0.5 s holds) read a touch higher on the creep — that's the ~2.9-vs-2.92 spread, not noise. All per-tick values are in the logs; fit the plateau or the creep as you prefer.
+
+### 6b. CLEAN static thrust curve — `20260716_031128_sysid_thrust_hover3g_f1` (SYSID_DONE, full)
+3 g applied **first from the v≈0 bootstrap hover** (cleanest static point), mids interleaved with 1 g. Peak accel_z per collective (peak = spin-up complete, lowest velocity):
+| collective | thrust (g) | linear label |
+|---|---|---|
+| 0 (free-fall, batt-3) | ~0 | 0 g |
+| 0.2656 (hover) | 1.0 | 1 g |
+| 0.398 | ~1.2 | 1.5 g |
+| 0.531 | ~2.2 | 2 g |
+| 0.664 | ~3.6 | 2.5 g |
+| 0.797 | **~5.2** | 3 g |
+
+**Convex, ≈ thrust ∝ collective^1.5** (0.797 = 3× hover-collective → 5.2 g ≈ 3^1.5 = 5.2). At full-ish stick the sim delivers **~1.7× the linear thrust** → confirms the ~2.1× full-stick under-prediction, cleaner than the free-fall run's velocity-smeared 4.6–5.6.
+
+**Velocity-dependence re-confirmed independently:** the 1 g-recovery segments (drone climbing fast) read only **~0.4 g at hover-collective** vs 1 g at v=0 — same collective, less thrust when climbing (inflow). So the thrust map is **f(collective, climb-velocity)**, not static. Fit both from the raw 117 Hz IMU (this run = climbing velocities; battery-3 free-fall-first = falling velocities → together they bracket the velocity range).
+
+### 6c. Battery-4 capture inventory
+| program | session | rows | landed |
+|---|---|---|---|
+| `seg4_roll_fill` | `20260716_030723_sysid_roll_fill_f1` | 95/144 | roll ±0.2, ±0.4, +0.8 |
+| `seg4_pitch_fill` | `20260716_031011_sysid_pitch_fill_f1` | 89/144 | pitch ±0.2, ±0.4, +0.8 |
+| `seg4_thrust_hover3g` | `20260716_031128_sysid_thrust_hover3g_f1` | 85/85 FULL | static 3/2.5/2/1.5/1 g + velocity |
