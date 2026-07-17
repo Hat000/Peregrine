@@ -16,10 +16,20 @@ torch = pytest.importorskip("torch")
 
 
 class _RawEnv:
+    """Models the REAL storage topology (smoke 3312166's lesson): ``_w`` resolves via the CLASS
+    (diffaero base property), so it is NOT in the instance __dict__ and a drill for "_w" misses;
+    ``_egorw``/``_yaw_cmd_clamp`` are plain instance attrs (peregrine_racing_ego.py:835)."""
+
     def __init__(self, n):
-        self._w = torch.zeros((n, 3))
-        self._w[:, 2] = 1.5
+        self._n = n
+        self._egorw = object()          # the anneal-proven drill anchor
         self._yaw_cmd_clamp = 0.7
+
+    @property
+    def _w(self):
+        w = torch.zeros((self._n, 3))
+        w[:, 2] = 1.5
+        return w
 
 
 class _Guard:
@@ -43,6 +53,17 @@ def test_guard_raises_bare_access():
     g = _Guard(_RawEnv(4))
     with pytest.raises(AttributeError):
         _ = g._w  # the exact pre-fix failure
+
+
+def test_drill_for_w_itself_misses_property_topology():
+    """Pins the smoke-3312166 lesson: _w is a class property -> NOT in __dict__ -> a drill for
+    "_w" returns None (the a589211 v1 fix fell back to the guard and re-crashed); the drill must
+    anchor on an instance attr the racing env actually owns (_egorw)."""
+    te = _import_train_ego()
+    wrapped = _Guard(_RawEnv(4))
+    assert te._unwrap_env_with(wrapped, "_w") is None
+    holder = te._unwrap_env_with(wrapped, "_egorw")
+    assert holder is not None and float(holder._w[0, 2]) == 1.5
 
 
 def test_accum_yaw_through_guard_no_raise_and_correct_clamp():
