@@ -635,9 +635,13 @@ def _accum_yaw(env, phys_action, reset_mask, ys):
     and excludes just-reset envs from the ACHIEVED mean (env._w is re-seeded by reset_idx that step).
     Returns the (lazily-initialised) accumulator dict."""
     import torch
-    clamp = float(getattr(env, "_yaw_cmd_clamp", 0.0) or 0.0)
+    # RecordEpisodeStatistics prohibits ALL underscore attrs from the top (test_unwrap_env.py): the bare
+    # env._w raised and killed DET_EVAL (v1smoke 3312029), and getattr(env, "_yaw_cmd_clamp", 0.0)
+    # SILENTLY fell back to 0.0 through the same guard. Drill to the raw holder like every anneal does.
+    raw = _unwrap_env_with(env, "_w") or env
+    clamp = float(getattr(raw, "_yaw_cmd_clamp", 0.0) or 0.0)
     cmd_yaw = clamp_yaw_command(phys_action, clamp)[..., 3].reshape(-1)
-    ach_yaw = env._w[..., 2].reshape(-1)
+    ach_yaw = raw._w[..., 2].reshape(-1)
     if ys is None:
         z = torch.zeros_like(cmd_yaw)
         ys = {"last_sign": z.clone(), "flips": z.clone(),
