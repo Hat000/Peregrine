@@ -20,7 +20,7 @@ operator's count — and which demonstrably worked (below).
 
 | run | GO→first_cmd | prog rows | died in seg | collision | pilot visual (Fengyou) |
 |---|---|---|---|---|---|
-| p02_r1 (`022161̀3`) | 0.493 s | 271 (~6.8 s) | g3 | env (1002) | right of gate 0, right of g1, right of g2 |
+| p02_r1 (`021613`) | 0.493 s | 271 (~6.8 s) | g3 | env (1002) | right of gate 0, right of g1, right of g2 |
 | p02_r2 (`021824`) | 0.477 s | 199 (~5.0 s) | g1 | **gate 1 frame** (1001) | right of gate 0, clipped right of gate 1 |
 | p02_r3 (`022415`) | 0.556 s | 297 (~7.4 s) | g3 | env (1002), 13 contacts | (same right-line shape) |
 
