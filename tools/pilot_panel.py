@@ -202,6 +202,25 @@ SCHEMA = [
          group="Ego control", default=0.0, step=0.5,
          help="Clip ALL 3 body-rate axes (rad/s, 0=off). NOT for despin ckpts -- use yaw-clamp."),
 
+    # ---- Ego arrestor (ratchet) -------------------------------------------
+    dict(key="ego_arrestor", flag="--ego-arrestor", action="flag", ui="bool",
+         group="Ego arrestor", default=False,
+         help="Post-gate STARE-BRAKE takeover: after banking a listed gate, take the wire, bleed "
+              "speed while staring at the next gate, hand back to the policy slow+level+in-view. "
+              "Fail-open (gate-lost/timeout/drift aborts return control to the policy). Applies at "
+              "LAUNCH; engages automatically in-flight. NEEDS branch ratchet-arrestor-2026-07-18."),
+    dict(key="ego_arrest_after_gates", flag="--ego-arrest-after-gates", action="value", ui="text",
+         group="Ego arrestor", default="1",
+         help="Comma list of gate indices whose PASS engages the arrestor (once each). '1' = brake "
+              "right after banking gate 1, before the gate-2 descend wall. Blank = no gate trigger."),
+    dict(key="ego_arrest_speed_hi", flag="--ego-arrest-speed-hi", action="value", ui="number",
+         group="Ego arrestor", default=0.0, step=0.5,
+         help="Runaway catcher: engage whenever KF horizontal speed exceeds this (m/s, 0=off). "
+              "~2 s refractory after each handback so it can't chatter. Probe recipe: 10."),
+    dict(key="ego_arrest_max_s", flag="--ego-arrest-max-s", action="value", ui="number",
+         group="Ego arrestor", default=4.0, step=0.5,
+         help="Hard arrest timeout (s) -> fail-open handback to the policy."),
+
     # ---- Run / timing -----------------------------------------------------
     dict(key="label", flag="--label", action="value", ui="text",
          group="Run", default="panel_run",
@@ -243,7 +262,7 @@ SCHEMA = [
          help="Verbose per-tick obs debug printing."),
 ]
 
-GROUP_ORDER = ["Flight stack", "Vision", "Ego perception", "Ego control", "Run", "Advanced"]
+GROUP_ORDER = ["Flight stack", "Vision", "Ego perception", "Ego control", "Ego arrestor", "Run", "Advanced"]
 BY_KEY = {s["key"]: s for s in SCHEMA}
 
 # Per-model deploy DEFAULTS -- auto-applied in the panel when a checkpoint is picked (keyed by
