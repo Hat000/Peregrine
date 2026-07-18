@@ -270,7 +270,31 @@ BY_KEY = {s["key"]: s for s in SCHEMA}
 # the ego-ckpts-tracka-2026-07-13 arm (w0 + m8) at 0.35. MIXING THE TWO = OOD (Fengyou 2026-07-13).
 # NOTE: only the yaw clamp is encoded so far -- whether the vtrackA lineage also needs the vpef
 # recipe (slot1 / sector=map / tight pitch) is UNCONFIRMED; extend per model once known.
+# ego-ckpts-v1-2026-07-18 (v1 PICK release): full REPORT4 champion recipe, auto-applied on pick.
+# TRT M-engine detector, assist 1.3 g, the champion LOG-ECHO map (frozen side file -- NOT the
+# live survey map), tight pitch 1.0, det-hold 0.2, rate 40 @ uplink scale 1.2, yaw 0.7 MANDATORY
+# (fly_rl default is 0.0). A = sweep pick (4.65 gates @1200-step); R = stability fallback
+# (recovery-trained, best roll of portfolio). Settled GO >=3 s per run; labels v1pick_*.
+_V1_RECIPE = {
+    "ego_yaw_clamp": 0.7,
+    "seeker_detector": "yolo",
+    "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
+    "ego_assist_thrust": 1.3,
+    "ego_sector_mode": "map",
+    "ego_coarse_map": "configs/vq2_coarse_map_champion_logecho.json",
+    "ego_slot1": True,
+    "ego_pitch_clamp": 1.0,
+    "ego_det_hold": 0.2,
+    "ego_stale_horizon": 0.5,
+    "ego_rate_scale": 1.2,
+    "rate": 40.0,
+    "virtual_flip": True,
+}
+
 MODEL_DEFAULTS = {
+    # ego-ckpts-v1-2026-07-18  -- see _V1_RECIPE above
+    "v1As0_upd17500_actor.pth": {**_V1_RECIPE, "label": "v1pick_A"},
+    "v1Rs0_upd17500_actor.pth": {**_V1_RECIPE, "label": "v1pick_R"},
     # ego-ckpts-vpef-2026-07-12  -- yaw 0.7
     "vpefwh2_actor.pth":    {"ego_yaw_clamp": 0.7},
     "vpeffs0_actor.pth":    {"ego_yaw_clamp": 0.7},

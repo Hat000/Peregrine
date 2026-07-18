@@ -1,0 +1,13 @@
+{
+  "_doc": "VQ2 coarse map for --ego-sector-mode map. 'sector' is one [horiz, vert] turn bucket PER GATE, each value in {-1, 0, 1}, in the drone's gravity-leveled approach frame. Row g answers 'as I arrive at gate g, where is gate g+1?'. horiz -1 = next gate RIGHT, +1 = LEFT; vert +1 = ABOVE, -1 = BELOW.",
+  "_provenance": "EXACT map the 5-gate champion flew (echoed in its launch log tools/pilot_panel_logs/p1784060588_67.log @ 28404fa). The main survey map was edited post-flight; this file freezes the champion's version for reproduction flights (ratchet-P0.3/REPORT4 recipe, v1 pick-flights).",
+  "sector": [
+    [0, 0],
+    [-1, 1],
+    [0, -1],
+    [0, 0],
+    [1, -1],
+    [0, 0],
+    [-1, 0]
+  ]
+}
