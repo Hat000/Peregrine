@@ -128,10 +128,13 @@ FAITHFUL_SHARED="++dynamics.faithful_rate=true ++env.ego_vision_cadence=true \
 ++env.ego_vision_frame_hz=${VCFRAMEHZ} ++env.ego_vision_detect_p=${VCDETECTP}"
 
 # ---- THE v1.5 SHARED SPEED-DISCIPLINE + YAW-QUIETNESS block (A,B,D + roll-recover CORE). rw_yaw_duty +
-#      rw_yaw_dither are per-arm (built in extra_for). recovery term uses the default theta0 (30deg); it is
-#      ON-FROM-BIRTH (no recovery_anneal) -- the dither-from-birth philosophy for the smooth ffs0 warm. ----
+#      rw_yaw_dither are per-arm (built in extra_for). recovery term keeps the v1-arm-R VALIDATED anneal
+#      (commander review 2026-07-18): a from-birth POSITIVE shaping reward is farmable in principle
+#      (induce roll -> collect recovery); arm R's no-cost/best-roll validation was WITH the anneal, so the
+#      anneal keys ship in CORE. Dither-from-birth stays for the PENALTIES only. ----
 V15_SHARED="++env.overspeed_abort_mps=${OVERSPEED} ++env.rw_progress_vcap_mps=${PROGVCAP} \
-++env.rw_yaw_jerk=${YAWJERK} ++env.yaw_duty_free_band=${FREEBAND} ++env.rw_roll_recover=${RECOVER}"
+++env.rw_yaw_jerk=${YAWJERK} ++env.yaw_duty_free_band=${FREEBAND} ++env.rw_roll_recover=${RECOVER} \
+++env.recovery_anneal=true ++env.recovery_start=0.0 ++env.recovery_hold_frac=0.3"
 
 export STAGES="${STAGE}"
 export PRECHECK=1
