@@ -1,0 +1,51 @@
+{
+  "source": "data\\runs\\20260714_202317_panel_run_f1\\ego_obs.jsonl",
+  "flip": false,
+  "rate_hz": 40.0,
+  "n_source_ticks": 287,
+  "n_tape_rows": 433,
+  "duration_s": 10.821705,
+  "truncate_at_gate": null,
+  "margin_ticks": null,
+  "cut_src_index": null,
+  "gate_transitions": [
+    {
+      "k": 76,
+      "gate_from": 0,
+      "gate_to": 1,
+      "t_rel_s": 2.9451
+    },
+    {
+      "k": 132,
+      "gate_from": 1,
+      "gate_to": 2,
+      "t_rel_s": 5.1677
+    },
+    {
+      "k": 159,
+      "gate_from": 2,
+      "gate_to": 3,
+      "t_rel_s": 6.189
+    },
+    {
+      "k": 193,
+      "gate_from": 3,
+      "gate_to": 4,
+      "t_rel_s": 7.4252
+    },
+    {
+      "k": 243,
+      "gate_from": 4,
+      "gate_to": 5,
+      "t_rel_s": 9.1894
+    }
+  ],
+  "kf_speed_at_tape_end": 12.005762856840914,
+  "recorded_ego_rate_scale": 1.2,
+  "recorded_virtual_flip": true,
+  "inversion_roundtrip_err": {
+    "rates": 1.1102230246251565e-16,
+    "collective": 5.6639999999608115e-06
+  },
+  "replay_cmd": "python rl/fly_rl.py --endpoint udp:127.0.0.1:14550 --ego-ckpt ckpts/vpeffs0_actor.pth --sysid-replay tape_full.csv --rate 40 --ego-rate-scale 1.2 --no-virtual-flip --sysid-climb-s 0 --sysid-settle-s 0 --seeker-detector red_glow --max-seconds 26"
+}
