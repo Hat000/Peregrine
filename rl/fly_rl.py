@@ -759,6 +759,35 @@ def sysid_wire_from_action(a, virtual_flip: bool):
     return rate_frd, collective, normed_thrust
 
 
+def replay_row_for_sim_time(st_ns: int, anchor_ns: int, tick_ns: int, n_rows: int):
+    """SIM-TIME-INDEXED tape row selector (--sysid-replay-simtime, REPLAY-RATCHET P0.1). Returns
+    the tape row DUE at sim-time ``st_ns`` (measured from ``anchor_ns`` = the sim clock at the
+    FIRST program tick), or ``None`` once the program is over.
+
+    ZOH latest-due-row semantics: row k owns the sim-time window
+    ``[anchor + k*tick_ns, anchor + (k+1)*tick_ns)``; ``k = floor((st - anchor)/tick_ns)``,
+    clamped below at 0 (pre-anchor jitter holds row 0). A SLOW wake (>1 tick since the last) skips
+    the intermediate rows -> the latest due row wins (SET_ATTITUDE_TARGET streaming: latest wins).
+    A FAST wake (<1 tick) re-selects the SAME row -> the caller re-sends it (the wire is a >=30 Hz
+    keepalive; never suppress). The last row (n_rows-1) is held for its FULL tick_ns window; once
+    ``st - anchor >= n_rows*tick_ns`` the program is over -> None.
+
+    Pure + integer-exact (ns ints, no float clock) so a row-boundary straddle is deterministic to
+    the sim tick; unit-tested without a sim. This is the fix for the player consuming one row per
+    WALL tick (which drifts ~3.5% vs the tape's fixed grid under loop under-run)."""
+    n_rows = int(n_rows)
+    tick_ns = int(tick_ns)
+    if n_rows <= 0 or tick_ns <= 0:
+        return None
+    elapsed = int(st_ns) - int(anchor_ns)
+    if elapsed < 0:
+        return 0                                 # pre-anchor (clock jitter): hold row 0
+    k = elapsed // tick_ns
+    if k >= n_rows:
+        return None                              # last row's full window elapsed -> program over
+    return int(k)
+
+
 def _clip01(x: float) -> float:
     """Clip to the wire collective range [0,1] — the SAME clip policy_step applies to its
     own collective, so an inactive assist recomputes a bit-identical value."""
@@ -2054,6 +2083,10 @@ def _fly_ego(client, actor, args, flight_idx: int,
     _sysid_log: list = []
     _sysid_k    = -1           # -1 => bootstrap (climb-then-hover) until settled; then 0..N-1 = program
     _sysid_boot = 0
+    _sysid_simtime  = bool(getattr(args, "sysid_replay_simtime", False))  # P0.1: index rows by sim-time
+    _sysid_tick_ns  = int(round(1e9 / args.rate))          # tape grid period (ns) for sim-time indexing
+    _sysid_anchor_ns = None    # sim_time_ns at the FIRST program tick (captured lazily in simtime mode)
+    _sysid_wake     = 0        # per-tick wall-wake counter -> logged as k_tick (fast wakes re-send a row)
     if getattr(args, "sysid_replay", ""):
         import csv as _csvmod
         with open(args.sysid_replay, newline="") as _sf:
@@ -2063,6 +2096,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
         _sysid_labels = [(r[5] if len(r) > 5 else "") for r in _srows[1:]]
         print(f"  [sysid] replay: {len(_sysid_prog)} rows from {args.sysid_replay} -- policy BYPASSED, "
               f"clamps/assist OFF, response=gyro+accel (ODOMETRY blocked on this wire).", flush=True)
+        print("  [sysid] row indexing: "
+              + (f"SIM-TIME (--sysid-replay-simtime): row = floor((sim_time-anchor)/"
+                 f"{_sysid_tick_ns / 1e6:.3f} ms), ZOH latest-due, fast wakes RE-SEND (keepalive)"
+                 if _sysid_simtime else
+                 "WALL-TICK (one row per loop wake; default == byte-identical A/B baseline)"),
+              flush=True)
+    _sysid_replay_on = _sysid_prog is not None
     _SYSID_CLIMB_G      = float(getattr(args, "sysid_climb_g", 1.5))
     _SYSID_CLIMB_TICKS  = int(round(float(getattr(args, "sysid_climb_s", 1.5)) * args.rate))
     _SYSID_ARREST_G     = max(0.0, 2.0 - _SYSID_CLIMB_G)   # symmetric decel nulls the climb velocity
@@ -2098,9 +2138,22 @@ def _fly_ego(client, actor, args, flight_idx: int,
     _timing_log: list = []
 
     while time.monotonic() < deadline:
-        while time.monotonic() < next_t:
-            client.pump()
-            time.sleep(0.001)
+        if _sysid_replay_on:
+            # PRECISION tick wait (--sysid-replay only): pump + coarse-sleep to ~2 ms before the
+            # deadline, then spin to it. Needs the 1 ms system timer (timeBeginPeriod, set around
+            # this loop in _fly_armed) for the sleep to land at ~1 ms instead of ~15 ms -> the loop
+            # holds --rate instead of under-running it. Policy flights use the UNCHANGED wait below.
+            while True:
+                client.pump()
+                _rem = next_t - time.monotonic()
+                if _rem <= 0.0:
+                    break
+                if _rem > 0.002:
+                    time.sleep(0.001)
+        else:
+            while time.monotonic() < next_t:
+                client.pump()
+                time.sleep(0.001)
         client.pump()
         next_t = time.monotonic() + tick
         now = time.monotonic()
@@ -2168,15 +2221,27 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     print(f"  [sysid] bootstrap done ({_sysid_boot} ticks: climb {_SYSID_CLIMB_G}g / "
                           f"arrest {_SYSID_ARREST_G:.2f}g / hover) -> PROGRAM START (k=0)", flush=True)
             else:                                           # ---- program injection ----
-                if _sysid_k >= len(_sysid_prog):
-                    print(f"  [sysid] program COMPLETE through k={_sysid_k - 1} -> ending.", flush=True)
-                    final_state = "SYSID_DONE"
-                    break
-                _av = _sysid_prog[_sysid_k]
+                if _sysid_simtime:                          # P0.1: pick the row DUE at this sim-time
+                    if _sysid_anchor_ns is None:
+                        _sysid_anchor_ns = st               # anchor at the FIRST program tick
+                    _row = replay_row_for_sim_time(st, _sysid_anchor_ns, _sysid_tick_ns,
+                                                   len(_sysid_prog))
+                    if _row is None:                        # last row held its full window -> done
+                        print(f"  [sysid] program COMPLETE (sim-time indexed; last row held its "
+                              f"full {_sysid_tick_ns / 1e6:.3f} ms window) -> ending.", flush=True)
+                        final_state = "SYSID_DONE"
+                        break
+                else:                                       # default: one row per WALL tick
+                    if _sysid_k >= len(_sysid_prog):
+                        print(f"  [sysid] program COMPLETE through k={_sysid_k - 1} -> ending.", flush=True)
+                        final_state = "SYSID_DONE"
+                        break
+                    _row = _sysid_k
+                _av = _sysid_prog[_row]
                 _rate_frd, _coll, _normed = sysid_wire_from_action(_av, args.virtual_flip)
                 _a = (float(_av[0]), float(_av[1]), float(_av[2]), float(_av[3]))
-                _phase = "prog"; _krow = _sysid_k
-                _seg = (_sysid_labels[_sysid_k] if _sysid_labels else "")
+                _phase = "prog"; _krow = _row
+                _seg = (_sysid_labels[_row] if _sysid_labels else "")
             client.send_command(ControlCommand(mode=ControlMode.BODY_RATE, sim_time_ns=st,
                                                body_rate=_rate_frd, thrust=_coll))
             _g = getattr(s, "gyro_body_raw", None); _ac = s.accel_body   # RAW wire gyro (PRE gyro_sign),
@@ -2190,7 +2255,9 @@ def _fly_ego(client, actor, args, flight_idx: int,
                 gyro_z=(float(_g[2]) if _g is not None else None),
                 accel_x=(float(_ac[0]) if _ac is not None else None),
                 accel_y=(float(_ac[1]) if _ac is not None else None),
-                accel_z=(float(_ac[2]) if _ac is not None else None)))
+                accel_z=(float(_ac[2]) if _ac is not None else None),
+                k_tick=_sysid_wake))              # wall-wake counter (APPENDED col; fast wakes re-send)
+            _sysid_wake += 1
             if _sysid_k >= 0:
                 _sysid_k += 1
             n_ticks += 1
@@ -2391,7 +2458,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
         import csv as _csvmod
         _scols = ["k", "phase", "seg", "sim_time_ns", "a_thrust", "a_roll", "a_pitch", "a_yaw",
                   "cmd_wx", "cmd_wy", "cmd_wz", "cmd_thrust", "collective",
-                  "gyro_x", "gyro_y", "gyro_z", "accel_x", "accel_y", "accel_z"]
+                  "gyro_x", "gyro_y", "gyro_z", "accel_x", "accel_y", "accel_z", "k_tick"]
         _sout = Path(session_dir) / "sysid_vq2_log.csv"
         try:
             with open(_sout, "w", newline="") as _sf:
@@ -2498,7 +2565,28 @@ def _fly_armed(client, actor, args, flight_idx: int,
     # --ego-ckpt every existing path below is untouched. [ego-deploy 2026-07-09]
     # ------------------------------------------------------------------
     if getattr(args, "ego_ckpt", None):
-        return _fly_ego(client, actor, args, flight_idx, session_dir, result)
+        # --- Windows precision timer for --sysid-replay (REPLAY-RATCHET P0.1): the default ~15 ms
+        # sleep granularity makes the replay loop under-run --rate (the tape then lags the sim
+        # clock). Raise the system timer to 1 ms for the flight, ALWAYS restoring it (finally).
+        # No-op off Windows / off replay / if winmm is unavailable. Scoped to the ego path (the only
+        # --sysid-replay host); the hybrid tick wait that USES it lives in _fly_ego's loop
+        # (replay-gated). Policy flights never enter this branch on the replay guard, so their
+        # timing is untouched. ---
+        _winmm = None
+        if getattr(args, "sysid_replay", "") and sys.platform == "win32":
+            try:
+                _winmm = ctypes.windll.winmm
+                _winmm.timeBeginPeriod(1)
+            except Exception:
+                _winmm = None
+        try:
+            return _fly_ego(client, actor, args, flight_idx, session_dir, result)
+        finally:
+            if _winmm is not None:
+                try:
+                    _winmm.timeEndPeriod(1)
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # PATH B bridge: CTBR launcher to the handoff seam
@@ -2819,6 +2907,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "Raise this to start higher (more drift margin before the excitation).")
     ap.add_argument("--sysid-settle-s", type=float, default=1.0,
                     help="sysID bootstrap hover-hold (s) after climb+arrest, before program k=0.")
+    ap.add_argument("--sysid-replay-simtime", action="store_true",
+                    help="REPLAY-RATCHET P0.1: index the tape by SIM-TIME "
+                         "(row = floor((sim_time_ns - anchor)/tick_ns), tick_ns = round(1e9/--rate)) "
+                         "instead of consuming one row per WALL loop tick. Kills the cumulative "
+                         "command lag from loop under-run (the wall clock drifts ~3.5%% vs the tape's "
+                         "fixed grid on Windows). ZOH latest-due-row: a slow wake SKIPS rows (latest "
+                         "wins on the SET_ATTITUDE_TARGET stream), a fast wake RE-SENDS the same row "
+                         "(>=30 Hz keepalive). --rate MUST equal the tape's grid rate. Default OFF == "
+                         "byte-identical one-row-per-tick (the A/B baseline).")
     ap.add_argument("--label",        default="rl_s1")
     ap.add_argument("--rate",         type=float, default=30.0,
                     help="control loop Hz; default 30 = the TRAINING dt 0.0333 "
@@ -3351,7 +3448,9 @@ def main() -> int:
                     "ego_yaw_clamp": args.ego_yaw_clamp,
                     "ego_speed_gov": args.ego_speed_gov,
                     "ego_slot1": args.ego_slot1,
-                    "ego_kp_persist": args.ego_kp_persist}
+                    "ego_kp_persist": args.ego_kp_persist,
+                    "sysid_replay": str(args.sysid_replay),
+                    "sysid_replay_simtime": bool(args.sysid_replay_simtime)}
                    if getattr(args, "ego_ckpt", None) else {}),
             )
             holder["rec"] = recorder
