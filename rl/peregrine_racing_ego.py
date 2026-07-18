@@ -613,6 +613,24 @@ def ceiling_contact(curr_z: Tensor, spawn_z: Tensor, above_m: float) -> Tensor:
     return curr_z > (spawn_z + float(above_m))
 
 
+def overspeed_abort_mask(speed: Tensor, overspeed_abort_mps: float) -> Tensor:
+    """OVERSPEED EPISODE-ABORT trigger (v1.5 anti-velocity-runaway): True where GT total speed ``speed``
+    = ||v|| (m/s) EXCEEDS ``overspeed_abort_mps``. The env folds this into ``oob`` (OOB-CLASS handling:
+    pays terminal_oob, KEEPS banked gate progress -- death pricing UNCHANGED), so it terminates the
+    episode fatally when the drone rides past a racing-safe top speed. GT is legal in a TERMINATION (the
+    obs is untouched; only the reward/termination path reads it). Distinct from ``ceiling_contact`` (which
+    is CRASH-class / lethal): overspeed is a soft-bound OOB-class abort, NOT a banked-progress forfeit.
+
+    Caps the RUNAWAY VARIABLE (top speed) BY CONSTRUCTION -- the no-spin-abort precedent -- forcing braking
+    skill into the curriculum, closing the discount/time pull-forward that the progress-credit saturation
+    cannot remove (REWARD-LEDGER Q2). overspeed_abort_mps <= 0 -> permanently False (byte-identical
+    default-off). speed (N,) m/s; returns bool (N,). Pure -> unit-testable offline (the env is cluster-only)."""
+    assert torch is not None
+    if overspeed_abort_mps <= 0.0:
+        return torch.zeros_like(speed, dtype=torch.bool)
+    return speed > float(overspeed_abort_mps)
+
+
 def kp_persist_update(count, detectable, n_required):
     """KEYPOINT-PERSISTENCE debounce (pure; wired exactly ONCE per tick by _step_estimator).
 
@@ -846,6 +864,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # Only READ/rolled when rw_vel_smooth != 0 -> byte-identical when the term is OFF (never touched).
         self._prev_vel = torch.zeros(self.n_envs, 3, device=dev, dtype=self._ego_dtype)
         self._prev_accel = torch.zeros(self.n_envs, 3, device=dev, dtype=self._ego_dtype)
+        # per-env PEAK GT speed this episode (m/s), for the DET_EVAL max_speed observability (v1.5). Updated
+        # each step (max with ||v||), reset per-episode in reset_idx, exposed as stats_raw["peak_speed_mps"].
+        # Purely diagnostic -- never enters the reward or a termination (byte-identical training).
+        self._peak_speed = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         # ONCE-PER-GATE parabola latch buffer (ego_reward.crossing_parabola_reward contract; the audit
         # re-payment-farm fix): per-env bool, passed into compute_ego_reward EVERY step and mutated IN
         # PLACE there (marked on a forward target-plane crossing) ONLY when rw_parabola_latch is on.
@@ -944,6 +966,16 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # LETHAL CEILING plane at spawn_z + this (m): crash-class like the floor (see
         # ceiling_contact's docstring; A2 ceiling-strike patch). 0.0 == OFF (default).
         self._ceiling_above_spawn = float(getattr(cfg, "ego_ceiling_above_spawn_m", 0.0))
+        # OVERSPEED EPISODE-ABORT (v1.5 anti-velocity-runaway, 2026-07-18): a fatal, OOB-CLASS termination
+        # when GT ||v|| exceeds this cap (m/s). GT is legal in TERMINATIONS (the hard no-GT-in-obs rule is
+        # untouched -- the obs builder never sees this). Routed through the SAME ``oob`` path as an arena
+        # exit (pays terminal_oob, KEEPS banked gate progress) -- death pricing is UNCHANGED; this only adds
+        # a new OOB trigger. Caps the actual runaway variable (top speed) BY CONSTRUCTION -- the no-spin-
+        # abort precedent -- forcing braking skill into the curriculum where the discount/time pull-forward
+        # (which progress saturation cannot remove) otherwise rewards riding to the controllability edge.
+        # Cannot fire at spawn: the ego env spawns at rest (v~0) and the plant cannot reach the cap in one
+        # 33 ms step, so no grace is needed (mirrors OOB, which has none). 0.0 == OFF (byte-identical).
+        self._overspeed_abort_mps = float(getattr(cfg, "overspeed_abort_mps", 0.0))
         self._spin_clock = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         self._rot_accum = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         # last detectable mask from _step_estimator (diagnostics: target_detectable_duty).
@@ -1157,6 +1189,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # so no cross-episode jerk leaks (a standing start has v~0 -> the first-step jerk is ~0 anyway).
             self._prev_vel[env_idx] = 0.0
             self._prev_accel[env_idx] = 0.0
+            self._peak_speed[env_idx] = 0.0   # v1.5: fresh episode -> reset the peak-GT-speed tracker
             self._kp_persist_count[env_idx] = 0   # kp-persist: fresh episode -> streak restarts
             # clear the ONCE-PER-GATE parabola latch for EVERY reset path: step() funnels BOTH
             # terminated and truncated (timeout) envs through reset_idx, so this is the single choke
@@ -1518,6 +1551,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self.target_pos.copy_(self.gate_pos[ar, tg_new])
 
         oob_full = ((curr_pos < self.box_min) | (curr_pos > self.box_max)).any(dim=-1)
+        # OVERSPEED EPISODE-ABORT (v1.5 anti-velocity-runaway): a fatal OOB-CLASS termination when GT ||v||
+        # exceeds the cap. GT is legal in a TERMINATION (the actor obs is untouched). Folded into oob_full
+        # BEFORE the `& ~lethal` below so it rides the EXACT OOB handling (pays terminal_oob, KEEPS banked
+        # progress) and a simultaneously-lethal env (floor/ceiling/spin) still routes lethal (crash-class
+        # wins). 0.0 == OFF (byte-identical: overspeed stays all-False, oob_full unchanged).
+        overspeed = torch.zeros_like(oob_full)
+        if self._overspeed_abort_mps > 0.0:
+            overspeed = overspeed_abort_mask(torch.linalg.norm(self._v, dim=-1), self._overspeed_abort_mps)
+            oob_full = oob_full | overspeed
         # FLOOR CONTACT = a CRASH / DISQUALIFICATION, as expensive as a gate strike (Fengyou 2026-07-07).
         # Diving below the arena floor (Z-up z < box_min_z) is physically a GROUND CONTACT, not merely
         # "off course": in the competition hitting the floor and hitting a gate are BOTH DQs. So fold a
@@ -1560,6 +1602,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._peak_roll = torch.maximum(self._peak_roll, roll_from_quat_xyzw(self._q).abs())
         speed = torch.linalg.norm(self._v, dim=-1)
         self._speed_sum += speed
+        self._peak_speed = torch.maximum(self._peak_speed, speed)   # v1.5: episode peak GT speed (DET_EVAL)
 
         time_left_s = (self.max_steps - self.progress).clamp(min=0).float() * self.dt
         a_norm = (action - self._act_lo) / self._act_span
@@ -1637,9 +1680,14 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # A steady yaw (a needed turn) -> delta~0 -> ~0 penalty; a +-clamp rail-flip -> large delta -> heavy
             # penalty (the dither). Read HERE, BEFORE self.last_action is rolled to the current action (~L1440),
             # so self.last_action still holds the PREVIOUS step's applied command.
+            # yaw_cmd_delta serves BOTH the squared yaw_dither AND the v1.5 L1 yaw_jerk term (same post-clamp
+            # delta); compute it when EITHER is armed. yaw_cmd (the post-clamp applied yaw command itself)
+            # feeds the v1.5 amplitude/duty term. self.last_action still holds the PREVIOUS applied command
+            # (rolled after the reward, ~L1797). None when the respective term is OFF -> byte-identical.
             yaw_cmd_delta = None
-            if self._egorw.yaw_dither != 0.0:
+            if self._egorw.yaw_dither != 0.0 or self._egorw.yaw_jerk != 0.0:
                 yaw_cmd_delta = action[..., 3] - self.last_action[..., 3]
+            yaw_cmd = action[..., 3] if self._egorw.yaw_duty != 0.0 else None
             # VELOCITY-JERK smoothness input (R0 still-yaw hover boot 2026-07-12; None unless
             # rw_vel_smooth>0 -> byte-identical off): the CURRENT-step WORLD CoM acceleration
             # accel_curr = (v_t - v_{t-1})/dt (self._prev_vel holds v_{t-1}); accel_prev = the threaded
@@ -1700,7 +1748,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # leveled roll/pitch (None unless a weight>0). All pefcap-package, byte-identical when OFF.
                 cos_view_next=cos_view_next, roll=roll_att, pitch=pitch_att,
                 # ANTI-DITHER yaw smoothness (None unless rw_yaw_dither>0): the applied yaw-command jerk.
+                # v1.5: yaw_cmd_delta ALSO feeds the L1 yaw_jerk term; yaw_cmd (post-clamp applied command,
+                # None unless rw_yaw_duty>0) + yaw_clamp (the env clamp) feed the amplitude/duty term.
                 yaw_cmd_delta=yaw_cmd_delta,
+                yaw_cmd=yaw_cmd, yaw_clamp=self._yaw_cmd_clamp,
                 # VELOCITY-JERK smoothness (None unless rw_vel_smooth>0): current + previous world CoM accel.
                 accel_curr=accel_curr, accel_prev=accel_prev,
                 # RECOVERY / DAMPING form (A) (None unless rw_roll_recover>0): the drone->current-gate world
@@ -1769,6 +1820,8 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         loss_components["target_detectable_duty"] = float(self._last_detectable[ar, tg].float().mean())
         loss_components["spin_abort_rate"] = float(spin_abort.float().mean())
         loss_components["spin_rot_accum_mean"] = float(self._rot_accum.mean())
+        # v1.5 anti-velocity-runaway: how often the overspeed episode-abort fired this step (0.0 when OFF).
+        loss_components["overspeed_abort_rate"] = float(overspeed.float().mean())
 
         # ===== ESTIMATOR-FAITHFUL diagnostics (L16: these keys emitting in the PRECHECK log ==
         # the package armed; absent keys == it did not). Scored per-step from the just-stepped
@@ -1870,6 +1923,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 "peak_tilt_deg": torch.rad2deg(self._peak_tilt)[reset],
                 "peak_roll_deg": torch.rad2deg(self._peak_roll)[reset],
                 "mean_speed": (self._speed_sum / self.progress.clamp(min=1).float())[reset],
+                "peak_speed_mps": self._peak_speed[reset],   # v1.5: episode peak GT speed (DET_EVAL max_speed)
                 "finish_time_s": ((self.progress.clone() - 1).float() * self.dt)[newly_finished],
                 "pass_offset_m": pass_linf[gate_passed],
             },

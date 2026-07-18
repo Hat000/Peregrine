@@ -586,6 +586,7 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
         agg, n_ep = {}, 0
         ys = None                                          # yaw accumulators (lazy init; only when yaw_log)
         roll_sum = 0.0                                      # sum of per-episode peak |roll| (deg); yaw_log
+        max_speed = 0.0                                     # v1.5: max GT episode-peak speed over the eval (m/s)
         obs = env.reset()
         with torch.no_grad():
             for _ in range(steps):
@@ -594,6 +595,13 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
                 obs, _l, _t, info = env.step(phys)
                 sr = info.get("stats_raw", {})
                 m = info.get("reset")
+                # v1.5 overspeed observability: track the max episode-peak GT speed across the eval (the
+                # peak_speed_mps stat is [reset]-indexed -> present only on completed-episode steps). Read
+                # BEFORE the reset-mask continues so every completed episode is captured. Guarded so an env
+                # without the stat (backward compat) just leaves max_speed at 0.
+                _ps = sr.get("peak_speed_mps")
+                if _ps is not None and _ps.numel() > 0:
+                    max_speed = max(max_speed, float(_ps.max().item()))
                 if yaw_log:                                    # per-STEP yaw-hunting accumulation
                     ys = _accum_yaw(env, phys, m, ys)
                 if m is None:
@@ -610,12 +618,14 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
         r = None
         if n_ep:
             r = {k: agg.get(k, 0.0) / n_ep for k in _DET_EVAL_KEYS}
+            # v1.5: max_speed appended at END (append-only -- existing fields keep their positions for grep).
             print(f"DET_EVAL[{label}] n_ep={n_ep} "
                   f"thread={r['success_rate']:.4f} collision={r['collision_rate']:.4f} "
                   f"miss={r['miss_rate']:.4f} oob={r['oob_rate']:.4f} "
-                  f"n_passed_gates={r['n_passed_gates']:.4f}  (test=True, LIVE env, {steps} steps)")
+                  f"n_passed_gates={r['n_passed_gates']:.4f}  (test=True, LIVE env, {steps} steps) "
+                  f"max_speed={max_speed:.2f}")
         else:
-            print(f"DET_EVAL[{label}] no episodes completed in {steps} steps")
+            print(f"DET_EVAL[{label}] no episodes completed in {steps} steps max_speed={max_speed:.2f}")
         if yaw_log:                                        # single greppable YAW_EVAL[...] line
             _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r)
         return r
@@ -648,9 +658,12 @@ def _accum_yaw(env, phys_action, reset_mask, ys):
     ach_yaw = raw._w[..., 2].reshape(-1)
     if ys is None:
         z = torch.zeros_like(cmd_yaw)
+        # v1.5: satur_sum = count of steps at |cmd_yaw| > 0.95*clamp (yaw rail-saturation duty); clamp
+        # stored so _emit_yaw_eval can report satur_duty=nan when the clamp is OFF (0.95*0 == meaningless).
         ys = {"last_sign": z.clone(), "flips": z.clone(),
               "cmd_abs_sum": cmd_yaw.new_zeros(()), "cmd_n": 0,
-              "ach_abs_sum": cmd_yaw.new_zeros(()), "ach_n": cmd_yaw.new_zeros(())}
+              "ach_abs_sum": cmd_yaw.new_zeros(()), "ach_n": cmd_yaw.new_zeros(()),
+              "satur_sum": cmd_yaw.new_zeros(()), "clamp": clamp}
     active = cmd_yaw.abs() > 0.05                           # DEADBAND (rad/s)
     s = torch.sign(cmd_yaw)
     prev = ys["last_sign"]
@@ -659,6 +672,11 @@ def _accum_yaw(env, phys_action, reset_mask, ys):
     ys["last_sign"] = torch.where(active, s, prev)
     ys["cmd_abs_sum"] = ys["cmd_abs_sum"] + cmd_yaw.abs().sum()
     ys["cmd_n"] += int(cmd_yaw.numel())
+    # v1.5 YAW SATURATION DUTY: fraction of eval steps commanding within 5% of the +-clamp rail (the yaw-
+    # hunter signature). Only meaningful when the clamp is armed (post-clamp |cmd| <= clamp); guarded so a
+    # clamp-OFF run does not report a spurious ~1.0 (0.95*0 == 0 < any nonzero |cmd|).
+    if clamp > 0.0:
+        ys["satur_sum"] = ys["satur_sum"] + (cmd_yaw.abs() > 0.95 * clamp).to(cmd_yaw.dtype).sum()
     if reset_mask is not None:
         rm = reset_mask.reshape(-1).to(torch.bool)
         valid = (~rm).to(cmd_yaw.dtype)
@@ -680,8 +698,9 @@ def _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r):
     dt = float(getattr(env, "dt", 0.0) or 0.0)
     dstr = str(delay) if delay is not None else "?"
     if ys is None or dt <= 0.0:
+        # v1.5: satur_duty appended at END (append-only -- existing fields keep their positions for grep).
         print(f"YAW_EVAL[{label}] delay={dstr} signflips_per_s=nan cmd_absmean=nan ach_absmean=nan "
-              f"roll_swing=nan n_passed=nan  (no steps accumulated or dt unavailable)")
+              f"roll_swing=nan n_passed=nan satur_duty=nan  (no steps accumulated or dt unavailable)")
         return
     n_envs = int(ys["last_sign"].numel())
     flip_total = float(ys["flips"].sum().item())
@@ -692,9 +711,14 @@ def _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r):
     ach_absmean = (float(ys["ach_abs_sum"].item()) / ach_n) if ach_n > 0 else float("nan")
     roll_swing = (roll_sum / n_ep) if n_ep else float("nan")
     n_passed = float(r.get("n_passed_gates", float("nan"))) if r else float("nan")
+    # v1.5 YAW SATURATION DUTY (append-only, at END): fraction of eval steps commanding within 5% of the
+    # +-clamp rail. nan when the clamp is OFF (see _accum_yaw). The yaw-quietness proof pairs a low
+    # signflips_per_s (no flipping) with a low satur_duty (not pinned to the rail).
+    clamp = float(ys.get("clamp", 0.0) or 0.0)
+    satur_duty = (float(ys["satur_sum"].item()) / max(int(ys["cmd_n"]), 1)) if clamp > 0.0 else float("nan")
     print(f"YAW_EVAL[{label}] delay={dstr} signflips_per_s={signflips_per_s:.3f} "
           f"cmd_absmean={cmd_absmean:.4f} ach_absmean={ach_absmean:.4f} "
-          f"roll_swing={roll_swing:.2f} n_passed={n_passed:.4f}")
+          f"roll_swing={roll_swing:.2f} n_passed={n_passed:.4f} satur_duty={satur_duty:.4f}")
 
 
 def _run_rollout_only(self, env, agent, cfg):

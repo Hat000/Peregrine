@@ -130,6 +130,19 @@ class EgoRewardWeights:
     # the TRUE peak speed (~30 m/s) + ~30% headroom (-> 39 m/s), so the clamp trims only UNPHYSICAL
     # bursts, never legit top speed. dt is passed at call time (env control dt, ~1/30 s).
     vmax_mps: float = 39.0
+    # --- PROGRESS-CREDIT SATURATION (v1.5 anti-velocity-runaway, 2026-07-18; NOT a penalty). Cap the
+    # POSITIVE per-step progress credit at ``progress * progress_vcap_mps * dt`` -- i.e. the per-step
+    # arc-advance credit saturates at the credit for advancing ``progress_vcap_mps`` m/s along the segment.
+    # Above v* the MARGINAL credit for going faster is ZERO (the excess arc credit is FORFEITED, not
+    # deferred and never turned negative -- this is a SATURATION, not the rejected v_cap hinge PENALTY).
+    # WHY (REWARD-LEDGER Q1/Q2): the per-step progress magnitude scales linearly with closing speed
+    # (0.20->0.87 reward/step at 3->13 m/s) and is one lever of the velocity runaway; flattening it above a
+    # racing v* removes the myopic "faster = bigger reward now" gradient with ZERO stall risk (no penalty,
+    # so a slow drone loses nothing). Applies to POSITIVE credit only; negative progress (backing up the
+    # segment) is priced as-is. Pairs with the overspeed episode-abort (the discount/time pull-forward that
+    # saturation cannot remove is capped by the abort). 0 == OFF (byte-identical). Tune via
+    # +env.rw_progress_vcap_mps.
+    progress_vcap_mps: float = 0.0   # (m/s) saturate positive progress credit above this along-track speed; 0 == OFF
 
     # --- PASSAGE + centering (SB ~1.0; knob to ~4x for the vision-noise regime) ---
     passage: float = 1.0             # R_pass BASE, on (1 - e_lat / w_g_half) at the crossing
@@ -386,6 +399,32 @@ class EgoRewardWeights:
     # kills the constant-spin escape; keep BOTH. 0 == OFF (byte-identical). Tune via +env.rw_yaw_dither.
     yaw_dither: float = 0.0          # rw_yaw_dither; weight on (delta yaw_cmd)^2 [per (rad/s)^2]; 0 == OFF
 
+    # --- YAW AMPLITUDE / DUTY pricing (v1.5, 2026-07-18; AUTHORIZED anti-dither, NOT energy). A per-step
+    # penalty on the SUSTAINED AMPLITUDE of the applied (post-clamp) yaw command beyond a FREE band:
+    #   R_yawduty = -yaw_duty * relu(|yaw_cmd| - yaw_duty_free_band) / (clamp - yaw_duty_free_band)
+    # (clamp == the env's ego_yaw_cmd_clamp_rad_s, passed in). ZERO at |yaw_cmd| <= free_band and linear to
+    # -yaw_duty at the +-clamp rail. WHY (complements yaw_dither): yaw_dither taxes the temporal CHANGE
+    # (a rail-FLIP) but is ~0 for a SUSTAINED near-rail command; the ~6 Hz limit cycle rides high-amplitude
+    # yaw that a jerk term under-prices between flips. This prices the AMPLITUDE directly. The FREE BAND is
+    # LOAD-BEARING for the yaw->gate-in-view->altitude coupling (hard rule): the champion ffs0 flies quiet
+    # at cmd |yaw| absmean 0.232, so the default band 0.25 leaves the champion's gate-tracking yaw EXACTLY
+    # free (pays 0) -- only excess amplitude beyond the band is priced. Post-clamp -> |yaw_cmd| <= clamp so
+    # the normalised excess is in [0,1]. NON-farmable (min 0 at low-amplitude yaw), vanishes at convergence.
+    # 0 == OFF (byte-identical). Tune via +env.rw_yaw_duty / +env.yaw_duty_free_band.
+    yaw_duty: float = 0.0            # rw_yaw_duty; weight on the post-clamp |yaw_cmd| excess beyond the band; 0 == OFF
+    yaw_duty_free_band: float = 0.25 # (rad/s) free band; |yaw_cmd| <= this pays EXACTLY 0 (champion 0.232 is free)
+
+    # --- YAW JERK pricing (v1.5, 2026-07-18; AUTHORIZED anti-dither, NOT energy). An L1 penalty on the
+    # temporal CHANGE of the applied (post-clamp) yaw command: R_yawjerk = -yaw_jerk * |yaw_cmd_t -
+    # yaw_cmd_{t-1}|. Prices the 6 Hz bang-bang directly (a +-rail flip Delta=2*clamp pays the most; a
+    # steady turn Delta~0 pays 0) so a single re-point transition costs ONE step's worth. DISTINCT from
+    # yaw_dither (the SQUARED (Delta)^2): the L1 form is scale-linear in the flip amplitude (it does not
+    # under-weight moderate flips the way the square does), catching the sustained flip-train that the
+    # square lets through cheaply. A steady command (needed turn) -> Delta 0 -> 0 (the yaw->gate coupling is
+    # preserved; only oscillation pays). NON-farmable, vanishes at convergence. 0 == OFF (byte-identical).
+    # Tune via +env.rw_yaw_jerk.
+    yaw_jerk: float = 0.0            # rw_yaw_jerk; L1 weight on |delta yaw_cmd| [per (rad/s)]; 0 == OFF
+
     # --- VELOCITY-JERK smoothness prior (R0 still-yaw hover boot, 2026-07-12; AUTHORIZED smoothness, NOT
     # energy/speed). A SMOOTHNESS penalty on the temporal CHANGE of the WORLD-frame CoM acceleration:
     # R_velsmooth = -vel_smooth * ||jerk||^2, jerk = accel_curr - accel_prev (the 1st difference of
@@ -591,6 +630,25 @@ def segment_progress_reward(s_curr: Tensor, s_prev: Tensor, rw_progress: float,
     band = vmax_mps * dt
     delta = (s_curr - s_prev).clamp(min=-band, max=band)
     return rw_progress * delta
+
+
+def progress_credit_saturate(r_prog: Tensor, rw_progress: float, progress_vcap_mps: float,
+                             dt: float) -> Tensor:
+    """SATURATE the POSITIVE per-step progress credit at ``rw_progress * progress_vcap_mps * dt`` (v1.5
+    anti-velocity-runaway). Above the cap the marginal credit for going faster is ZERO (excess forfeited);
+    at/below it the credit is UNCHANGED, and NEGATIVE progress (backing up the segment) is left AS-IS.
+
+    This is a SATURATION, NOT a penalty: it never turns a positive credit negative and never subtracts from
+    a slow drone -- it only flattens the credit for along-track speed beyond ``progress_vcap_mps`` m/s, so
+    the myopic "faster = bigger reward now" gradient (REWARD-LEDGER Q1/Q2 lever 1) disappears above v* with
+    zero stall risk. The cap ``rw_progress * progress_vcap_mps * dt`` is the credit for advancing exactly
+    ``progress_vcap_mps`` m/s along the segment in one control step. ``progress_vcap_mps`` <= 0 -> OFF (the
+    input tensor is returned UNCHANGED == byte-identical). Returns (N,)."""
+    assert torch is not None
+    if progress_vcap_mps <= 0.0:
+        return r_prog
+    cap = rw_progress * progress_vcap_mps * dt
+    return torch.clamp(r_prog, max=cap)
 
 
 def area_distance_progress_factor(area_true: Tensor, dist_to_gate: Tensor,
@@ -938,6 +996,43 @@ def yaw_dither_penalty(yaw_cmd_delta: Tensor, rw_yaw_dither: float) -> Tensor:
     return -rw_yaw_dither * yaw_cmd_delta ** 2
 
 
+def yaw_duty_penalty(yaw_cmd: Tensor, rw_yaw_duty: float, free_band: float,
+                     clamp: float) -> Tensor:
+    """YAW AMPLITUDE / DUTY penalty (v1.5): R_yawduty = -rw_yaw_duty * relu(|yaw_cmd| - free_band) /
+    (clamp - free_band), on the APPLIED (post-clamp) yaw command ``yaw_cmd`` (channel 3, rad/s). ZERO at
+    |yaw_cmd| <= ``free_band`` (the champion's 0.232 absmean is inside the 0.25 default band -> pays 0,
+    preserving the yaw->gate-in-view->altitude coupling) and grows LINEARLY to -rw_yaw_duty at the +-clamp
+    rail (normalised excess 1). Prices the SUSTAINED high-amplitude yaw of the ~6 Hz limit cycle that the
+    (temporal-change) yaw_dither / yaw_jerk terms under-price between flips. ``clamp`` is the env's applied
+    yaw-command clamp (ego_yaw_cmd_clamp_rad_s); since ``yaw_cmd`` is post-clamp, |yaw_cmd| <= clamp so the
+    normalised excess is in [0,1]. The span (clamp - free_band) is floored at 1e-6 defensively (a well-set
+    config has clamp > free_band, e.g. 0.7 > 0.25). NON-farmable (min 0 at low-amplitude yaw), vanishes at
+    convergence. Sign NEGATIVE. rw_yaw_duty==0 -> OFF (zeros -> byte-identical). Returns the (<=0) (N,)."""
+    assert torch is not None
+    if rw_yaw_duty == 0.0:
+        return torch.zeros_like(yaw_cmd)
+    span = max(float(clamp) - float(free_band), 1e-6)
+    excess = (yaw_cmd.abs() - float(free_band)).clamp(min=0.0) / span
+    return -rw_yaw_duty * excess
+
+
+def yaw_jerk_penalty(yaw_cmd_delta: Tensor, rw_yaw_jerk: float) -> Tensor:
+    """YAW JERK penalty (v1.5): R_yawjerk = -rw_yaw_jerk * |yaw_cmd_t - yaw_cmd_{t-1}|, on the L1 temporal
+    change of the APPLIED (post-clamp) yaw command (``yaw_cmd_delta`` = the SAME delta the yaw_dither term
+    reads). Prices the 6 Hz bang-bang: a +-clamp rail-flip (|Delta| = 2*clamp) pays the most; a SUSTAINED /
+    steady yaw command (a needed turn -> Delta ~0) pays 0, so a smooth turn is NEVER penalised. DISTINCT
+    from yaw_dither's SQUARED (Delta)^2: the L1 form is scale-LINEAR in the flip amplitude, so it does not
+    under-weight the moderate-amplitude flip-train the square lets through cheaply -- a single re-point
+    transition costs one step's worth. NON-farmable (min 0 at steady yaw), vanishes at convergence. The
+    constant-drift (slow steady spin, 0 jerk) escape is closed BY CONSTRUCTION by the retained fatal spin
+    abort, same as yaw_dither. Sign NEGATIVE. rw_yaw_jerk==0 -> OFF (zeros -> byte-identical). Returns the
+    (<=0) penalty (N,)."""
+    assert torch is not None
+    if rw_yaw_jerk == 0.0:
+        return torch.zeros_like(yaw_cmd_delta)
+    return -rw_yaw_jerk * yaw_cmd_delta.abs()
+
+
 def velocity_jerk_penalty(accel_curr: Tensor, accel_prev: Tensor, rw_vel_smooth: float) -> Tensor:
     """VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12): R_velsmooth = -rw_vel_smooth *
     ||jerk||^2, where jerk = ``accel_curr`` - ``accel_prev`` (the 1st difference of acceleration == the 2nd
@@ -1159,6 +1254,8 @@ def compute_ego_reward(
     roll: "Tensor | None" = None,
     pitch: "Tensor | None" = None,
     yaw_cmd_delta: "Tensor | None" = None,
+    yaw_cmd: "Tensor | None" = None,
+    yaw_clamp: float = 0.0,
     accel_curr: "Tensor | None" = None,
     accel_prev: "Tensor | None" = None,
     los_world: "Tensor | None" = None,
@@ -1177,7 +1274,15 @@ def compute_ego_reward(
     factor). Backward progress is never scaled (you always pay full for retreating). Omit them (or set
     w.area_dist_ref_m<=0) to disable. ``passed_gate_index`` (N,) enables the per-gate passage increment."""
     assert torch is not None
-    r_prog = segment_progress_reward(s_curr, s_prev, w.progress, w.vmax_mps, dt)
+    r_prog_raw = segment_progress_reward(s_curr, s_prev, w.progress, w.vmax_mps, dt)
+    # PROGRESS-CREDIT SATURATION (v1.5 anti-velocity-runaway; OFF unless w.progress_vcap_mps>0 -> byte-
+    # identical): cap the POSITIVE arc credit at rw_progress*progress_vcap_mps*dt so marginal credit above
+    # v* is ZERO (a saturation, NOT a penalty -- negative progress is left as-is; a slow drone loses
+    # nothing). Applied BEFORE the area coupling (which only shrinks positive credit) so the cap on the
+    # credited along-track speed holds regardless of the approach angle. ``prog_sat_forfeit`` = the credit
+    # forfeited by the cap this step (0 when OFF) -> logged for TB visibility of how much the cap bites.
+    r_prog = progress_credit_saturate(r_prog_raw, w.progress, w.progress_vcap_mps, dt)
+    prog_sat_forfeit = r_prog_raw - r_prog
     # DISTANCE-GATED area coupling: scale ONLY the positive (forward) progress -- a shallow close-in
     # approach earns less; a beeline from far earns full; retreat always pays full (never discounted).
     area_factor = None
@@ -1253,6 +1358,17 @@ def compute_ego_reward(
     # or None. See yaw_dither_penalty: the retained fatal spin abort closes the constant-drift (slow-spin) hole.
     r_yawdith = (yaw_dither_penalty(yaw_cmd_delta, w.yaw_dither)
                  if yaw_cmd_delta is not None else torch.zeros_like(r_prog))
+    # YAW AMPLITUDE / DUTY (v1.5; OFF unless w.yaw_duty>0 -> byte-identical): price the SUSTAINED post-clamp
+    # yaw amplitude beyond the free band (the champion's 0.232 absmean is inside the 0.25 band -> 0). The env
+    # passes yaw_cmd = the applied (post-clamp) channel-3 command + yaw_clamp = the env clamp for the [0,1]
+    # normaliser. Complements yaw_dither/yaw_jerk (which price the temporal CHANGE, not the amplitude).
+    r_yaw_duty = (yaw_duty_penalty(yaw_cmd, w.yaw_duty, w.yaw_duty_free_band, yaw_clamp)
+                  if yaw_cmd is not None else torch.zeros_like(r_prog))
+    # YAW JERK (v1.5; OFF unless w.yaw_jerk>0 -> byte-identical): L1 price on the applied yaw-command change
+    # (REUSES yaw_cmd_delta, the SAME post-clamp delta yaw_dither reads) -- the 6 Hz bang-bang; a steady turn
+    # (delta~0) pays 0. Distinct from yaw_dither's squared form (this is scale-linear in the flip amplitude).
+    r_yaw_jerk = (yaw_jerk_penalty(yaw_cmd_delta, w.yaw_jerk)
+                  if yaw_cmd_delta is not None else torch.zeros_like(r_prog))
     # VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12; OFF unless w.vel_smooth>0 ->
     # byte-identical): penalise the temporal CHANGE of the world-frame CoM acceleration (a snappy spike pays;
     # steady speed AND smooth hard accel both pay ~0). The env passes accel_curr = (v_t - v_{t-1})/dt +
@@ -1290,8 +1406,8 @@ def compute_ego_reward(
                                 forfeit_mask=forfeit_mask)
 
     reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_gvhold + r_corr + r_align + r_perc
-              + r_perc_next + r_att + r_roll_recover + r_cross_level + r_yawdith + r_velsmooth + r_vcap
-              + r_fin + r_cone + r_smooth + r_exit + r_time - term)
+              + r_perc_next + r_att + r_roll_recover + r_cross_level + r_yawdith + r_yaw_duty + r_yaw_jerk
+              + r_velsmooth + r_vcap + r_fin + r_cone + r_smooth + r_exit + r_time - term)
 
     components = {
         "prog_reward": float(r_prog.mean()),
@@ -1308,6 +1424,9 @@ def compute_ego_reward(
         "roll_recover_pen": float((-r_roll_recover).mean()),
         "cross_level_pen": float((-r_cross_level).mean()),
         "yaw_dither_pen": float((-r_yawdith).mean()),
+        "yaw_duty_pen": float((-r_yaw_duty).mean()),
+        "yaw_jerk_pen": float((-r_yaw_jerk).mean()),
+        "prog_sat_forfeit": float(prog_sat_forfeit.mean()),
         "velsmooth_pen": float((-r_velsmooth).mean()),
         "vcap_pen": float((-r_vcap).mean()),
         "finish_reward": float(r_fin.mean()),
