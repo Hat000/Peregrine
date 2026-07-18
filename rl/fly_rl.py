@@ -984,6 +984,261 @@ class EgoFloorClamp:
         return emitted, _clip01(emitted * self.hover_collective), arrest
 
 
+def _arrest_fmt(x) -> str:
+    """None/NaN-safe 1-dp formatter for the arrestor's transition logs."""
+    return "n/a" if (x is None or not np.isfinite(x)) else f"{float(x):.1f}"
+
+
+class ArrestCommand(NamedTuple):
+    """One arrestor tick's wire output (the stare-brake command), or the marker that the arrestor
+    has HANDED BACK (returned as ``None`` from ``EgoArrestor.step`` -- the policy runs that tick)."""
+    rate_frd: np.ndarray      # (3,) FRD body-rate, rad/s -- ControlCommand.body_rate
+    collective_01: float      # [0,1] wire collective -- ControlCommand.thrust
+    normed_g: float           # emitted g-units (hover = 1.0) -- feeds obs[8] next tick (honesty)
+    arrest_id: int            # 1-based arrest-episode counter (forensics)
+    event: str | None         # 'ENGAGE' on the engage tick, else None (per-transition print gate)
+    reason: str | None        # the engage reason on the engage tick, else None
+
+
+class EgoArrestor:
+    """Post-gate STARE-BRAKE takeover for the ego policy [replay-ratchet ARRESTOR, 2026-07-18].
+
+    THE PROBLEM (ratchet-P0.3, handoff REPORT4): N=5 settled-launch policy flights of the champion
+    ckpt banked gates {2,2,1,2,2}; gate-0 pass reproduces to 58 ms, but 4/5 died at the gate-1 exit
+    or on the gate-2 descend leg from the SAME failure -- too fast / too high entering gate 2 -- and
+    0/5 were contact-free. The policy flies the opening in-distribution then runs OUT of its training
+    envelope (speed accumulates, the next gate is not yet centered) and crashes.
+
+    THE FIX: after a chosen gate is banked, TAKE OVER control from the policy, bleed forward speed
+    while keeping the next gate in view, and hand a SLOW / ~level / gate-in-view state back -- i.e.
+    re-spawn the stateless policy into its training distribution mid-flight. 'Passed 2 gates then
+    crashed' becomes 'passed 2 gates, arrested clean, continued'. The actor is a stateless MLP, so
+    HANDBACK is just: stop overriding; the policy resumes on the current obs (the whole premise).
+
+    ESTIMATOR-ONLY (hard project rule -- NO ground truth anywhere in a trigger or a command):
+      * speed  = horizontal KF nav velocity magnitude (nav_state.velocity_ned; the design's KF speed);
+      * bearing/rel_up = the builder's HELD slot-0 relative position (last_diag['rel_flu'], TRUE body
+        FLU [fwd, left, up] -- survives brief detection gaps via ego-propagation);
+      * gate-in-view = the builder's det-proxy (age < det_hold), the SAME masking signal the obs uses;
+      * attitude = obs[3]/obs[4] (leveled, virtual-flipped roll/pitch).
+
+    TRIGGERS (policy phase only; never while the takeoff assist still owns the pad):
+      * gate: engage the tick RACE_STATUS shows a LISTED gate was just passed (index p -> p+1, p in
+        after_gates); each listed gate fires ONCE.
+      * speed: engage whenever speed > speed_hi (0 = off); re-arms after each handback with a
+        refractory window so it cannot chatter.
+
+    STARE-BRAKE (all wire-legal, commands emitted in FINAL FRD -- the arrestor is NOT the policy, it
+    does not go through policy_step's virtual-flip/clamps; it writes body_rate directly):
+      * YAW-hold on the gate bearing: wz = clip(-K_yaw * bearing, +-yaw_clamp), bearing =
+        atan2(rel_left, rel_fwd). SIGN: gate LEFT => bearing>0 => nose must go LEFT => wz<0 in FRD
+        (right-hand rule about +Z-DOWN: +wz yaws nose RIGHT), so wz = -K_yaw*bearing. Agrees with BOTH
+        the design doc and standard FRD; yaw axis is invariant under the virtual pi-flip
+        (_RZ_PI_BODY[2,2]=+1, _ACT_FLU_TO_FRD[2]=+1) so no flip ambiguity. Capped at the ACTIVE yaw
+        clamp -- never yaw faster than the lineage flew. 1-BIT FLY-CHECK: if the stare walks the gate
+        OUT of frame instead of centering it, the sign is flipped -- negate K_yaw.
+      * PITCH brake: one-sided NOSE-UP rate wy = clip(K_brake*speed, 0, pitch_rate_cap) to bleed
+        forward speed, HARD-STOPPED once obs[4] >= pitch_level_rad (~level). NOSE-UP is wy>0 (mirror
+        of the deploy perception fence, where nose-DOWN <=> obs[4]<0 AND rate_frd[1]<0). The level
+        stop respects the +20 deg mount: over-pitching UP walks the gate out the BOTTOM of frame (a
+        level body already puts the camera +20 deg up); the known perception wall is over-nose-DOWN,
+        so the brake never needs to go there. This is a LEVEL-OUT brake (remove the forward tilt +
+        drag), not a reverse-thrust brake.
+      * COLLECTIVE: vision-vertical altitude HOLD g = hover + K_z*(rel_up - rel_up_entry), bounded
+        [collective_lo_g, collective_hi_g] -- hold height RELATIVE TO THE GATE (no absolute altitude
+        on the wire). rel_up_entry is latched LAZILY at the first re-acquisition after engage (the
+        post-pass track is cold: the just-banked gate's slot was reset, so rel_up is None until the
+        NEXT gate is acquired -- until then hold hover).
+      * ROLL: command 0 rate (hold wings; roll rests at ~0 on this obs).
+
+    HANDBACK (-> policy) when speed < handback_speed AND gate-in-view AND ~level (obs pitch in
+    [pitch_hb_lo, pitch_hb_hi], |roll| < roll_hb), HELD for handback_dwell_s (anti-chatter).
+    ABORTS (fail-OPEN to the policy -- the trained recovery agent -- NEVER a freeze/blind hover):
+      * |rel_up - rel_up_entry| > rel_up_drift_m (bad vertical estimate);
+      * gate lost > gate_lost_s (measured from engage, so there is a grace window to (re)acquire the
+        next gate before giving up);
+      * total arrest time > max_s (hard backstop; guarantees handback even if nothing else fires).
+
+    Pure, sim-free, injectable-clock state machine mirroring EgoTakeoffAssist / EgoFloorClamp; OFF
+    (enabled=False) it returns None every tick, so the policy path is byte-identical."""
+
+    def __init__(self, *, enabled: bool, after_gates, speed_hi: float, max_s: float,
+                 yaw_clamp: float, hover_collective: float, hover_g: float = 1.0,
+                 handback_speed: float = 2.0, handback_dwell_s: float = 0.3,
+                 refractory_s: float = 2.0, pitch_rate_cap: float = 0.8,
+                 pitch_level_rad: float = -0.05, pitch_hb_lo: float = -0.45,
+                 pitch_hb_hi: float = 0.0, roll_hb: float = 0.17, k_yaw: float = 1.5,
+                 k_brake: float = 0.1, k_z: float = 0.15, collective_lo_g: float = 0.7,
+                 collective_hi_g: float = 1.4, gate_lost_s: float = 1.0,
+                 rel_up_drift_m: float = 2.0):
+        self._enabled = bool(enabled)
+        self._after_gates = set(int(g) for g in after_gates)   # gate indices whose PASS engages
+        self._speed_hi = float(speed_hi)                       # safety speed trigger (m/s); 0 = off
+        self._max_s = float(max_s)                             # hard arrest timeout (s)
+        self._yaw_clamp = float(yaw_clamp) if yaw_clamp > 0.0 else 0.7   # never > the lineage clamp
+        self._hover_collective = float(hover_collective)       # _HOVER_THRUST: g-units -> [0,1]
+        self._hover_g = float(hover_g)
+        self._handback_speed = float(handback_speed)
+        self._handback_dwell_s = float(handback_dwell_s)
+        self._refractory_s = float(refractory_s)
+        self._pitch_rate_cap = float(pitch_rate_cap)
+        self._pitch_level_rad = float(pitch_level_rad)
+        self._pitch_hb_lo = float(pitch_hb_lo)
+        self._pitch_hb_hi = float(pitch_hb_hi)
+        self._roll_hb = float(roll_hb)
+        self._k_yaw = float(k_yaw)
+        self._k_brake = float(k_brake)
+        self._k_z = float(k_z)
+        self._collective_lo_g = float(collective_lo_g)
+        self._collective_hi_g = float(collective_hi_g)
+        self._gate_lost_s = float(gate_lost_s)
+        self._rel_up_drift_m = float(rel_up_drift_m)
+        # -- mutable state --
+        self._phase = "policy"          # 'policy' | 'arrest'
+        self._prev_gi: int | None = None
+        self._fired: set[int] = set()   # listed gates already consumed (fire-once)
+        self._arrest_id = 0             # episode counter
+        self._t_engage: float | None = None
+        self._last_fresh_t: float | None = None    # last time the gate was in view (gate-lost clock)
+        self._rel_up_entry: float | None = None     # altitude-hold reference (lazily latched)
+        self._entry_speed: float | None = None
+        self._hb_since: float | None = None         # handback dwell clock
+        self._refractory_until = float("-inf")
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def phase(self) -> str:
+        return self._phase
+
+    @property
+    def arrest_id(self) -> int:
+        """1-based count of arrest episodes started so far (0 before the first engage)."""
+        return self._arrest_id
+
+    def step(self, *, now: float, gate_index: int, ground_active: bool,
+             speed_est, bearing_rad, rel_up, obs_pitch, obs_roll, det_fresh: bool,
+             log=None) -> "ArrestCommand | None":
+        """One control tick. Returns an ArrestCommand while the arrestor OWNS the wire, or None when
+        the POLICY should run this tick (disabled, idle-in-policy, or the exact handback/abort tick).
+        ``now`` is an injectable monotonic clock (unit-tested without a sim)."""
+        if not self._enabled:
+            return None
+        gi = int(gate_index)
+        prev = self._prev_gi
+        self._prev_gi = gi
+
+        if self._phase == "policy":
+            reason = None
+            # gate trigger: a listed gate was just passed (index advanced past it), fire-once.
+            if prev is not None and gi > prev and not ground_active:
+                for p in range(prev, gi):
+                    if p in self._after_gates and p not in self._fired:
+                        self._fired.add(p)
+                        reason = f"after gate {p}"
+                        break
+            # speed trigger: hot speed, refractory-gated so it cannot chatter after a handback.
+            if (reason is None and self._speed_hi > 0.0 and not ground_active
+                    and speed_est is not None and np.isfinite(speed_est)
+                    and float(speed_est) > self._speed_hi and now >= self._refractory_until):
+                reason = f"speed {float(speed_est):.1f}>{self._speed_hi:.1f} m/s"
+            if reason is None:
+                return None
+            # ---- ENGAGE ----
+            self._phase = "arrest"
+            self._arrest_id += 1
+            self._t_engage = now
+            self._last_fresh_t = now        # grace: gate_lost_s to (re)acquire the next gate
+            self._rel_up_entry = (float(rel_up) if (rel_up is not None and np.isfinite(rel_up))
+                                  else None)
+            self._entry_speed = (float(speed_est) if (speed_est is not None
+                                                      and np.isfinite(speed_est)) else None)
+            self._hb_since = None
+            if log is not None:
+                log(f"[ego-arrest] ENGAGE #{self._arrest_id} ({reason}) gi={gi} "
+                    f"speed={_arrest_fmt(speed_est)} m/s")
+            return self._command(speed_est, bearing_rad, rel_up, obs_pitch,
+                                 event="ENGAGE", reason=reason)
+
+        # ---- ARREST phase ----
+        if det_fresh:
+            self._last_fresh_t = now
+        # lazily latch the altitude reference at the first re-acquisition after engage
+        if self._rel_up_entry is None and rel_up is not None and np.isfinite(rel_up):
+            self._rel_up_entry = float(rel_up)
+
+        # ABORTS (fail-open, senior to handback) -----------------------------------------------
+        abort = None
+        if (self._rel_up_entry is not None and rel_up is not None and np.isfinite(rel_up)
+                and abs(float(rel_up) - self._rel_up_entry) > self._rel_up_drift_m):
+            abort = f"rel_up drift {float(rel_up) - self._rel_up_entry:+.1f} m"
+        elif self._last_fresh_t is not None and (now - self._last_fresh_t) > self._gate_lost_s:
+            abort = f"gate lost {now - self._last_fresh_t:.1f}s"
+        elif self._t_engage is not None and (now - self._t_engage) > self._max_s:
+            abort = f"timeout {now - self._t_engage:.1f}s"
+        if abort is not None:
+            self._end("ABORT", abort, now, speed_est, log)
+            return None
+
+        # HANDBACK: slow + gate-in-view + ~level, held for the dwell ----------------------------
+        slow = speed_est is not None and np.isfinite(speed_est) and float(speed_est) < self._handback_speed
+        level = (obs_pitch is not None and np.isfinite(obs_pitch)
+                 and self._pitch_hb_lo <= float(obs_pitch) <= self._pitch_hb_hi
+                 and (obs_roll is None or not np.isfinite(obs_roll)
+                      or abs(float(obs_roll)) < self._roll_hb))
+        if slow and det_fresh and level:
+            if self._hb_since is None:
+                self._hb_since = now
+            if (now - self._hb_since) >= self._handback_dwell_s:
+                self._end("HANDBACK", "slow+in-view+level", now, speed_est, log)
+                return None
+        else:
+            self._hb_since = None
+
+        # keep braking
+        return self._command(speed_est, bearing_rad, rel_up, obs_pitch, event=None, reason=None)
+
+    # -- helpers -------------------------------------------------------------------------------
+    def _end(self, event: str, reason: str, now: float, speed_est, log) -> None:
+        """Transition ARREST -> POLICY (handback or abort): log, arm the speed-trigger refractory,
+        clear the episode state. The policy resumes THIS tick (step returns None to the caller)."""
+        dur = (now - self._t_engage) if self._t_engage is not None else 0.0
+        if log is not None:
+            log(f"[ego-arrest] {event} #{self._arrest_id} ({reason}) dur={dur:.2f}s "
+                f"entry={_arrest_fmt(self._entry_speed)}->exit={_arrest_fmt(speed_est)} m/s")
+        self._phase = "policy"
+        self._refractory_until = now + self._refractory_s
+        self._t_engage = None
+        self._last_fresh_t = None
+        self._rel_up_entry = None
+        self._hb_since = None
+
+    def _command(self, speed_est, bearing_rad, rel_up, obs_pitch, *,
+                 event, reason) -> "ArrestCommand":
+        """Build the FRD stare-brake command (see class doc for every sign)."""
+        # YAW: stare toward the gate bearing; hold heading (0) when no bearing is available yet.
+        wz = 0.0
+        if bearing_rad is not None and np.isfinite(bearing_rad):
+            wz = float(np.clip(-self._k_yaw * float(bearing_rad), -self._yaw_clamp, self._yaw_clamp))
+        # PITCH: nose-UP brake proportional to speed, capped, hard-stopped at ~level.
+        spd = (float(speed_est) if (speed_est is not None and np.isfinite(speed_est))
+               else self._handback_speed)
+        wy = float(np.clip(self._k_brake * spd, 0.0, self._pitch_rate_cap))
+        if obs_pitch is not None and np.isfinite(obs_pitch) and float(obs_pitch) >= self._pitch_level_rad:
+            wy = 0.0            # at/above level: block further nose-up (camera-out-the-bottom guard)
+        # ROLL: hold wings level.
+        rate_frd = np.array([0.0, wy, wz], dtype=np.float64)
+        # COLLECTIVE: vision-vertical altitude hold, bounded; hover until an altitude ref exists.
+        g = self._hover_g
+        if self._rel_up_entry is not None and rel_up is not None and np.isfinite(rel_up):
+            g = self._hover_g + self._k_z * (float(rel_up) - self._rel_up_entry)
+        g = float(np.clip(g, self._collective_lo_g, self._collective_hi_g))
+        return ArrestCommand(rate_frd=rate_frd, collective_01=_clip01(g * self._hover_collective),
+                             normed_g=g, arrest_id=self._arrest_id, event=event, reason=reason)
+
+
 def _kp_persist_step(streak: int, pose, n_required: int):
     """KEYPOINT-PERSISTENCE debounce -- deploy twin of training ego_kp_persist_frames
     (Fengyou 2026-07-11: gate info transmits only after the detectability condition
@@ -2041,6 +2296,27 @@ def _fly_ego(client, actor, args, flight_idx: int,
               f"above the clamp so a low gate stays reachable. WARNING: keys off the (biased) VISION "
               f"altitude estimate -- MITIGATION not cure, sweep the threshold empirically.")
 
+    # --- post-gate STARE-BRAKE takeover (replay-ratchet ARRESTOR; see EgoArrestor). Default OFF ->
+    # step() returns None every tick -> the policy path below is byte-identical. The active yaw clamp
+    # (--ego-yaw-clamp, 0.7 for the lineage) bounds the stare so it never yaws faster than trained. ---
+    _arrest_after = {int(x) for x in str(args.ego_arrest_after_gates).split(",") if x.strip() != ""}
+    arrestor = EgoArrestor(
+        enabled=args.ego_arrestor,
+        after_gates=_arrest_after,
+        speed_hi=args.ego_arrest_speed_hi,
+        max_s=args.ego_arrest_max_s,
+        yaw_clamp=args.ego_yaw_clamp,
+        hover_collective=_HOVER_THRUST,
+    )
+    if arrestor.enabled:
+        print(f"[ego] ARRESTOR ON: engage after gate(s) {sorted(_arrest_after)}"
+              f"{f' OR speed>{args.ego_arrest_speed_hi:g} m/s' if args.ego_arrest_speed_hi > 0 else ''}; "
+              f"stare-brake (yaw-hold |<={max(args.ego_yaw_clamp, 0.7):g}| + nose-up level-out brake + "
+              f"vision-vertical alt-hold [0.7,1.4] g); handback on speed<2 m/s AND gate-in-view AND "
+              f"~level (0.3 s dwell); fail-OPEN to the policy on |rel_up drift|>2 m / gate-lost>1 s / "
+              f"{args.ego_arrest_max_s:g} s timeout. Estimator-only, never on the pad. 1-BIT FLY-CHECK: "
+              f"if the stare walks the gate OUT of frame, the yaw sign is flipped (negate K_yaw).")
+
     # --- async detector decouple (--video-async-detect): run detect_cached on a WORKER thread so the
     # paced control loop never blocks on the GPU-contended YOLO/TRT inference (today it runs INSIDE
     # nav.update -> it IS the p99 nav_ms jitter). The loop then reads the latest ALREADY-DETECTED frame
@@ -2351,31 +2627,60 @@ def _fly_ego(client, actor, args, flight_idx: int,
         if not builder.last_diag.get("det_proxy", False):
             n_masked += 1
         pol_dbg: dict = {}   # captures the RAW policy output (actor mean + rescaled action, pre-clamp)
-        rate_frd, collective, last_normed = policy_step(
-            actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
-            yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp,
-            pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)),
-            roll_clamp_rad=float(np.radians(args.ego_roll_clamp)),
-            v_gov_soft=v_gov_soft, v_gov_hard=v_gov_hard, debug=pol_dbg)
-        # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
-        # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
-        # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
-        last_normed, collective, assist_on = takeoff_assist.apply(
-            last_normed, now=now, gyro_frd=s.gyro_body,
-            nav_z=(float(nav_state.position_ned[2])
-                   if nav_state.position_ned is not None else None),
-            log=lambda m: print("\n  " + m, flush=True))
-        # --- floor / descent fence: after the assist, arrest a near-ground sink (low gates 4/5/6)
-        # by flooring the EMITTED collective; one-sided, never touches rate; last_normed carries the
-        # actually-emitted g-units so obs[8] next tick reflects it. No-op (bit-identical) under the
-        # default --ego-floor-clamp 0 or whenever the drone is above the clamp / not descending. ---
-        last_normed, collective, floor_on = floor_clamp.apply(
-            last_normed,
-            nav_z=(float(nav_state.position_ned[2])
-                   if nav_state.position_ned is not None else None),
-            vel_down=(float(nav_state.velocity_ned[2])
-                      if nav_state.velocity_ned is not None else None),
-            log=lambda m: print("\n  " + m, flush=True))
+        # --- post-gate STARE-BRAKE takeover (--ego-arrestor). When engaged it OWNS the wire this
+        # tick (bypassing policy_step + assist + floor); OFF it returns None and the policy path below
+        # is byte-identical. Inputs are ESTIMATOR-only: horizontal KF speed, the builder's HELD slot0
+        # rel_flu (TRUE body FLU [fwd,left,up] -> bearing + rel_up, survives detection gaps via
+        # ego-propagation), the det-proxy (gate-in-view), and obs roll/pitch (leveled). ---
+        arr = None
+        if arrestor.enabled:
+            _rel_flu = builder.last_diag.get("rel_flu")     # held TRUE body FLU [fwd,left,up] or None
+            _arr_bearing = (float(np.arctan2(_rel_flu[1], _rel_flu[0]))
+                            if _rel_flu is not None else None)
+            _arr_rel_up = float(_rel_flu[2]) if _rel_flu is not None else None
+            _arr_speed = (float(np.hypot(nav_state.velocity_ned[0], nav_state.velocity_ned[1]))
+                          if nav_state.velocity_ned is not None else None)
+            arr = arrestor.step(
+                now=now, gate_index=gate_index, ground_active=takeoff_assist.active,
+                speed_est=_arr_speed, bearing_rad=_arr_bearing, rel_up=_arr_rel_up,
+                obs_pitch=float(obs[4]), obs_roll=float(obs[3]),
+                det_fresh=bool(builder.last_diag.get("det_proxy", False)),
+                log=lambda m: print("\n  " + m, flush=True))
+        if arr is not None:
+            # ARRESTOR owns this tick: its FRD stare-brake replaces the policy command. Assist/floor
+            # do NOT apply (the arrestor holds altitude itself and only runs airborne, long after the
+            # assist handed over); last_normed carries the emitted g so obs[8] stays honest next tick.
+            rate_frd, collective, last_normed = arr.rate_frd, arr.collective_01, arr.normed_g
+            assist_on = floor_on = False
+            arrest_phase, arrest_id = "arrest", arr.arrest_id
+        else:
+            rate_frd, collective, last_normed = policy_step(
+                actor, obs, args.max_rate, virtual_flip=args.virtual_flip,
+                yaw_scale=args.yaw_scale, yaw_clamp=args.ego_yaw_clamp,
+                pitch_clamp_rad=float(np.radians(args.ego_pitch_clamp)),
+                roll_clamp_rad=float(np.radians(args.ego_roll_clamp)),
+                v_gov_soft=v_gov_soft, v_gov_hard=v_gov_hard, debug=pol_dbg)
+            # --- takeoff assist: floor the EMITTED collective to unload the pad (rate commands pass
+            # through untouched); last_normed tracks the ACTUALLY emitted g-units so obs[8] next tick
+            # reflects it. No-op (bit-identical) under --no-ego-takeoff-assist or after handover. ---
+            last_normed, collective, assist_on = takeoff_assist.apply(
+                last_normed, now=now, gyro_frd=s.gyro_body,
+                nav_z=(float(nav_state.position_ned[2])
+                       if nav_state.position_ned is not None else None),
+                log=lambda m: print("\n  " + m, flush=True))
+            # --- floor / descent fence: after the assist, arrest a near-ground sink (low gates 4/5/6)
+            # by flooring the EMITTED collective; one-sided, never touches rate; last_normed carries the
+            # actually-emitted g-units so obs[8] next tick reflects it. No-op (bit-identical) under the
+            # default --ego-floor-clamp 0 or whenever the drone is above the clamp / not descending. ---
+            last_normed, collective, floor_on = floor_clamp.apply(
+                last_normed,
+                nav_z=(float(nav_state.position_ned[2])
+                       if nav_state.position_ned is not None else None),
+                vel_down=(float(nav_state.velocity_ned[2])
+                          if nav_state.velocity_ned is not None else None),
+                log=lambda m: print("\n  " + m, flush=True))
+            arrest_phase = arrestor.phase if arrestor.enabled else "off"
+            arrest_id = arrestor.arrest_id
         client.send_command(ControlCommand(
             mode=ControlMode.BODY_RATE,
             sim_time_ns=st,
@@ -2424,6 +2729,11 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     "kf_pos_ned": np.asarray(nav_state.position_ned).round(3).tolist(),
                     "tsv": (None if not np.isfinite(nav_state.time_since_vision_update_s)
                             else round(nav_state.time_since_vision_update_s, 3)),
+                    # ARRESTOR phase this tick (APPEND-ONLY; 'off'|'policy'|'arrest') + the arrest
+                    # episode id (0 until the first engage). During 'arrest' actor_mean/act_raw are []
+                    # (policy_step was bypassed) and rate_frd/collective are the stare-brake command.
+                    "arrest_phase": arrest_phase,
+                    "arrest_id": arrest_id,
                 })
             except Exception:
                 _ego_log_errors += 1
@@ -3112,6 +3422,33 @@ def build_parser() -> argparse.ArgumentParser:
                          "counts fresh frames -- near-matched at 30 Hz, slower under frame "
                          "starvation). Fly a debounce-trained ckpt with the SAME N or the wire "
                          "sees earlier/flickerier first fixes than training did.")
+    ap.add_argument("--ego-arrestor", action="store_true",
+                    help="EGO post-gate STARE-BRAKE takeover (replay-ratchet ARRESTOR). DEFAULT OFF "
+                         "(byte-identical policy path). When ON, after a chosen gate is banked the "
+                         "arrestor TAKES OVER from the policy, bleeds forward speed while keeping the "
+                         "next gate centered (yaw-hold on the estimator bearing + nose-up level-out "
+                         "brake + vision-vertical altitude hold), and hands a SLOW / ~level / "
+                         "gate-in-view state back so the stateless policy resumes IN its training "
+                         "distribution. Converts ratchet-P0.3's 'passed 2 gates then crashed' into "
+                         "'passed 2 gates, arrested clean, continued'. Estimator-only (NO ground "
+                         "truth); fails OPEN to the policy on any abort. Never engages on the pad "
+                         "(the takeoff assist owns that). Tune via --ego-arrest-*.")
+    ap.add_argument("--ego-arrest-after-gates", type=str, default="1",
+                    help="Comma list of gate indices whose PASS engages the arrestor (each fires "
+                         "ONCE). Index p means 'engage the tick RACE_STATUS advances active_gate_index "
+                         "past gate p' (p -> p+1). Default '1' = arrest just after gate 1 is banked, "
+                         "i.e. BEFORE the gate-2 descend leg that ratchet-P0.3 (handoff REPORT4) found "
+                         "is the wall (4/5 deaths). Empty string = no gate trigger (rely on "
+                         "--ego-arrest-speed-hi). Only used with --ego-arrestor.")
+    ap.add_argument("--ego-arrest-speed-hi", type=float, default=0.0,
+                    help="EGO arrestor SAFETY speed trigger (m/s of estimated horizontal KF speed); "
+                         "0 = off. Engages the arrestor whenever the estimated speed exceeds this, "
+                         "independent of the gate triggers. Re-arms after each handback with a ~2 s "
+                         "refractory so it cannot chatter. Only used with --ego-arrestor.")
+    ap.add_argument("--ego-arrest-max-s", type=float, default=4.0,
+                    help="EGO arrestor HARD timeout (s): the arrest hands control back to the policy "
+                         "after this even if the slow/level/in-view handback never fires (fail-open "
+                         "backstop; the policy is the trained recovery agent). Default 4.0.")
     ap.add_argument("--yaw-scale",    type=float, default=1.0,
                     help="scale the policy's yaw-rate command (0 = drop yaw). S17 "
                          "mixer mitigation: the policy's per-tick yaw rail dither is "
