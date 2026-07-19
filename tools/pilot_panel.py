@@ -612,9 +612,12 @@ def git_commit(sessions, include_heavy, do_push):
     try:
         # the selected sessions live under the gitignored data/runs (+ the panel .log under the
         # gitignored pilot_panel_logs); the user is EXPLICITLY choosing them, so force-add the
-        # specific files. -f + an explicit file list never pulls in pilots.json / other ignored cruft.
-        subprocess.run(["git", "-C", str(REPO), "add", "-f", "--", *files],
-                       check=True, capture_output=True, text=True)
+        # specific files. -f + an explicit file list never pulls in pilots.json / other ignored
+        # cruft. CHUNKED 40 paths/spawn: Windows caps a CreateProcess command line at ~32K chars,
+        # and a big batch (or include_heavy) blows past it -> WinError 206 mid-"committing".
+        for i in range(0, len(files), 40):
+            subprocess.run(["git", "-C", str(REPO), "add", "-f", "--", *files[i:i + 40]],
+                           check=True, capture_output=True, text=True)
         msg = f"logs(panel): {len(sessions)} session(s) -- " + ", ".join(sessions[:4]) + \
               (" ..." if len(sessions) > 4 else "")
         r = subprocess.run(["git", "-C", str(REPO), "commit", "-m", msg],
@@ -630,6 +633,9 @@ def git_commit(sessions, include_heavy, do_push):
                 "include_heavy": include_heavy, "pushed": pushed}
     except subprocess.CalledProcessError as e:
         return {"ok": False, "error": (e.stdout or "") + (e.stderr or "")}
+    except OSError as e:
+        # e.g. WinError 206 (command line too long): surface it instead of hanging the UI.
+        return {"ok": False, "error": f"git spawn failed: {e}"}
 
 # --------------------------------------------------------------------------- #
 # Render (onboard video + real detector overlay) via tools/render_yolo.py
