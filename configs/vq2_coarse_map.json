@@ -1,13 +1,13 @@
 {
-  "_doc": "VQ2 coarse map for --ego-sector-mode map. 'sector' is one [horiz, vert] turn bucket PER GATE, each value in {-1, 0, 1}, in the drone's gravity-leveled approach frame. Row g answers 'as I arrive at gate g, where is gate g+1?' and is fed into obs[9:11] while active_gate_index == g (the anticipation prior the _pef policy trained on; the wire cannot compute it). CONVENTION (verified against training build_coarse_map + the vpef-zbias flight where gates 1-2 were off to the RIGHT): horiz -1 = next gate to the RIGHT of approach, +1 = LEFT, 0 = straight ahead; vert +1 = next gate ABOVE, -1 = BELOW, 0 = level. Hand-author one row per gate AS YOU SURVEY the course; past the last row the builder clamps to the last row. 1-BIT FLY-CHECK: if the drone banks the WRONG way (left when the gate is right), NEGATE the horiz value.",
-  "_provenance": "Edited via panel map editor (7 gates).",
+  "_doc": "VQ2 coarse map for --ego-sector-mode map. 'sector' is one [horiz, vert] turn bucket PER GATE, each value in {-1, 0, 1}, in the drone's gravity-leveled approach frame. Row g is FED into obs[9:11] the whole time active_gate_index == g (ego_obs.py latches coarse_map[active_gate_index] at each gate change -- verified, NO +1 in code) and answers 'as I arrive at gate g, where is gate g+1?' -- the ANTICIPATION prior the _pef policy trained on. CONVENTION: horiz -1 = next gate to the RIGHT of approach, +1 = LEFT, 0 = straight; vert +1 = ABOVE, -1 = BELOW, 0 = level. AUTHORING SELF-CHECK: the FIRST row must describe where GATE 1 sits as you arrive at gate 0 (this course: upper-right = [-1,1]). If your first row is [0,0] you have authored destination-style ('row g = where gate g is') -- that is the off-by-one that mis-steered batches 1-3; shift everything up one. 1-BIT FLY-CHECK: if the drone banks the WRONG way (left when the next gate is right), NEGATE the horiz value.",
+  "_provenance": "2026-07-19 hand-survey by Fengyou (gates 0-6 fed sequence, = what best-batch 4 flew): g0->g1 upper-right, g1->g2 down, g2->g3 lower-left, g3->g4 straight, g4->g5 right, g5->g6 up. Row 6 (gate 7 direction) UNSURVEYED -- placeholder [0,0], survey it when a flight reaches gate 6. Supersedes the destination-authored 7-row variant committed at 6655f31.",
   "sector": [
-    [0, 0],
     [-1, 1],
     [0, -1],
     [1, -1],
     [0, 0],
-    [0, 0],
-    [-1, 0]
+    [-1, 0],
+    [0, 1],
+    [0, 0]
   ]
 }
