@@ -425,6 +425,21 @@ class EgoRewardWeights:
     # Tune via +env.rw_yaw_jerk.
     yaw_jerk: float = 0.0            # rw_yaw_jerk; L1 weight on |delta yaw_cmd| [per (rad/s)]; 0 == OFF
 
+    # --- PITCH-CHANNEL quietness (v1.6, 2026-07-19; AUTHORIZED anti-chatter, NOT energy). The PITCH mirror
+    # of the yaw duty/jerk pair, on the APPLIED pitch-rate command (action channel 2, rad/s), defending
+    # against the Qs1 near-gate pitch limit cycle. pitch_duty prices the SUSTAINED pitch amplitude beyond a
+    # WIDE free band: R_pitchduty = -pitch_duty * relu(|pitch_cmd| - pitch_duty_free_band) / (PITCH_CMD_RAIL
+    # - pitch_duty_free_band). pitch_jerk is the L1 |delta pitch_cmd|. The WIDE free band (default 0.6) is
+    # LOAD-BEARING and DELIBERATE: pitch is the PRIMARY control axis (unlike yaw, which the position-free obs
+    # leaves reward-indifferent), so a tight band would reproduce the pitch-limit-1 crawl -- only CHATTER
+    # above the band pays. Normalised by the +-PITCH_CMD_RAIL (3.0) authority rail (pitch has no configurable
+    # clamp, unlike yaw), so pitch_duty is the penalty magnitude at the rail. NON-farmable (min 0 in-band /
+    # steady pitch), vanishes at convergence. 0 == OFF (byte-identical). Tune via +env.rw_pitch_duty /
+    # +env.pitch_duty_free_band / +env.rw_pitch_jerk.
+    pitch_duty: float = 0.0          # rw_pitch_duty; weight on the |pitch_cmd| excess beyond the band; 0 == OFF
+    pitch_duty_free_band: float = 0.6  # (rad/s) free band; |pitch_cmd| <= this pays EXACTLY 0 (wide: pitch is primary)
+    pitch_jerk: float = 0.0          # rw_pitch_jerk; L1 weight on |delta pitch_cmd| [per (rad/s)]; 0 == OFF
+
     # --- VELOCITY-JERK smoothness prior (R0 still-yaw hover boot, 2026-07-12; AUTHORIZED smoothness, NOT
     # energy/speed). A SMOOTHNESS penalty on the temporal CHANGE of the WORLD-frame CoM acceleration:
     # R_velsmooth = -vel_smooth * ||jerk||^2, jerk = accel_curr - accel_prev (the 1st difference of
@@ -1033,6 +1048,42 @@ def yaw_jerk_penalty(yaw_cmd_delta: Tensor, rw_yaw_jerk: float) -> Tensor:
     return -rw_yaw_jerk * yaw_cmd_delta.abs()
 
 
+# Pitch has NO configurable command clamp (only yaw does, via ego_yaw_cmd_clamp_rad_s), so the pitch
+# duty penalty normalises its excess against a FIXED authority rail = the |pitch_cmd| the PITCH_EVAL
+# satur_duty also treats as railed. Just inside the +-3.14 action space.
+PITCH_CMD_RAIL = 3.0
+
+
+def pitch_duty_penalty(pitch_cmd: Tensor, rw_pitch_duty: float, free_band: float,
+                       rail: float = PITCH_CMD_RAIL) -> Tensor:
+    """PITCH AMPLITUDE / DUTY penalty (v1.6): R_pitchduty = -rw_pitch_duty * relu(|pitch_cmd| - free_band) /
+    (rail - free_band), on the APPLIED pitch-rate command (action channel 2, rad/s). The pitch mirror of
+    ``yaw_duty_penalty`` with the yaw clamp replaced by the fixed +-``rail`` authority (PITCH_CMD_RAIL=3.0;
+    pitch has no configurable clamp). ZERO at |pitch_cmd| <= ``free_band`` (WIDE by default, 0.6, since
+    pitch is the PRIMARY control axis -- a tight band would crawl) and grows LINEARLY to -rw_pitch_duty at
+    the +-rail. Prices the SUSTAINED near-gate pitch limit cycle (Qs1) that the temporal-change jerk term
+    under-prices between flips. NON-farmable (min 0 in-band), vanishes at convergence. Sign NEGATIVE.
+    rw_pitch_duty==0 -> OFF (zeros -> byte-identical). Returns the (<=0) penalty (N,)."""
+    assert torch is not None
+    if rw_pitch_duty == 0.0:
+        return torch.zeros_like(pitch_cmd)
+    span = max(float(rail) - float(free_band), 1e-6)
+    excess = (pitch_cmd.abs() - float(free_band)).clamp(min=0.0) / span
+    return -rw_pitch_duty * excess
+
+
+def pitch_jerk_penalty(pitch_cmd_delta: Tensor, rw_pitch_jerk: float) -> Tensor:
+    """PITCH JERK penalty (v1.6): R_pitchjerk = -rw_pitch_jerk * |pitch_cmd_t - pitch_cmd_{t-1}|, on the L1
+    temporal change of the APPLIED pitch-rate command (action channel 2). The pitch mirror of
+    ``yaw_jerk_penalty``: prices the near-gate pitch bang-bang; a SUSTAINED / steady pitch (a needed
+    climb/dive -> delta ~0) pays 0, so smooth pitching is NEVER penalised -- only chatter. NON-farmable,
+    vanishes at convergence. Sign NEGATIVE. rw_pitch_jerk==0 -> OFF (zeros -> byte-identical). (N,)."""
+    assert torch is not None
+    if rw_pitch_jerk == 0.0:
+        return torch.zeros_like(pitch_cmd_delta)
+    return -rw_pitch_jerk * pitch_cmd_delta.abs()
+
+
 def velocity_jerk_penalty(accel_curr: Tensor, accel_prev: Tensor, rw_vel_smooth: float) -> Tensor:
     """VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12): R_velsmooth = -rw_vel_smooth *
     ||jerk||^2, where jerk = ``accel_curr`` - ``accel_prev`` (the 1st difference of acceleration == the 2nd
@@ -1256,6 +1307,8 @@ def compute_ego_reward(
     yaw_cmd_delta: "Tensor | None" = None,
     yaw_cmd: "Tensor | None" = None,
     yaw_clamp: float = 0.0,
+    pitch_cmd: "Tensor | None" = None,
+    pitch_cmd_delta: "Tensor | None" = None,
     accel_curr: "Tensor | None" = None,
     accel_prev: "Tensor | None" = None,
     los_world: "Tensor | None" = None,
@@ -1369,6 +1422,14 @@ def compute_ego_reward(
     # (delta~0) pays 0. Distinct from yaw_dither's squared form (this is scale-linear in the flip amplitude).
     r_yaw_jerk = (yaw_jerk_penalty(yaw_cmd_delta, w.yaw_jerk)
                   if yaw_cmd_delta is not None else torch.zeros_like(r_prog))
+    # PITCH DUTY + JERK (v1.6; OFF unless w.pitch_duty/w.pitch_jerk>0 -> byte-identical): the pitch mirror of
+    # the yaw duty/jerk terms on the applied channel-2 command (a WIDE free band -- pitch is the primary
+    # axis). The env passes pitch_cmd (None unless rw_pitch_duty>0) + pitch_cmd_delta (None unless
+    # rw_pitch_jerk>0). Defends against the Qs1 near-gate pitch limit cycle.
+    r_pitch_duty = (pitch_duty_penalty(pitch_cmd, w.pitch_duty, w.pitch_duty_free_band)
+                    if pitch_cmd is not None else torch.zeros_like(r_prog))
+    r_pitch_jerk = (pitch_jerk_penalty(pitch_cmd_delta, w.pitch_jerk)
+                    if pitch_cmd_delta is not None else torch.zeros_like(r_prog))
     # VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12; OFF unless w.vel_smooth>0 ->
     # byte-identical): penalise the temporal CHANGE of the world-frame CoM acceleration (a snappy spike pays;
     # steady speed AND smooth hard accel both pay ~0). The env passes accel_curr = (v_t - v_{t-1})/dt +
@@ -1407,6 +1468,7 @@ def compute_ego_reward(
 
     reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_gvhold + r_corr + r_align + r_perc
               + r_perc_next + r_att + r_roll_recover + r_cross_level + r_yawdith + r_yaw_duty + r_yaw_jerk
+              + r_pitch_duty + r_pitch_jerk
               + r_velsmooth + r_vcap + r_fin + r_cone + r_smooth + r_exit + r_time - term)
 
     components = {
@@ -1426,6 +1488,8 @@ def compute_ego_reward(
         "yaw_dither_pen": float((-r_yawdith).mean()),
         "yaw_duty_pen": float((-r_yaw_duty).mean()),
         "yaw_jerk_pen": float((-r_yaw_jerk).mean()),
+        "pitch_duty_pen": float((-r_pitch_duty).mean()),
+        "pitch_jerk_pen": float((-r_pitch_jerk).mean()),
         "prog_sat_forfeit": float(prog_sat_forfeit.mean()),
         "velsmooth_pen": float((-r_velsmooth).mean()),
         "vcap_pen": float((-r_vcap).mean()),
