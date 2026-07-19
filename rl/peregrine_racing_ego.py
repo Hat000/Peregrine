@@ -788,6 +788,104 @@ def seed_fresh_fix_age_s(t_since_fix: Tensor, cdf_ms: Tensor, gen, dtype=None) -
 
 
 # ================================================================================================
+# CAMERA MOUNT PITCH re-aim (v1.6, 2026-07-19; +env.ego_cam_mount_pitch_deg). DEFAULT unset == byte-id.
+# ================================================================================================
+# DISCOVERED CODE REALITY (contradicts the "mount UNMODELED in sim" flight-forensic note): the emulated
+# projection R_camera_from_body (rl/inc8_estimator_emul._r_camera_from_body_np) ALREADY bakes a +20 deg
+# body-Y pitch-up mount, and every detection consumer (gate_detectable / gate_apparent_area /
+# gate_center_view_cos, all via _cam_R_wb) already sees it -- tests/test_gate_visibility.py even pins the
+# resulting up/down asymmetry. So the sim's net optical-axis elevation is ALREADY +20 deg (probe-verified),
+# NOT 0. This knob is therefore an ABSOLUTE mount-pitch OVERRIDE, not an additive tilt: it re-aims the net
+# elevation to the requested angle. Unset (None) OR == the baked 20 deg -> zero delta -> byte-identical.
+BAKED_CAM_MOUNT_PITCH_DEG = 20.0    # == inc8_estimator_emul._r_camera_from_body_np()'s a (single source)
+
+
+def cam_mount_pitch_delta_R(target_pitch_deg, baked_pitch_deg=BAKED_CAM_MOUNT_PITCH_DEG,
+                            device=None, dtype=None):
+    """The RIGHT-multiply rotation for _cam_R_wb that re-aims the emulated camera's NET optical-axis
+    elevation to ``target_pitch_deg`` (ABSOLUTE degrees; positive = optical axis pitched UP from body-
+    forward). Because R_camera_from_body already bakes ``baked_pitch_deg`` (+20 deg), inserting a
+    Ry(baked - target) pitch about the Z-up body-y axis (post-multiplied into _cam_R_wb's body->world)
+    shifts the net elevation to exactly ``target`` -- VERIFIED numerically against the real gate_detectable
+    projection: net_elev == target, zero azimuth coupling, body-fixed at all attitudes (a Ry(phi) here maps
+    to net_elev = baked - phi through the flip+NED conjugation, so phi = baked - target).
+
+    Returns a (3,3) tensor, or ``None`` when ``target`` is None or EXACTLY equals ``baked`` (zero delta ->
+    the caller skips the multiply -> byte-identical). Sign proof + probe: scratchpad/probe_mount2.py."""
+    if target_pitch_deg is None:
+        return None
+    if float(target_pitch_deg) == float(baked_pitch_deg):
+        return None
+    phi = math.radians(float(baked_pitch_deg) - float(target_pitch_deg))
+    c, s = math.cos(phi), math.sin(phi)
+    return torch.tensor([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]], device=device, dtype=dtype)
+
+
+# ================================================================================================
+# RANGE-DEPENDENT DETECTION availability (v1.6, 2026-07-19; +env.ego_vision_detect_mode=range).
+# ================================================================================================
+# Replaces the FLAT per-frame detector-success probability (cadence_effective_detectable's scalar p) with
+# a miner-calibrated range-dependent p(r) (14,938 wire frames): a logistic rise from a near-gate blackout
+# (a very close gate fills the frame / few clean corners) to a mid-range plateau, then a far attenuation
+# (a distant gate is small). Cadence (the 30 Hz frame clock) + FOV visibility are UNCHANGED -- this only
+# reshapes the Bernoulli draw's probability. r = the GT gate-centre range (a physical VISIBILITY-model
+# input, GT-legal exactly as gate_detectable's own far-cap uses the GT centre range; at a successful
+# detection the estimated range ~ GT so this matches the wire's estimated-range calibration, AND it avoids
+# the acquisition deadlock a pure-estimated range would cause -- an un-acquired gate has rel_pos=0 ->
+# est-range 0 -> p~0 -> never detectable). DEFAULT mode 'legacy' keeps the flat draw == byte-identical.
+def range_detect_prob(rng: Tensor, r0: float, k: float, plateau: float,
+                      far_start: float, far_p: float) -> Tensor:
+    """Per-gate detector-success probability p(r) for the range-dependent detection model:
+        p_base(r) = plateau / (1 + exp(-(r - r0) / k))          (logistic near-blackout -> plateau)
+        p(r)      = p_base(r) * far_p   for r > far_start,  else p_base(r)
+    ``rng`` (N,G) GT gate-centre range (m). Returns (N,G) in [0, plateau]. PURE (no RNG). At r=r0 -> 0.5*
+    plateau; r>>r0 (<=far_start) -> plateau; r>far_start -> plateau*far_p. Miner defaults: r0=2.2, k=0.4,
+    plateau=0.99, far_start=26.0, far_p=0.79."""
+    assert torch is not None
+    p_base = float(plateau) / (1.0 + torch.exp(-(rng - float(r0)) / max(float(k), 1e-9)))
+    return torch.where(rng > float(far_start), p_base * float(far_p), p_base)
+
+
+def cadence_effective_detectable_p(geometric_detectable: Tensor, frame_fired: bool, p_gate: Tensor,
+                                   gen, dtype=None) -> Tensor:
+    """As ``cadence_effective_detectable`` but with a PER-GATE success-probability TENSOR ``p_gate`` (same
+    shape as ``geometric_detectable``) instead of a scalar p -- the range-dependent detection mode. Off a
+    frame tick -> all-False (the estimator ego-propagates). On a frame tick each geometrically-detectable
+    gate independently succeeds with its own p_gate[..]. The draw uses the DEDICATED generator ``gen`` (the
+    estimator's draw stream is never perturbed), drawing ONE uniform of the same shape as the scalar path,
+    so the RNG-isolation guarantee is identical. PURE (inputs unmutated)."""
+    assert torch is not None
+    if not frame_fired:
+        return torch.zeros_like(geometric_detectable)
+    fdt = dtype if dtype is not None else torch.float32
+    succ = torch.rand(geometric_detectable.shape, generator=gen,
+                      device=geometric_detectable.device, dtype=fdt) < p_gate.to(fdt)
+    return geometric_detectable & succ
+
+
+# ================================================================================================
+# APERTURE-MARGIN reclassification (v1.6, 2026-07-19; +env.pass_margin_anneal). DEFAULT OFF == byte-id.
+# ================================================================================================
+def aperture_margin_reclassify(gate_passed: Tensor, lat: Tensor, vert: Tensor,
+                               lat_weight: float, margin) -> "tuple[Tensor, Tensor]":
+    """PASS->MISS reclassification for the aperture-margin curriculum (Fengyou's shrink-the-gate
+    CONSTRAINT, not reward shaping). A geometric PASS (``gate_passed``) whose WEIGHTED miss
+        m = sqrt((lat_weight * |lat|)^2 + |vert|^2)
+    exceeds ``margin`` is DOWNGRADED to a wide-flyby miss. ``lat``/``vert`` (N,) are the signed gate-plane
+    lateral (y) / vertical (z) crossing offsets (crossing_events); ``lat_weight`` up-weights lateral risk
+    (miner: lateral risk ~2x vertical). ``margin`` is a scalar float OR a broadcastable tensor (the annealed
+    live margin). Returns (kept_pass, downgraded): kept_pass = gate_passed & ~downgraded (still a valid
+    pass); downgraded = gate_passed & (m > margin) (the env ORs this into gate_miss -> the EXISTING
+    rw_terminal_miss; NO new penalty). Collision geometry / visuals / detection are untouched -- only what
+    counts as a successful thread. PURE; with a loose margin (>= max m of any geometric pass) downgraded is
+    all-False -> byte-identical."""
+    assert torch is not None
+    m = torch.sqrt((float(lat_weight) * lat.abs()) ** 2 + vert.abs() ** 2)
+    downgraded = gate_passed & (m > margin)
+    return gate_passed & ~downgraded, downgraded
+
+
+# ================================================================================================
 # The environment (requires diffaero -- training/eval cluster only).
 # ================================================================================================
 # The base import is deferred to class-body time so that the PURE functions above are importable on a
@@ -827,6 +925,14 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # +env.ego_camera_virtual_flip=false restores the raw camera for A/B.
         self._cam_flip = bool(getattr(cfg, "ego_camera_virtual_flip", True))
         self._Rz_cam = torch.as_tensor(_RZ_PI_BODY_NP, device=dev, dtype=self._ego_dtype)
+        # CAMERA MOUNT PITCH override (v1.6, 2026-07-19; +env.ego_cam_mount_pitch_deg). ABSOLUTE net
+        # optical-axis elevation in degrees (positive = pitched UP). The baked R_camera_from_body ALREADY
+        # models the wire's +20 deg mount (see cam_mount_pitch_delta_R + BAKED_CAM_MOUNT_PITCH_DEG), so
+        # unset -> None -> byte-identical, and ego_cam_mount_pitch_deg=20.0 -> zero delta -> byte-identical
+        # (an explicit re-statement of the baked mount, NOT a second +20). Applied in _cam_R_wb so ALL
+        # detection/perception consumers (raycast, apparent area, view-cos reward) see the re-aimed camera.
+        self._cam_mount_pitch_delta = cam_mount_pitch_delta_R(
+            getattr(cfg, "ego_cam_mount_pitch_deg", None), device=dev, dtype=self._ego_dtype)
         self._ego_contact_penalty = float(getattr(cfg, "ego_contact_penalty",
                                                    EGO_CONTACT_PENALTY_DEFAULT))
         # MISS TERMINATION (Fengyou A/B 2026-07-07): default True -> a wide flyby TERMINATES (miss, the
@@ -907,6 +1013,24 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         _ap = getattr(cfg, "gate_inner_opening_m", None)
         if _ap is not None:
             self.gate_half_opening_m = float(_ap) / 2.0
+        # APERTURE-MARGIN CURRICULUM (v1.6, 2026-07-19; +env.pass_margin_anneal; Fengyou's SHRINK-THE-GATE
+        # constraint, NOT reward shaping). Tightens the PASS/thread classification only: at a gate-plane
+        # crossing, a geometric pass whose WEIGHTED miss m = sqrt((lat_w*|lat|)^2 + |vert|^2) exceeds the
+        # live margin is reclassified as a wide-flyby MISS (routed to the EXISTING rw_terminal_miss; NO new
+        # penalty). The train loop anneals _pass_margin_current LINEARLY from _pass_margin_start (the full
+        # effective aperture) DOWN to pass_margin_final_m over the front (1-hold_frac), END-HOLD (the tight
+        # end is the guarantee). _pass_margin_start = gate_half_opening_m*sqrt(lat_w^2+1) is the MAX weighted
+        # miss any geometric pass (linf < gate_half_opening_m, and half_in_eff <= gate_half_opening_m) can
+        # have, so update 0 (margin == start) is a STRICT no-op. Default OFF -> the reclassification block in
+        # step() never runs -> byte-identical. current inits to start so even before the first anneal mutate
+        # it is a no-op.
+        self._pass_margin_on = bool(getattr(cfg, "pass_margin_anneal", False))
+        self._pass_margin_lat_weight = float(getattr(cfg, "pass_margin_lat_weight", 2.0))
+        self._pass_margin_final = float(getattr(cfg, "pass_margin_final_m", 1.0))
+        self._pass_margin_hold_frac = float(getattr(cfg, "pass_margin_hold_frac", 0.25))
+        self._pass_margin_start = float(self.gate_half_opening_m) * math.sqrt(
+            self._pass_margin_lat_weight ** 2 + 1.0)
+        self._pass_margin_current = self._pass_margin_start
         # OBS BLACKOUT COAST (Fengyou 2026-07-09; audit read_estimator-kf-audit.md STALE-CLIFF). Default
         # False == byte-identical (the obs builder hard-masks each gate slot on INSTANTANEOUS detectability,
         # so the estimator's coast-through-gaps never reaches the policy and the crossing endgame is flown
@@ -1065,6 +1189,18 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             self._vc_dt_ms = float(self.dt) * 1000.0
             self._vc_frame_period_ms = (1000.0 / self._vc_frame_hz) if self._vc_frame_hz > 0.0 else 0.0
             self._vc_detect_p = float(getattr(cfg, "ego_vision_detect_p", 0.35))   # per-frame detect prob
+            # RANGE-DEPENDENT detection availability (v1.6, +env.ego_vision_detect_mode). 'legacy' (default)
+            # keeps the flat _vc_detect_p Bernoulli draw == byte-identical; 'range' replaces the per-frame
+            # success PROBABILITY with the miner-calibrated p(r) (near-blackout logistic -> plateau -> far
+            # attenuation; see range_detect_prob). Only the draw's probability changes; the frame clock +
+            # FOV visibility are untouched. Sub-knobs read only in 'range' mode.
+            self._vc_detect_mode = str(getattr(cfg, "ego_vision_detect_mode", "legacy"))
+            if self._vc_detect_mode == "range":
+                self._vc_det_r0 = float(getattr(cfg, "ego_det_r0", 2.2))
+                self._vc_det_k = float(getattr(cfg, "ego_det_k", 0.4))
+                self._vc_det_plateau = float(getattr(cfg, "ego_det_plateau", 0.99))
+                self._vc_det_far_start_m = float(getattr(cfg, "ego_det_far_start_m", 26.0))
+                self._vc_det_far_p = float(getattr(cfg, "ego_det_far_p", 0.79))
             self._vc_frame_accum = 0.0              # ms accumulated toward the next camera frame (GLOBAL)
             self._vc_fired = False                  # did a camera frame land this tick (diagnostic)
             # THIN frame->pose compute-latency sub-effect (default ON when the cadence is armed; SECOND-
@@ -1290,9 +1426,18 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         """Body->world matrix for the emulated CAMERA visibility test. Applies the virtual
         pi-about-body-z flip so the tail-first-flying drone's camera looks along the TRAVEL direction
         (nose-first deploy convention) and sees the gates AHEAD. Only the camera is rotated -- the
-        control frame / rel_pos / velocity / rates all use the unflipped self._q."""
+        control frame / rel_pos / velocity / rates all use the unflipped self._q.
+
+        The v1.6 ABSOLUTE mount-pitch override (self._cam_mount_pitch_delta; None == byte-identical) is
+        post-multiplied here so the re-aimed body-fixed camera propagates to EVERY consumer at once."""
         R_wb = quat_xyzw_to_matrix_torch(self._q)
-        return R_wb @ self._Rz_cam if self._cam_flip else R_wb
+        cam = R_wb @ self._Rz_cam if self._cam_flip else R_wb
+        # getattr default None (byte-identical; matches the _step_estimator getattr convention) so partial-
+        # init stub-self unit tests that predate this knob keep working with no mount delta.
+        mount_delta = getattr(self, "_cam_mount_pitch_delta", None)
+        if mount_delta is not None:
+            cam = cam @ mount_delta
+        return cam
 
     # ---- MOTION-BLUR gate (perception-honesty package; DETERMINISTIC pure function of truth) -----
     def _blur_los_rate(self):
@@ -1359,8 +1504,21 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             frame_fired = False
             if getattr(self, "_vc_on", False):
                 frame_fired = self._vc_frame_tick()
-                det_eff = cadence_effective_detectable(detectable, frame_fired, self._vc_detect_p,
-                                                       self._vc_gen, dtype=self._ego_dtype)
+                # getattr default "legacy" (byte-identical) so a partial-init stub that sets _vc_on but not
+                # the v1.6 detect-mode knob keeps the original flat-p cadence path.
+                if getattr(self, "_vc_detect_mode", "legacy") == "range":
+                    # RANGE-DEPENDENT (v1.6): per-gate success prob p(r) from the GT centre range (the same
+                    # GT range gate_detectable's far-cap uses; a physical visibility-model input). Replaces
+                    # only the Bernoulli probability; cadence + FOV mask (detectable) unchanged.
+                    gt_rng = torch.linalg.norm(self.gate_pos - self._p.unsqueeze(1), dim=-1)   # (N,G)
+                    p_gate = range_detect_prob(gt_rng, self._vc_det_r0, self._vc_det_k,
+                                               self._vc_det_plateau, self._vc_det_far_start_m,
+                                               self._vc_det_far_p)
+                    det_eff = cadence_effective_detectable_p(detectable, frame_fired, p_gate,
+                                                             self._vc_gen, dtype=self._ego_dtype)
+                else:
+                    det_eff = cadence_effective_detectable(detectable, frame_fired, self._vc_detect_p,
+                                                           self._vc_gen, dtype=self._ego_dtype)
             else:
                 det_eff = detectable
             # ESTIMATOR-FAITHFUL inputs (None on the default path == byte-identical legacy):
@@ -1523,6 +1681,16 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             gate_miss = gate_miss & ~slab_t
             gate_collision = gate_collision | slab_hit.any(dim=1)
         pass_linf = ev["linf"][ar, tg]
+        # APERTURE-MARGIN reclassification (v1.6; OFF unless _pass_margin_on -> byte-identical). Downgrade a
+        # geometric pass whose WEIGHTED miss exceeds the annealed margin to a wide-flyby MISS (existing miss
+        # terminal). lat/vert = the interpolated gate-plane crossing offsets at the TARGET gate. Placed AFTER
+        # the slab-hit adjustment so a slab-struck env (gate_passed already False) is never touched; BEFORE
+        # advance/n_passed/finish + the reward so the downgrade propagates everywhere consistently.
+        if self._pass_margin_on:
+            gate_passed, _pm_downgraded = aperture_margin_reclassify(
+                gate_passed, ev["y"][ar, tg], ev["z"][ar, tg],
+                self._pass_margin_lat_weight, self._pass_margin_current)
+            gate_miss = gate_miss | _pm_downgraded
 
         # PRE-ADVANCE current-target segment [prev_center -> target_center] (GT, Z-up). Progress this
         # step is credited along the segment that was CURRENT at the START of the step (the drone moved
@@ -1688,6 +1856,15 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             if self._egorw.yaw_dither != 0.0 or self._egorw.yaw_jerk != 0.0:
                 yaw_cmd_delta = action[..., 3] - self.last_action[..., 3]
             yaw_cmd = action[..., 3] if self._egorw.yaw_duty != 0.0 else None
+            # PITCH-CHANNEL quietness inputs (v1.6; None unless the respective term is armed -> byte-identical
+            # off). pitch_cmd = channel 2 of the APPLIED command (action = [thrust, roll, pitch, yaw]; the yaw
+            # clamp touches ONLY channel 3, so channel 2 IS the applied pitch, read at the same point as
+            # yaw_cmd). pitch_cmd_delta = its L1 temporal change (the jerk term reads it). Defence against the
+            # Qs1 near-gate pitch limit cycle; the WIDE free band (0.6) leaves the primary control axis free.
+            pitch_cmd_delta = None
+            if self._egorw.pitch_jerk != 0.0:
+                pitch_cmd_delta = action[..., 2] - self.last_action[..., 2]
+            pitch_cmd = action[..., 2] if self._egorw.pitch_duty != 0.0 else None
             # VELOCITY-JERK smoothness input (R0 still-yaw hover boot 2026-07-12; None unless
             # rw_vel_smooth>0 -> byte-identical off): the CURRENT-step WORLD CoM acceleration
             # accel_curr = (v_t - v_{t-1})/dt (self._prev_vel holds v_{t-1}); accel_prev = the threaded
@@ -1752,6 +1929,9 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # None unless rw_yaw_duty>0) + yaw_clamp (the env clamp) feed the amplitude/duty term.
                 yaw_cmd_delta=yaw_cmd_delta,
                 yaw_cmd=yaw_cmd, yaw_clamp=self._yaw_cmd_clamp,
+                # PITCH-CHANNEL quietness (v1.6; None unless the term is armed): pitch_cmd (applied channel-2
+                # command) -> duty above the free band; pitch_cmd_delta -> L1 jerk. Mirror of the yaw terms.
+                pitch_cmd=pitch_cmd, pitch_cmd_delta=pitch_cmd_delta,
                 # VELOCITY-JERK smoothness (None unless rw_vel_smooth>0): current + previous world CoM accel.
                 accel_curr=accel_curr, accel_prev=accel_prev,
                 # RECOVERY / DAMPING form (A) (None unless rw_roll_recover>0): the drone->current-gate world
