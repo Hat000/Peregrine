@@ -301,7 +301,17 @@ _V1_RECIPE = {
 # mid-session even if a flight looks divey -- land and relay. Qs1 = fly first; Ws0 = quiet fallback.
 _V15_RECIPE = {**_V1_RECIPE, "ego_pitch_clamp": 0.0}
 
+# ego-ckpts-v16-2026-07-19 (v1.6 Q PICK): v15 recipe (PITCH FREE, this IS the A/B vs a clamped
+# baseline) with ONE deliberate delta -- ego_rate_scale 1.2 -> 1.0 (commander 2026-07-19). Unchanged:
+# yaw 0.7, det-hold 0.2, slot1, editor map (configs/vq2_coarse_map.json), M-engine, assist 1.3.
+# Settled GO >=3 s. Re-fly any flight with max|gyro| > 2.5 rad/s in the first 0.75 s. NO mixing
+# with v15 ckpts. Target: beat Ws0's clamp-15 ledger {5,5,5,4,4,3,3} UNCLAMPED + CONTACT-FREE.
+_V16_RECIPE = {**_V15_RECIPE, "ego_rate_scale": 1.0}
+
 MODEL_DEFAULTS = {
+    # ego-ckpts-v16-2026-07-19  -- see _V16_RECIPE above (PITCH FREE + rate scale 1.0)
+    "v16Qs0_final_actor.pth": {**_V16_RECIPE, "label": "v16pick_Qs0"},
+    "v16Qs1_final_actor.pth": {**_V16_RECIPE, "label": "v16pick_Qs1"},
     # ego-ckpts-v15-2026-07-19  -- see _V15_RECIPE above (PITCH FREE)
     "v15Qs1_final_actor.pth":         {**_V15_RECIPE, "label": "v15pick_Qs1"},
     "v15Ws0_periodic_prev_actor.pth": {**_V15_RECIPE, "label": "v15pick_Ws0"},
