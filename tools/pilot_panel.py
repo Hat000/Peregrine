@@ -281,7 +281,11 @@ _V1_RECIPE = {
     "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
     "ego_assist_thrust": 1.3,
     "ego_sector_mode": "map",
-    "ego_coarse_map": "configs/vq2_coarse_map_champion_logecho.json",
+    # Fengyou 2026-07-19: fly the HAND-MADE panel map only -- picking a model no longer swaps to
+    # any frozen/canonical map. This points at the panel map-editor's own file; edit it via the
+    # 🗺 tab and it takes effect on the next launch. (Champion log-echo + commander canonical are
+    # IGNORED here by directive; the frozen side file still exists for the commander's reference.)
+    "ego_coarse_map": "configs/vq2_coarse_map.json",
     "ego_slot1": True,
     "ego_pitch_clamp": 1.0,
     "ego_det_hold": 0.2,
