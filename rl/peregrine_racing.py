@@ -246,6 +246,11 @@ def crossing_events(prev_rel: Tensor, curr_rel: Tensor, half_inner: float, half_
       pass_ok  -- crossing point inside the 1.5 m inner opening (L-inf < half_inner)
       in_frame -- crossing point in the physical frame band (half_inner <= L-inf <= half_outer)
       linf     -- float tensor: L-inf off-axis distance at the crossing point (junk where no cross)
+      y, z     -- float tensors: the SIGNED in-plane lateral (y) + vertical (z) offsets at the
+                  crossing point (the components linf = max(|y|,|z|) is built from; junk where no
+                  cross). Exposed for the v1.6 aperture-margin curriculum's WEIGHTED miss (which
+                  needs lateral vs vertical separately); every legacy caller keys the dict, so the
+                  extra entries are byte-identical for them.
     The interpolation matters at racing speed: ~0.5 m/step at 30 Hz is most of the aperture.
     ``half_inner``/``half_outer`` may be floats (legacy) or tensors broadcastable against the
     crossing dims -- the INC7 per-env body-radius-inflated bands."""
@@ -262,7 +267,8 @@ def crossing_events(prev_rel: Tensor, curr_rel: Tensor, half_inner: float, half_
     linf = torch.maximum(y.abs(), z.abs())
     pass_ok = crossed & (linf < half_inner)
     in_frame = crossed & (linf >= half_inner) & (linf <= half_outer)
-    return {"fwd": fwd, "bwd": bwd, "pass_ok": pass_ok, "in_frame": in_frame, "linf": linf}
+    return {"fwd": fwd, "bwd": bwd, "pass_ok": pass_ok, "in_frame": in_frame, "linf": linf,
+            "y": y, "z": z}
 
 
 def slab_frame_hits(prev_rel: Tensor, curr_rel: Tensor, half_inner, half_outer,
