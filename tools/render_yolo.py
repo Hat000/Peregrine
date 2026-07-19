@@ -30,14 +30,51 @@ from racer.vision.gate_pose import estimate_gate_pose
 GAP_MS = 60.0   # a recv hole bigger than this is flagged as a stream gap / dropped frames
 
 
+# Fallback ONLY for pre-2026-07-19 sessions whose meta.json predates the seeker fields. This is
+# the current champion M-engine (what recent v1/v15/v16 flights flew); a render off it prints a
+# loud warning because it is a GUESS, not the recorded flight detector.
+_FALLBACK_WEIGHTS = "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine"
+
+
+def _load_flight_detector(session, weights_override):
+    """Load the SAME detector the flight actually used, from <session>/meta.json (seeker_detector +
+    seeker_weights, written by fly_rl on the ego path). --weights forces an override. Old sessions
+    with no recorded detector fall back to the current champion M-engine with a loud warning."""
+    if weights_override:
+        print(f"[render] detector OVERRIDE (--weights, may NOT match the flight): {weights_override}")
+        return GateDetector.load(weights_override)
+    meta = {}
+    mp = Path(session) / "meta.json"
+    if mp.exists():
+        try:
+            meta = json.loads(mp.read_text())
+        except Exception as e:
+            print(f"[render] WARNING: could not read {mp}: {e}")
+    detname, weights = meta.get("seeker_detector"), meta.get("seeker_weights")
+    if detname == "red_glow":
+        print("[render] flight detector (from meta): red_glow classical -> overlaying red_glow")
+        return RedGlowGateDetector()
+    if weights:
+        print(f"[render] flight detector (from meta.json, matches the flight): {weights}")
+        return GateDetector.load(weights)
+    print(f"[render] WARNING: {mp} has no seeker_detector/seeker_weights (pre-2026-07-19 flight). "
+          f"Falling back to the current champion M-engine, which may NOT match this flight:\n"
+          f"         {_FALLBACK_WEIGHTS}\n"
+          f"         pass --weights <engine> if this flight used a different detector.")
+    return GateDetector.load(_FALLBACK_WEIGHTS)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("session"); ap.add_argument("out_mp4")
     ap.add_argument("--slowmo", type=float, default=4.0)
     ap.add_argument("--out-fps", type=int, default=30)
     ap.add_argument("--scale", type=int, default=2)
-    ap.add_argument("--weights", default="C:/Users/Shadow/Peregrine/models/vq2_darkred_negreal42_2026-07-05_fp16_384x640.engine",
-                    help="YOLO/TRT detector engine to overlay (the REAL flight detector, not red_glow)")
+    ap.add_argument("--weights", default=None,
+                    help="Override the detector engine to overlay. DEFAULT (unset): use the SAME "
+                         "detector the flight flew, read from <session>/meta.json (seeker_detector "
+                         "+ seeker_weights), so the overlay matches the pilot's view. Only set this "
+                         "to force a different engine than the flight used.")
     ap.add_argument("--last-seconds", type=float, default=0.0,
                     help="render only the last N seconds (by recv_monotonic_ns); 0 = whole recording. "
                          "The flight is at the END of the recording (the long pre-GO wait precedes it).")
@@ -52,8 +89,7 @@ def main() -> int:
         idx = [r for r in idx if r.get("recv_monotonic_ns", 0) >= cutoff]
         print(f"[render] trimmed to last {args.last_seconds:g}s: {len(idx)}/{n_before} frames")
     blob = (session / "video.bin").read_bytes()
-    det = GateDetector.load(args.weights)
-    print(f"[render] overlaying REAL flight detector: {args.weights}")
+    det = _load_flight_detector(session, args.weights)
     S = args.scale
     W, H = 640 * S, 360 * S
     # H.264 (yuv420p + faststart) via imageio-ffmpeg's bundled ffmpeg. cv2's mp4v is NOT playable

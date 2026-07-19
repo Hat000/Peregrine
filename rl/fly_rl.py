@@ -3786,6 +3786,10 @@ def main() -> int:
                     "ego_speed_gov": args.ego_speed_gov,
                     "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist,
+                    # the ACTUAL detector this flight flew -> renders overlay the SAME engine
+                    # (tools/render_yolo.py reads these), not a stale hardcoded default.
+                    "seeker_detector": args.seeker_detector,
+                    "seeker_weights": _resolve_seeker_weights(args) or "",
                     "sysid_replay": str(args.sysid_replay),
                     "sysid_replay_simtime": bool(args.sysid_replay_simtime)}
                    if getattr(args, "ego_ckpt", None) else {}),
