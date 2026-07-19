@@ -2721,6 +2721,16 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     "conf1": (None if d.get("conf1") is None else round(float(d.get("conf1")), 4)),
                     "area1": round(float(d.get("area1", 0.0)), 4),
                     "rel_flu1": d.get("rel_flu1"),
+                    # slot0 (ACTIVE gate) TRUE body FLU [fwd,left,up] = the POINT fed to the policy
+                    # this tick (z-bias offset already baked in); dist = its range (m). render_yolo
+                    # projects rel_flu back into the frame to show where we aimed + how far.
+                    "rel_flu": d.get("rel_flu"),
+                    "dist": (round(float(np.linalg.norm(d["rel_flu"])), 3)
+                             if d.get("rel_flu") is not None else None),
+                    # frame this tick acted on -- the EXACT key to align renders to video frames
+                    # (video_index + ego_obs share the sim frame counter; their sim_time_ns do NOT
+                    # share an epoch, so frame_id is the only safe cross-stream join).
+                    "frame_id": (frame.frame_id if frame is not None else None),
                     "rate_frd": rate_frd.round(4).tolist(),
                     "collective": round(collective, 5),
                     "normed_thrust": round(last_normed, 5),
@@ -3779,6 +3789,7 @@ def main() -> int:
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,
                     "ego_coarse_map": args.ego_coarse_map,
+                    "ego_gate_z_bias": float(getattr(args, "ego_gate_z_bias", 0.0)),
                     "ego_pitch_clamp": args.ego_pitch_clamp,
                     "ego_roll_clamp": args.ego_roll_clamp,
                     "ego_floor_clamp": args.ego_floor_clamp,

@@ -26,8 +26,45 @@ from racer.contracts import Frame
 from racer.vision.red_glow_detector import RedGlowGateDetector
 from racer.vision.detector import GateDetector
 from racer.vision.gate_pose import estimate_gate_pose
+from racer.frames import CAMERA_INTRINSICS_K as _K, R_camera_from_body
 
 GAP_MS = 60.0   # a recv hole bigger than this is flagged as a stream gap / dropped frames
+_R_CB = R_camera_from_body()   # body(FRD) -> camera(optical), +20deg mount baked in
+
+
+def _project_flu(flu):
+    """Project a body-FLU point [fwd,left,up] (metres) to 640x360 image (u,v,depth_m), or None if
+    behind/at the camera. FLU->FRD = [fwd,-left,-up]; then R_camera_from_body + pinhole K."""
+    p_cam = _R_CB @ np.array([flu[0], -flu[1], -flu[2]], dtype=np.float64)
+    z = p_cam[2]
+    if z <= 0.05:
+        return None
+    return float(_K[0, 0] * p_cam[0] / z + _K[0, 2]), float(_K[1, 1] * p_cam[1] / z + _K[1, 2]), float(z)
+
+
+def _load_fed_points(session):
+    """Map video frame_id -> the target the policy was FED on that frame (slot0 active gate):
+    {frame_id: (rel_flu [fwd,left,up] with z-bias baked in, dist_m, gate_index)}. Keyed by frame_id --
+    the ONLY exact cross-stream join, because the video and ego logs stamp sim_time_ns from DIFFERENT
+    epochs. Later ticks on the same frame overwrite -> the most-settled fed point for that frame. {}
+    if the session predates rel_flu/frame_id logging."""
+    p = Path(session) / "ego_obs.jsonl"
+    if not p.exists():
+        return {}
+    fed = {}
+    for ln in p.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            r = json.loads(ln)
+        except Exception:
+            continue
+        fid, flu = r.get("frame_id"), r.get("rel_flu")
+        if fid is None or flu is None:
+            continue
+        fed[int(fid)] = (flu, r.get("dist"), r.get("gate_index"))
+    return fed
 
 
 # Fallback ONLY for pre-2026-07-19 sessions whose meta.json predates the seeker fields. This is
@@ -90,6 +127,17 @@ def main() -> int:
         print(f"[render] trimmed to last {args.last_seconds:g}s: {len(idx)}/{n_before} frames")
     blob = (session / "video.bin").read_bytes()
     det = _load_flight_detector(session, args.weights)
+    # the POINT the policy was fed on each frame (slot0 active gate, z-bias offset baked in) + distance
+    fed = _load_fed_points(session)
+    z_bias = 0.0
+    try:
+        z_bias = float((json.loads((session / "meta.json").read_text()).get("ego_gate_z_bias") or 0.0))
+    except Exception:
+        pass
+    if fed:
+        print(f"[render] fed-point overlay: {len(fed)} frames with a policy target; z-bias offset {z_bias:+.2f} m")
+    else:
+        print("[render] no rel_flu/frame_id in ego_obs.jsonl (pre-2026-07-19 flight) -- fed-point overlay OFF")
     S = args.scale
     W, H = 640 * S, 360 * S
     # H.264 (yuv420p + faststart) via imageio-ffmpeg's bundled ffmpeg. cv2's mp4v is NOT playable
@@ -124,8 +172,27 @@ def main() -> int:
                                 0.6, (0, 255, 255), 2, cv2.LINE_AA)
             except Exception:
                 pass
+        # --- the POINT fed to the policy on this frame (slot0 active gate, z-bias offset baked in) ---
+        fp = fed.get(rec["frame_id"])
+        fed_dist = None
+        if fp is not None:
+            flu, dist, gi = fp
+            fed_dist = dist
+            pr = _project_flu(flu)
+            if pr is not None:
+                u, v, _z = pr
+                cu, cv = int(round(u * S)), int(round(v * S))
+                # MAGENTA cross-diamond = where we're actually aiming the drone (fed to the policy).
+                cv2.drawMarker(big, (cu, cv), (255, 0, 255), cv2.MARKER_DIAMOND, 20 + 6 * S, 2, cv2.LINE_AA)
+                cv2.drawMarker(big, (cu, cv), (255, 0, 255), cv2.MARKER_CROSS, 12 + 4 * S, 1, cv2.LINE_AA)
+                label = f"FED g{gi}" + (f"  {dist:.1f} m" if dist is not None else "")
+                cv2.putText(big, label, (cu + 12, cv + 6), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, (255, 0, 255), 2, cv2.LINE_AA)
+                if abs(z_bias) > 1e-6:
+                    cv2.putText(big, f"z-off {z_bias:+.2f}m", (cu + 12, cv + 26),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 120, 255), 1, cv2.LINE_AA)
         frames.append({"recv_ms": rec["recv_monotonic_ns"] / 1e6, "fid": rec["frame_id"],
-                       "img": big, "dets": len(obs), "best": best})
+                       "img": big, "dets": len(obs), "best": best, "fed_dist": fed_dist})
 
     if len(frames) < 2:
         raise SystemExit("too few frames")
