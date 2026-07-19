@@ -291,7 +291,16 @@ _V1_RECIPE = {
     "virtual_flip": True,
 }
 
+# ego-ckpts-v15-2026-07-19 (v15 PICK): champion recipe with TWO training-faithful deltas --
+# PITCH FREE (clamp 0 = off; this lineage trained unclamped and priced the runaway in training:
+# overspeed abort 12 m/s, census max 11.97) + yaw 0.7 MANDATORY. Do NOT re-add the pitch clamp
+# mid-session even if a flight looks divey -- land and relay. Qs1 = fly first; Ws0 = quiet fallback.
+_V15_RECIPE = {**_V1_RECIPE, "ego_pitch_clamp": 0.0}
+
 MODEL_DEFAULTS = {
+    # ego-ckpts-v15-2026-07-19  -- see _V15_RECIPE above (PITCH FREE)
+    "v15Qs1_final_actor.pth":         {**_V15_RECIPE, "label": "v15pick_Qs1"},
+    "v15Ws0_periodic_prev_actor.pth": {**_V15_RECIPE, "label": "v15pick_Ws0"},
     # ego-ckpts-v1-2026-07-18  -- see _V1_RECIPE above
     "v1As0_upd17500_actor.pth": {**_V1_RECIPE, "label": "v1pick_A"},
     "v1Rs0_upd17500_actor.pth": {**_V1_RECIPE, "label": "v1pick_R"},
