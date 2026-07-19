@@ -118,3 +118,9 @@ STANDING register of banked-but-parked threads — the anti-"banked-then-forgot"
 
 ---
 *Maintenance: when an item is actioned, move it to DEAD with the closing commit/branch. When a trigger fires, move the item to FOLD-NOW and assign an owner. Keep this file the SINGLE register — do not re-scatter parked items back into topic files.*
+
+## #84 — Tape/segment speed-refinement (ILC) from arrest anchors [PARKED 2026-07-18]
+Open-loop replay retired for banking (OFFSET-FIT: 0.5 m horizon = 3.15 s; launch-state offset closed-loop-absorbed). The surviving tape idea: AFTER the 20-bank exists, re-fly individual <3 s gate legs faster via between-attempt refinement, spliced from ARREST anchors (arrestor handback states), keeping only valid attempts. Inputs ready: rl/tape_extract.py (+11 tests, --truncate-at-gate), P0-P0.3 saga + OFFSET-FIT (handoff/ratchet-p0-2026-07-17/), arrestor branch. REVIVE TRIGGER: 20-gate bank achieved OR Fengyou asks for speed work on a banked prefix.
+
+## #85 — Arrestor (post-gate stare-brake takeover) — KILLED BY FENGYOU 2026-07-18 [RECORD-ONLY]
+Built+reviewed at branch ratchet-arrestor-2026-07-18 @271880c (EgoArrestor, 16 tests, fail-open aborts). First flights: engages/arrests fine but DISTURBS surrounding control (Fengyou pilot report; no committed logs; suspects never triaged — mid-yaw handback / roll-0 uncoordinated turn / panel wiring). Fengyou: "no more arrestor" — do NOT revive as active work; reinforces feedback-no-deploy-bandaids (episodic-takeover carve-out revoked). Revive ONLY on explicit Fengyou request. If merged ever: green_gate sentinel 1091->1107.
