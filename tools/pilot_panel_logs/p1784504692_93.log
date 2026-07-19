@@ -1,0 +1,53 @@
+loading EGO actor: ckpts/v16Qs0_final_actor.pth
+[load_ego_actor] EGO action bounds HARDCODED: thrust [0,3.765] rates +-3.14 rad/s (no sidecar consulted; the ego launcher writes none and the legacy [0,5] fallback would overdrive thrust ~33%).
+  type: _ActorMean
+  obs_dim=21 -> action shape=(4,)  (expected (4,))
+  [ego] FORCING cmd_rate_scale=1 (--ego-rate-scale; profile 'vq2_case_c' value 0.4 NOT applied) gyro_sign=(-1.0, -1.0, -1.0)
+connecting udp:127.0.0.1:14550 ...
+  [detector] GateDetector on device='cuda:0' (weights='C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine')
+Loading C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine for TensorRT inference...
+[07/19/2026-16:45:00] [TRT] [I] Loaded engine size: 44 MiB
+[07/19/2026-16:45:01] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +1, GPU +28, now: CPU 1, GPU 68 (MiB)
+  [prewarm] YOLO detector warmed in 4.21s (first-predict off the launch window; tick-0 stall eliminated).
+
+====================== FLIGHT 1/1 ======================
+recording -> data\runs\20260719_234501_v16pick_Qs0_f1
+>>> Waiting PASSIVELY for the race GO (no sim-control command will be sent; this is the submission-safe posture).
+
+  LATE-JOIN GO!  to_go=-2.85s  pos_off=0.00 m  gi=0.  armed=True sim_t=   6.331s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+
+[arm] ...
+  attempt 1/3: ACK=MAV_RESULT_ACCEPTED  armed=True
+  [ego] no live TRACK_INFO + self-localizing profile -> MAP-FREE flight (vision yaw/z + the tracked gate lever; NO absolute map).
+  [ego] coarse map from --ego-coarse-map configs/vq2_coarse_map.json (8 gates): [[-1, 1], [0, 0], [1, -1], [0, 0], [-1, 0], [0, 1], [0, 0], [0, 0]]
+
+[ego] ckpt=ckpts/v16Qs0_final_actor.pth  profile=vq2_case_c self_localizing=True
+[ego] act bounds thrust [0,3.765] rates +-3.14 | cmd_rate_scale=1 (ego FORCES wire scale via --ego-rate-scale; the seeker profile's 0.4 is NOT applied -- the RL plant was sysid'd at wire scale 1.0)
+[ego] det_hold=0.3s stale_horizon=0.6s obs_coast=False sector_mode=map slot1=True (SOURCE: seeker tg+1 next-gate track) pitch_clamp=0deg roll_clamp=0deg yaw_clamp=0.7 speed_gov=off virtual_flip=True rate=40Hz max=120s ...
+[ego] takeoff-assist ON: thrust floor 1.3 g (collective 0.345); rate commands pass through untouched; disarms PERMANENTLY on |gyro_body|>1.0 rad/s OR climb>0.5 m OR 1s (whichever first). Fully automatic (§7-compliant).
+
+  [ego-assist] ACTIVE (thrust floor 1.300 g)
+  t=   6.38s gi=0 conf=1.00 area=0.99 thr=0.345 rate=[-0.37,-0.97,+0.02]   
+  [ego-assist] HANDOVER at t=0.089s trigger=rates
+  t=   7.39s gi=0 conf=1.00 area=1.00 thr=0.276 rate=[+0.08,-0.28,+0.05]   
+  [ego] HARD COLLISION -> abort.
+  [ego-log] wrote 50 ticks -> data\runs\20260719_234501_v16pick_Qs0_f1\ego_obs.jsonl
+  [loop-rate]  27.8 Hz over 50 ticks (target 40); worst work 100 ms; 44.0% ticks over budget -> CHOKED
+  [ego-diag] fresh gate levers=35  masked-slot0 ticks=0/50 (0% blackout duty)
+  [ego-diag] slot1 next-gate levers=25/50 (50% of ticks fed a fresh tg+1 pose)
+  [ego-timing] wrote 50 ticks -> ego_timing.jsonl
+  [ego-timing] median ms/tick: work=21 nav_update=14 detect_lever=4
+  [ego-timing]   NO-detect ticks (n=5): work=2 nav_update=1 (nav is the non-vision floor -> AHRS/ESKF + estimator)
+  [ego-timing]   detect ticks (n=45): work=24 nav_update=15 detect_lever=4
+  [ego-timing]   nav.detect: n=45 avg=12.3ms max=28.4ms
+  [ego-timing]   nav.vp_yaw: n=9 avg=33.6ms max=44.4ms
+  [ego-timing]   nav.floor_height: n=15 avg=21.1ms max=28.6ms
+
+[safety] disarming ...
+
+  flight 1: CRASH  gates=0  session=data\runs\20260719_234501_v16pick_Qs0_f1
+  [video-thread] frames=188 max_gap=170ms@fid=106879 gaps>200ms=0 gaps>1s=0 gap_sum=6215ms max_pub=0.1ms reconnects=0(idle=0,exc=0) | wire: datagrams=187483 completed=188 evicted=0 dup=181473 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
+
+==== fly_rl summary ====
+  flight 1: CRASH      gates=0  data\runs\20260719_234501_v16pick_Qs0_f1
+  collisions (all flights): 2 (ids [1001]; 1001=gate 1002=env)
