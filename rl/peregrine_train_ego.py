@@ -558,6 +558,31 @@ def _resolve_recovery_anneal(cfg):
     )
 
 
+def _pass_margin_schedule(update_idx: int, n_updates: int, start: float, end: float,
+                          hold_frac: float) -> float:
+    """LINEAR ramp of the aperture-margin (v1.6, +env.pass_margin_anneal) from ``start`` (the full
+    effective aperture -- loose, a strict no-op) DOWN to ``end`` (pass_margin_final_m -- tight) over the
+    FRONT ``1-hold_frac`` of training, then HOLD ``end`` for the LAST ``hold_frac`` -- END-HOLD, the SAME
+    guarantee-at-the-end shape as _spin_abort_schedule (the tight envelope is the guarantee; only the PATH
+    to it is annealed, never the END). start > end here (shrinking the pass gate)."""
+    N = max(int(n_updates), 1)
+    span = max((1.0 - hold_frac) * N, 1.0)
+    p = min(max(update_idx / span, 0.0), 1.0)
+    return float(start) + (float(end) - float(start)) * p
+
+
+def _resolve_pass_margin_anneal(cfg):
+    """Parse the APERTURE-MARGIN anneal from cfg.env, or None when OFF (byte-identical default). Gated by
+    ``+env.pass_margin_anneal`` (truthy). The start (full aperture), end (pass_margin_final_m) + hold_frac
+    are captured from the ENV holder (it computed _pass_margin_start = gate_half_opening_m*sqrt(lat_w^2+1)
+    from its own aperture + lat_weight) at wiring time -- the SAME base-from-holder pattern the spin-abort /
+    recovery anneals use. Only n_updates is read here. PURE getattr."""
+    env = getattr(cfg, "env", None)
+    if env is None or not bool(getattr(env, "pass_margin_anneal", False)):
+        return None
+    return dict(n_updates=int(getattr(cfg, "n_updates", 0) or 0))
+
+
 _DET_EVAL_KEYS = ("success_rate", "collision_rate", "miss_rate", "oob_rate", "n_passed_gates")
 
 
@@ -585,6 +610,7 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
     try:
         agg, n_ep = {}, 0
         ys = None                                          # yaw accumulators (lazy init; only when yaw_log)
+        ps = None                                          # v1.6 pitch accumulators (lazy; only when yaw_log)
         roll_sum = 0.0                                      # sum of per-episode peak |roll| (deg); yaw_log
         max_speed = 0.0                                     # v1.5: max GT episode-peak speed over the eval (m/s)
         obs = env.reset()
@@ -602,8 +628,9 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
                 _ps = sr.get("peak_speed_mps")
                 if _ps is not None and _ps.numel() > 0:
                     max_speed = max(max_speed, float(_ps.max().item()))
-                if yaw_log:                                    # per-STEP yaw-hunting accumulation
+                if yaw_log:                                    # per-STEP yaw- + pitch-hunting accumulation
                     ys = _accum_yaw(env, phys, m, ys)
+                    ps = _accum_pitch(env, phys, m, ps)
                 if m is None:
                     continue
                 n = int(m.sum().item())
@@ -626,8 +653,9 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
                   f"max_speed={max_speed:.2f}")
         else:
             print(f"DET_EVAL[{label}] no episodes completed in {steps} steps max_speed={max_speed:.2f}")
-        if yaw_log:                                        # single greppable YAW_EVAL[...] line
+        if yaw_log:                                        # single greppable YAW_EVAL[...] + PITCH_EVAL[...]
             _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r)
+            _emit_pitch_eval(env, label, steps, ps)
         return r
     except Exception as e:  # never let the post-hoc eval fail a completed run
         print(f"DET_EVAL: FAILED ({type(e).__name__}: {e})")
@@ -686,6 +714,58 @@ def _accum_yaw(env, phys_action, reset_mask, ys):
     ys["ach_abs_sum"] = ys["ach_abs_sum"] + (ach_yaw.abs() * valid).sum()
     ys["ach_n"] = ys["ach_n"] + valid.sum()
     return ys
+
+
+def _accum_pitch(env, phys_action, reset_mask, ps):
+    """Per-STEP PITCH accumulation for the v1.6 PITCH_EVAL line (parallel to _accum_yaw; only under
+    _run_det_eval's ``yaw_log``). ``phys_action`` is the PHYSICAL action ([thrust, roll, pitch, yaw]
+    rad/s); the pitch command is channel 2, and the env clamps ONLY channel 3 (yaw) -- so phys_action[..,2]
+    IS the applied pitch command (no clamp to re-apply, unlike yaw). Sign-flips use the SAME 0.05 rad/s
+    DEADBAND as yaw; satur_duty counts ticks at |pitch_cmd| >= PITCH_CMD_RAIL (3.0, the fixed authority the
+    pitch duty penalty normalises against). ``reset_mask`` zeroes the committed sign at episode boundaries.
+    Returns the (lazily-initialised) accumulator dict."""
+    import torch
+    cmd_pitch = phys_action[..., 2].reshape(-1)
+    if ps is None:
+        z = torch.zeros_like(cmd_pitch)
+        ps = {"last_sign": z.clone(), "flips": z.clone(),
+              "cmd_abs_sum": cmd_pitch.new_zeros(()), "cmd_n": 0,
+              "satur_sum": cmd_pitch.new_zeros(())}
+    active = cmd_pitch.abs() > 0.05                         # DEADBAND (rad/s), same as yaw
+    s = torch.sign(cmd_pitch)
+    prev = ps["last_sign"]
+    flip = active & (prev != 0) & (s != prev)
+    ps["flips"] = ps["flips"] + flip.to(cmd_pitch.dtype)
+    ps["last_sign"] = torch.where(active, s, prev)
+    ps["cmd_abs_sum"] = ps["cmd_abs_sum"] + cmd_pitch.abs().sum()
+    ps["cmd_n"] += int(cmd_pitch.numel())
+    # PITCH SATURATION DUTY: fraction of eval steps at |pitch_cmd| >= 3.0 (near the +-3.14 rail). Pitch has
+    # no configurable clamp, so the threshold is the fixed authority rail (no clamp-OFF guard needed).
+    ps["satur_sum"] = ps["satur_sum"] + (cmd_pitch.abs() >= 3.0).to(cmd_pitch.dtype).sum()
+    if reset_mask is not None:
+        rm = reset_mask.reshape(-1).to(torch.bool)
+        ps["last_sign"] = torch.where(rm, torch.zeros_like(ps["last_sign"]), ps["last_sign"])
+    return ps
+
+
+def _emit_pitch_eval(env, label, steps, ps):
+    """Compute + print the single greppable ``PITCH_EVAL[...]`` line from the per-step pitch accumulators,
+    the v1.6 parallel to YAW_EVAL (SAME EVAL[label] field=value style so the census sweep greps it
+    identically). Fields: signflips_per_s (0.05 rad/s deadband) + cmd_absmean + satur_duty (|pitch_cmd| >=
+    3.0). p2p_near is OMITTED (not cheap in this accumulator -- no near-gate window threaded here)."""
+    dt = float(getattr(env, "dt", 0.0) or 0.0)
+    if ps is None or dt <= 0.0:
+        print(f"PITCH_EVAL[{label}] signflips_per_s=nan cmd_absmean=nan satur_duty=nan  "
+              f"(no steps accumulated or dt unavailable)")
+        return
+    n_envs = int(ps["last_sign"].numel())
+    flip_total = float(ps["flips"].sum().item())
+    total_env_s = n_envs * steps * dt
+    signflips_per_s = flip_total / total_env_s if total_env_s > 0 else float("nan")
+    cmd_absmean = float(ps["cmd_abs_sum"].item()) / max(int(ps["cmd_n"]), 1)
+    satur_duty = float(ps["satur_sum"].item()) / max(int(ps["cmd_n"]), 1)
+    print(f"PITCH_EVAL[{label}] signflips_per_s={signflips_per_s:.3f} "
+          f"cmd_absmean={cmd_absmean:.4f} satur_duty={satur_duty:.4f}")
 
 
 def _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r):
@@ -1090,6 +1170,31 @@ def _run_with_ego_lifelines(self):
         else:
             rc_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
 
+    # APERTURE-MARGIN anneal (v1.6; see _resolve_pass_margin_anneal / _pass_margin_schedule). Mutates the raw
+    # env's _pass_margin_current (read per step by the PASS->MISS reclassification), annealing it from the
+    # full aperture (start, a no-op) DOWN to pass_margin_final_m (END-HOLD). start/end/hold_frac captured from
+    # the env holder (which computed them from its own aperture + lat_weight). start MUST exceed end (a
+    # shrinking gate); start<=end would be a no-op or an inverted (widening) schedule under an annealed name.
+    pm_sched = _resolve_pass_margin_anneal(cfg)
+    pm_env = _require_anneal_holder(env, "_pass_margin_current", pm_sched, "pass-margin-anneal", cfg)
+    if pm_sched is not None:
+        if pm_env is not None:
+            pm_sched["start"] = float(pm_env._pass_margin_start)
+            pm_sched["end"] = float(pm_env._pass_margin_final)
+            pm_sched["hold_frac"] = float(pm_env._pass_margin_hold_frac)
+            if not (pm_sched["start"] > pm_sched["end"]):
+                raise RuntimeError(
+                    "[pass-margin-anneal] requested but start (full aperture "
+                    f"{pm_sched['start']:.3f}) <= end (pass_margin_final_m {pm_sched['end']:.3f}) -- the "
+                    "shrink-the-gate anneal would be a no-op or widen the pass gate under an annealed run "
+                    "name (footgun L16); set pass_margin_final_m below the full aperture or drop "
+                    "+env.pass_margin_anneal.")
+            print(f"[pass-margin-anneal] ON: {pm_sched} (SHRINK {pm_sched['start']:.3f} -> "
+                  f"{pm_sched['end']:.3f} m weighted-miss, END-HOLD tight for the last "
+                  f"{pm_sched['hold_frac']:.0%} of updates)")
+        else:
+            pm_sched = None          # allow_skip path -- _require_anneal_holder already printed SKIPPED
+
     # CHECKPOINT SELECTION ON n_passed_gates (Stage-1 vtrackAr5). Gated on ++ckpt_select_metric=
     # n_passed_gates (unset -> byte-identical: no harvest wrapper, no best_npg/, no promotion). BANK-FIRST:
     # every 8-gate run PEAKS then regresses 24-42% and otherwise ships its degraded FINAL; selecting on the
@@ -1194,6 +1299,12 @@ def _run_with_ego_lifelines(self):
                 print(f"[recovery-anneal] update {counter['i']}: scale={rcv:.3f} "
                       f"rw_roll_recover={rc_env._egorw.roll_recover:.3f} "
                       f"rw_cross_level={rc_env._egorw.cross_level:.3f}")
+        if pm_sched is not None:
+            pmv = _pass_margin_schedule(counter["i"], pm_sched["n_updates"],
+                                        pm_sched["start"], pm_sched["end"], pm_sched["hold_frac"])
+            pm_env._pass_margin_current = pmv
+            if counter["i"] % max(int(cfg.log_freq), 1) == 0:
+                print(f"[pass-margin-anneal] update {counter['i']}: margin_m={pmv:.3f}")
         out = orig_step(*a, **k)
         counter["i"] += 1
         if counter["i"] % max(int(cfg.save_freq), 1) == 0:
