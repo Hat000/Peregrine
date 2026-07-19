@@ -1351,6 +1351,50 @@ STAGES: dict[str, dict] = {
                  "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
     },
     # ================================================================================================
+    # v1.6 stage (2026-07-19) -- dual_gate_fullstack_floor_pef VERBATIM (course + the HARD no-spin package
+    # + the estimator-faithful _raw ALL byte-identical, so the wire-proven flight skill is preserved) with
+    # exactly ONE change: the PERCEPTION BUDGET SPLIT (pefcap-style) rw_perception 0.02 -> 0.014 +
+    # rw_perception_next 0.004 (sum 0.018 < rw_time 0.02 -> farm-neutral). Adds a NEXT-gate perception cue
+    # for honest acquisition while keeping the current-gate perception dominant. Warm-started from the
+    # wire-proven v1.5 W arm (periodic_prev); the launcher wires +init_from at run time. The v1.6 MECHANISM
+    # knobs (camera mount override, range detection, aperture-margin anneal, pitch quietness) are passed via
+    # the launch script's EXTRA, NOT hardcoded here -- so this stage is a clean pef+split base that also runs
+    # any warm chain unchanged.
+    # ================================================================================================
+    "dual_gate_fullstack_floor_pef16": {
+        **_COMMON,
+        "course_n_gates": 2,
+        "course_spawn_dist_lo": 8.0, "course_spawn_dist_hi": 15.0,          # == dual_gate_fullstack_floor_pef
+        "course_spawn_below_g0_lo": 0.5, "course_spawn_below_g0_hi": 6.0,
+        "course_spawn_yaw_jitter": 0.25,
+        "course_seg_len_lo": 10.0, "course_seg_len_hi": 20.0,
+        "course_gates_above_spawn": 0.5,
+        "floor_at_spawn": True,
+        "use_racing_line": True,
+        "rw_progress_to_center": False,
+        "rw_corridor": 4.0,
+        "rw_centering": 0.4, "rw_centering_max_m": 6.0,
+        "rw_parabola_crossing": True,
+        "rw_cross_center": 20.0, "rw_cross_zero_m": 4.0, "rw_cross_neg_cap": 100.0,
+        # REAL noise (NO ego_noise_scale override) -- the deploy regime; the packages ride along.
+        "ego_blur_gate": True,
+        "ego_blur_rate_lo_rad_s": 2.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_blur_rate_hi_rad_s": 4.0,     # PLACEHOLDER pending the A2 detect-vs-rate curve
+        "ego_spin_rate_abort": 3.5,
+        "ego_spin_time_abort": 0.4,
+        "ego_spin_rev_abort": 1.5,
+        "ego_spin_rev_window_s": 4.0,
+        "ego_yaw_cmd_clamp_rad_s": 0.35,
+        "rw_perception": 0.014, "rw_perception_next": 0.004,   # v1.6 SPLIT, sum 0.018 < rw_time 0.02 (farm-neutral)
+        "rw_perception_exponent": 4.0,
+        "ego_faithful": True,
+        "ego_est_dt_ticks_hi": 4,          # measured choked-loop dt band (renewal over the pmf)
+        "_raw": {"env.max_time": 60, "algo.gamma": _GAMMA,
+                 # NO +init_from here (LOAD-BEARING): the sbatch ladder auto-appends it on stage 2.
+                 "++algo.noise_std_hold": 0.12, "++algo.noise_std_floor": 0.03, "++algo.noise_hold_frac": 0.5,
+                 "++dynamics.n_substeps": 5, "++dynamics.capture_specific_force": True},
+    },
+    # ================================================================================================
     # NODITHER fine-tune (2026-07-12) -- dual_gate_fullstack_floor_pef VERBATIM (course + reward + the
     # HARD no-spin package + the estimator-faithful _raw ALL byte-identical, so the flight skill is
     # preserved) PLUS exactly ONE new armed knob: rw_yaw_dither. A SHORT WARM-STARTED fine-tune whose
