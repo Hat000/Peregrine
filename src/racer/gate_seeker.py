@@ -302,6 +302,15 @@ class GateSeekerConfig:
     # wants to precede), (c) prior-cone-compliant, for ``supersede_min_frames`` CONSECUTIVE fresh frames =>
     # SWITCH the lock to it ("supersede_nearer"). Debounce resets on any non-qualifying frame. This is the
     # recovery when the true big gate appears AFTER a wrong far-lock survived (or the prior was unavailable).
+    # ADVANCE-PROMOTE (WP2a) -- DEFAULT OFF on the WIRE EVIDENCE of the 2026-07-20 patch-2 batch. slot1 is
+    # index-BLIND: on this course's gi=1->2 advance it is routinely locked on the FAR downrange gate (the
+    # true next gate is still occluded at the advance), so promoting it INSTALLS a confident wrong lock --
+    # observed 2/5 gi=2 advances seeded at 17.5/19.6 m where the true gate was 7-8 m (supersede then had to
+    # undo it 2-3 ticks later). Meanwhile the upside is small: plain cold re-acquire found the SAME gate at
+    # the same range on every leg where promote was correct (gi=1 ~17 m, gi=3 ~11 m), and going honestly
+    # DARK is what lets det_hold=0.2 buy the sector-commit turn that acquires the true gate at 7-8 m (5/5
+    # on patch-1). Flip to True only for a course/slot1 association proven reliable at the advance.
+    advance_promote_enabled: bool = False
     supersede_range_factor: float = 0.65         # fresh cand must be nearer than this * the locked range
     supersede_min_frames: int = 3                # consecutive qualifying fresh frames before the switch
     # GYRO-FED TRACK PREDICTION: between detector fixes, rotate the stored track bearing by the body rotation
@@ -1008,6 +1017,7 @@ class GateSeeker:
             A promote seeds slot0's smoothed (range, bearing) from slot1 and marks it LOCKED
             (``_track_ever_locked`` True -> re-acquire discipline armed, since a promoted track IS a lock),
             then resets slot1 to cold. Sanity-fail (or no live slot1) => a plain cold reset.
+            DEFAULT OFF (``advance_promote_enabled``) -- see the config field for the wire evidence.
 
         ``prior_dir`` = the just-passed gate's coarse-map (horiz, vert) bucket (row gate_index-1), latched
         as ``_acquire_prior`` for the whole gate (until the next advance) and used to veto/gate every
@@ -1019,7 +1029,8 @@ class GateSeeker:
                                else (float(prior_dir[0]), float(prior_dir[1])))
         # candidate promote: a LIVE slot1 track (locked, not coasting-expired) that passes sanity.
         promote_r = None
-        if self._next_track_range_m is not None and self._next_track_bearing is not None:
+        if (self.config.advance_promote_enabled
+                and self._next_track_range_m is not None and self._next_track_bearing is not None):
             r = float(self._next_track_range_m)
             in_range = 3.0 <= r <= float(self.config.max_acquire_range_m)
             prior_ok = True

@@ -133,7 +133,7 @@ def test_advance_reset_kills_stale_track(monkeypatch):
 
 
 def test_advance_promote_seeds_slot0_from_live_slot1():
-    s = _seeker()
+    s = _seeker(advance_promote_enabled=True)           # OFF by default (wire evidence) -- opt in to test it
     s._next_track_range_m = 12.0                        # a LIVE next-gate track within [3, 22]
     s._next_track_bearing = np.array([0.1, 0.0])
     mark = s.on_gate_advance(prior_dir=None, level_rp=(0.0, 0.0))
@@ -145,8 +145,24 @@ def test_advance_promote_seeds_slot0_from_live_slot1():
     assert s._next_track_range_m is None                # slot1 reset to cold
 
 
+def test_advance_promote_disabled_by_default_is_a_cold_reset():
+    """WIRE EVIDENCE (2026-07-20 patch-2 batch): slot1 is index-blind and was locked on the FAR gate at
+    2/5 gi=1->2 advances, so a promote installed a confident WRONG lock (17.5/19.6 m vs the true 7-8 m).
+    Default OFF => a live, in-range, prior-clean slot1 is still NOT promoted; the new slot0 re-acquires
+    cold (and goes honestly dark first, which is what buys the sector-commit turn)."""
+    s = _seeker()                                       # default config: advance_promote_enabled False
+    s._next_track_range_m = 12.0                        # live + in-range + no prior => would promote if ON
+    s._next_track_bearing = np.array([0.1, 0.0])
+    mark = s.on_gate_advance(prior_dir=None, level_rp=(0.0, 0.0))
+    assert mark["action"] == "advance_reset"
+    assert mark["promoted_range_m"] is None
+    assert s._track_range_m is None and s._track_bearing is None
+    assert s._track_ever_locked is False                # cold => the acquisition fallback is armed
+    assert s._next_track_range_m is None                # slot1 reset either way
+
+
 def test_advance_promote_sanity_fail_falls_back_to_cold():
-    s = _seeker()
+    s = _seeker(advance_promote_enabled=True)
     s._next_track_range_m = 28.0                        # beyond max_acquire_range_m (22) -> not trustworthy
     s._next_track_bearing = np.array([0.1, 0.0])
     mark = s.on_gate_advance(prior_dir=None, level_rp=(0.0, 0.0))
@@ -326,7 +342,7 @@ def test_decision_log_carries_prior_and_supersede_streak(monkeypatch):
 
 
 def test_on_gate_advance_records_marker():
-    s = _seeker()
+    s = _seeker(advance_promote_enabled=True)
     s._next_track_range_m = 10.0
     s._next_track_bearing = np.array([0.05, 0.0])
     mark = s.on_gate_advance(prior_dir=(-1.0, 1.0), level_rp=(0.0, 0.0))
