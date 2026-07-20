@@ -117,6 +117,27 @@ def _unit(v: np.ndarray, fallback: np.ndarray | None = None) -> np.ndarray:
     return np.asarray(v, dtype=np.float64) / n
 
 
+# Body FRD <-> FLU flip (R_x(pi) diagonal) -- the SAME [1,-1,-1] fly_rl / ego_obs use. Redefined here
+# (src/ never imports rl/, and importing racer.ego_obs would violate its "nothing imports this module on
+# the default paths" invariant); pinned equal to racer.ego_obs._FLIP_FRD_FLU in tests.
+_FLIP_FRD_FLU = np.array([1.0, -1.0, -1.0], dtype=np.float64)
+
+
+def _leveled_from_body(v_body_flu: np.ndarray, roll: float, pitch: float) -> np.ndarray:
+    """Rotate a body-FLU vector into the gravity-leveled heading frame (yaw removed) -- a VERBATIM copy
+    of ``racer.ego_obs.leveled_from_body`` (pinned equal in tests). Used by the WP2 arrival-prior veto so
+    a candidate bearing is compared to the coarse-sector bucket in the SAME leveled frame the bucket is
+    defined in (build_coarse_map / EgoObsBuilder._compute_sector), NOT the raw camera frame. The camera's
+    +20deg mount PLUS the drone's pitch/roll otherwise corrupt the naive camera bearing: on a nose-down
+    dive a gate that is world-leveled-DOWN reads as camera-frame UP (the 040510 wrong-lock trap), so the
+    veto MUST level before comparing or it flips sign under pitch."""
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]], dtype=np.float64)
+    Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]], dtype=np.float64)
+    return Ry @ Rx @ np.asarray(v_body_flu, dtype=np.float64)
+
+
 # Flight-proven decoupled-CTBR sim-sign compensation (MEASURED on ShadowPC; see
 # scripts/twin_fly_course._FAITHFUL_SIGNS). The ODOMETRY roll-quat + roll/pitch-rate reporting
 # inversions and the roll/yaw COMMAND inversion the live sim needs. ff_gain is 1.0 here (NOT 2.5):
@@ -256,6 +277,39 @@ class GateSeekerConfig:
     # and the surviving candidates are SCORED by proximity to the hint. Generous by default; the WP1a cap
     # always applies FIRST. 0 => veto off (the hint still biases scoring). Config-overridable per the spec.
     reacquire_hint_max_bearing_rad: float = 0.6
+
+    # --- ARRIVAL-PRIOR ACQUISITION GATE + NEARER-SUPERSEDE + GYRO PROPAGATION (Patch-2 WP2, 2026-07-20) ---
+    # The post-advance wrong-lock fix (flight 20260720_040510: gi 1->2, only the FAR next-next gate visible
+    # at re-acquire, the cold-start fallback locked it, the true nearer gate was defended OUT by continuity;
+    # 7 flights locked the same wrong target, 4 died short). ``on_gate_advance`` resets slot0 (+ promotes a
+    # live slot1) and latches an ARRIVAL PRIOR = the just-passed gate's coarse-map bucket (where the current
+    # gate SHOULD sit relative to the incoming leg). During post-advance acquisition, promote sanity and
+    # supersede, a candidate whose GRAVITY-LEVELED bearing hard-contradicts the prior is VETOED ("prior_
+    # reject") -> stay dark (coast on the ego-propagated hold + sector) rather than lock a wrong gate: a
+    # false veto = blind (safe -- the policy flies the sector), a wrong lock = death. Cones are per-axis on
+    # the LEVELED heading-frame bearing (a_lev +LEFT, e_lev +UP; the bucket sign ALIGNS): a NONZERO bucket
+    # component vetoes the WRONG side beyond ``wrong_cone`` (e.g. DOWN[-1] vetoes e_lev > +wrong = UP); a
+    # ZERO component is a generous band, vetoing only beyond ``zero_cone`` either side. LOOSE by design so a
+    # legitimately-visible active gate is never rejected. NOTE (data-derived): with the flown EDITOR map the
+    # 040510 arrival row is [0,0] and the wrong candidate levels DOWN (not up -- the naive camera "up" is a
+    # 36deg nose-dive artifact), so for THAT flight the operative fix is the SUPERSEDE below, not this veto;
+    # the veto bites the NONZERO arrival rows (gate0->1 [-1,1], gate2->3 [1,-1], ...). 0 disables a cone.
+    acquire_prior_wrong_cone_rad: float = 0.26   # nonzero bucket: veto the WRONG side beyond this (~15 deg)
+    acquire_prior_zero_cone_rad: float = 0.50    # zero bucket: generous +/- band (~29 deg) before vetoing
+    # NEARER-SUPERSEDE (the pilot's size-precedence): while slot0 is LOCKED, a fresh candidate that is (a) a
+    # DIFFERENT gate (not track-consistent), (b) meaningfully NEARER (range < factor * track range -- for the
+    # fixed gate PnP model apparent size ~ 1/range, so nearer == the physically larger/nearer gate the pilot
+    # wants to precede), (c) prior-cone-compliant, for ``supersede_min_frames`` CONSECUTIVE fresh frames =>
+    # SWITCH the lock to it ("supersede_nearer"). Debounce resets on any non-qualifying frame. This is the
+    # recovery when the true big gate appears AFTER a wrong far-lock survived (or the prior was unavailable).
+    supersede_range_factor: float = 0.65         # fresh cand must be nearer than this * the locked range
+    supersede_min_frames: int = 3                # consecutive qualifying fresh frames before the switch
+    # GYRO-FED TRACK PREDICTION: between detector fixes, rotate the stored track bearing by the body rotation
+    # -[w]x dt (mirrors the obs builder's exp(-[w]x dt)) so the continuity gate compares the next detection
+    # to where the gate has ROTATED to in the frame under fast yaw/roll (91% of emit-gaps are continuity
+    # rejects of a real detection that drifted outside the STATIC-prediction gate). Range stays on its EMA.
+    # ON by default; fly_rl calls seeker.propagate(gyro, dt) each control tick. False => static prediction.
+    track_gyro_propagate: bool = True
 
     # --- NEXT-GATE (slot1) TRACK  (the --ego-slot1 SOURCE; 2026-07-12) ---
     # The tg+1 gate for the WINDOW=2 ego obs slot1. ``detect_next_gate_lever`` maintains a SECOND
@@ -568,6 +622,18 @@ class GateSeeker:
     _next_track_range_m: float | None = field(default=None, repr=False)
     _next_track_bearing: np.ndarray | None = field(default=None, repr=False)
     _next_track_coast_ticks: int = field(default=0, repr=False)
+    # -- WP2 (Patch-2): the ARRIVAL PRIOR latched by on_gate_advance -- the just-passed gate's coarse-map
+    #    (horiz, vert) bucket (where the CURRENT gate should sit relative to the incoming leg). None => no
+    #    prior (gate 0, sector_mode!=map, or fly_rl passed None) -> the prior veto is inert. Persists until
+    #    the next advance. Consumed by _first_acquisition (post-advance acquisition), _pick_supersede and
+    #    on_gate_advance's promote sanity, ALL leveled against the drone attitude (level_rp) fly_rl passes.
+    _acquire_prior: tuple | None = field(default=None, repr=False)
+    # -- WP2c nearer-supersede debounce: the tracked super-candidate + its consecutive-frame streak --
+    _supersede_streak: int = field(default=0, repr=False)
+    _supersede_range_m: float | None = field(default=None, repr=False)
+    _supersede_bearing: np.ndarray | None = field(default=None, repr=False)
+    # -- WP2a last advance marker (for the seeker.jsonl advance row; set by on_gate_advance) --
+    _last_advance: dict | None = field(default=None, repr=False)
     # -- per-frame_id cache of _valid_poses (the active + next lever both consume it; the shared
     #    detect() is already frame-idempotent, this also spares the second per-candidate PnP) --
     _valid_poses_fid: int | None = field(default=None, repr=False)
@@ -710,7 +776,8 @@ class GateSeeker:
         return out
 
     def detect_gate_lever(self, frame: Frame | None, *,
-                          hint_rel_body_frd: np.ndarray | None = None) -> GatePose | None:
+                          hint_rel_body_frd: np.ndarray | None = None,
+                          level_rp: tuple | None = None) -> GatePose | None:
         """Run the injected detector + PnP on ``frame`` and return the camera-relative pose of the
         gate to chase (``GatePose.t_cam_gate`` = gate centre in the camera optical frame), or ``None``
         when nothing usable is seen.
@@ -720,6 +787,13 @@ class GateSeeker:
         gate -- consulted ONLY on a RE-ACQUISITION (never a cold start / a live continuity track). It
         vetoes + scores re-acquire candidates by proximity to where the gate was last known to be. None
         (the default) => the WP1a cap-only behaviour. See ``reacquire_hint_max_bearing_rad``.
+
+        ``level_rp`` (Patch-2 WP2b) is an OPTIONAL (roll, pitch) rad tuple -- the drone's gravity-leveled
+        attitude in the TRAINING z-up extraction (``ego_obs.roll_pitch_zup``; fly_rl passes it every tick).
+        It levels each candidate's camera bearing into the coarse-sector heading frame so the ARRIVAL PRIOR
+        (``_acquire_prior``, latched by ``on_gate_advance``) can VETO a candidate that hard-contradicts the
+        just-passed gate's turn bucket ("prior_reject"), and gates the WP2c supersede. None => no leveling
+        => the prior veto + supersede-prior-gate are inert (byte-identical to Patch-1).
 
         MAP-FREE: no association to any map gate, no self-position — just "which opening is in front
         of me, and where is it relative to the camera". Quality-gated by detection score + PnP reproj.
@@ -767,12 +841,17 @@ class GateSeeker:
             # far-but-perfectly-centered one. Falls back to the legacy selection when prefer_nearest is
             # off (or, on a COLD start, when every candidate is beyond the acquire range -> don't reject
             # them all). WP1a: a RE-ACQUISITION (this gate locked before, expired via coast) does NOT
-            # fall back -- no in-cap candidate -> None (coast) rather than far-lock a wrong gate.
+            # fall back -- no in-cap candidate -> None (coast) rather than far-lock a wrong gate. WP2b: the
+            # ARRIVAL-PRIOR veto is applied FIRST (inside _first_acquisition), so a candidate that
+            # contradicts the just-passed gate's turn bucket is dropped BEFORE the cap/hint/score.
+            self._supersede_streak = 0    # no active lock -> no supersede context this frame
+            self._supersede_range_m, self._supersede_bearing = None, None
             chosen = self._first_acquisition(
-                poses, cold_start=not self._track_ever_locked, hint_rel_body_frd=hint_rel_body_frd)
+                poses, cold_start=not self._track_ever_locked,
+                hint_rel_body_frd=hint_rel_body_frd, level_rp=level_rp)
             if chosen is None:
-                # WP1a/WP1b re-acquire reject: keep coasting/dark (the reason is set by
-                # _first_acquisition -> "reacquire_range_reject" | "reacquire_hint_reject").
+                # WP1a/WP1b/WP2b reject: keep coasting/dark (the reason is set by _first_acquisition ->
+                # "reacquire_range_reject" | "reacquire_hint_reject" | "prior_reject").
                 self._record_decision(0, self._last_none_reason, len(poses))
                 return None
         else:
@@ -784,6 +863,20 @@ class GateSeeker:
                 return (abs(p.range_m - pred_r) <= self.config.track_max_range_jump_m
                         and float(np.linalg.norm(self._pose_bearing(p) - pred_b))
                         <= self.config.track_max_bearing_jump_rad)
+
+            # WP2c NEARER-SUPERSEDE: while LOCKED, a DIFFERENT gate that is persistently nearer + bigger +
+            # prior-compliant SWITCHES the lock (the pilot's size-precedence -- the recovery when the true
+            # big gate appears AFTER a wrong far-lock survived, or the arrival prior was unavailable).
+            superseded = self._update_supersede(poses, pred_r, pred_b, _consistent, level_rp)
+            if superseded is not None:
+                chosen = superseded
+                # SWITCH: reset the smoothed track onto the new (nearer) gate, drop the continuity EMA.
+                self._track_range_m, self._track_bearing = float(chosen.range_m), self._pose_bearing(chosen)
+                self._track_coast_ticks = 0
+                self._track_ever_locked = True
+                self._last_none_reason = None
+                self._record_decision(0, "supersede_nearer", len(poses), chosen)
+                return chosen
 
             cands = [p for p in poses if _consistent(p)]
             if not cands:
@@ -816,10 +909,19 @@ class GateSeeker:
         return chosen
 
     def _first_acquisition(self, poses: list[GatePose], *, cold_start: bool = True,
-                           hint_rel_body_frd: np.ndarray | None = None) -> GatePose | None:
-        """Pick the gate to LOCK when there is no active track (A5 BLOCKER 2 + Patch-1 WP1a/WP1b).
+                           hint_rel_body_frd: np.ndarray | None = None,
+                           level_rp: tuple | None = None) -> GatePose | None:
+        """Pick the gate to LOCK when there is no active track (A5 BLOCKER 2 + Patch-1 WP1a/WP1b + Patch-2 WP2b).
 
-        TWO regimes, gated by ``cold_start``:
+        WP2b ARRIVAL-PRIOR VETO (applied FIRST, before the cap/hint/score): when an arrival prior is latched
+        (``_acquire_prior``, from ``on_gate_advance``) AND ``level_rp`` (roll, pitch) is supplied, drop every
+        candidate whose gravity-leveled bearing hard-contradicts the just-passed gate's turn bucket. If that
+        empties the pool return None ("prior_reject") -> stay dark (coast on the ego hold + sector) rather
+        than lock a gate the course geometry says can't be the current one. The veto is LOOSE (a false veto
+        = blind = safe; a wrong lock = death), and applies to BOTH cold-start and re-acquisition + the
+        cold-start beyond-cap fallback (the 040510 trap is a cold-start-after-advance fallback lock).
+
+        TWO regimes, gated by ``cold_start`` (unchanged from Patch-1):
 
         * COLD START (this track never locked since construct / a reset-for-new-gate) -- the A5
           selection, UNCHANGED: REJECT candidates beyond ``max_acquire_range_m``, but if that empties the
@@ -838,6 +940,13 @@ class GateSeeker:
         WP1a discipline lives on the prefer_nearest path, exactly where the fallback lived). Returns the
         chosen pose, or None on a re-acquire reject (with ``_last_none_reason`` set for the caller/log).
         """
+        # WP2b: arrival-prior veto FIRST (before every other filter), so a prior-violating candidate can
+        # never be locked -- not via the cold-start fallback, not via the hint score. Inert when no prior
+        # is latched or no attitude is supplied (then poses passes through untouched == Patch-1).
+        poses = self._prior_filter(poses, level_rp)
+        if not poses:
+            self._last_none_reason = "prior_reject"
+            return None
         if not self.config.prefer_nearest:
             if self.config.track_prefer_centered:
                 return min(poses, key=lambda p: float(np.linalg.norm(self._pose_bearing(p))))
@@ -883,13 +992,207 @@ class GateSeeker:
                            dtype=np.float64)
         return bearing, float(np.linalg.norm(t_cam))
 
+    # =======================================================================
+    # WP2 (Patch-2): advance handling + arrival-prior veto + nearer-supersede + gyro propagation
+    # =======================================================================
+    def on_gate_advance(self, prior_dir: tuple | None = None,
+                        level_rp: tuple | None = None) -> dict:
+        """Handle a RACE_STATUS active-gate advance (fly_rl calls this the tick the wire increments the
+        gate index) -- replaces the blunt ``reset()`` the ego loop used to call. Two jobs:
+
+          * RESET the slot0 perception track so it never COASTS the just-passed gate through the advance
+            (the pre-advance continuity-reject storm the wire showed at 040510). By default a plain reset
+            = a TRUE COLD START (``_track_ever_locked`` False -> the acquisition fallback is armed).
+          * PROMOTE a live slot1 (next-gate) track into slot0 when it is trustworthy: range in
+            [3, max_acquire_range_m] AND (when a prior is available + level_rp given) prior-cone-compliant.
+            A promote seeds slot0's smoothed (range, bearing) from slot1 and marks it LOCKED
+            (``_track_ever_locked`` True -> re-acquire discipline armed, since a promoted track IS a lock),
+            then resets slot1 to cold. Sanity-fail (or no live slot1) => a plain cold reset.
+
+        ``prior_dir`` = the just-passed gate's coarse-map (horiz, vert) bucket (row gate_index-1), latched
+        as ``_acquire_prior`` for the whole gate (until the next advance) and used to veto/gate every
+        subsequent acquisition + supersede. None => no prior (gate 0 / sector_mode!=map) -> veto inert.
+        ``level_rp`` (roll, pitch) levels the slot1 promote-sanity bearing into the sector frame.
+
+        Returns a small dict {action, prior, promoted_range_m} for the seeker.jsonl advance marker."""
+        self._acquire_prior = (None if prior_dir is None
+                               else (float(prior_dir[0]), float(prior_dir[1])))
+        # candidate promote: a LIVE slot1 track (locked, not coasting-expired) that passes sanity.
+        promote_r = None
+        if self._next_track_range_m is not None and self._next_track_bearing is not None:
+            r = float(self._next_track_range_m)
+            in_range = 3.0 <= r <= float(self.config.max_acquire_range_m)
+            prior_ok = True
+            if self._acquire_prior is not None and level_rp is not None:
+                a_lev, e_lev = self._level_camera_bearing(
+                    float(self._next_track_bearing[0]), float(self._next_track_bearing[1]),
+                    float(level_rp[0]), float(level_rp[1]))
+                prior_ok = not self._prior_vetoes(a_lev, e_lev)
+            if in_range and prior_ok:
+                promote_r = r
+        if promote_r is not None:
+            # PROMOTE slot1 -> slot0 (seed the smoothed state), then reset slot1 to cold.
+            self._track_range_m = float(self._next_track_range_m)
+            self._track_bearing = np.asarray(self._next_track_bearing, dtype=np.float64).copy()
+            self._track_coast_ticks = 0
+            self._track_ever_locked = True            # a promoted track is a LOCK (re-acquire armed)
+            self._next_track_range_m, self._next_track_bearing = None, None
+            self._next_track_coast_ticks = 0
+            action = "advance_promote"
+        else:
+            # plain COLD reset of BOTH perception tracks (the new slot0 re-acquires from scratch).
+            self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+            self._track_ever_locked = False
+            self._next_track_range_m, self._next_track_bearing = None, None
+            self._next_track_coast_ticks = 0
+            action = "advance_reset"
+        # drop the supersede debounce + the frame-idempotence caches (a NEW gate is a fresh decision).
+        self._supersede_streak = 0
+        self._supersede_range_m, self._supersede_bearing = None, None
+        self._valid_poses_fid, self._valid_poses_cache = None, None
+        self._last_frame_id, self._last_pose = None, None
+        self._last_advance = {"action": action, "prior": self._acquire_prior,
+                              "promoted_range_m": (None if promote_r is None else round(promote_r, 3))}
+        return self._last_advance
+
+    def propagate(self, gyro_frd: np.ndarray | None, dt: float,
+                  vel_frd: np.ndarray | None = None) -> None:
+        """WP2d: gyro-fed track prediction. Between detector fixes, rotate the stored (active + next)
+        track BEARING by the body rotation ``exp(-[w]x dt)`` (mirroring the obs builder's ego-propagation)
+        so the continuity gate compares the NEXT detection to where the gate has ROTATED to in the frame
+        under fast yaw/roll -- 91% of the emit-gaps are continuity rejects of a REAL detection that drifted
+        outside the STATIC-prediction gate. Range is left on its EMA (bearing-only; ``vel_frd`` is accepted
+        for a future range-propagation but unused). fly_rl calls this every control tick (not only fresh-
+        frame ticks) so the prediction stays current across the ~7-15 Hz detection gaps. No-op when
+        disabled, no track, no/non-finite gyro, or a non-positive dt."""
+        if not self.config.track_gyro_propagate or gyro_frd is None:
+            return
+        if self._track_bearing is None and self._next_track_bearing is None:
+            return
+        w = np.asarray(gyro_frd, dtype=np.float64)
+        if w.shape != (3,) or not np.all(np.isfinite(w)):
+            return
+        if dt is None or not np.isfinite(dt) or float(dt) <= 0.0:
+            return
+        from scipy.spatial.transform import Rotation as _Rotation
+        w_cam = R_camera_from_body() @ w                       # body FRD rate -> camera optical rate
+        dR = _Rotation.from_rotvec(-w_cam * float(dt)).as_matrix()   # exp(-[w]x dt), gate rotates by -w
+        for attr in ("_track_bearing", "_next_track_bearing"):
+            b = getattr(self, attr)
+            if b is None:
+                continue
+            b = np.asarray(b, dtype=np.float64)
+            ray = np.array([np.tan(b[0]), np.tan(b[1]), 1.0])  # (az,el) -> camera ray (x=R,y=D,z=fwd)
+            ray = dR @ ray
+            z = float(ray[2]) if abs(float(ray[2])) > 1e-6 else 1e-6
+            setattr(self, attr,
+                    np.array([np.arctan2(float(ray[0]), z), np.arctan2(float(ray[1]), z)],
+                             dtype=np.float64))
+
+    # -- arrival-prior veto (WP2b) ------------------------------------------
+    def _leveled_bearing(self, pose: GatePose, roll: float, pitch: float) -> tuple[float, float]:
+        """Candidate camera lever -> (a_lev, e_lev) in the gravity-leveled heading frame (a_lev +LEFT,
+        e_lev +UP), the SAME frame the coarse-sector buckets live in. Camera optical -> body FRD (removes
+        the +20deg mount) -> body FLU -> ``_leveled_from_body`` (removes roll+pitch, keeps yaw)."""
+        rel_frd = R_camera_from_body().T @ np.asarray(pose.t_cam_gate, dtype=np.float64)
+        return self._leveled_frd(rel_frd, roll, pitch)
+
+    def _level_camera_bearing(self, az: float, el: float, roll: float,
+                              pitch: float) -> tuple[float, float]:
+        """As ``_leveled_bearing`` but from a stored camera bearing (az, el) rather than a pose (used for
+        the slot1 promote-sanity check, which holds only the smoothed bearing). Reconstructs the camera
+        ray [tan(az), tan(el), 1] (round-trips ``_pose_bearing`` for |angle| well under 90deg)."""
+        rel_frd = R_camera_from_body().T @ np.array([np.tan(az), np.tan(el), 1.0], dtype=np.float64)
+        return self._leveled_frd(rel_frd, roll, pitch)
+
+    def _leveled_frd(self, rel_frd: np.ndarray, roll: float, pitch: float) -> tuple[float, float]:
+        """Shared: body-FRD lever -> leveled heading-frame (a_lev +LEFT, e_lev +UP)."""
+        rel_flu = _FLIP_FRD_FLU * np.asarray(rel_frd, dtype=np.float64)     # [f,r,d] -> [f,l,u]
+        lv = _leveled_from_body(rel_flu, float(roll), float(pitch))
+        horiz = float(np.hypot(lv[0], lv[1]))
+        a_lev = float(np.arctan2(lv[1], lv[0]))                # +LEFT (matches sector horiz +1=LEFT)
+        e_lev = float(np.arctan2(lv[2], max(horiz, 1e-9)))     # +UP   (matches sector vert  +1=UP)
+        return a_lev, e_lev
+
+    @staticmethod
+    def _axis_veto(bucket: float, x: float, wrong_cone: float, zero_cone: float) -> bool:
+        """One coarse-sector axis: the bucket sign ALIGNS with the leveled bearing sign (+1 bucket expects
+        +x). A NONZERO bucket vetoes the WRONG side beyond ``wrong_cone`` (the expected side is unbounded);
+        a ZERO bucket is a generous +/-``zero_cone`` band. 0 cone disables that side."""
+        if bucket > 0.0:
+            return wrong_cone > 0.0 and x < -wrong_cone
+        if bucket < 0.0:
+            return wrong_cone > 0.0 and x > wrong_cone
+        return zero_cone > 0.0 and abs(x) > zero_cone
+
+    def _prior_vetoes(self, a_lev: float, e_lev: float) -> bool:
+        """True iff the latched arrival prior VETOES a candidate at leveled bearing (a_lev, e_lev). Horiz
+        bucket vs a_lev (+LEFT), vert bucket vs e_lev (+UP). No prior latched => never vetoes."""
+        if self._acquire_prior is None:
+            return False
+        h, v = self._acquire_prior
+        wrong = float(self.config.acquire_prior_wrong_cone_rad)
+        zero = float(self.config.acquire_prior_zero_cone_rad)
+        return (self._axis_veto(float(h), a_lev, wrong, zero)
+                or self._axis_veto(float(v), e_lev, wrong, zero))
+
+    def _prior_filter(self, poses: list[GatePose], level_rp: tuple | None) -> list[GatePose]:
+        """Drop every candidate the arrival prior vetoes. Inert (returns ``poses``) when no prior is
+        latched or no attitude (``level_rp``) is supplied -- so the Patch-1 acquisition is untouched."""
+        if self._acquire_prior is None or level_rp is None:
+            return poses
+        roll, pitch = float(level_rp[0]), float(level_rp[1])
+        return [p for p in poses
+                if not self._prior_vetoes(*self._leveled_bearing(p, roll, pitch))]
+
+    # -- nearer-supersede (WP2c) --------------------------------------------
+    def _update_supersede(self, poses: list[GatePose], pred_r: float, pred_b: np.ndarray,
+                          consistent, level_rp: tuple | None) -> GatePose | None:
+        """WP2c debounce step (called each LOCKED continuity frame). Returns the superseding pose when a
+        DIFFERENT gate has been persistently nearer + prior-compliant for ``supersede_min_frames`` frames,
+        else None (and updates/decays the streak). A super-candidate is NOT track-consistent, is nearer
+        than ``supersede_range_factor`` * the locked range, and (when a prior + attitude exist) passes the
+        prior cone. The streak counts CONSECUTIVE frames on the SAME super-candidate (a flicker resets)."""
+        if int(self.config.supersede_min_frames) <= 0 or self.config.supersede_range_factor <= 0.0:
+            return None
+        thresh = float(self.config.supersede_range_factor) * float(pred_r)
+        sup: GatePose | None = None
+        for p in poses:
+            if consistent(p):
+                continue                              # same gate the track already follows
+            if float(p.range_m) >= thresh:
+                continue                              # not meaningfully nearer / bigger
+            if self._acquire_prior is not None and level_rp is not None:
+                if self._prior_vetoes(*self._leveled_bearing(p, float(level_rp[0]), float(level_rp[1]))):
+                    continue                          # prior-incompatible -> not a valid supersede
+            if sup is None or float(p.range_m) < float(sup.range_m):
+                sup = p                               # the nearest qualifying super-candidate
+        if sup is None:
+            self._supersede_streak = 0
+            self._supersede_range_m, self._supersede_bearing = None, None
+            return None
+        sb = self._pose_bearing(sup)
+        same = (self._supersede_bearing is not None and self._supersede_range_m is not None
+                and abs(float(sup.range_m) - float(self._supersede_range_m))
+                <= self.config.track_max_range_jump_m
+                and float(np.linalg.norm(sb - np.asarray(self._supersede_bearing, dtype=np.float64)))
+                <= self.config.track_max_bearing_jump_rad)
+        self._supersede_streak = (self._supersede_streak + 1) if same else 1
+        self._supersede_range_m, self._supersede_bearing = float(sup.range_m), sb
+        if self._supersede_streak >= int(self.config.supersede_min_frames):
+            self._supersede_streak = 0                # consume the streak on the switch
+            self._supersede_range_m, self._supersede_bearing = None, None
+            return sup
+        return None
+
     def _record_decision(self, slot: int, reason: str | None, n_cand: int,
                          chosen: GatePose | None = None) -> None:
-        """WP0: snapshot this tick's per-slot seeker decision for ``seeker.jsonl`` (logging only -- NO
-        behaviour change). ``reason`` is None when a pose was emitted, else the None-reason
+        """WP0/WP2e: snapshot this tick's per-slot seeker decision for ``seeker.jsonl`` (logging only -- NO
+        behaviour change). ``reason`` is None when a pose was emitted, else a None/switch reason
         ("valid_poses_empty" | "continuity_reject" | "other" | "reacquire_range_reject" |
-        "reacquire_hint_reject"). ``n_cand`` = candidates the slot's track considered after the quality
-        gate. Track state (range + coast) and the emitted (range, bearing) are captured for the log."""
+        "reacquire_hint_reject" | "prior_reject" | "supersede_nearer"). ``n_cand`` = candidates the slot's
+        track considered after the quality gate. Track state (range + coast), the emitted (range, bearing),
+        the active arrival ``prior`` and the supersede streak are captured for the log (WP2e)."""
         rng = self._track_range_m if slot == 0 else self._next_track_range_m
         coast = self._track_coast_ticks if slot == 0 else self._next_track_coast_ticks
         self._last_decision[slot] = {
@@ -900,12 +1203,21 @@ class GateSeeker:
             "emit_range_m": (None if chosen is None else round(float(chosen.range_m), 3)),
             "emit_bearing": (None if chosen is None
                              else [round(float(b), 4) for b in self._pose_bearing(chosen)]),
+            # WP2e: the active arrival prior (slot0 only -- slot1 does not consume it) + supersede streak.
+            "prior": (list(self._acquire_prior) if (slot == 0 and self._acquire_prior is not None)
+                      else None),
+            "sup_streak": (int(self._supersede_streak) if slot == 0 else 0),
         }
 
     def last_decision(self, slot: int = 0) -> dict | None:
         """WP0: the last per-tick decision recorded for a slot (0=active gate, 1=next gate), or None
         before the first detect call for that slot. fly_rl writes these to ``<session>/seeker.jsonl``."""
         return self._last_decision[slot] if 0 <= slot < len(self._last_decision) else None
+
+    def last_advance(self) -> dict | None:
+        """WP2e: the last ``on_gate_advance`` outcome {action, prior, promoted_range_m}, or None before
+        any advance. fly_rl stamps it into the seeker.jsonl row on the advance tick (the advance marker)."""
+        return self._last_advance
 
     def _is_active_gate(self, pose: GatePose) -> bool:
         """True when ``pose`` is the candidate the ACTIVE-gate track (slot0) is locked on, using the
@@ -1300,9 +1612,10 @@ class GateSeeker:
             "valid_poses_empty": "none_valid_poses_empty",
             "continuity_reject": "none_continuity_reject",
             "first_acq_reject": "none_first_acq_reject",
-            # WP1a/WP1b re-acquire rejects are first-acquisition rejects -> the same bucket.
+            # WP1a/WP1b re-acquire rejects + the WP2b arrival-prior reject are first-acquisition rejects.
             "reacquire_range_reject": "none_first_acq_reject",
             "reacquire_hint_reject": "none_first_acq_reject",
+            "prior_reject": "none_first_acq_reject",
         }.get(reason, "none_other")
         self.diag_counts[key] += 1
 
@@ -1791,6 +2104,13 @@ class GateSeeker:
         self._track_coast_ticks = 0
         self._track_ever_locked = False   # WP1a: a reset (epoch / gate advance) => the next acquire is COLD
         self._last_decision = [None, None]
+        # WP2 (Patch-2): drop the arrival prior + the supersede debounce + the advance marker on a full
+        # reset (a sim epoch restart clears the whole course context; on_gate_advance manages them per-gate).
+        self._acquire_prior = None
+        self._supersede_streak = 0
+        self._supersede_range_m = None
+        self._supersede_bearing = None
+        self._last_advance = None
         # next-gate (slot1) track clears in lockstep: on a gate advance the window "promotes" and the
         # builder carries no next-gate state, so the tg+1 slot re-acquires cold too (never a stale lock).
         self._next_track_range_m = None
