@@ -593,6 +593,43 @@ def _load_coarse_map(path: str) -> np.ndarray:
     return sector
 
 
+# --- Patch-1 WP6: flight-start provenance for meta.json (map rows + seeker constants + recipe drift) ---
+def _parse_recipe_drift(spec: str | None) -> list:
+    """The --recipe-drift CSV (the pilot-panel-computed list of knob keys whose flown value != the
+    picked model's recipe pin) -> a clean list. Empty/blank -> []."""
+    return [k for k in (str(spec or "")).split(",") if k.strip()]
+
+
+def _meta_coarse_rows(args) -> "list | None":
+    """The ACTUAL sector rows read from the flown coarse-map file (int [[horiz,vert], ...]), or None
+    when no map is set / it fails to load -- so meta.json records WHICH map this flight actually flew."""
+    try:
+        path = getattr(args, "ego_coarse_map", "") or ""
+        if path:
+            return _load_coarse_map(path).astype(int).tolist()
+    except Exception:
+        return None
+    return None
+
+
+def _meta_seeker_constants(args) -> dict:
+    """The gate-seeker constants in force this flight (GateSeekerConfig defaults; only max_valid_range_m
+    is CLI-driven on the ego path). Recorded to meta.json so a flight's re-acquire/track discipline is
+    self-documenting alongside the map + recipe."""
+    from racer.gate_seeker import GateSeekerConfig
+    c = GateSeekerConfig()
+    return {
+        "max_acquire_range_m": c.max_acquire_range_m,
+        "max_valid_range_m": (float(getattr(args, "ego_max_valid_range", 30.0))
+                              if getattr(args, "ego_ckpt", None) else float("inf")),
+        "track_max_range_jump_m": c.track_max_range_jump_m,
+        "track_max_bearing_jump_rad": c.track_max_bearing_jump_rad,
+        "track_max_coast_ticks": c.track_max_coast_ticks,
+        "track_ema_alpha": c.track_ema_alpha,
+        "reacquire_hint_max_bearing_rad": c.reacquire_hint_max_bearing_rad,
+    }
+
+
 @torch.no_grad()
 def policy_step(actor: nn.Module, obs_np: np.ndarray, max_rate: float = 0.0,
                 virtual_flip: bool = False, max_thrust: float = 0.0,
@@ -2409,6 +2446,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
 
     _ego_log: list = []        # in-memory; single write at exit (no per-tick I/O)
     _ego_log_errors = 0
+    _seeker_log: list = []     # WP0: per-tick seeker slot0/slot1 decisions -> seeker.jsonl (single write at exit)
     # [DIAG timing — ADDITIVE, contract-neutral, LOCAL-ONLY (do NOT push): per-tick phase
     # wall-times to localize the loop-choke floor. Changes no obs/command/control value.]
     _timing_log: list = []
@@ -2585,7 +2623,12 @@ def _fly_ego(client, actor, args, flight_idx: int,
         _t_det = time.perf_counter()                             # [DIAG]
         _fresh_frame = frame is not None and frame.frame_id != last_lever_fid
         if _fresh_frame:
-            pose = seeker.detect_gate_lever(frame)   # detect_cached: shared + frame_id-idempotent
+            # WP1b re-acquire hint: the obs builder's ego-propagated held slot0 lever (body FRD), or None
+            # when nothing live is held. The seeker consults it ONLY on a RE-ACQUISITION (never a cold
+            # start / a live continuity track), so a just-advanced gate (seeker.reset above -> COLD)
+            # structurally ignores it -- the held lever is always for the CURRENT gate when it is used.
+            _reacq_hint = builder.slot0_hint_frd()
+            pose = seeker.detect_gate_lever(frame, hint_rel_body_frd=_reacq_hint)   # detect_cached: shared + frame_id-idempotent
             last_lever_fid = frame.frame_id
             # kp-persist debounce (default OFF == byte-identical passthrough): advance the
             # streak ONLY on fresh-frame events; suppressed poses become None here, so
@@ -2747,6 +2790,19 @@ def _fly_ego(client, actor, args, flight_idx: int,
                 })
             except Exception:
                 _ego_log_errors += 1
+            # WP0: one seeker-decision row per tick (join to ego_obs.jsonl on k / sim_time_ns / frame_id).
+            # last_decision() reflects the most recent detect call (only fresh frames re-run detect, so
+            # fresh_frame flags a real re-decision vs a carried-over one). slot1 only when --ego-slot1.
+            try:
+                _seeker_log.append({
+                    "k": n_ticks, "sim_time_ns": st,
+                    "frame_id": (frame.frame_id if frame is not None else None),
+                    "gate_index": gate_index, "fresh_frame": bool(_fresh_frame),
+                    "slot0": seeker.last_decision(0),
+                    "slot1": (seeker.last_decision(1) if args.ego_slot1 else None),
+                })
+            except Exception:
+                _ego_log_errors += 1
 
         work_ms = (time.monotonic() - now) * 1e3
         n_ticks += 1
@@ -2796,6 +2852,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
             print(f"  [ego-log] wrote {len(_ego_log)} ticks -> {out}")
         except Exception as exc:
             print(f"  [ego-log] WARNING: failed to write ego_obs.jsonl: {exc}")
+    if session_dir is not None and _seeker_log:                  # WP0: seeker decision trace
+        sout = Path(session_dir) / "seeker.jsonl"
+        try:
+            sout.write_text("\n".join(json.dumps(r) for r in _seeker_log) + "\n", encoding="utf-8")
+            print(f"  [seeker-log] wrote {len(_seeker_log)} ticks -> {sout}")
+        except Exception as exc:
+            print(f"  [seeker-log] WARNING: failed to write seeker.jsonl: {exc}")
     if _ego_log_errors:
         print(f"  [ego-log] WARNING: {_ego_log_errors} per-tick record errors "
               f"(logging bug, not flight bug)")
@@ -3413,6 +3476,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "re-opens the spin door. NOT --max-rate (clips all 3 axes, ~9x roll/pitch "
                          "OOD) and NOT --yaw-scale (multiplicative, mis-scales the transfer function). "
                          "Leave 0 for pre-despin checkpoints (vn16/vcz16) -- they trained unclamped.")
+    ap.add_argument("--recipe-drift", type=str, default="",
+                    help="Patch-1 WP6: comma-separated knob keys whose FLOWN value differs from the "
+                         "picked model's recipe pins (the pilot panel computes + passes this; empty when "
+                         "clean). Recorded to meta.json (recipe_drift) and WARNED at flight start -- a "
+                         "guard against a stale UI knob riding into a flight. No effect on control.")
     ap.add_argument("--ego-speed-gov", type=str, default="",
                     help="EGO deploy speed governor \"SOFT,HARD\" -- or a single number = HARD cap at that "
                          "speed (m/s of OBSERVED HORIZONTAL body speed; EMPTY or 0 = off, byte-identical). "
@@ -3797,6 +3865,12 @@ def main() -> int:
                     "ego_speed_gov": args.ego_speed_gov,
                     "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist,
+                    # Patch-1 WP6: flight provenance -- the ACTUAL map rows flown, the seeker constants
+                    # in force, and the recipe-drift list (knobs whose flown value != the picked model's
+                    # recipe pin; empty when clean) the panel passed via --recipe-drift.
+                    "coarse_map_rows": _meta_coarse_rows(args),
+                    "seeker_constants": _meta_seeker_constants(args),
+                    "recipe_drift": _parse_recipe_drift(getattr(args, "recipe_drift", "")),
                     # the ACTUAL detector this flight flew -> renders overlay the SAME engine
                     # (tools/render_yolo.py reads these), not a stale hardcoded default.
                     "seeker_detector": args.seeker_detector,
@@ -3807,6 +3881,13 @@ def main() -> int:
             )
             holder["rec"] = recorder
             print(f"recording -> {session}")
+            # WP6c: one console warning at flight start if the flown config drifted from the picked
+            # model's recipe (a stale UI knob rode in). No block -- the pilot asked for these values.
+            _drift = _parse_recipe_drift(getattr(args, "recipe_drift", ""))
+            if _drift:
+                print(f"  [recipe-drift] WARNING: {len(_drift)} knob(s) differ from the picked model's "
+                      f"recipe: {', '.join(_drift)} (flown values override the recipe pins).",
+                      file=sys.stderr)
 
             res = {"flight": flight, "final_state": "ERROR", "gate_index": 0}
             try:

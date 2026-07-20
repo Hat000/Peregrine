@@ -318,6 +318,25 @@ class EgoObsBuilder:
         self._reset_slot()
         self._gate_index = None
 
+    def slot0_hint_frd(self) -> np.ndarray | None:
+        """Patch-1 WP1b: the held ACTIVE-gate (slot0) lever as a body-FRD 3-vector [forward, right, down]
+        (m), ego-propagated through the current detection gap, for the seeker's re-acquire HINT.
+
+        Returns None when there is no held slot0 position for the current gate (``_rel_flu[0]`` is
+        cleared on a gate change / reset) OR the held estimate has decayed past the confidence horizon
+        (conf<=0, i.e. age>=stale_horizon_s) -- the SAME liveness the obs masking uses, so the hint is
+        trusted only while the builder still treats the held position as live. NEVER fabricates: it only
+        surfaces what the builder already holds (the seeker uses it to disambiguate a re-acquisition, not
+        to synthesise a fix). Read at the TOP of a control tick (before ``update``), so it reflects the
+        previous tick's ego-propagated hold -- one control tick stale, negligible for a bearing prior."""
+        rel_flu = self._rel_flu[0]
+        if rel_flu is None:
+            return None
+        # liveness: reuse the confidence computed at the last update (conf>0 == age<stale_horizon_s).
+        if float(self.last_diag.get("conf", 0.0) or 0.0) <= 0.0:
+            return None
+        return _FLIP_FRD_FLU * np.asarray(rel_flu, dtype=np.float64)   # FLU [f,l,u] -> FRD [f,r,d]
+
     # -- per-tick ---------------------------------------------------------------------------
     def update(self, *, sim_time_ns: int, gate_index: int, R_frd2ned: np.ndarray,
                vel_ned: np.ndarray | None, gyro_frd: np.ndarray | None,

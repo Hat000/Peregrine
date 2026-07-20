@@ -240,6 +240,23 @@ class GateSeekerConfig:
     # lost / between gates) so re-acquisition can re-centre on a fresh gate.
     track_max_coast_ticks: int = 8
 
+    # --- RE-ACQUIRE DISCIPLINE (Patch-1 WP1a/WP1b, 2026-07-19: the wire wrong-gate-on-re-acquire fix) ---
+    # ``detect_gate_lever`` distinguishes a TRUE COLD START (this active-gate track has never locked since
+    # the seeker was constructed or reset for a NEW gate -- flight start / a gate advance) from a
+    # RE-ACQUISITION (a track existed for THIS gate and expired via coast). On a RE-ACQUISITION the
+    # first-acquisition FALLBACK -- lock the nearest even BEYOND ``max_acquire_range_m`` -- is DROPPED: if
+    # no candidate is within the acquire cap we return None (keep coasting/dark on the obs-builder's
+    # ego-propagated hold) rather than lock a far wrong gate. This is the flight-20260719_231220 failure:
+    # gate 0 lost in a pitch-dive blackout, the only visible candidate the NEXT gate at 26.7 m > the 22 m
+    # cap, the fallback locked it and the policy flew at it. A true COLD START keeps the fallback (A5: at
+    # flight start we must lock SOMETHING to make progress). WP1b: when the obs builder still holds an
+    # ego-propagated position for the current gate, fly_rl passes it to ``detect_gate_lever`` as a
+    # re-acquire HINT (body-FRD lever); on a RE-ACQUISITION a candidate whose camera bearing differs from
+    # the hint by more than this is VETOED (a re-acquire must resemble where we last knew the gate to be),
+    # and the surviving candidates are SCORED by proximity to the hint. Generous by default; the WP1a cap
+    # always applies FIRST. 0 => veto off (the hint still biases scoring). Config-overridable per the spec.
+    reacquire_hint_max_bearing_rad: float = 0.6
+
     # --- NEXT-GATE (slot1) TRACK  (the --ego-slot1 SOURCE; 2026-07-12) ---
     # The tg+1 gate for the WINDOW=2 ego obs slot1. ``detect_next_gate_lever`` maintains a SECOND
     # temporal track -- a faithful mirror of the active-gate track above -- over the NEXT gate to fly
@@ -541,6 +558,11 @@ class GateSeeker:
     _track_range_m: float | None = field(default=None, repr=False)      # tracked gate range, EMA-smoothed
     _track_bearing: np.ndarray | None = field(default=None, repr=False)  # tracked gate camera bearing (az,el) rad
     _track_coast_ticks: int = field(default=0, repr=False)     # consecutive ticks with no consistent candidate
+    # WP1a (Patch-1): has the slot0 track locked at least once since construction / a reset-for-new-gate
+    # (reset() on a gate advance, or _begin_pass/ACQUIRE-NEXT in the slow-lap path)? False => the next
+    # first-acquisition is a TRUE COLD START (keep the beyond-cap fallback); True with track None => a
+    # RE-ACQUISITION (enforce the acquire cap -> coast instead of far-locking a wrong gate).
+    _track_ever_locked: bool = field(default=False, repr=False)
     # -- next-gate (slot1 --ego-slot1 SOURCE) track: the tg+1 gate's smoothed (range, camera-bearing),
     #    a mirror of the active track above; maintained/consumed ONLY via detect_next_gate_lever --
     _next_track_range_m: float | None = field(default=None, repr=False)
@@ -576,6 +598,10 @@ class GateSeeker:
     # -- A13 instrumentation: per-flight pose-None breakdown + bridge coverage counters (logging only,
     #    no behaviour change). Accumulated in memory; fly_rl emits a one-line summary at loop exit. --
     _last_none_reason: str | None = field(default=None, repr=False)         # why detect_gate_lever returned None
+    # WP0 (Patch-1): per-tick decision snapshot for seeker.jsonl, one per slot (0=active, 1=next). Each is
+    # a small dict {reason, n_cand, track_range_m, coast_ticks, emit_range_m, emit_bearing} set by
+    # detect_gate_lever / detect_next_gate_lever; exposed via last_decision(slot). Logging only.
+    _last_decision: list = field(default_factory=lambda: [None, None], repr=False)
     diag_counts: dict = field(default_factory=lambda: {
         "pursuit": 0,            # regime 3: real pose -> pursuit command
         "none_total": 0,         # pose=None ticks (after launch, post-settle/anchor)
@@ -683,10 +709,17 @@ class GateSeeker:
         self._valid_poses_cache = out
         return out
 
-    def detect_gate_lever(self, frame: Frame | None) -> GatePose | None:
+    def detect_gate_lever(self, frame: Frame | None, *,
+                          hint_rel_body_frd: np.ndarray | None = None) -> GatePose | None:
         """Run the injected detector + PnP on ``frame`` and return the camera-relative pose of the
         gate to chase (``GatePose.t_cam_gate`` = gate centre in the camera optical frame), or ``None``
         when nothing usable is seen.
+
+        ``hint_rel_body_frd`` (Patch-1 WP1b) is an OPTIONAL body-FRD drone->gate lever
+        ([forward, right, down] m) -- the obs builder's ego-propagated held position for the CURRENT
+        gate -- consulted ONLY on a RE-ACQUISITION (never a cold start / a live continuity track). It
+        vetoes + scores re-acquire candidates by proximity to where the gate was last known to be. None
+        (the default) => the WP1a cap-only behaviour. See ``reacquire_hint_max_bearing_rad``.
 
         MAP-FREE: no association to any map gate, no self-position — just "which opening is in front
         of me, and where is it relative to the camera". Quality-gated by detection score + PnP reproj.
@@ -703,6 +736,7 @@ class GateSeeker:
         each frame, no continuity."""
         if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
             self._last_none_reason = "other"     # no detector / no frame -> nothing to localize
+            self._record_decision(0, "other", 0)
             return None
         poses = self._valid_poses(frame)
 
@@ -712,6 +746,7 @@ class GateSeeker:
                 if best is None or pose.range_m < best.range_m:
                     best = pose
             self._last_none_reason = None if best is not None else "valid_poses_empty"
+            self._record_decision(0, self._last_none_reason, len(poses), best)
             return best
 
         # --- temporal track: lock one gate across frames -------------------
@@ -720,6 +755,7 @@ class GateSeeker:
             self._track_coast_ticks += 1
             if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                 self._track_range_m, self._track_bearing = None, None
+            self._record_decision(0, "valid_poses_empty", 0)
             return None
 
         if self._track_range_m is None or self._track_bearing is None:
@@ -729,8 +765,16 @@ class GateSeeker:
             # ``max_acquire_range_m`` (a distant downrange gate is never the next gate); among the rest,
             # score by range + a bearing penalty so a near-and-reasonably-centered gate beats a
             # far-but-perfectly-centered one. Falls back to the legacy selection when prefer_nearest is
-            # off (or when every candidate is beyond the acquire range -> don't reject them all).
-            chosen = self._first_acquisition(poses)
+            # off (or, on a COLD start, when every candidate is beyond the acquire range -> don't reject
+            # them all). WP1a: a RE-ACQUISITION (this gate locked before, expired via coast) does NOT
+            # fall back -- no in-cap candidate -> None (coast) rather than far-lock a wrong gate.
+            chosen = self._first_acquisition(
+                poses, cold_start=not self._track_ever_locked, hint_rel_body_frd=hint_rel_body_frd)
+            if chosen is None:
+                # WP1a/WP1b re-acquire reject: keep coasting/dark (the reason is set by
+                # _first_acquisition -> "reacquire_range_reject" | "reacquire_hint_reject").
+                self._record_decision(0, self._last_none_reason, len(poses))
+                return None
         else:
             # CONTINUITY: pick the candidate nearest the track in (range, bearing); REJECT a jump.
             pred_r = float(self._track_range_m)
@@ -748,6 +792,7 @@ class GateSeeker:
                 self._track_coast_ticks += 1
                 if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                     self._track_range_m, self._track_bearing = None, None
+                self._record_decision(0, "continuity_reject", len(poses))
                 return None
             # among the consistent candidates, the one closest to the predicted bearing+range.
             chosen = min(
@@ -765,31 +810,102 @@ class GateSeeker:
             self._track_range_m = (1.0 - a) * float(self._track_range_m) + a * float(chosen.range_m)
             self._track_bearing = (1.0 - a) * np.asarray(self._track_bearing, dtype=np.float64) + a * b_meas
         self._track_coast_ticks = 0
+        self._track_ever_locked = True   # WP1a: this gate's track has now locked -> re-acquire discipline
         self._last_none_reason = None    # a usable pose this tick (clear the stale reason)
+        self._record_decision(0, None, len(poses), chosen)
         return chosen
 
-    def _first_acquisition(self, poses: list[GatePose]) -> GatePose:
-        """Pick the gate to LOCK on first acquisition (no track yet). (A5 BLOCKER 2 fix.)
+    def _first_acquisition(self, poses: list[GatePose], *, cold_start: bool = True,
+                           hint_rel_body_frd: np.ndarray | None = None) -> GatePose | None:
+        """Pick the gate to LOCK when there is no active track (A5 BLOCKER 2 + Patch-1 WP1a/WP1b).
 
-        With ``prefer_nearest`` (default): REJECT candidates beyond ``max_acquire_range_m`` (a distant
-        downrange gate is never the next gate to fly -- the A5 far-gate trap), then among the admissible
-        ones minimise ``range_m + nearest_bearing_weight_m_per_rad * |bearing|`` so a NEAR,
-        reasonably-centered gate beats a far-but-perfectly-centered one. If EVERY candidate is beyond the
-        acquire range we do NOT reject them all (keep the nearest admissible-by-fallback); the score then
-        still favours the nearest. ``prefer_nearest`` off => the legacy prefer-centered / closest select.
+        TWO regimes, gated by ``cold_start``:
+
+        * COLD START (this track never locked since construct / a reset-for-new-gate) -- the A5
+          selection, UNCHANGED: REJECT candidates beyond ``max_acquire_range_m``, but if that empties the
+          set FALL BACK to the nearest of ALL (we must lock something at flight start / a fresh gate to
+          make progress); among the admissible minimise ``range_m + nearest_bearing_weight_m_per_rad *
+          |bearing|`` so a NEAR, reasonably-centered gate beats a far-but-perfectly-centered one.
+        * RE-ACQUISITION (a track existed for THIS gate and expired via coast) -- the fallback is DROPPED
+          (WP1a): if no candidate is within ``max_acquire_range_m`` return None ("reacquire_range_reject")
+          so we COAST on the ego-propagated hold instead of far-locking a wrong gate (the 231220 failure).
+          When ``hint_rel_body_frd`` is supplied (WP1b), candidates whose camera bearing differs from the
+          hint by more than ``reacquire_hint_max_bearing_rad`` are VETOED; if that empties the in-cap set
+          return None ("reacquire_hint_reject"); otherwise SCORE by proximity to the hint (the SAME range
+          + bearing-weight shape, centred on the hint instead of on the nearest/boresight).
+
+        ``prefer_nearest`` off => the legacy prefer-centered / closest select (no cap, no hint -- the
+        WP1a discipline lives on the prefer_nearest path, exactly where the fallback lived). Returns the
+        chosen pose, or None on a re-acquire reject (with ``_last_none_reason`` set for the caller/log).
         """
         if not self.config.prefer_nearest:
             if self.config.track_prefer_centered:
                 return min(poses, key=lambda p: float(np.linalg.norm(self._pose_bearing(p))))
             return min(poses, key=lambda p: p.range_m)
-        # reject the distant downrange gates; if that empties the set, fall back to ALL (never reject
-        # every candidate -> we must still lock something to make progress).
+        w = float(self.config.nearest_bearing_weight_m_per_rad)
+        # reject the distant downrange gates.
         admissible = [p for p in poses if p.range_m <= self.config.max_acquire_range_m]
         if not admissible:
-            admissible = poses
-        w = float(self.config.nearest_bearing_weight_m_per_rad)
+            if cold_start:
+                # A5: never reject EVERY candidate on a cold start -> fall back to the nearest of all.
+                admissible = poses
+            else:
+                # WP1a RE-ACQUISITION: no in-cap candidate -> coast (do NOT far-lock a wrong gate).
+                self._last_none_reason = "reacquire_range_reject"
+                return None
+        # An in-cap candidate pool exists. On a RE-ACQUISITION WITH a hint, veto off-hint candidates and
+        # score by proximity to the hint; else the cold-start / no-hint nearest+centered score.
+        if (not cold_start) and hint_rel_body_frd is not None:
+            hint_bearing, hint_range = self._hint_bearing_range(hint_rel_body_frd)
+            max_db = float(self.config.reacquire_hint_max_bearing_rad)
+
+            def _dbear(p: GatePose) -> float:
+                return float(np.linalg.norm(self._pose_bearing(p) - hint_bearing))
+
+            hinted = [p for p in admissible if _dbear(p) <= max_db] if max_db > 0.0 else admissible
+            if not hinted:
+                self._last_none_reason = "reacquire_hint_reject"
+                return None
+            return min(hinted, key=lambda p: abs(p.range_m - hint_range) + w * _dbear(p))
         return min(admissible,
                    key=lambda p: p.range_m + w * float(np.linalg.norm(self._pose_bearing(p))))
+
+    def _hint_bearing_range(self, hint_rel_body_frd: np.ndarray) -> tuple[np.ndarray, float]:
+        """WP1b: convert a body-FRD drone->gate hint lever ([forward, right, down] m -- the obs builder's
+        ego-propagated held slot0) into the seeker's native (camera bearing (az,el), range) so a
+        re-acquire is scored against it in the SAME ``_pose_bearing`` coordinate the candidates use.
+        Rotates by the camera mount only (``R_camera_from_body``, exactly as ``_gate_dir_world`` does);
+        the sub-degree metric boresight offset is below the generous bearing veto and is not applied.
+        The range is ``|hint|`` (a pure rotation preserves length)."""
+        t_cam = R_camera_from_body() @ np.asarray(hint_rel_body_frd, dtype=np.float64)
+        z = max(float(t_cam[2]), 1e-6)
+        bearing = np.array([np.arctan2(float(t_cam[0]), z), np.arctan2(float(t_cam[1]), z)],
+                           dtype=np.float64)
+        return bearing, float(np.linalg.norm(t_cam))
+
+    def _record_decision(self, slot: int, reason: str | None, n_cand: int,
+                         chosen: GatePose | None = None) -> None:
+        """WP0: snapshot this tick's per-slot seeker decision for ``seeker.jsonl`` (logging only -- NO
+        behaviour change). ``reason`` is None when a pose was emitted, else the None-reason
+        ("valid_poses_empty" | "continuity_reject" | "other" | "reacquire_range_reject" |
+        "reacquire_hint_reject"). ``n_cand`` = candidates the slot's track considered after the quality
+        gate. Track state (range + coast) and the emitted (range, bearing) are captured for the log."""
+        rng = self._track_range_m if slot == 0 else self._next_track_range_m
+        coast = self._track_coast_ticks if slot == 0 else self._next_track_coast_ticks
+        self._last_decision[slot] = {
+            "reason": reason,
+            "n_cand": int(n_cand),
+            "track_range_m": (None if rng is None else round(float(rng), 3)),
+            "coast_ticks": int(coast),
+            "emit_range_m": (None if chosen is None else round(float(chosen.range_m), 3)),
+            "emit_bearing": (None if chosen is None
+                             else [round(float(b), 4) for b in self._pose_bearing(chosen)]),
+        }
+
+    def last_decision(self, slot: int = 0) -> dict | None:
+        """WP0: the last per-tick decision recorded for a slot (0=active gate, 1=next gate), or None
+        before the first detect call for that slot. fly_rl writes these to ``<session>/seeker.jsonl``."""
+        return self._last_decision[slot] if 0 <= slot < len(self._last_decision) else None
 
     def _is_active_gate(self, pose: GatePose) -> bool:
         """True when ``pose`` is the candidate the ACTIVE-gate track (slot0) is locked on, using the
@@ -820,6 +936,7 @@ class GateSeeker:
         MUST be called AFTER :meth:`detect_gate_lever` on the same frame: it excludes the candidate
         consistent with the just-updated ACTIVE track so the two slots never lock the same gate."""
         if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
+            self._record_decision(1, "other", 0)
             return None
         poses = self._valid_poses(frame)                          # frame-cached; no 2nd detect()/PnP
         cands = [p for p in poses if not self._is_active_gate(p)]  # drop the active gate (slot0)
@@ -827,6 +944,7 @@ class GateSeeker:
             self._next_track_coast_ticks += 1
             if self._next_track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                 self._next_track_range_m, self._next_track_bearing = None, None
+            self._record_decision(1, "valid_poses_empty", 0)
             return None
 
         if self._next_track_range_m is None or self._next_track_bearing is None:
@@ -842,6 +960,7 @@ class GateSeeker:
                 self._next_track_coast_ticks += 1
                 if self._next_track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                     self._next_track_range_m, self._next_track_bearing = None, None
+                self._record_decision(1, "other", len(cands))   # seed range/dedup reject
                 return None
             chosen = min(admissible, key=lambda p: p.range_m)
         else:
@@ -858,6 +977,7 @@ class GateSeeker:
                 self._next_track_coast_ticks += 1
                 if self._next_track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                     self._next_track_range_m, self._next_track_bearing = None, None
+                self._record_decision(1, "continuity_reject", len(cands))
                 return None
             chosen = min(
                 consistent,
@@ -876,6 +996,7 @@ class GateSeeker:
             self._next_track_bearing = ((1.0 - a) * np.asarray(self._next_track_bearing, dtype=np.float64)
                                         + a * b_meas)
         self._next_track_coast_ticks = 0
+        self._record_decision(1, None, len(cands), chosen)
         return chosen
 
     def command_visual(self, nav: NavState, frame: Frame | None, active_gate_index: int, *,
@@ -926,6 +1047,7 @@ class GateSeeker:
                 and self._pass_t_ns is not None
                 and (int(nav.sim_time_ns) - self._pass_t_ns) / 1e9 >= self.config.pass_coast_s):
             self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+            self._track_ever_locked = False   # WP1a: ACQUIRE-NEXT re-locks a NEW gate -> COLD (keep fallback)
 
         # Detect the gate to chase (idempotent across re-feeds of the same frame_id; a re-fed frame
         # keeps the cached bearing decision rather than re-running the detector).
@@ -1060,8 +1182,10 @@ class GateSeeker:
         self._passing = True
         self._pass_t_ns = int(sim_time_ns)
         self._pass_heading = self._last_yaw if self._last_yaw is not None else 0.0
-        # reset the temporal track so the next-gate re-acquisition starts clean (a different gate).
+        # reset the temporal track so the next-gate re-acquisition starts clean (a different gate). WP1a:
+        # the NEXT gate is a fresh COLD acquisition (keep the fallback), so clear the ever-locked latch.
         self._track_range_m, self._track_bearing, self._track_coast_ticks = None, None, 0
+        self._track_ever_locked = False
 
     def _end_pass(self) -> None:
         """End the pass regime (the NEXT gate has been re-acquired) -> resume normal pursuit on it.
@@ -1176,6 +1300,9 @@ class GateSeeker:
             "valid_poses_empty": "none_valid_poses_empty",
             "continuity_reject": "none_continuity_reject",
             "first_acq_reject": "none_first_acq_reject",
+            # WP1a/WP1b re-acquire rejects are first-acquisition rejects -> the same bucket.
+            "reacquire_range_reject": "none_first_acq_reject",
+            "reacquire_hint_reject": "none_first_acq_reject",
         }.get(reason, "none_other")
         self.diag_counts[key] += 1
 
@@ -1662,6 +1789,8 @@ class GateSeeker:
         self._track_range_m = None
         self._track_bearing = None
         self._track_coast_ticks = 0
+        self._track_ever_locked = False   # WP1a: a reset (epoch / gate advance) => the next acquire is COLD
+        self._last_decision = [None, None]
         # next-gate (slot1) track clears in lockstep: on a gate advance the window "promotes" and the
         # builder carries no next-gate state, so the tg+1 slot re-acquires cold too (never a stale lock).
         self._next_track_range_m = None

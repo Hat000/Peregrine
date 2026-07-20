@@ -1782,3 +1782,181 @@ def test_pipeline_smoke_off_path_navigator_still_constructs():
     ns = nav.update(ds, None)
     assert np.all(np.isfinite(ns.position_ned))
     assert nav._ahrs is None        # no AHRS constructed on the legacy path
+
+
+# ===========================================================================
+# PATCH-1 (2026-07-19): RE-ACQUIRE CAP (WP1a) + HELD-POINT HINT (WP1b) + DECISION LOG (WP0)
+# ===========================================================================
+def _level_multi(gates):
+    """A multi-gate projection detector from a drone at the origin, level, facing north (+X). At
+    frame_id=0 EVERY gate projects UN-jittered (sin(pi*i)=0), so single-tick selection is clean."""
+    from racer.frames import R_world_from_body
+    return _MultiProjDetector(gates, np.zeros(3), R_world_from_body(0.0, 0.0, 0.0))
+
+
+class _BlindDet:
+    def detect(self, frame):
+        return []
+
+
+def test_cold_start_keeps_fallback_but_reacquire_enforces_cap():
+    """WP1a A/B: with ONLY a beyond-cap candidate, a TRUE COLD START keeps the A5 fallback (must lock
+    something at flight start), but a RE-ACQUISITION (this gate locked before + expired via coast) does
+    NOT -- it returns None so the pipeline coasts on the ego-propagated hold rather than far-lock a wrong
+    gate."""
+    far = [_gate([26.0, 3.0, 0.0], normal=[1, 0, 0], gate_id=0)]     # ~26.2 m, beyond the 22 m cap
+    # COLD start: fresh seeker, only the far candidate -> fallback locks it.
+    cold = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=22.0), detector=_level_multi(far))
+    assert cold._track_ever_locked is False
+    p_cold = cold.detect_gate_lever(_frame(0, 0))
+    assert p_cold is not None and p_cold.range_m > 22.0, "cold start must keep the beyond-cap fallback (A5)"
+    # RE-ACQUISITION: lock a near gate, coast it out past the limit, then only the far gate is visible.
+    reacq = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=22.0, track_max_coast_ticks=3),
+                       detector=_level_multi([_gate([10.0, 0.0, 0.0], normal=[1, 0, 0])]))
+    assert reacq.detect_gate_lever(_frame(0, 0)) is not None       # lock the near gate ~10 m
+    assert reacq._track_ever_locked is True
+    reacq.detector = _BlindDet()
+    for k in range(1, 6):                                          # blind frames past coast -> track drops
+        assert reacq.detect_gate_lever(_frame(k, 0)) is None
+    assert reacq._track_range_m is None and reacq._track_ever_locked is True
+    reacq.detector = _level_multi(far)
+    assert reacq.detect_gate_lever(_frame(20, 0)) is None, "re-acquire must reject the beyond-cap candidate"
+    assert reacq.last_decision(0)["reason"] == "reacquire_range_reject"
+
+
+def test_reacquire_far_lock_231220_regression():
+    """NAMED REGRESSION -- flight 20260719_231220: gate 0 locked ~10 m, a pitch-dive blackout expired the
+    slot0 track (RACE_STATUS active_gate_index still 0, so NO seeker.reset), and the ONLY visible candidate
+    on re-acquire was the next (upper-right) gate at ~26.7 m -- beyond the 22 m acquire cap. The pre-patch
+    fallback LOCKED it and the policy flew at the wrong gate. WP1a: a re-acquire must NOT far-lock -> None
+    (coast on the propagated hold). A COLD seeker with the SAME candidate DOES lock it (proves the candidate
+    is genuine + detectable; only the cold/re-acquire distinction changes the outcome)."""
+    wrong = [_gate([25.0, 8.0, -6.0], normal=[1, 0, 0], gate_id=1)]  # ~26.9 m, up-and-right, beyond cap
+    # control: a COLD seeker locks the far candidate (it is real + within FOV + PnP-clean).
+    cold = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=22.0), detector=_level_multi(wrong))
+    p_cold = cold.detect_gate_lever(_frame(0, 0))
+    assert p_cold is not None and p_cold.range_m > 22.0
+
+    # the 231220 sequence: lock the active gate ~10 m, blackout past the coast limit, then the wrong gate.
+    seeker = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=22.0, track_max_coast_ticks=8),
+                        detector=_level_multi([_gate([10.0, 0.0, 0.0], normal=[1, 0, 0], gate_id=0)]))
+    assert seeker.detect_gate_lever(_frame(0, 0)) is not None
+    seeker.detector = _BlindDet()
+    for k in range(1, 11):                                          # > track_max_coast_ticks blind ticks
+        seeker.detect_gate_lever(_frame(k, 0))
+    assert seeker._track_range_m is None                            # track expired via coast (NOT a reset)
+    seeker.detector = _level_multi(wrong)
+    pose = seeker.detect_gate_lever(_frame(50, 0))
+    assert pose is None, "231220: the far wrong gate on re-acquire must be REJECTED, not locked + flown at"
+    assert seeker.last_decision(0)["reason"] == "reacquire_range_reject"
+
+
+def test_reacquire_hint_prefers_near_hint_over_nearer_off_hint():
+    """WP1b: on a RE-ACQUISITION with a held-point hint, a candidate NEAR the hint beats a candidate that
+    is nearer in RANGE but off the hint bearing -- the hint disambiguates which opening is 'the gate we
+    lost'. Without the hint the same re-acquire picks the nearer (wrong) gate."""
+    A = _gate([20.0, 0.0, 0.0], normal=[1, 0, 0], gate_id=0)        # dead-ahead, 20 m (matches the hint)
+    B = _gate([10.0, 2.0, 0.0], normal=[1, 0, 0], gate_id=1)        # nearer (10 m) but off to the right
+    hint = np.array([20.0, 0.0, 0.0])                              # body-FRD lever pointing at A
+
+    def _reacq():
+        s = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=25.0), detector=_level_multi([A, B]))
+        s._track_ever_locked = True                                # this gate locked before -> re-acquire
+        return s
+
+    p_nohint = _reacq().detect_gate_lever(_frame(0, 0))            # nearest -> B
+    assert p_nohint is not None and p_nohint.range_m < 15.0, "no-hint re-acquire picks the nearer gate B"
+    p_hint = _reacq().detect_gate_lever(_frame(0, 0), hint_rel_body_frd=hint)
+    assert p_hint is not None and p_hint.range_m > 15.0, "the hint must steer re-acquire to the near-hint gate A"
+
+
+def test_reacquire_hint_veto_rejects_off_hint_candidate():
+    """WP1b: a re-acquire candidate whose bearing differs from the hint by more than
+    reacquire_hint_max_bearing_rad is VETOED; if that empties the (in-cap) pool -> None + the veto reason."""
+    C = [_gate([12.0, -10.0, 0.0], normal=[1, 0, 0], gate_id=0)]   # in cap (~15.6 m) but hard-left (~-0.69 rad)
+    s = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=25.0, reacquire_hint_max_bearing_rad=0.6),
+                   detector=_level_multi(C))
+    s._track_ever_locked = True
+    pose = s.detect_gate_lever(_frame(0, 0), hint_rel_body_frd=np.array([18.0, 0.0, 0.0]))  # hint = dead-ahead
+    assert pose is None, "an off-hint re-acquire candidate must be vetoed"
+    assert s.last_decision(0)["reason"] == "reacquire_hint_reject"
+
+
+def test_reacquire_hint_ignored_on_cold_start():
+    """WP1b guard: the hint is consulted ONLY on a RE-ACQUISITION. A COLD start (never locked) ignores it
+    and keeps the A5 nearest+fallback selection, so a hint can never distort the flight-start acquisition."""
+    A = _gate([20.0, 0.0, 0.0], normal=[1, 0, 0], gate_id=0)
+    B = _gate([10.0, 2.0, 0.0], normal=[1, 0, 0], gate_id=1)
+    s = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=25.0), detector=_level_multi([A, B]))
+    assert s._track_ever_locked is False                           # COLD
+    # even with a hint pointing at the FAR gate A, a cold start uses nearest -> B (hint ignored).
+    pose = s.detect_gate_lever(_frame(0, 0), hint_rel_body_frd=np.array([20.0, 0.0, 0.0]))
+    assert pose is not None and pose.range_m < 15.0, "cold start must ignore the hint (nearest selection)"
+
+
+def test_seeker_decision_accessor_records_each_outcome():
+    """WP0: last_decision(slot) is populated for the emitted / valid-poses-empty / continuity-reject /
+    re-acquire-reject outcomes, with candidate counts, track state, and (when emitted) the chosen pose."""
+    from racer.frames import R_world_from_body
+    R_wb = R_world_from_body(0.0, 0.0, 0.0)
+    g = _gate([12.0, 0.0, 0.0], normal=[1, 0, 0])
+    s = GateSeeker(config=GateSeekerConfig(), detector=_level_multi([g]))
+    # emitted -> reason None, emit fields populated.
+    p = s.detect_gate_lever(_frame(0, 0))
+    d = s.last_decision(0)
+    assert p is not None and d["reason"] is None
+    assert d["n_cand"] >= 1 and d["emit_range_m"] is not None and d["emit_bearing"] is not None
+    assert d["track_range_m"] is not None
+    # valid_poses_empty -> reason set, no emit.
+    s.detector = _BlindDet()
+    assert s.detect_gate_lever(_frame(1, 0)) is None
+    assert s.last_decision(0)["reason"] == "valid_poses_empty" and s.last_decision(0)["emit_range_m"] is None
+    # continuity-reject -> a candidate existed (n_cand>=1) but jumped the track gate.
+    s2 = GateSeeker(config=GateSeekerConfig(track_max_range_jump_m=6.0), detector=None)
+    s2._track_range_m, s2._track_bearing, s2._track_ever_locked = 20.0, np.zeros(2), True
+
+    class _Jumped:
+        def detect(self, frame):
+            near = _gate([2.0, 0.0, 0.0], normal=[1, 0, 0])       # ~2 m, a >15 m jump from the 20 m track
+            return _ProjDetector(near, np.zeros(3), R_wb).detect(frame)
+
+    s2.detector = _Jumped()
+    assert s2.detect_gate_lever(_frame(1, 0)) is None
+    assert s2.last_decision(0)["reason"] == "continuity_reject" and s2.last_decision(0)["n_cand"] >= 1
+    # slot1 decision is recorded too (single gate -> the next-gate slot finds no non-active candidate).
+    s3 = GateSeeker(config=GateSeekerConfig(), detector=_level_multi([g]))
+    s3.detect_gate_lever(_frame(0, 0))
+    s3.detect_next_gate_lever(_frame(0, 0))
+    d1 = s3.last_decision(1)
+    assert d1 is not None and d1["reason"] in ("valid_poses_empty", "other")
+
+
+def test_reset_clears_reacquire_latch_back_to_cold():
+    """WP1a: reset() (a sim epoch / a gate advance in fly_rl) returns the seeker to a COLD start -- the
+    ever-locked latch clears, so the next first-acquisition keeps the A5 fallback for the NEW gate."""
+    far = [_gate([26.0, 3.0, 0.0], normal=[1, 0, 0])]
+    s = GateSeeker(config=GateSeekerConfig(max_acquire_range_m=22.0),
+                   detector=_level_multi([_gate([10.0, 0.0, 0.0], normal=[1, 0, 0])]))
+    s.detect_gate_lever(_frame(0, 0))
+    assert s._track_ever_locked is True
+    s.reset()
+    assert s._track_ever_locked is False and s.last_decision(0) is None
+    # after reset the far-only candidate locks again (cold fallback), NOT a re-acquire reject.
+    s.detector = _level_multi(far)
+    p = s.detect_gate_lever(_frame(1, 0))
+    assert p is not None and p.range_m > 22.0
+
+
+def test_perceived_gate_down_bias_lowers_every_emission_unchanged():
+    """WP5 subject / regression: the perceived-gate vertical bias lowers EVERY emitted pose by exactly the
+    bias on the camera +Y (down) axis (x/z untouched). Pins the z-bias the recipes now pin to 0, and
+    guards that the Patch-1 seeker edits did not disturb the emission path."""
+    g = _gate([12.0, 0.0, 0.0], normal=[1, 0, 0])
+    base = GateSeeker(config=GateSeekerConfig(perceived_gate_down_bias_m=0.0), detector=_level_multi([g]))
+    biased = GateSeeker(config=GateSeekerConfig(perceived_gate_down_bias_m=0.5), detector=_level_multi([g]))
+    pb = base.detect_gate_lever(_frame(0, 0))
+    px = biased.detect_gate_lever(_frame(0, 0))
+    assert pb is not None and px is not None
+    assert float(px.t_cam_gate[1] - pb.t_cam_gate[1]) == pytest.approx(0.5, abs=1e-6)   # lowered by the bias
+    assert float(px.t_cam_gate[0]) == pytest.approx(float(pb.t_cam_gate[0]), abs=1e-6)  # x unchanged
+    assert float(px.t_cam_gate[2]) == pytest.approx(float(pb.t_cam_gate[2]), abs=1e-6)  # z unchanged

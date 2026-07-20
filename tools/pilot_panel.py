@@ -277,6 +277,12 @@ BY_KEY = {s["key"]: s for s in SCHEMA}
 # (recovery-trained, best roll of portfolio). Settled GO >=3 s per run; labels v1pick_*.
 _V1_RECIPE = {
     "ego_yaw_clamp": 0.7,
+    # WP5 (Patch-1): explicitly PIN the two knobs that silently rode across model switches on
+    # 2026-07-19 (ego_yaw_clamp 0.35 + ego_gate_z_bias 0.25 corrupted a v16 batch). Pinned here at
+    # the _V1 base so v1/v15/v16 all RESULT in yaw 0.7 + z-bias 0.0 on a model-pick. z-bias LOWERS
+    # every emitted gate point (gate_seeker _valid_poses); the champion value is 0 (0.25 landed 1:1
+    # in a true-crossing miss). Combined with the WP6a model-pick reset, no stale knob can ride in.
+    "ego_gate_z_bias": 0.0,
     "seeker_detector": "yolo",
     "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
     "ego_assist_thrust": 1.3,
@@ -338,6 +344,67 @@ MODEL_DEFAULTS = {
 def _truthy(v):
     return v is True or str(v).lower() in ("1", "true", "on", "yes")
 
+# --------------------------------------------------------------------------- #
+# Recipe guards (Patch-1 WP6) — pure, unit-testable
+# --------------------------------------------------------------------------- #
+def _schema_default(key):
+    """The SCHEMA default for a knob key (None if the key is not a schema knob)."""
+    for s in SCHEMA:
+        if s["key"] == key:
+            return s.get("default")
+    return None
+
+def _recipe_managed_keys(model_defaults: dict | None = None) -> set:
+    """Every knob key ANY model recipe pins, minus the per-model ``label``. These are the knobs the
+    recipe system governs -> the set a model-pick RESETS to its schema default before applying the
+    picked recipe, so a knob edited for a PRIOR model never RIDES into the next one."""
+    md = MODEL_DEFAULTS if model_defaults is None else model_defaults
+    keys: set = set()
+    for r in md.values():
+        keys |= set(r.keys())
+    keys.discard("label")
+    return keys
+
+def _knob_equal(a, b) -> bool:
+    """Compare a form value (often a string) to a recipe pin (native type) tolerantly: boolean when the
+    pin is bool, numeric when both parse as float, else string-equal."""
+    if isinstance(b, bool):
+        return _truthy(a) == b
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except (TypeError, ValueError):
+        return str(a) == str(b)
+
+def repin_recipe(current: dict, recipe: dict, model_defaults: dict | None = None) -> dict:
+    """WP6a: the knob state a model-pick should PRODUCE. RESET every recipe-managed knob to its schema
+    default (clearing any value that rode from a prior model), then overlay the picked recipe's pins.
+    Non-managed fields (endpoint, flights, label unless the recipe sets it, ...) pass through untouched.
+    Pure (no UI, no side effects) so the model-pick behaviour is unit-testable; the browser
+    ``onCkptChange`` mirrors this exact logic on the live form."""
+    out = dict(current)
+    for k in _recipe_managed_keys(model_defaults):
+        out[k] = _schema_default(k)
+    out.update(recipe)
+    return out
+
+def compute_recipe_drift(values: dict, model_defaults: dict | None = None) -> list:
+    """WP6b/c: the recipe-pinned knob keys whose FLOWN value differs from the picked model's recipe pin
+    (empty when the flown config matches the recipe = clean). Looks the recipe up by the selected
+    ``ego_ckpt`` basename; an unknown model -> no drift. ``label`` is excluded (per-model, not a knob).
+    Pure + unit-testable; ``build_cmd`` uses it to warn + pass ``--recipe-drift`` to fly_rl."""
+    md = MODEL_DEFAULTS if model_defaults is None else model_defaults
+    base = str(values.get("ego_ckpt", "") or "").replace("\\", "/").split("/")[-1]
+    recipe = md.get(base)
+    if not recipe:
+        return []
+    drift = []
+    for k, pinned in recipe.items():
+        if k == "label":
+            continue
+        if not _knob_equal(values.get(k, _schema_default(k)), pinned):
+            drift.append(k)
+    return sorted(drift)
+
 def build_cmd(values: dict):
     """Return (argv_list, warnings) for a launch given posted form values."""
     warn = []
@@ -356,6 +423,14 @@ def build_cmd(values: dict):
                 argv += [s["flag"]]
         elif act == "boolopt":
             argv += [s["flag"] if _truthy(v) else _neg(s["flag"])]
+    # WP6: recipe-drift guard. Surface (UI warning) + pass to fly_rl (--recipe-drift) any recipe-pinned
+    # knob whose flown value != the picked model's pin, so it lands in meta.json + a flight-start console
+    # warning (the 2026-07-19 stale-knob ride-in guard). Empty when clean.
+    drift = compute_recipe_drift(values)
+    if drift:
+        argv += ["--recipe-drift", ",".join(drift)]
+        warn.append("recipe drift: " + ", ".join(drift)
+                    + " differ from the picked model's recipe (flown values override the pins).")
     # free-form extra flags
     extra = (values.get("extra_flags") or "").strip()
     if extra:
@@ -1020,9 +1095,18 @@ async function onCkptChange(){
   const el=$('f_ego_ckpt');
   const base=el?(el.value||'').split('/').pop():'';
   const d=MODEL_DEFAULTS[base]; const applied=[];
-  if(d){for(const k in d){const f=$('f_'+k); if(!f)continue;
-    if(f.type==='checkbox')f.checked=!!d[k]; else f.value=d[k];
-    applied.push(k.replace(/^ego_/,'').replace(/_/g,' ')+'='+d[k]);}}
+  if(d){
+    // WP6a: RESET every recipe-managed knob to its schema default FIRST, so a knob edited for a PRIOR
+    // model can't RIDE into this one (the 2026-07-19 z-bias/yaw ride-in that corrupted a v16 batch).
+    // Then apply the picked recipe. Mirrors the server repin_recipe() pure function. (label excluded.)
+    const managed=new Set();
+    for(const m in MODEL_DEFAULTS){for(const k in MODEL_DEFAULTS[m])if(k!=='label')managed.add(k);}
+    SCHEMA.forEach(s=>{ if(!managed.has(s.key))return; const f=$('f_'+s.key); if(!f)return;
+      if(f.type==='checkbox')f.checked=!!s.default; else f.value=(s.default==null?'':s.default);});
+    for(const k in d){const f=$('f_'+k); if(!f)continue;
+      if(f.type==='checkbox')f.checked=!!d[k]; else f.value=d[k];
+      applied.push(k.replace(/^ego_/,'').replace(/_/g,' ')+'='+d[k]);}
+  }
   await preview();
   if(applied.length){const w=$('lwarn').textContent;
     $('lwarn').textContent='✓ '+base+' defaults ('+applied.join(', ')+')'+(w?'  •  '+w:'');}
