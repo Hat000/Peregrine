@@ -658,7 +658,7 @@ def clear_finished():
 # --------------------------------------------------------------------------- #
 # Sessions + git
 # --------------------------------------------------------------------------- #
-SMALL_FILES = ["meta.json", "ego_obs.jsonl", "ego_timing.jsonl", "video_index.jsonl"]
+SMALL_FILES = ["meta.json", "ego_obs.jsonl", "ego_timing.jsonl", "video_index.jsonl", "seeker.jsonl"]
 HEAVY_FILES = ["video.bin", "mavlink.tlog"]
 
 def list_sessions(limit=200):
