@@ -593,6 +593,22 @@ def _load_coarse_map(path: str) -> np.ndarray:
     return sector
 
 
+def _arrival_prior_for(coarse_map: "np.ndarray | None", gate_index: int) -> "tuple | None":
+    """Patch-2 WP2b: the ARRIVAL PRIOR for the CURRENT active gate = the JUST-PASSED gate's coarse-map
+    (horiz, vert) bucket (row ``gate_index-1``). Row g is the turn AT gate g -- where gate g+1 sits
+    relative to the leg INTO gate g -- so row ``gate_index-1`` is exactly ``where gate_index should sit``
+    as the drone exits gate_index-1. Passed to ``seeker.on_gate_advance``/``detect_gate_lever`` so a
+    re-acquisition that hard-contradicts it is vetoed (stay dark) rather than locking a wrong far gate.
+    None when there is no map (sector_mode != 'map'), at gate 0 (no just-passed gate), or past the mapped
+    rows (an unmapped gate carries no prior -> the veto is inert there, never a false reject)."""
+    if coarse_map is None or int(gate_index) < 1:
+        return None
+    row = int(gate_index) - 1
+    if row >= coarse_map.shape[0]:
+        return None
+    return (float(coarse_map[row, 0]), float(coarse_map[row, 1]))
+
+
 # --- Patch-1 WP6: flight-start provenance for meta.json (map rows + seeker constants + recipe drift) ---
 def _parse_recipe_drift(spec: str | None) -> list:
     """The --recipe-drift CSV (the pilot-panel-computed list of knob keys whose flown value != the
@@ -2217,7 +2233,7 @@ def _fly_ego(client, actor, args, flight_idx: int,
 
     from racer.contracts import Frame
     from racer.deploy_profile import get_profile
-    from racer.ego_obs import EgoObsBuilder, EgoObsBuilderConfig
+    from racer.ego_obs import EgoObsBuilder, EgoObsBuilderConfig, roll_pitch_zup
     from racer.navigator import gates_from_track_records, load_track_map
 
     profile = get_profile(args.deploy_profile)
@@ -2443,6 +2459,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
     prev_pos = (np.asarray(client.state.position_ned, dtype=np.float64).copy()
                 if client.state.position_ned is not None else None)
     last_lever_fid: int | None = None   # feed each frame_id to the lever ONCE (fresh-fix gating)
+    _ego_prev_st: int | None = None     # WP2d: previous tick sim_time_ns for the gyro-propagation dt
+    pending_advance = None              # WP2a: a pending RACE_STATUS advance to hand seeker.on_gate_advance
 
     _ego_log: list = []        # in-memory; single write at exit (no per-tick I/O)
     _ego_log_errors = 0
@@ -2579,13 +2597,20 @@ def _fly_ego(client, actor, args, flight_idx: int,
 
         # --- active gate from RACE_STATUS; on an advance drop the perception track + slot state
         # (the new slot0 starts cold/masked until first acquisition -- window-promotion analog) ---
+        # Patch-2 WP2a: the advance is HANDLED by seeker.on_gate_advance (reset + promote a live slot1 +
+        # latch the arrival prior) below, AFTER R_frd2ned is available (promote sanity + the prior veto
+        # need the drone attitude). Here we only flag it + capture the arrival prior row; the old blunt
+        # seeker.reset() is superseded. ``pending_advance`` PERSISTS across ticks (a 1-tuple of the prior,
+        # so a None prior is distinct from "no pending") until on_gate_advance actually consumes it -- so a
+        # tick that continues early (e.g. pre-attitude warmup, though an advance can't happen there) can
+        # never DROP the advance-reset and leave the just-passed gate's track coasting.
         if gi_now is not None and gi_now > gate_index:
             print(f"\n  [ego] gate {gate_index} PASSED -> targeting {gi_now}", flush=True)
             gate_index = gi_now
-            seeker.reset()            # drop the temporal track -> re-acquire the NEW gate
             last_lever_fid = None
             kp_streak = 0             # kp-persist MATCHED-PAIR rule: the new gate's streak
                                       # restarts from 0 (train: _kp_persist_count[advance] = 0)
+            pending_advance = (_arrival_prior_for(coarse_map, gate_index),)   # just-passed gate's bucket
         elif gi_now is not None:
             gate_index = max(gi_now, 0)
 
@@ -2616,6 +2641,29 @@ def _fly_ego(client, actor, args, flight_idx: int,
         # so RE-apply the same conjugation build_obs uses (fly_rl frame contract).
         q_true = q_raw * _ODO_QUAT_TRUE_CONJ
         R_frd2ned = _Rot.from_quat([q_true[1], q_true[2], q_true[3], q_true[0]]).as_matrix()
+        # WP2b leveling attitude: the TRUE gravity-leveled (roll, pitch) in the training z-up extraction
+        # (== EgoObsBuilder._compute_sector's frame), so the seeker levels a candidate bearing into the
+        # SAME heading frame the coarse-sector buckets (and the arrival prior) live in.
+        _R_b2w_zup = (_FLIP[:, None] * R_frd2ned) * _FLIP[None, :]
+        _level_rp = roll_pitch_zup(_R_b2w_zup)
+
+        # WP2a: handle the RACE_STATUS advance now that the attitude is known (reset + promote a live
+        # slot1 + latch the arrival prior). Replaces the blunt seeker.reset() the ego loop used to call.
+        _advance_marker = None
+        if pending_advance is not None:
+            _advance_marker = seeker.on_gate_advance(prior_dir=pending_advance[0], level_rp=_level_rp)
+            pending_advance = None
+            _pr = _advance_marker["promoted_range_m"]
+            _pr_txt = "" if _pr is None else f" promoted@{_pr}m"
+            print(f"    [ego] advance: {_advance_marker['action']} "
+                  f"prior={_advance_marker['prior']}{_pr_txt}", flush=True)
+
+        # WP2d: gyro-propagate the perception track bearing EVERY control tick (not just fresh-frame
+        # ticks), so when the next detection lands the continuity gate compares it to where the gate has
+        # ROTATED to in the frame (not a stale static prediction). dt from the sim (IMU) clock.
+        _prop_dt = (st - _ego_prev_st) / 1e9 if _ego_prev_st is not None else 0.0
+        _ego_prev_st = st
+        seeker.propagate(s.gyro_body, _prop_dt)
 
         # --- gate lever: feed each frame_id ONCE (a repeated pose is NOT a fresh fix; the
         # builder ego-propagates through the gap between real detections) ---
@@ -2625,10 +2673,12 @@ def _fly_ego(client, actor, args, flight_idx: int,
         if _fresh_frame:
             # WP1b re-acquire hint: the obs builder's ego-propagated held slot0 lever (body FRD), or None
             # when nothing live is held. The seeker consults it ONLY on a RE-ACQUISITION (never a cold
-            # start / a live continuity track), so a just-advanced gate (seeker.reset above -> COLD)
-            # structurally ignores it -- the held lever is always for the CURRENT gate when it is used.
+            # start / a live continuity track), so a just-advanced gate (on_gate_advance -> COLD, unless a
+            # slot1 promote) structurally ignores it -- the held lever is always for the CURRENT gate.
+            # WP2b level_rp levels candidate bearings against the arrival prior (post-advance veto).
             _reacq_hint = builder.slot0_hint_frd()
-            pose = seeker.detect_gate_lever(frame, hint_rel_body_frd=_reacq_hint)   # detect_cached: shared + frame_id-idempotent
+            pose = seeker.detect_gate_lever(frame, hint_rel_body_frd=_reacq_hint,
+                                            level_rp=_level_rp)   # detect_cached: shared + frame_id-idempotent
             last_lever_fid = frame.frame_id
             # kp-persist debounce (default OFF == byte-identical passthrough): advance the
             # streak ONLY on fresh-frame events; suppressed poses become None here, so
@@ -2800,6 +2850,9 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     "gate_index": gate_index, "fresh_frame": bool(_fresh_frame),
                     "slot0": seeker.last_decision(0),
                     "slot1": (seeker.last_decision(1) if args.ego_slot1 else None),
+                    # WP2e: the advance marker on the tick the wire advanced (reset vs promote + prior),
+                    # else None -- the join key for "what the seeker did AT the gate boundary".
+                    "advance": _advance_marker,
                 })
             except Exception:
                 _ego_log_errors += 1
