@@ -230,6 +230,93 @@ def _resolve_pair(cfg, lo_key: str, hi_key: str, sampler_key: str) -> dict:
 
 
 # ================================================================================================
+# HANDOFF SPAWN REALISM (v1.7 M1, 2026-07-20; +env.handoff_spawn_frac). DEFAULT 0.0 == byte-identical.
+# ================================================================================================
+# THE DIAGNOSED OOD (pilot-confirmed 2026-07-20, ~250 logged flights): flown pitch-free the policy commands
+# pitch_cmd ~ -0.99 from tick 0 -> ~-53 deg -> the gate leaves the frame TOP -> lost (pitch-free 0.75-0.89
+# gates vs 1.75-2.0 fenced). MEASURED CAUSE, not a guess -- probe the real projection at the two spawn poses:
+#
+#     spawn attitude            camera optical-axis elevation      detectable gate-elevation band
+#     VQ1 tilted pad (-17.8 deg)          +2.0 deg                      -31.0 .. +35.0 deg
+#     WIRE handoff (LEVEL)               +19.5 deg                      -13.5 .. +52.5 deg
+#
+# (the +19.5 is the baked +20 deg camera mount; the pad tilt cancels ~all of it). So at EVERY training spawn
+# the gate sits AT OR ABOVE the optical axis (gate 0 is 0.5-6 m above the pad at 8-15 m -> elevation +2..+37
+# deg, axis +2 deg), while at the WIRE handoff -- level, ~4 m up, gate ~10-11 m out at roughly its own height
+# -- the gate sits ~20 deg BELOW the axis. The policy's control law reads "gate low in frame" -> "pitch down",
+# and it has LITERALLY NEVER SEEN that input from rest, so its response is an extrapolation: it saturates,
+# overshoots straight past centring, and the gate exits the top. The existing velocity constraints
+# (overspeed_abort_mps 12, rw_progress_vcap_mps 7.5) bind only at the END of an acceleration, so a hard dive
+# from rest never touches them -- nothing in training prices the maneuver that costs gate 0.
+#
+# THE FIX IS DISTRIBUTIONAL, NOT A PENALTY: put the wire's from-rest acquisition geometry INTO the training
+# spawn distribution for a fraction of envs, and let the existing reward do the rest. A handoff env spawns
+# LEVEL (so the camera really is aimed +19.5 deg), AT REST, on the incoming approach leg, at a sampled 3-D
+# range to the ACTIVE gate (default 9.5-11.5 m -- the deploy first-lock band 10.3-11.2 widened), with the gate
+# centre at a sampled vertical offset about the drone's own altitude (default +-1.5 m -> elevation +-8 deg ->
+# 11-28 deg BELOW the axis, exactly the wire's in-frame position). The whole sampled band lands inside the
+# level pose's -13.5..+52.5 detectable window, so gate 0 is ACQUIRED AT t=0 on every handoff env -- matching
+# the deploy logs' "first slot0 lock at 10.3-11.2 m on EVERY flight". A SIBLING spawn mode, not a rewrite:
+# the base env's standing-start/near-gate selection, its course sampling, the OOB boxes and the pad-relative
+# floor are all untouched; this only re-poses the drone afterwards on the selected fraction.
+#
+# WHY RELATIVE GEOMETRY AND NOT THE WIRE'S ABSOLUTE "4 m UP": the actor obs is POSITION-FREE, so what the
+# policy can possibly experience is the RELATIVE gate geometry (range / bearing / elevation, all folded
+# through attitude) -- absolute AGL is not in the obs at all. Sampling AGL directly would also break the
+# acquisition invariant (a drone pinned 3-5 m up with a gate 0.5-6 m above a pad lands elevations down to
+# -25 deg, i.e. 44 deg below the axis == OUT OF FRAME). The only thing absolute height buys is FLOOR ROOM
+# before a dive turns fatal, which is what ``handoff_min_agl_m`` controls (default 0.5 m == the stage's own
+# course_gates_above_spawn; raise it toward the wire's ~4 m if the commander wants the dive budget too).
+# HOVER THRUST NEEDS NO KNOB: DiffAeroDynamics.reset_idx already re-seeds ``_thrust`` to hover and
+# ``_sf_body_flu`` to the level-hover sample [0,0,+g] FLU on EVERY reset -- so "handed over at ~hover thrust"
+# is already true by construction, and levelling the attitude makes the seeded specific force CONSISTENT with
+# the pose for the first time (at the -17.8 deg pad it was a level-hover sample at a tilted pose).
+def handoff_spawn_geometry(gate_pos: Tensor, approach_from: Tensor, floor_ref_z: Tensor,
+                           sel_draw: Tensor, range_draw: Tensor, dz_draw: Tensor, *,
+                           frac: float, range_lo: float, range_hi: float,
+                           gate_dz_lo: float, gate_dz_hi: float, min_agl_m: float):
+    """Place a fraction of reset envs at the WIRE HANDOFF geometry relative to their ACTIVE gate.
+
+    Inputs (all (M,...) over the reset envs, GT world Z-up):
+      gate_pos       (M,3) the ACTIVE target gate's centre.
+      approach_from  (M,3) the START of the incoming leg (the pad for target 0, else the previous gate) --
+                     the drone is backed up-course ALONG this direction, so it stays ON the progress segment
+                     / racing line and the contouring terms see no spurious spawn offset.
+      floor_ref_z    (M,) the pad altitude the arena floor is defined against (spawn_pos z); the drone is
+                     never placed below ``floor_ref_z + min_agl_m``.
+      sel_draw / range_draw / dz_draw   (M,) independent U[0,1) draws (selection / 3-D range / vertical offset).
+
+    Returns ``(pos (M,3), bearing (M,), selected (M,) bool)``: the new world spawn position, the horizontal
+    drone->gate bearing (the caller adds pi for the tail-first body yaw, plus jitter), and which envs were
+    selected. Rows that were NOT selected still carry a computed pos -- the CALLER masks with ``selected``.
+
+    ``gate_dz`` is the gate centre MINUS the drone altitude (+ve == gate above the drone). The requested dz
+    is honoured unless the AGL floor bites, in which case the REALISED dz is whatever the floor leaves; the
+    horizontal leg is then solved from the 3-D range (r_h = sqrt(r^2 - dz^2)) so the sampled range is the
+    TRUE slant range to the gate -- the same quantity the deploy first-lock logs report. frac <= 0 selects
+    nothing (the caller must not even draw). PURE: no RNG, no state, no diffaero -> laptop-testable."""
+    assert torch is not None
+    dtp = gate_pos.dtype
+    selected = sel_draw < float(frac)
+    r = float(range_lo) + (float(range_hi) - float(range_lo)) * range_draw.clamp(0.0, 1.0)
+    dz_req = float(gate_dz_lo) + (float(gate_dz_hi) - float(gate_dz_lo)) * dz_draw.clamp(0.0, 1.0)
+    # drone altitude = gate centre - requested offset, floored at the pad + the AGL clearance
+    z = torch.maximum(gate_pos[:, 2] - dz_req, floor_ref_z + float(min_agl_m))
+    dz = gate_pos[:, 2] - z                                          # REALISED offset after the floor
+    r_h = torch.sqrt((r ** 2 - dz ** 2).clamp(min=1e-4))             # horizontal leg of the slant range
+    # unit horizontal direction along the incoming leg (approach_from -> gate); degenerate -> +x
+    d = gate_pos[:, :2] - approach_from[:, :2]                       # (M,2)
+    n = torch.linalg.norm(d, dim=-1, keepdim=True)
+    fallback = torch.zeros_like(d)
+    fallback[:, 0] = 1.0
+    u = torch.where(n > 1e-6, d / n.clamp(min=1e-6), fallback)       # (M,2) unit, drone->gate direction
+    xy = gate_pos[:, :2] - r_h.unsqueeze(-1) * u                     # back up-course along the approach
+    pos = torch.cat([xy, z.unsqueeze(-1)], dim=-1).to(dtp)           # (M,3)
+    bearing = torch.atan2(u[:, 1], u[:, 0])                          # (M,) horizontal drone->gate bearing
+    return pos, bearing, selected
+
+
+# ================================================================================================
 # Coarse map -- STATIC PREBUILT per-gate 3x3 sector, AUTO-FILLED from course geometry.
 # ================================================================================================
 def build_coarse_map(gate_pos_zup: Tensor, spawn_pos_zup: Tensor,
@@ -631,6 +718,55 @@ def overspeed_abort_mask(speed: Tensor, overspeed_abort_mps: float) -> Tensor:
     return speed > float(overspeed_abort_mps)
 
 
+def blind_abort_update(blind_clock: Tensor, acquired: Tensor, detectable: Tensor,
+                       dist_to_gate: Tensor, closing: Tensor, dt: float,
+                       blind_abort_s: float, blind_abort_range_m: float,
+                       since_advance_s: "Tensor | None" = None, grace_s: float = 0.0):
+    """BLIND-FLIGHT EPISODE-ABORT (v1.7 M2): terminate an episode that has LOST the framing of a gate it
+    already had. Joins the ``overspeed_abort_mask`` / spin-abort family -- a FATAL, BY-CONSTRUCTION
+    termination, NOT reward shaping (v1.6 proved shaping does not stop the dive: rw_pitch_duty / rw_pitch_jerk
+    were both armed and the -53 deg start dive survived them). It is the PITCH-CAP REPLACEMENT: a deploy-side
+    pitch clamp mechanically forbids the dive but cannot teach anything, and removing it returns the dive
+    (pitch-free 0.75-0.89 gates vs 1.75-2.0 fenced). A terminal makes framing loss cost the whole episode, so
+    the policy must learn to keep the gate in frame ITSELF.
+
+    STATE (per env): ``blind_clock`` (s of CONTINUOUS non-detectability of the ACTIVE gate) and ``acquired``
+    (has the ACTIVE gate ever been detected since it became active). ``detectable`` (N,) is the GEOMETRIC
+    in-frame mask for the active gate (``_last_detectable[env, tg]`` -- the FOV/occlusion/far-cap test), NOT
+    the estimator's cadence-gated fresh-fix mask: what we price is WHERE THE CAMERA IS POINTED, which the
+    policy controls, never the stochastic detector dropout, which it does not.
+
+    Fires where ALL of:
+      (1) HAD-THEN-LOST -- ``acquired`` (the gate was in frame at least once since it became the target);
+      (2) the blind clock exceeds ``blind_abort_s``;
+      (3) the gate is within ``blind_abort_range_m`` (a far gate that is not yet framed is not a failure);
+      (4) ``closing`` -- the drone is still approaching it (dot(v, drone->gate) > 0).
+
+    SCOPING -- WHY THE POST-PASS BLACKOUT CANNOT FIRE IT (the explicit design requirement): the caller CLEARS
+    ``acquired`` on every target ADVANCE, so immediately after a pass the NEW active gate is un-acquired and
+    condition (1) is FALSE. The measured 0.7-5.8 s post-pass acquisition gap on descend legs therefore banks
+    no clock at all and can never abort -- and this grace is EVENT-DRIVEN and EXACT rather than a tuned
+    timeout. Only a gate the drone HAS FRAMED and then LOST while still flying at it -- the start dive, and
+    the blind-coast panic that follows it -- can fire. ``since_advance_s`` + ``grace_s`` are an OPTIONAL
+    second, belt-and-braces time grace after an advance (grace_s <= 0 == off == the acquired-reset alone).
+
+    Returns ``(new_clock, new_acquired, abort)``. The clock/acquired update runs regardless (the caller only
+    invokes this when armed); ``blind_abort_s`` <= 0 -> abort is all-False. PURE (no RNG, inputs unmutated) ->
+    unit-testable offline. GT range/velocity are legal here (a TERMINATION, never the obs)."""
+    assert torch is not None
+    new_acquired = acquired | detectable
+    running = new_acquired & ~detectable
+    new_clock = torch.where(running, blind_clock + float(dt), torch.zeros_like(blind_clock))
+    if blind_abort_s <= 0.0:
+        return new_clock, new_acquired, torch.zeros_like(detectable)
+    abort = ((new_clock > float(blind_abort_s))
+             & (dist_to_gate <= float(blind_abort_range_m))
+             & closing)
+    if grace_s > 0.0 and since_advance_s is not None:
+        abort = abort & (since_advance_s > float(grace_s))
+    return new_clock, new_acquired, abort
+
+
 def kp_persist_update(count, detectable, n_required):
     """KEYPOINT-PERSISTENCE debounce (pure; wired exactly ONCE per tick by _step_estimator).
 
@@ -893,7 +1029,10 @@ def aperture_margin_reclassify(gate_passed: Tensor, lat: Tensor, vert: Tensor,
 try:                                    # pragma: no cover - exercised on the cluster
     from peregrine_racing import (PeregrineRacing, world_to_gateframe, crossing_events,
                                   slab_frame_hits, tilt_cos_from_quat_xyzw, roll_from_quat_xyzw,
-                                  compute_reward_terms, rel_tables)
+                                  compute_reward_terms, rel_tables,
+                                  # v1.7 M1 handoff re-pose: the SAME quat helpers the base reset builds
+                                  # its spawn attitude from (level pitch + the identical jitter form).
+                                  quat_xyzw_from_yaw_pitch, quat_xyzw_mul, quat_xyzw_from_axis_angle)
     from inc8_estimator_emul import quat_xyzw_to_matrix_torch, _RZ_PI_BODY_NP
     _HAVE_DIFFAERO = True
 except Exception:                       # pragma: no cover
@@ -951,6 +1090,22 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         self._course_overrides = resolve_course_overrides(cfg) if self.course_mode == "random" else {}
         if self._course_overrides:
             self._apply_course_overrides(self._arange, first_build=True)
+
+        # ===== HANDOFF SPAWN REALISM (v1.7 M1, +env.handoff_spawn_frac; default 0.0 == byte-identical,
+        # and at 0.0 the re-pose helper returns BEFORE drawing anything, so the reset RNG stream is
+        # untouched too). A SIBLING spawn mode: after the base reset has built its standing-start pose,
+        # this fraction of envs is re-posed LEVEL + AT REST on the incoming approach leg at the wire's
+        # measured handoff geometry (see handoff_spawn_geometry's block for the probe numbers that
+        # diagnosed the -53 deg start dive as an OOD extrapolation). Every band is a knob so the arm is
+        # tunable without a code change; the DEFAULTS are the measured deploy numbers. =====
+        self._handoff_frac = float(getattr(cfg, "handoff_spawn_frac", 0.0))
+        self._handoff_range_lo = float(getattr(cfg, "handoff_range_lo_m", 9.5))    # deploy first-lock
+        self._handoff_range_hi = float(getattr(cfg, "handoff_range_hi_m", 11.5))   # band 10.3-11.2, widened
+        self._handoff_dz_lo = float(getattr(cfg, "handoff_gate_dz_lo_m", -1.5))    # gate centre MINUS drone z
+        self._handoff_dz_hi = float(getattr(cfg, "handoff_gate_dz_hi_m", 1.5))     # +-1.5 m -> el +-8 deg
+        self._handoff_min_agl = float(getattr(cfg, "handoff_min_agl_m", 0.5))      # floor clearance (pad-rel)
+        self._handoff_yaw_jitter = float(getattr(cfg, "handoff_yaw_jitter_rad", 0.25))   # == course_spawn_yaw_jitter
+        self._handoff_att_jitter = float(getattr(cfg, "handoff_att_jitter_rad", 0.3))    # == the base's 0.3 (+-0.15)
 
         # ===== REFINED-B reward (this generation trains on it; DEFAULT ON under +env.ego=true) =====
         # ``+env.reward_refined_b=false`` -> fall back to the legacy inc7 option-B path (the old
@@ -1100,8 +1255,23 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # Cannot fire at spawn: the ego env spawns at rest (v~0) and the plant cannot reach the cap in one
         # 33 ms step, so no grace is needed (mirrors OOB, which has none). 0.0 == OFF (byte-identical).
         self._overspeed_abort_mps = float(getattr(cfg, "overspeed_abort_mps", 0.0))
+        # BLIND-FLIGHT EPISODE-ABORT (v1.7 M2, +env.blind_abort_s; 0.0 == OFF == byte-identical). A fatal,
+        # OOB-CLASS termination when the ACTIVE gate -- once ACQUIRED -- goes continuously out of frame for
+        # longer than this while the drone is still closing on it inside blind_abort_range_m. The PITCH-CAP
+        # REPLACEMENT (v1.6 proved rw_pitch_duty/rw_pitch_jerk shaping does not stop the -53 deg start dive)
+        # and the lever against the blind-coast yaw panic (raw yaw p99 2.66 fires DURING blackouts). See
+        # blind_abort_update for the had-then-lost scoping that makes the legitimate post-pass acquisition
+        # gap UNABLE to fire it. Range/grace defaults are SHAPE only -- inert while blind_abort_s <= 0.
+        self._blind_abort_s = float(getattr(cfg, "blind_abort_s", 0.0))
+        self._blind_abort_range_m = float(getattr(cfg, "blind_abort_range_m", 15.0))
+        self._blind_abort_grace_s = float(getattr(cfg, "blind_abort_grace_s", 0.0))
         self._spin_clock = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         self._rot_accum = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        # blind-abort per-env state. Allocated UNCONDITIONALLY (zeros, no RNG -- the _kp_persist_count
+        # convention) so the reset paths never need existence checks; inert unless _blind_abort_s > 0.
+        self._blind_clock = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
+        self._blind_acquired = torch.zeros(self.n_envs, dtype=torch.bool, device=dev)
+        self._blind_since_adv = torch.zeros(self.n_envs, device=dev, dtype=self._ego_dtype)
         # last detectable mask from _step_estimator (diagnostics: target_detectable_duty).
         self._last_detectable = torch.zeros(self.n_envs, self.n_gates, dtype=torch.bool, device=dev)
         # consecutive-detectable counter for the kp-persist debounce (advanced ONLY in
@@ -1313,11 +1483,74 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             return
         self._estimator.reset_idx(env_idx, self._p[env_idx], self._v[env_idx], self._q[env_idx])
 
+    # ---- HANDOFF SPAWN re-pose (v1.7 M1; OFF at frac<=0 -> returns BEFORE any draw) ---------------
+    def _apply_handoff_spawn(self, env_idx) -> None:
+        """Re-pose a ``handoff_spawn_frac`` fraction of the just-reset envs at the WIRE HANDOFF state:
+        LEVEL attitude, AT REST, on the incoming approach leg at a sampled slant range to the ACTIVE gate
+        with the gate near the drone's own altitude (see the handoff_spawn_geometry block for the measured
+        camera-elevation probe that diagnosed the start dive). Runs AFTER super().reset_idx has written the
+        base standing-start pose, and BEFORE the estimator cold-init, so the estimator/obs see the handoff
+        pose on tick 0. The base's course sampling, OOB boxes, pad-relative floor, coarse map and racing
+        line are ALL untouched -- this only moves the drone.
+
+        Writes ``dynamics._state`` OUT-OF-PLACE with the SAME masked torch.where the base reset uses (the
+        state can be non-leaf / grad-bearing mid-rollout). Velocity is forced to ZERO on the selected envs
+        (the handoff is a standing hover, and it must survive a run that arms spawn_vel_frac); body rates
+        and the hover-seeded thrust / specific force are already correct from the base reset.
+
+        frac <= 0 -> returns immediately, drawing NOTHING, so the reset RNG stream stays bit-identical."""
+        if float(getattr(self, "_handoff_frac", 0.0)) <= 0.0:
+            return
+        m = int(env_idx.numel())
+        if m == 0:
+            return
+        dev = self.device
+        # the ACTIVE gate + the START of its incoming leg (pad for target 0, else the previous gate) --
+        # backing up along THIS direction keeps the handoff spawn ON the progress segment / racing line.
+        approach_from, gate_c = self._current_segment(env_idx)
+        pos, bearing, sel = handoff_spawn_geometry(
+            gate_c, approach_from, self.spawn_pos[env_idx, 2],
+            torch.rand(m, device=dev), torch.rand(m, device=dev), torch.rand(m, device=dev),
+            frac=self._handoff_frac, range_lo=self._handoff_range_lo, range_hi=self._handoff_range_hi,
+            gate_dz_lo=self._handoff_dz_lo, gate_dz_hi=self._handoff_dz_hi,
+            min_agl_m=self._handoff_min_agl)
+        # TAIL-FIRST body yaw = drone->gate bearing + pi (the base's near-gate `near_yaw = gy + pi`
+        # convention), jittered so the gate lands across the frame instead of pinned dead-centre.
+        yaw = bearing + math.pi + self._handoff_yaw_jitter * (2.0 * torch.rand(m, device=dev) - 1.0)
+        q = quat_xyzw_from_yaw_pitch(yaw, torch.zeros_like(yaw))        # LEVEL: pitch 0, not the -17.8 pad
+        q = quat_xyzw_mul(q, quat_xyzw_from_axis_angle(
+            self._handoff_att_jitter * (torch.rand(m, 3, device=dev) - 0.5)))
+        st = self.dynamics._state
+        cur = st[env_idx]                                               # (m, 13) [p(3) q(4) v(3) w(3)]
+        selq = sel.unsqueeze(-1)
+        new = torch.cat([
+            torch.where(selq, pos.to(cur.dtype), cur[:, 0:3]),
+            torch.where(selq, q.to(cur.dtype), cur[:, 3:7]),
+            torch.where(selq, torch.zeros_like(cur[:, 7:10]), cur[:, 7:10]),   # AT REST
+            cur[:, 10:13],
+        ], dim=-1)
+        mask = torch.zeros_like(st, dtype=torch.bool)
+        mask[env_idx] = True
+        full = torch.zeros_like(st)
+        full[env_idx] = new
+        self.dynamics._state = torch.where(mask, full, st)
+        self.init_pos[env_idx] = torch.where(selq, pos.to(self.init_pos.dtype),
+                                             self.init_pos[env_idx])
+
     def reset_idx(self, env_idx):
         super().reset_idx(env_idx)
         if getattr(self, "_ego_on", False) and hasattr(self, "_estimator"):
+            # HANDOFF SPAWN (v1.7 M1) FIRST: re-pose before the estimator cold-init so the estimator, the
+            # first obs and the progress/contouring re-seed below all read the handoff pose. No-op at the
+            # 0.0 default (returns without drawing) -> byte-identical.
+            self._apply_handoff_spawn(env_idx)
             self._reset_estimator(env_idx)
             self._prev_q[env_idx] = self._q[env_idx]
+            # BLIND-FLIGHT ABORT state (v1.7 M2): fresh episode -> no banked blind time, and the first gate
+            # is UN-ACQUIRED (the had-then-lost precondition must be re-earned every episode).
+            self._blind_clock[env_idx] = 0.0
+            self._blind_acquired[env_idx] = False
+            self._blind_since_adv[env_idx] = 0.0
             # fatal-spin-abort state: fresh episode -> zero the sustained clock + rotation accumulator.
             self._spin_clock[env_idx] = 0.0
             self._rot_accum[env_idx] = 0.0
@@ -1692,6 +1925,29 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 self._pass_margin_lat_weight, self._pass_margin_current)
             gate_miss = gate_miss | _pm_downgraded
 
+        # ===== BLIND-FLIGHT EPISODE-ABORT (v1.7 M2; OFF at blind_abort_s<=0 -> the whole block is SKIPPED,
+        # nothing computed, blind_abort all-False == byte-identical). Clocked on the PRE-ADVANCE target with
+        # the POST-step truth (self._last_detectable was refreshed by _step_estimator above), and CLEARED on
+        # advance below -- that clear is what makes the legitimate post-pass acquisition gap unable to fire
+        # it (see blind_abort_update). Folded into oob_full further down (OOB-CLASS: pays terminal_oob, KEEPS
+        # banked gate progress) exactly like the v1.5 overspeed abort, so death pricing is UNCHANGED. =====
+        blind_abort = torch.zeros(self.n_envs, dtype=torch.bool, device=curr_pos.device)
+        if self._blind_abort_s > 0.0:
+            los_blind = self.gate_pos[ar, tg] - curr_pos                     # (N,3) drone -> ACTIVE gate
+            dist_blind = torch.linalg.norm(los_blind, dim=-1)                # (N,) GT slant range
+            closing = (self._v * los_blind).sum(dim=-1) > 0.0                # still flying AT it
+            self._blind_since_adv = self._blind_since_adv + float(self.dt)
+            self._blind_clock, self._blind_acquired, blind_abort = blind_abort_update(
+                self._blind_clock, self._blind_acquired, self._last_detectable[ar, tg],
+                dist_blind, closing, float(self.dt),
+                self._blind_abort_s, self._blind_abort_range_m,
+                since_advance_s=self._blind_since_adv, grace_s=self._blind_abort_grace_s)
+            # A THREADED GATE ALWAYS WINS. The measured terminal blind onset is 0.7-2.2 m in every
+            # geometry, so a slow enough approach CAN bank > blind_abort_s of blackout and still cross
+            # cleanly -- killing that env would destroy a genuine success and teach the opposite of the
+            # intent. Mask the abort on the pass step; the clock is cleared on the advance below anyway.
+            blind_abort = blind_abort & ~gate_passed
+
         # PRE-ADVANCE current-target segment [prev_center -> target_center] (GT, Z-up). Progress this
         # step is credited along the segment that was CURRENT at the START of the step (the drone moved
         # toward THIS gate). seg_end = gate_pos[tg]; seg_start = spawn (tg==0) else gate_pos[tg-1].
@@ -1713,6 +1969,14 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # train state (estimator memory persists across advance); only the
             # transmit debounce restarts for advancing envs.
             self._kp_persist_count[advance] = 0
+        if self._blind_abort_s > 0.0:
+            # BLIND-ABORT ADVANCE CLEAR (v1.7 M2) -- THE scoping guarantee. A new target gate is
+            # UN-ACQUIRED, so the had-then-lost precondition is false and the 0.7-5.8 s geometric
+            # post-pass acquisition gap on a descend leg banks no clock and CANNOT abort. Only a gate
+            # the drone framed and then lost while still closing on it can fire.
+            self._blind_clock[advance] = 0.0
+            self._blind_acquired[advance] = False
+            self._blind_since_adv[advance] = 0.0
         self.n_passed_gates[gate_passed] += 1
         self.finished |= newly_finished
         tg_new = self.target_gates.long()
@@ -1728,6 +1992,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         if self._overspeed_abort_mps > 0.0:
             overspeed = overspeed_abort_mask(torch.linalg.norm(self._v, dim=-1), self._overspeed_abort_mps)
             oob_full = oob_full | overspeed
+        # BLIND-FLIGHT ABORT (v1.7 M2): SAME OOB-CLASS fold as the overspeed abort -- pays terminal_oob,
+        # KEEPS banked gate progress, and a simultaneously-lethal env still routes lethal (`& ~lethal`
+        # below). all-False when OFF -> oob_full unchanged -> byte-identical.
+        if self._blind_abort_s > 0.0:
+            oob_full = oob_full | blind_abort
         # FLOOR CONTACT = a CRASH / DISQUALIFICATION, as expensive as a gate strike (Fengyou 2026-07-07).
         # Diving below the arena floor (Z-up z < box_min_z) is physically a GROUND CONTACT, not merely
         # "off course": in the competition hitting the floor and hitting a gate are BOTH DQs. So fold a
@@ -1810,8 +2079,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             # cos of the angle between the EMULATED camera's optical axis and the drone->current-gate-centre
             # vector, for the Swift/Geles r_perc = perception*exp(-acos(cos)^exp). Uses the SAME flipped
             # camera (self._cam_R_wb) as the detector/visible_area so "point at the gate" matches the FOV.
+            # v1.7 M3 REUSES THIS EXACT ANGLE as the framing measure that multiplies progress (no second
+            # angular model), so it must also be computed when only the multiplier is armed -- hence the
+            # OR. Both weights 0 -> None -> byte-identical off.
             cos_view = None
-            if self._egorw.perception != 0.0:
+            if self._egorw.perception != 0.0 or self._egorw.progress_frame_mult != 0.0:
                 cos_view = gate_center_view_cos(self._p, self._cam_R_wb(), self.gate_pos,
                                                 self.gate_yaw, is_quat=False)[ar, tg]   # (N,)
             # NEXT-GATE perception cue (pefcap 2026-07-12; None unless rw_perception_next>0 -> byte-identical
@@ -1924,6 +2196,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # NEXT-GATE perception (None unless rw_perception_next>0; detectability-gated) + ATTITUDE-LIMIT
                 # leveled roll/pitch (None unless a weight>0). All pefcap-package, byte-identical when OFF.
                 cos_view_next=cos_view_next, roll=roll_att, pitch=pitch_att,
+                # PROGRESS FRAMING MULTIPLIER (v1.7 M3; inert unless rw_progress_frame_mult>0): the
+                # GEOMETRIC in-frame mask for the CURRENT target gate -- the same _last_detectable row the
+                # next-gate cue is gated on and the same signal the M2 blind abort clocks, so "in frame"
+                # means one thing across the whole v1.7 package. cos_view (above) supplies the angle.
+                frame_detectable=self._last_detectable[ar, tg],
                 # ANTI-DITHER yaw smoothness (None unless rw_yaw_dither>0): the applied yaw-command jerk.
                 # v1.5: yaw_cmd_delta ALSO feeds the L1 yaw_jerk term; yaw_cmd (post-clamp applied command,
                 # None unless rw_yaw_duty>0) + yaw_clamp (the env clamp) feed the amplitude/duty term.
@@ -2002,6 +2279,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         loss_components["spin_rot_accum_mean"] = float(self._rot_accum.mean())
         # v1.5 anti-velocity-runaway: how often the overspeed episode-abort fired this step (0.0 when OFF).
         loss_components["overspeed_abort_rate"] = float(overspeed.float().mean())
+        # v1.7 M2 blind-flight abort: the fire rate (the gate's BITE -- early nonzero == it is teaching,
+        # -> ~0 by convergence, exactly like spin_abort_rate) + the mean banked blind time (the leading
+        # indicator: it should fall long before the abort rate does). Both 0.0 when OFF (wiring watchdog).
+        loss_components["blind_abort_rate"] = float(blind_abort.float().mean())
+        loss_components["blind_clock_mean"] = float(self._blind_clock.mean())
 
         # ===== ESTIMATOR-FAITHFUL diagnostics (L16: these keys emitting in the PRECHECK log ==
         # the package armed; absent keys == it did not). Scored per-step from the just-stepped
@@ -2059,6 +2341,11 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             c_hceil = _take(above_ceiling)                                  # hit the CEILING plane (crash-class)
             c_frame = _take(gate_collision)                                 # hit the gate FRAME (contact, non-floor)
             c_pmiss = _take(gate_miss)                                      # crossed the gate PLANE wide (in-bounds)
+            # v1.7 M2 BLIND-FLIGHT ABORT: its OWN exit class, taken BEFORE the positional oob classes (it
+            # is oob-CLASS but fires anywhere in the box, so the wall classes below would never claim it and
+            # it would fall through UNATTRIBUTED -- the gap the overspeed abort still has). all-False when
+            # OFF -> the existing priority chain is byte-identical.
+            c_blind = _take(blind_abort)                                    # lost the framing of an ACQUIRED gate
             c_ceil = _take(oob & (cp[:, 2] > bx_hi[:, 2]))                 # climbed out the CEILING
             c_side = _take(oob & ((cp[:, 1] < bx_lo[:, 1]) | (cp[:, 1] > bx_hi[:, 1])))   # ran out a SIDE wall
             c_back = _take(oob & (cp[:, 0] < bx_lo[:, 0]))                 # flew BACKWARD out the back wall
@@ -2088,6 +2375,7 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 "spin_abort_rate": spin_abort[reset].float(),
                 "exit_frame": c_frame[reset].float(),
                 "exit_plane_miss": c_pmiss[reset].float(),
+                "exit_blind": c_blind[reset].float(),       # v1.7 M2 blind-flight abort (0 when OFF)
                 # exit_ceiling = lethal ceiling STRIKE (knob armed) | soft OOB climb-out (legacy top
                 # exit); one key so dashboards read continuously across the knob flip.
                 "exit_ceiling": (c_ceil | c_hceil)[reset].float(),
