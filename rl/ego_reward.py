@@ -144,6 +144,39 @@ class EgoRewardWeights:
     # +env.rw_progress_vcap_mps.
     progress_vcap_mps: float = 0.0   # (m/s) saturate positive progress credit above this along-track speed; 0 == OFF
 
+    # --- PROGRESS FRAMING MULTIPLIER (v1.7 M3, 2026-07-20; the COUPLING change, not a bigger carrot).
+    # The 250-flight ledger read: rw_perception is an ADDITIVE ~0.014/step payment == ~4% of progress income
+    # at speed -- it WHISPERS, so a policy that trades framing for forward speed is still ahead. This term
+    # changes the COUPLING instead: the POSITIVE per-step progress credit is MULTIPLIED by a framing factor
+    #   f = clamp(1 - progress_frame_mult * (1 - g),  min=progress_frame_floor),
+    #   g = exp(-(delta_cam / progress_frame_scale_rad)^progress_frame_exponent) * detectable
+    # where delta_cam is the SAME optical-axis-to-gate-centre angle rw_perception already reads (cos from
+    # gate_visibility.gate_center_view_cos -- the existing machinery, NOT a second angular model) and
+    # ``detectable`` is the geometric in-frame mask (g forced to 0 while the gate is out of frame/occluded).
+    # f == 1 with the gate dead-centre, decaying to the FLOOR off-axis or blind. Progress earned while the
+    # gate is out of frame is worth only ``floor`` of its framed value, so keeping the gate in frame is now
+    # paid IN THE CURRENCY THE POLICY ACTUALLY OPTIMISES (progress) rather than in a rounding-error side term.
+    #   * FARM-PROOF BY CONSTRUCTION: it MULTIPLIES progress -- no progress, no payment. Hovering and staring
+    #     at the gate earns f * 0 == 0 (strictly worse than the -rw_time tick cost), so unlike the additive
+    #     carrot this needs no farm-neutrality budget at all.
+    #   * NON-ZERO FLOOR (default 0.5) IS LOAD-BEARING: at floor 0 a blinded policy earns nothing for moving
+    #     and its best move is to STOP and search -- the freeze mode observed at deploy pitch clamp 1. A 0.5
+    #     floor keeps "fly on while blind" strictly better than stalling, it just pays half.
+    #   * POSITIVE CREDIT ONLY (like the area coupling): scaling NEGATIVE progress would make retreating
+    #     CHEAPER while blind -- an incentive to lose the gate on the way backwards. Backing up always pays full.
+    #   * DELIBERATELY BREAKS the progress potential's pure telescoping: two paths between the same two points
+    #     no longer sum to the same credit -- the FRAMED path is worth more. That is the intent (the whole
+    #     point is to price HOW you fly the leg, not just where you end up), and it is safe here because f is
+    #     bounded in [floor, 1] so the credit can never EXCEED the unframed telescoping value -- the term can
+    #     only ever SHRINK income, so no cycle can pump reward.
+    # 0 == OFF (the caller skips the multiply entirely -> byte-identical). Tune via +env.rw_progress_frame_mult
+    # / +env.progress_frame_floor / +env.progress_frame_scale_rad / +env.progress_frame_exponent.
+    progress_frame_mult: float = 0.0     # rw_progress_frame_mult; blend strength in [0,1]; 0 == OFF
+    progress_frame_floor: float = 0.5    # hard lower bound on f (NON-ZERO on purpose -- see above)
+    progress_frame_scale_rad: float = 0.5  # (rad) delta_cam at which g = 1/e; 0.5 ~ the 29.35 deg vertical half-FOV
+    progress_frame_exponent: float = 2.0   # GAUSSIAN (not the perception term's 4): a credit multiplier wants
+    #                                        gradient across the WHOLE frame, not a flat plateau then a cliff
+
     # --- PASSAGE + centering (SB ~1.0; knob to ~4x for the vision-noise regime) ---
     passage: float = 1.0             # R_pass BASE, on (1 - e_lat / w_g_half) at the crossing
     # PER-GATE passage increment (Fengyou 2026-07-07): the passage weight for gate g is
@@ -544,6 +577,25 @@ class EgoRewardWeights:
         # gaussian half-width for form (A) so w(theta)=exp(-(theta/theta0)^2) is well-defined. Checked
         # only when (A) is armed; roll_recover==cross_level==0 -> no-op (byte-identical). Runs BEFORE the
         # terminal_progress_scaled early-return below so it fires under the default (True).
+        # PROGRESS FRAMING MULTIPLIER sanity (v1.7 M3): the term can only ever SHRINK positive progress
+        # credit (f in [floor, 1]), so like the recovery penalties it is EXEMPT from the perception/time
+        # farm budget above -- it multiplies progress, and hover-and-stare multiplies ZERO. What MUST hold
+        # is the bracket: a blend strength in [0,1], a floor in [0,1] (NON-ZERO floors are the anti-freeze
+        # guarantee; a floor > 1 would let framing INFLATE credit above the telescoping value and open a
+        # pump), and a positive angular scale so g = exp(-(delta/scale)^exp) is well-defined. Armed-only ->
+        # progress_frame_mult == 0 is a no-op (byte-identical).
+        if self.progress_frame_mult != 0.0:
+            assert 0.0 <= self.progress_frame_mult <= 1.0, (
+                f"[ego-reward] rw_progress_frame_mult ({self.progress_frame_mult}) must be in [0, 1] -- it "
+                "is the BLEND STRENGTH of the framing multiplier (0 == OFF, 1 == the full [floor, 1] range).")
+            assert 0.0 <= self.progress_frame_floor <= 1.0, (
+                f"[ego-reward] progress_frame_floor ({self.progress_frame_floor}) must be in [0, 1]. A floor "
+                "> 1 would let framing INFLATE progress credit above the telescoping value (a reward pump); "
+                "a floor of exactly 0 makes flying-while-blind worth nothing and invites the search-freeze.")
+            assert self.progress_frame_scale_rad > 0.0, (
+                f"[ego-reward] progress_frame_scale_rad ({self.progress_frame_scale_rad}) must be > 0 -- it "
+                "is the angular scale of g = exp(-(delta_cam/scale)^exponent) (default 0.5 rad ~ the "
+                "29.35 deg vertical half-FOV).")
         if self.roll_recover > 0.0:
             assert self.roll_recover_theta0_rad > 0.0, (
                 f"[ego-reward] rw_roll_recover_theta0_rad ({self.roll_recover_theta0_rad}) must be > 0 -- "
@@ -664,6 +716,34 @@ def progress_credit_saturate(r_prog: Tensor, rw_progress: float, progress_vcap_m
         return r_prog
     cap = rw_progress * progress_vcap_mps * dt
     return torch.clamp(r_prog, max=cap)
+
+
+def progress_frame_factor(cos_view: Tensor, detectable: "Tensor | None", frame_mult: float,
+                          floor: float, scale_rad: float, exponent: float) -> Tensor:
+    """The FRAMING MULTIPLIER f applied to the POSITIVE per-step progress credit (v1.7 M3):
+
+        g = exp(-(delta_cam / scale_rad)^exponent)   in (0, 1]      (delta_cam = acos(cos_view), rad)
+        g = 0                                        where NOT detectable (out of frame / occluded)
+        f = clamp(1 - frame_mult * (1 - g),  min=floor)             in [floor, 1]
+
+    ``cos_view`` (N,) is cos of the angle between the camera optical axis and the drone->current-gate-centre
+    vector -- the EXACT quantity ``perception_reward`` consumes (gate_visibility.gate_center_view_cos), reused
+    rather than re-derived. ``detectable`` (N,) bool is the geometric in-frame mask (the same
+    ``_last_detectable`` row the next-gate perception cue is gated on); pass None to skip the hard mask and
+    use the angle alone. A gate dead-centre gives f == 1 (full credit); off-axis or blind decays f to the
+    FLOOR, so a leg flown with the gate out of frame banks only ``floor`` of the progress a framed leg banks.
+
+    ``frame_mult`` is the BLEND STRENGTH: 0 -> f == 1 everywhere (the caller skips this entirely, so OFF is
+    byte-identical), 1 -> the full [floor, 1] swing. Bounded above by 1 -> the multiplier can only ever SHRINK
+    credit, so the (deliberately broken) telescoping cannot be pumped by any cycle. PURE (no RNG, no state).
+    Returns (N,)."""
+    assert torch is not None
+    delta = torch.acos(cos_view.clamp(-1.0, 1.0))
+    g = torch.exp(-((delta / max(float(scale_rad), 1e-9)) ** float(exponent)))
+    if detectable is not None:
+        g = g * detectable.to(g.dtype)
+    f = 1.0 - float(frame_mult) * (1.0 - g)
+    return f.clamp(min=float(floor))
 
 
 def area_distance_progress_factor(area_true: Tensor, dist_to_gate: Tensor,
@@ -1302,6 +1382,7 @@ def compute_ego_reward(
     floor_contact: "Tensor | None" = None,
     cos_view: "Tensor | None" = None,
     cos_view_next: "Tensor | None" = None,
+    frame_detectable: "Tensor | None" = None,
     roll: "Tensor | None" = None,
     pitch: "Tensor | None" = None,
     yaw_cmd_delta: "Tensor | None" = None,
@@ -1342,6 +1423,19 @@ def compute_ego_reward(
     if area_true is not None and dist_to_gate is not None and w.area_dist_ref_m > 0.0:
         area_factor = area_distance_progress_factor(area_true, dist_to_gate, w.area_dist_ref_m)
         r_prog = torch.where(r_prog > 0, r_prog * area_factor, r_prog)
+    # PROGRESS FRAMING MULTIPLIER (v1.7 M3; OFF unless w.progress_frame_mult != 0 -> the block is SKIPPED,
+    # byte-identical): scale the POSITIVE progress credit by f in [floor, 1] -- 1 with the gate dead-centre,
+    # decaying to the floor off-axis / out of frame. Applied AFTER the saturation + area coupling so the
+    # v* cap still binds at the same along-track SPEED and the framing then discounts what was credited; and
+    # POSITIVE-only (like the area coupling) so retreating never gets cheaper by going blind. Reuses the SAME
+    # cos_view the perception carrot reads. Because r_prog is what gets BANKED, a leg flown blind also banks
+    # (and therefore forfeits) proportionally less -- consistent by construction.
+    frame_factor = None
+    if w.progress_frame_mult != 0.0 and cos_view is not None:
+        frame_factor = progress_frame_factor(cos_view, frame_detectable, w.progress_frame_mult,
+                                             w.progress_frame_floor, w.progress_frame_scale_rad,
+                                             w.progress_frame_exponent)
+        r_prog = torch.where(r_prog > 0, r_prog * frame_factor, r_prog)
     # SMOOTH PARABOLIC CROSSING (Fengyou 2026-07-08): when ON it REPLACES the passage reward + drops the
     # frame-clip/miss terminal penalties (floor+oob keep theirs, below). One smooth downward parabola of the
     # crossing offset -> no cliff, no moat.
@@ -1505,5 +1599,8 @@ def compute_ego_reward(
         # mean area-distance coupling multiplier applied to progress this step (1.0 == coupling off /
         # all far-or-square-on); < 1 == some envs are close AND off-axis (being nudged to square up).
         "area_factor": float(area_factor.mean()) if area_factor is not None else 1.0,
+        # v1.7 M3: mean framing multiplier applied to positive progress this step (1.0 == OFF / all
+        # dead-centre; -> progress_frame_floor == the fleet is flying blind or hard off-axis).
+        "frame_factor": float(frame_factor.mean()) if frame_factor is not None else 1.0,
     }
     return reward, components, r_prog
