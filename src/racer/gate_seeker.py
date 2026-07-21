@@ -294,6 +294,17 @@ class GateSeekerConfig:
     # 040510 arrival row is [0,0] and the wrong candidate levels DOWN (not up -- the naive camera "up" is a
     # 36deg nose-dive artifact), so for THAT flight the operative fix is the SUPERSEDE below, not this veto;
     # the veto bites the NONZERO arrival rows (gate0->1 [-1,1], gate2->3 [1,-1], ...). 0 disables a cone.
+    # 🛑 DEFAULT OFF on the WIRE EVIDENCE of the 2026-07-21 batch (12 flights, seeker.jsonl): the veto fired
+    # 109 times and only 3% were followed by ANY lock within 1 s -- it produced BLINDNESS, not correction
+    # (emit-dropout 23.4% -> 31.7% vs the same-config patch-1 batch; gates 3.33 -> 1.58). 93/109 fired at
+    # gate_index 1, in the first 0.5 s after the advance, against the [-1,+1] (RIGHT+UP) arrival row -- and
+    # that is the CONCEPTUAL defect: the arrival bucket describes where the next gate sits AT THE MOMENT OF
+    # THE PASS, in the incoming leg's frame. The drone then climbs/turns THROUGH the gate, so a tick later
+    # the true gate can legitimately read >15 deg DOWN of the new leveled heading while the stale bucket
+    # still demands UP -> the TRUE gate is vetoed. A direction prior is only valid at the instant it was
+    # authored; using it as a persistent acquisition filter re-times it wrongly. Re-enable only with a
+    # frame-corrected prior (rotate the bucket into the CURRENT heading frame) or a first-tick-only window.
+    acquire_prior_enabled: bool = False
     acquire_prior_wrong_cone_rad: float = 0.26   # nonzero bucket: veto the WRONG side beyond this (~15 deg)
     acquire_prior_zero_cone_rad: float = 0.50    # zero bucket: generous +/- band (~29 deg) before vetoing
     # NEARER-SUPERSEDE (the pilot's size-precedence): while slot0 is LOCKED, a fresh candidate that is (a) a
@@ -1138,8 +1149,9 @@ class GateSeeker:
 
     def _prior_vetoes(self, a_lev: float, e_lev: float) -> bool:
         """True iff the latched arrival prior VETOES a candidate at leveled bearing (a_lev, e_lev). Horiz
-        bucket vs a_lev (+LEFT), vert bucket vs e_lev (+UP). No prior latched => never vetoes."""
-        if self._acquire_prior is None:
+        bucket vs a_lev (+LEFT), vert bucket vs e_lev (+UP). No prior latched (or the veto disabled --
+        the default, see ``acquire_prior_enabled``) => never vetoes."""
+        if self._acquire_prior is None or not self.config.acquire_prior_enabled:
             return False
         h, v = self._acquire_prior
         wrong = float(self.config.acquire_prior_wrong_cone_rad)

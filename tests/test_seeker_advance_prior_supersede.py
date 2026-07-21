@@ -96,8 +96,19 @@ def test_axis_veto_per_bucket(bucket, x, vetoes):
     assert GateSeeker._axis_veto(bucket, x, 0.26, 0.50) is vetoes
 
 
+def test_prior_veto_disabled_by_default_never_vetoes():
+    """WIRE EVIDENCE (2026-07-21 batch): the veto fired 109x and only 3% were followed by ANY lock within
+    1 s -- it produced blindness, not correction (dropout 23.4%->31.7%, gates 3.33->1.58). The arrival
+    bucket describes the geometry AT THE PASS in the incoming leg's frame; a tick later the drone has
+    climbed/turned through the gate and the TRUE gate can read >15 deg off the stale bucket. Default OFF."""
+    s = _seeker()                                      # default config: acquire_prior_enabled False
+    s._acquire_prior = (0.0, -1.0)                     # a prior IS latched...
+    assert s._prior_vetoes(0.0, +0.5) is False         # ...but a strongly-UP candidate is NOT vetoed
+    assert s._prior_vetoes(+0.9, 0.0) is False         # nor a hard-left one
+
+
 def test_prior_vetoes_uses_both_axes():
-    s = _seeker()
+    s = _seeker(acquire_prior_enabled=True)            # OFF by default (wire evidence) -- opt in to test
     s._acquire_prior = (0.0, -1.0)                     # straight + DOWN
     assert s._prior_vetoes(0.0, +0.5) is True          # a strongly-UP candidate -> vetoed by vert
     assert s._prior_vetoes(0.0, -0.3) is False          # a DOWN candidate -> consistent
@@ -186,8 +197,11 @@ def test_advance_wrong_lock_040510(monkeypatch):
 
     (See the module docstring: the REAL 040510 flight flew a [0,0] arrival row and a leveled-DOWN wrong
     candidate, so its operative fix is the supersede test below; here we validate the veto chain with a
-    genuinely leveled-UP candidate vs a DOWN prior, which is what the veto is FOR.)"""
-    s = _seeker()
+    genuinely leveled-UP candidate vs a DOWN prior, which is what the veto is FOR.)
+
+    The veto ships DEFAULT OFF (2026-07-21 wire evidence -- see acquire_prior_enabled); this test opts
+    in so the MECHANISM stays pinned for the day a frame-corrected prior re-enables it."""
+    s = _seeker(acquire_prior_enabled=True)
     # 1) slot0 locked ~3 m on the just-passed gate.
     _feed(s, monkeypatch, [_pose(0.0, 0.0, 3.0)], 1)
     assert s._track_range_m is not None
@@ -241,7 +255,7 @@ def test_supersede_flicker_does_not_switch(monkeypatch):
 
 def test_supersede_respects_prior_cone(monkeypatch):
     # A nearer candidate that VIOLATES the arrival prior must NOT supersede (it is a wrong gate).
-    s = _seeker(supersede_min_frames=2, supersede_range_factor=0.65)
+    s = _seeker(supersede_min_frames=2, supersede_range_factor=0.65, acquire_prior_enabled=True)
     s._acquire_prior = (0.0, -1.0)                      # prior DOWN
     far = _pose(0.0, 3.0, 17.0)                         # lock a far, roughly-level gate
     _feed(s, monkeypatch, [far], 1)
