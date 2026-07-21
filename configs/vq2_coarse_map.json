@@ -1,6 +1,8 @@
 {
   "_doc": "VQ2 coarse map for --ego-sector-mode map. 'sector' is one [horiz, vert] turn bucket PER GATE, each value in {-1, 0, 1}, in the drone's gravity-leveled approach frame. Row g is FED into obs[9:11] the whole time active_gate_index == g (ego_obs.py latches coarse_map[active_gate_index] at each gate change -- verified, NO +1 in code) and answers 'as I arrive at gate g, where is gate g+1?' -- the ANTICIPATION prior the _pef policy trained on. CONVENTION: horiz -1 = next gate to the RIGHT of approach, +1 = LEFT, 0 = straight; vert +1 = ABOVE, -1 = BELOW, 0 = level. AUTHORING SELF-CHECK: the FIRST row must describe where GATE 1 sits as you arrive at gate 0 (this course: upper-right = [-1,1]). If your first row is [0,0] you have authored destination-style ('row g = where gate g is') -- that is the off-by-one that mis-steered batches 1-3; shift everything up one. 1-BIT FLY-CHECK: if the drone banks the WRONG way (left when the next gate is right), NEGATE the horiz value.",
-  "_provenance": "2026-07-19 hand-survey by Fengyou (gates 0-6 fed sequence, = what best-batch 4 flew): g0->g1 upper-right, g1->g2 down, g2->g3 lower-left, g3->g4 straight, g4->g5 right, g5->g6 up. Row 6 (gate 7 direction) UNSURVEYED -- placeholder [0,0], survey it when a flight reaches gate 6. Supersedes the destination-authored 7-row variant committed at 6655f31.",
+  "_provenance": "Rows 0-5: 2026-07-19 hand-survey by Fengyou (g0->g1 upper-right, g1->g2 down, g2->g3 lower-left, g3->g4 straight, g4->g5 right, g5->g6 up). Rows 6-7: 2026-07-20 PATH SURVEY of the 9-gate record flight 20260721_040555_v16pick_Qs1_f1 (v16Qs1, dh 0.2 / stale 0.6 / clamp 20, 20.6 s, 2 contacts) -- previously [0,0] placeholders, now measured. Row 8 (gate 9 -> gate 10) still UNSURVEYED placeholder: that flight reached gate_index 9 but did not pass gate 9.",
+  "_survey_method": "PATH survey (scratchpad/map_survey2.py), NOT a camera reading. The drone IS at gate g when RACE_STATUS advances to g+1, so pass position P_g = kf_pos_ned at that tick; row g = signed leveled turn from the incoming leg (P_g - P_{g-1}) to the outgoing leg (P_{g+1} - P_g), plus the outgoing climb angle, bucketed at the 0.20 rad training deadband. This needs no attitude, yaw or camera extrinsics. DO NOT survey from the first camera fix after an advance: the row is authored AT THE PASS in the INCOMING leg frame, and by the first post-advance fix the drone has already turned (and typically overshot) -- that method put a spurious ~20 deg LEFT on every row of this same flight. Same re-timing error that sank the deploy arrival-prior veto. VALIDATION: the path survey reproduced hand-surveyed rows 2, 3 and 4 EXACTLY ([1,-1], [0,0], [-1,0]).",
+  "_open_questions": "The path survey DISAGREES with the flown values on rows 0, 1 and 5 -- it measures row 0 turn -27.8 deg (RIGHT) / climb +8.1 deg (just inside the 11.5 deg deadband), row 1 +23.3 deg (LEFT), row 5 -21.4 deg (RIGHT) + climb +18.7 deg (UP). The record flight flew row 0 = [0,1] and row 1 = [0,0] from the editor and still scored 9 gates, so these were NOT changed here: a measured turn between pass points includes the drone's own overshoot/line choice, not just course geometry. Test deliberately (one knob, one batch) before adopting.",
   "sector": [
     [-1, 1],
     [0, -1],
@@ -8,6 +10,8 @@
     [0, 0],
     [-1, 0],
     [0, 1],
+    [-1, -1],
+    [-1, 0],
     [0, 0]
   ]
 }
