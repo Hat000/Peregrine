@@ -157,6 +157,16 @@
 set -euo pipefail
 STAGE=dual_gate_fullstack_floor_pef16  # REUSED from v1.6 -- every v1.8 knob is a +env. key passed here
 MODE=${MODE:-smoke}                    # smoke (phase 1, default) | arms (phase 2)
+# ALTERNATE-HARDWARE TAGGING (2026-07-21). Appended to every RUNTAG; EMPTY default == unchanged.
+# adroit's gpu partition is 3 nodes and only h11g1 carries full A100s (4 of them), so the default
+# GRES=gpu:nvidia_a100:1 queues ~13 h behind 55 pending jobs. h11g2 has 8x 3g.20gb MIG slices and
+# h11g3 has 4x tesla_v100 -- both far less contended. Set TAG_SUFFIX when submitting to those so the
+# run dirs do NOT collide with the A100 arms of the same name:
+#   MODE=arms SMOKE_JID=none GRES=gpu:3g.20gb:1   TAG_SUFFIX=_mig bash launch_v18.sh
+#   MODE=arms SMOKE_JID=none GRES=gpu:tesla_v100:1 TAG_SUFFIX=_v100 SBATCH_EXCLUDE= bash launch_v18.sh
+# NOTE: --exclude=adroit-h11g3 (the default) is a NO-OP for A100 requests -- h11g3 is V100-only and
+# never matched gpu:nvidia_a100:1 anyway. It DOES bite on tesla_v100, hence the empty SBATCH_EXCLUDE.
+TAG_SUFFIX=${TAG_SUFFIX:-}
 UPD=${UPD:-18000}                      # v1.5/v1.6 budget (unchanged)
 SAVEFREQ=${SAVEFREQ:-500}
 NGATES=${NGATES:-8}
@@ -228,7 +238,11 @@ SKIP_SMOKE=${SKIP_SMOKE:-0}            # phase-2 escape hatch: 1 => no dependenc
 
 # --- cluster mechanics (generic gres header; SBATCH_EXCLUDE default; optional SBATCH_TIMELIMIT injection) ---
 GRES=${GRES:-gpu:nvidia_a100:1}        # generic -> override for MIG/V100 (fail-loud OK)
-EXCLUDE=${SBATCH_EXCLUDE:-adroit-h11g3}
+# SBATCH_EXCLUDE="" (explicitly empty) OMITS --exclude entirely -- REQUIRED when requesting
+# tesla_v100, since the default excludes h11g3 which is the ONLY node carrying V100s.
+EXCLUDE=${SBATCH_EXCLUDE-adroit-h11g3}
+EXCLOPT=""
+if [ -n "${EXCLUDE}" ]; then EXCLOPT="--exclude=${EXCLUDE}"; fi
 TIMEOPT=""
 if [ -n "${SBATCH_TIMELIMIT:-}" ]; then TIMEOPT="--time=${SBATCH_TIMELIMIT}"; fi
 SBATCH_FILE="${SBATCH_FILE:-$(cd "$(dirname "$0")" && pwd)/peregrine_vq2_ego.sbatch}"
@@ -282,16 +296,16 @@ export PRECHECK=1
 export "UPD_${STAGE}=${UPD}"
 
 submit () {   # $1=RUNTAG  $2=SEED  $3=EXTRA  $4=n_updates-override(optional, smoke)  $5=dep(optional)
-  local TAG="$1" SEED="$2" EX="$3" NUPD="${4:-}" DEP="${5:-}"
+  local TAG="$1${TAG_SUFFIX:-}" SEED="$2" EX="$3" NUPD="${4:-}" DEP="${5:-}"
   export SEED
   export RUNTAG="${TAG}"
   export EXTRA="${EX}"
   if [ -n "${NUPD}" ]; then export "UPD_${STAGE}=${NUPD}"; else export "UPD_${STAGE}=${UPD}"; fi
   echo "=== submit ${TAG} SEED=${SEED} STAGE=${STAGE} UPD=${NUPD:-${UPD}} ngates=${NGATES} gres=${GRES}${DEP:+ dep=afterok:${DEP}} ==="
   if [ -n "${DEP}" ]; then
-    sbatch --dependency="afterok:${DEP}" --gres="${GRES}" --exclude="${EXCLUDE}" ${TIMEOPT} --export=ALL "${SBATCH_FILE}"
+    sbatch --dependency="afterok:${DEP}" --gres="${GRES}" ${EXCLOPT} ${TIMEOPT} --export=ALL "${SBATCH_FILE}"
   else
-    sbatch --gres="${GRES}" --exclude="${EXCLUDE}" ${TIMEOPT} --export=ALL "${SBATCH_FILE}"
+    sbatch --gres="${GRES}" ${EXCLOPT} ${TIMEOPT} --export=ALL "${SBATCH_FILE}"
   fi
 }
 
