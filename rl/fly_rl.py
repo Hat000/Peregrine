@@ -629,13 +629,15 @@ def _meta_coarse_rows(args) -> "list | None":
 
 
 def _meta_seeker_constants(args) -> dict:
-    """The gate-seeker constants in force this flight (GateSeekerConfig defaults; only max_valid_range_m
-    is CLI-driven on the ego path). Recorded to meta.json so a flight's re-acquire/track discipline is
+    """The gate-seeker constants in force this flight (GateSeekerConfig defaults; the two RANGE CAPS are
+    CLI-driven on the ego path). Recorded to meta.json so a flight's re-acquire/track discipline is
     self-documenting alongside the map + recipe."""
     from racer.gate_seeker import GateSeekerConfig
     c = GateSeekerConfig()
     return {
-        "max_acquire_range_m": c.max_acquire_range_m,
+        # the ACQUIRE cap (what may be LOCKED), distinct from the valid cap (what enters the pool)
+        "max_acquire_range_m": (float(getattr(args, "ego_max_acquire_range", 22.0))
+                                if getattr(args, "ego_ckpt", None) else c.max_acquire_range_m),
         "max_valid_range_m": (float(getattr(args, "ego_max_valid_range", 30.0))
                               if getattr(args, "ego_ckpt", None) else float("inf")),
         "track_max_range_jump_m": c.track_max_range_jump_m,
@@ -1850,6 +1852,12 @@ def _build_casec_seeker(args, gates):
             # slot1. inf for the classical path (byte-identical). Fengyou: "we throw away info after 30 m."
             max_valid_range_m=(float(getattr(args, "ego_max_valid_range", 30.0))
                                if getattr(args, "ego_ckpt", None) else float("inf")),
+            # The SECOND range cap (2026-07-21): valid-range drops far poses from the pool, this one
+            # bounds what may be LOCKED on a cold start / re-acquire. It was a hard-coded 22 m with no
+            # flag, so a gate at 25 m was valid-but-unlockable and no panel knob could close that
+            # window. Now CLI-driven; default 22.0 == the old constant == byte-identical.
+            **({"max_acquire_range_m": float(getattr(args, "ego_max_acquire_range", 22.0))}
+               if getattr(args, "ego_ckpt", None) else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
                                         if getattr(args, "ego_ckpt", None) else 0.0),
@@ -3487,6 +3495,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "billboard false-positive a cold re-acquire would otherwise lock as the "
                          "active gate. Default 30. Set very high (e.g. 1e9) to disable; the classical "
                          "path is always uncapped regardless.")
+    ap.add_argument("--ego-max-acquire-range", type=float, default=22.0,
+                    help="EGO FIRST-ACQUISITION distance cap in METRES (ego path only). The SECOND, "
+                         "tighter of the two range caps: --ego-max-valid-range (30) drops far poses "
+                         "from the candidate pool, then a gate may only be LOCKED (cold start / "
+                         "re-acquire) if it is within THIS. A gate at 25 m is therefore valid but "
+                         "UNLOCKABLE -- on a ~25 m leg that is a guaranteed blind window. Was a "
+                         "hard-coded GateSeekerConfig default with no flag until 2026-07-21; 22.0 "
+                         "reproduces every flight up to and including the 9-gate record. Raise toward "
+                         "--ego-max-valid-range to close a long-leg blind window (the A5 far-gate trap "
+                         "is what it guards against: too high re-admits a distant off-axis downrange "
+                         "gate as the lock). Never exceeds the valid-range cap in effect.")
     ap.add_argument("--ego-gate-z-bias", type=float, default=0.0,
                     help="EGO perceived-gate VERTICAL bias in METRES, applied at the VISION emission "
                          "(GateSeeker._valid_poses adds it to the camera-frame +Y/down of EVERY emitted "

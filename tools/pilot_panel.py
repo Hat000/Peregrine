@@ -136,7 +136,15 @@ SCHEMA = [
          help="Activate the WINDOW=2 next-gate obs slot (multi-gate _pef champions)."),
     dict(key="ego_max_valid_range", flag="--ego-max-valid-range", action="value", ui="number",
          group="Ego perception", default=30.0, step=1,
-         help="GATE DISTANCE CAP (m): drop detections beyond this (billboard-FP guard). 30 = record."),
+         help="CAP 1 of 2 -- VALID range (m): drop detections beyond this from the pool "
+              "(billboard-FP guard). 30 = record. A pose must ALSO pass the acquire cap to be locked."),
+    dict(key="ego_max_acquire_range", flag="--ego-max-acquire-range", action="value", ui="number",
+         group="Ego perception", default=22.0, step=1,
+         help="CAP 2 of 2 -- ACQUIRE range (m): a gate may only be LOCKED (cold start / re-acquire) "
+              "within this. Was HARD-CODED at 22 with no knob until 2026-07-21, so a gate at 25 m was "
+              "valid-but-unlockable -- a blind window on any leg longer than 22 m. 22 = the 9-gate "
+              "record. Raise toward the valid cap to close a long-leg window; too high re-admits the "
+              "far off-axis downrange gate this exists to reject."),
     dict(key="ego_gate_z_bias", flag="--ego-gate-z-bias", action="value", ui="number",
          group="Ego perception", default=0.0, step=0.1,
          help="Perceived-gate VERTICAL bias (m) added to EVERY vision emission (both slots). "
@@ -969,7 +977,7 @@ small.k{color:var(--mut)}
   <div class="col left">
     <div class="bar">
       <button onclick="doLaunch()">▶ Launch pilot</button>
-      <button class="sec" onclick="loadRecord()">Load record config</button>
+      <button class="sec" onclick="loadRecord()" title="20260721_040555_v16pick_Qs1_f1 -- gate 9, 2 collisions. Drifted v16: z-bias 0.4, pitch clamp 20, stale 0.6, assist 1.1.">Load 9-gate record</button>
       <button class="sec" onclick="preview()">Refresh command</button>
       <span id="lwarn" class="warn"></span>
     </div>
@@ -1112,11 +1120,31 @@ async function onCkptChange(){
     $('lwarn').textContent='✓ '+base+' defaults ('+applied.join(', ')+')'+(w?'  •  '+w:'');}
 }
 function loadRecord(){
-  // the known-good 4-gate config
-  const rec={ego_ckpt:'ckpts/vpeffs0_actor.pth',seeker_detector:'yolo',
-    seeker_weights:'C:/Users/Shadow/Peregrine/models/vq2_darkred_negreal42_2026-07-05_fp16_384x640.engine',
+  // THE RECORD: flight 20260721_040555_v16pick_Qs1_f1 -- gate_index 9, 2 collisions, CRASH at 20.6 s.
+  // Transcribed from that flight's own stored launch config (tools/pilot_panel_logs/pilots.json), not
+  // from a recipe -- it is a DRIFTED v16 run and the drift is the point: z-bias 0.4, pitch clamp 20,
+  // stale 0.6, assist 1.1 all differ from _V16_RECIPE, so loading this WILL raise the recipe-drift
+  // warning (it named those same four keys in the flight's meta.json). Superseded the old 4-gate
+  // vpeffs0/clamp-10 config on 2026-07-21; clamp 10 sits BELOW the -17.8 deg pad tilt, the opposite
+  // fence regime from this flight's clamp 20, and it carried the older negreal42 engine.
+  const rec={ego_ckpt:'ckpts/v16Qs1_final_actor.pth',seeker_detector:'yolo',
+    seeker_weights:'C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine',
+    video_dedup_fastpath:true,
     ego_sector_mode:'map',ego_coarse_map:'configs/vq2_coarse_map.json',ego_slot1:true,
-    ego_max_valid_range:30,ego_pitch_clamp:10,ego_yaw_clamp:0.7,flights:1,label:'record_cfg'};
+    // BOTH range caps pinned: 22 is what this flight actually flew, back when it was hard-coded.
+    ego_max_valid_range:30,ego_max_acquire_range:22,
+    ego_gate_z_bias:0.4,ego_det_hold:0.2,ego_stale_horizon:0.6,ego_obs_coast:false,ego_kp_persist:0,
+    ego_pitch_clamp:20,ego_roll_clamp:0,ego_floor_clamp:'',ego_speed_gov:'',ego_yaw_clamp:0.7,
+    ego_rate_scale:1,ego_takeoff_assist:true,ego_assist_thrust:1.1,ego_assist_max_s:1,
+    ego_arrestor:false,ego_arrest_after_gates:1,ego_arrest_speed_hi:0,ego_arrest_max_s:4,
+    virtual_flip:true,yaw_scale:1,max_rate:0,rate:40,max_seconds:120,flights:1,
+    deploy_profile:'vq2_case_c',spin_rate_abort:6,spin_time_abort:2,label:'record9_cfg'};
+  // Same anti-ride-in reset as a model pick (WP6a): clear every recipe-managed knob to its schema
+  // default first, so a knob this dict does not name cannot survive from the previous selection.
+  const managed=new Set();
+  for(const m in MODEL_DEFAULTS){for(const k in MODEL_DEFAULTS[m])if(k!=='label')managed.add(k);}
+  SCHEMA.forEach(s=>{ if(!managed.has(s.key)||(s.key in rec))return; const f=$('f_'+s.key); if(!f)return;
+    if(f.type==='checkbox')f.checked=!!s.default; else f.value=(s.default==null?'':s.default);});
   for(const k in rec){const el=$('f_'+k);if(!el)continue; if(el.type==='checkbox')el.checked=rec[k]; else el.value=rec[k];}
   preview();
 }

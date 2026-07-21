@@ -87,3 +87,27 @@ def test_build_cmd_no_drift_flag_when_clean():
     argv, warn = P.build_cmd(clean)
     assert "--recipe-drift" not in argv
     assert not any("recipe drift" in w for w in warn)
+
+
+def test_acquire_range_is_a_knob_and_defaults_to_the_record_value():
+    """2026-07-21: there are TWO range caps and only one was reachable. --ego-max-valid-range (30)
+    drops far poses from the candidate pool; ``max_acquire_range_m`` (22) then bounds what may be
+    LOCKED -- and it was a hard-coded GateSeekerConfig default with no flag and no panel field, so a
+    gate at 25 m was VALID but UNLOCKABLE and nothing the pilot could set closed that blind window.
+    It is now a real knob; the default reproduces every flight up to and including the 9-gate record."""
+    spec = P.BY_KEY["ego_max_acquire_range"]
+    assert spec["flag"] == "--ego-max-acquire-range"
+    assert spec["default"] == 22.0
+    assert spec["group"] == P.BY_KEY["ego_max_valid_range"]["group"]   # sits beside the cap it hid behind
+
+    argv, _ = P.build_cmd({"ego_ckpt": "ckpts/v16Qs1_final_actor.pth"})
+    assert argv[argv.index("--ego-max-acquire-range") + 1] == "22.0"
+    argv, _ = P.build_cmd({"ego_ckpt": "ckpts/v16Qs1_final_actor.pth",
+                           "ego_max_acquire_range": "28"})
+    assert argv[argv.index("--ego-max-acquire-range") + 1] == "28"
+
+
+def test_acquire_range_is_not_recipe_managed():
+    """The acquire cap is a PROBE knob, not a recipe pin: picking a model must not silently reset it
+    (unlike the ride-in knobs of WP5/WP6a), so a sweep survives a checkpoint switch."""
+    assert "ego_max_acquire_range" not in P._recipe_managed_keys()
