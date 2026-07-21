@@ -7,7 +7,8 @@
 # generation exists to score them WITHOUT M1 contaminating the arm. Warm start is the SAME DEPLOY-PROVEN
 # v1.6 Q_s1 checkpoint v1.7 used, so v1.8-vs-v1.7 is a clean single-mechanism read.
 #
-# v1.6 carryover (camera mount + range detection + aperture margin + pitch quietness, ALL wire-flown). Every new knob is config-gated and DEFAULT-OFF: a config
+# v1.6 carryover (camera mount + range detection + aperture margin + pitch quietness, ALL wire-flown).
+# Every new knob is config-gated and DEFAULT-OFF: a config
 # without the v1.8 keys trains BYTE-IDENTICAL to v1.6 (pinned by tests/test_v17_mechanisms.py's
 # equivalence + RNG-neutrality tests). NO new curriculum stage -- the stage stays
 # dual_gate_fullstack_floor_pef16 and every v1.8 knob rides in on EXTRA (hydra ++ beats the stage dict,
@@ -132,7 +133,7 @@
 #          $RUNDIR/.hydra/config.yaml   # 0.0 (M1 OFF -- THE v1.8 CHANGE) / 9.5 / 11.5 / 1.2 / 15.0 / 1.0 / 0.5 / 0.75 (all under env:)
 #     2. grep -nE 'rw_perception|rw_perception_next|overspeed_abort_mps|rw_progress_vcap_mps|ego_vision_detect_mode|ego_cam_mount_pitch_deg' \
 #          $RUNDIR/.hydra/config.yaml   # 0.016 / 0.004 / 12.0 / 7.5 / range / 20.0 (v15+v16 carryover)
-#     3. python scratchpad/tb_parse.py <event-file>   # THE WIRING WATCHDOG -- these keys MUST be present:
+#     3. python scratchpad/tb_scalars.py <event-file>   # THE WIRING WATCHDOG -- these keys MUST be present:
 #          env_loss/blind_abort_rate, env_loss/blind_clock_mean  (M2 armed)
 #          env_loss/frame_factor                                  (M3 armed; < 1.0 == it is BITING)
 #          metrics/exit_blind                                     (M2 exit class)
@@ -320,7 +321,7 @@ if [ "${MODE}" = "smoke" ]; then
            $RUNDIR/.hydra/config.yaml   # expect 0.0 (M1 OFF -- THE v1.8 CHANGE) / 9.5 / 11.5 / 1.2 / 15.0 / 1.0 / 0.5 / 0.75 (under env:)
       2. grep -nE 'rw_perception|rw_perception_next|overspeed_abort_mps|rw_progress_vcap_mps|ego_vision_detect_mode|ego_cam_mount_pitch_deg' \
            $RUNDIR/.hydra/config.yaml   # 0.016 / 0.004 / 12.0 / 7.5 / range / 20.0 (v15+v16 carryover)
-      3. python scratchpad/tb_parse.py <event-file>   # WIRING WATCHDOG -- ALL must be PRESENT:
+      3. python scratchpad/tb_scalars.py <event-file>   # WIRING WATCHDOG -- ALL must be PRESENT:
            env_loss/blind_abort_rate  env_loss/blind_clock_mean  env_loss/frame_factor
            metrics/exit_blind
            env_loss/pitch_duty_pen  /pitch_jerk_pen  /yaw_duty_pen  /prog_sat_forfeit  /overspeed_abort_rate
@@ -382,5 +383,5 @@ cat <<'EOF'
         a collapse means the anneal outran the policy -> lengthen PMHOLD or back PMFINAL toward 0.85.
     STEP 4 (rank survivors): HIGHEST DET n_passed_gates; tiebreak LOWEST yaw+pitch signflips + satur +
       peak roll. NEVER select on value. Multi-seed or it does not count (~2.8x seed variance).
-    MONITOR: scratchpad/tb_parse.py on each event file (TB, NOT stdout).
+    MONITOR: scratchpad/tb_scalars.py on each event file (TB, NOT stdout).
 EOF
