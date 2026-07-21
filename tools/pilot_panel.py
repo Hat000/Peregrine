@@ -322,7 +322,40 @@ _V15_RECIPE = {**_V1_RECIPE, "ego_pitch_clamp": 0.0}
 # with v15 ckpts. Target: beat Ws0's clamp-15 ledger {5,5,5,4,4,3,3} UNCLAMPED + CONTACT-FREE.
 _V16_RECIPE = {**_V15_RECIPE, "ego_rate_scale": 1.0}
 
+# ego-ckpts-v17-2026-07-21 -- ⚠ NOT A DEPLOY LEAD. Shipped as a FALSIFICATION TEST; the deploy lead
+# stays v16Qs1. v1.7's M1 ("handoff spawn realism") assumed the wire hands over LEVEL with the gate
+# ~20 deg BELOW the optical axis; measured over 161 flights it hands over at the PAD TILT (-0.3107 rad
+# on 63%, 0/161 level) with the gate DEAD-CENTRE (+2.42 deg median) -- so M1 INTRODUCED the mismatch it
+# was built to remove. Replay of 388 flights predicts these actors pitch down HARDER in the first 4
+# ticks after assist release (median worst nose-down rate cmd: parent v16Qs1 -0.856 vs v17Qs0 -1.386
+# = +62%, worse on 386/388) and therefore LOSE GATE 0 MORE OFTEN. We fly to try to FALSIFY that.
+#
+# Recipe = the 9-GATE RECORD CONFIG WITH ONLY THE ACTOR SWAPPED, because the release's binding
+# instruction is "fly at the same clamp as your v16Qs1 baseline -- the comparison is only meaningful
+# single-knob", and the record (+ its 11-flight batch) is that baseline. So pitch clamp 20, z-bias 0.4,
+# stale 0.6, assist 1.1 are inherited from the BASELINE, not from _V16_RECIPE. Release-pinned and
+# unchanged from v1.6: rate_scale 1.0, yaw 0.7, det-hold 0.2, slot1, settled GO >=3 s. No cross-release
+# mixing. Labels are v17test_* (NOT "pick") so these never read as deploy-lead flights.
+#
+# THE CLAMP IS BIMODAL, NOT A DIAL (v1.7 notes, supersedes the v1.6 "pitch FREE" rule): resting obs[4]
+# = -0.3107 (-17.80 deg) and the fence is obs[4] <= -clamp_rad, so clamp <=17.8 = FENCE ON AT REST,
+# >=17.9 (or 0) = FENCE OFF. Clamp 20 and clamp 0 are the SAME REGIME at rest -- the record's
+# "pitch-clamp drift" vs _V16_RECIPE's 0.0 is therefore cosmetic, not a regime change.
+_V17_RECIPE = {
+    **_V16_RECIPE,
+    "ego_pitch_clamp": 20.0,      # baseline-matched; fence OFF at rest, same regime as the recipe's 0
+    "ego_gate_z_bias": 0.4,       # baseline-matched (the record flew it; _V16_RECIPE pins 0.0)
+    "ego_stale_horizon": 0.6,     # v1.7 notes state 0.6 as the v1.6 recipe value; _V16_RECIPE says 0.5
+    "ego_assist_thrust": 1.1,     # baseline-matched (_V16_RECIPE pins 1.3)
+}
+
 MODEL_DEFAULTS = {
+    # ego-ckpts-v17-2026-07-21  -- see _V17_RECIPE above. FALSIFICATION TEST, not a deploy lead.
+    # Qs0 = the census lead AND the worst predicted diver (-1.386) = the sharpest test. Ws0 =
+    # heavier-damped arm. Prediction under test: more gate-0 losses than the v16Qs1 baseline.
+    "v17Qs0_actor.pth": {**_V17_RECIPE, "label": "v17test_Qs0"},
+    "v17Qs1_actor.pth": {**_V17_RECIPE, "label": "v17test_Qs1"},
+    "v17Ws0_actor.pth": {**_V17_RECIPE, "label": "v17test_Ws0"},
     # ego-ckpts-v16-2026-07-19  -- see _V16_RECIPE above (PITCH FREE + rate scale 1.0)
     "v16Qs0_final_actor.pth": {**_V16_RECIPE, "label": "v16pick_Qs0"},
     "v16Qs1_final_actor.pth": {**_V16_RECIPE, "label": "v16pick_Qs1"},
