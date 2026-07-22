@@ -38,6 +38,36 @@ from racer.vision.seg_labels import CLASS_NAMES, seg_label_from_pose_label  # no
 
 IMG_W, IMG_H = 640, 360
 
+# Census keys that count FRAMES or bookkeeping rather than per-gate conversion outcomes. Kept in
+# one place because the success-rate print used to re-list them and the two lists drifted.
+_NON_GATE_CENSUS = {"ok", "frames-kept", "frame-dropped", "duplicate-frame", "negative-kept",
+                    "direct-area-frames", "direct-area-rows"}
+
+
+def direct_seg_path(pose_label: Path) -> Path:
+    """The AREA label the hand-labeler writes beside its pose label: ``labels/seg/<stem>.txt``.
+
+    These are authored, not derived: tools/gate_labeler clips the quads AS DRAWN, so they carry the
+    close-range gates whose corners left the frame. Re-deriving those from the pose row is not
+    merely lossy -- it drops them entirely (the refit needs >= 4 in-frame keypoints), which is the
+    exact population this corpus exists to supply.
+    """
+    return pose_label.parent / "seg" / pose_label.name
+
+
+def seg_text_for(pose_label: Path, census: Counter):
+    """(seg_text, used_direct). Prefers the authored area label; falls back to pose-row derivation."""
+    direct = direct_seg_path(pose_label)
+    if direct.exists():
+        text = direct.read_text()
+        census["direct-area-frames"] += 1
+        census["direct-area-rows"] += len(text.splitlines())
+        return text, True
+    text, c = seg_label_from_pose_label(pose_label.read_text(), IMG_W, IMG_H)
+    for k, v in c.items():
+        census[k] += v
+    return text, False
+
 
 def label_path_for(img_path: Path) -> Path:
     """Pose-dataset convention: .../images/<split>/x.png -> .../labels/<split>/x.txt."""
@@ -78,34 +108,17 @@ def _link_or_copy(src: Path, dst: Path) -> None:
 
 
 def convert_split(img_paths, out_root: Path, split: str, census: Counter):
-    """Write one seg label + one linked image per frame. Returns the new image paths."""
-    out_img = out_root / "images" / split
-    out_lbl = out_root / "labels" / split
-    out_img.mkdir(parents=True, exist_ok=True)
-    out_lbl.mkdir(parents=True, exist_ok=True)
-    kept, used = [], set()
+    """File-list mode: resolve each image's pose label, then run the SAME writer as --scan.
+
+    (These were two near-identical loops that had already drifted apart once; one body now.)"""
+    pairs = []
     for img in img_paths:
         lp = label_path_for(img)
-        if not lp.exists():
+        if lp.exists():
+            pairs.append((img, lp))
+        else:
             census["missing-pose-label"] += 1
-            continue
-        text, c = seg_label_from_pose_label(lp.read_text(), IMG_W, IMG_H)
-        for k, v in c.items():
-            census[k] += v
-        # An EMPTY label is a true negative and must still be written -- ultralytics reads a missing
-        # file as "unlabelled image", which silently turns hard negatives into nothing at all.
-        # But a frame whose gates ALL failed conversion is not a negative; dropping it is correct.
-        if not text and c and not c.get("ok"):
-            census["frame-dropped"] += 1
-            continue
-        name = f"{dataset_tag(img)}__{img.stem}"
-        assert name not in used, f"name collision after re-keying: {name} ({img})"
-        used.add(name)
-        _link_or_copy(img, out_img / (name + img.suffix))
-        (out_lbl / (name + ".txt")).write_text(text, encoding="utf-8")
-        kept.append(out_img / (name + img.suffix))
-        census["frames-kept"] += 1
-    return kept
+    return convert_pairs(pairs, out_root, split, census)
 
 
 def build_scanned(args) -> int:
@@ -156,10 +169,10 @@ def build_scanned(args) -> int:
     for k, v in census.most_common():
         print(f"  {k:24s} {v}")
     ok, bad = census["ok"], sum(v for k, v in census.items()
-                                if k not in ("ok", "frames-kept", "frame-dropped", "duplicate-frame",
-                                             "negative-kept"))
+                                if k not in _NON_GATE_CENSUS)
     if ok + bad:
-        print(f"\ngates converted: {ok}/{ok + bad} = {100 * ok / (ok + bad):.1f}%")
+        print(f"\ngates converted: {ok}/{ok + bad} = {100 * ok / (ok + bad):.1f}% (derived from "
+              f"pose rows); {census['direct-area-rows']} area rows taken DIRECT from hand labels")
     print(f"wrote {out / 'data.yaml'}")
     return 0
 
@@ -172,12 +185,13 @@ def convert_pairs(items, out_root: Path, split: str, census: Counter):
     kept, used = [], set()
     for img, lp in items:
         raw = lp.read_text()
-        text, c = seg_label_from_pose_label(raw, IMG_W, IMG_H)
-        for k, v in c.items():
-            census[k] += v
+        text, _direct = seg_text_for(lp, census)
+        # An EMPTY label is a true negative and must still be WRITTEN -- ultralytics reads a missing
+        # file as "unlabelled image", which silently turns hard negatives into nothing at all. But a
+        # frame whose gates all failed conversion is not a negative; dropping it is correct.
         if not raw.strip():
-            census["negative-kept"] += 1          # a TRUE negative: keep it, with an empty label
-        elif not text and c and not c.get("ok"):
+            census["negative-kept"] += 1
+        elif not text.strip():
             census["frame-dropped"] += 1
             continue
         name = f"{dataset_tag(img)}__{img.stem}"
@@ -201,6 +215,10 @@ def scan_pairs(root: Path):
     hallucinating gates, and they are 779 of the 3675 labels on this box."""
     out = []
     for lp in sorted(set(list(root.rglob("labels/**/*.txt")) + list(root.glob("labels/*.txt")))):
+        # labels/seg/ holds AREA labels, not pose rows -- they are picked up via direct_seg_path()
+        # from their pose sibling. Scanning them as pose labels would double-count every frame.
+        if lp.parent.name in ("seg", "geom"):
+            continue
         # The hand-labeler's inbox layout is labels/ + frames/, the render pipeline's is
         # labels/ + images/. Try both, then the label's own directory, or the failure is SILENT:
         # a whole corpus scans to zero and you never learn it was skipped.
@@ -279,9 +297,10 @@ def main() -> int:
     for k, v in census.most_common():
         print(f"  {k:24s} {v}")
     ok, bad = census["ok"], sum(v for k, v in census.items()
-                                if k not in ("ok", "frames-kept", "frame-dropped"))
+                                if k not in _NON_GATE_CENSUS)
     if ok + bad:
-        print(f"\ngates converted: {ok}/{ok + bad} = {100 * ok / (ok + bad):.1f}%")
+        print(f"\ngates converted: {ok}/{ok + bad} = {100 * ok / (ok + bad):.1f}% (derived from "
+              f"pose rows); {census['direct-area-rows']} area rows taken DIRECT from hand labels")
     print(f"wrote {out / 'data.yaml'}")
     return 0
 

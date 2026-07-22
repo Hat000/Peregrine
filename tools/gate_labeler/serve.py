@@ -1,20 +1,32 @@
-"""VQ2 gate hand-labeling server -- STDLIB ONLY (http.server + json), no pip installs.
+"""VQ2 gate hand-labeling server -- http.server + json (labelio pulls in numpy via seg_labels).
 
 Run:
     <venv>\\Scripts\\python.exe tools/gate_labeler/serve.py --frames <img_dir> --labels <out_dir> [--port 8000]
 
 Serves the single-page UI (index.html, same directory) at http://localhost:<port>, lists the
-.png/.jpg frames in --frames, and on save writes a YOLO-pose .txt (same basename) into
---labels via labelio.encode_label (the pure, unit-testable encoder). Existing labels are
-loaded back onto the canvas for resume-editing.
+.png/.jpg frames in --frames, and on save writes THREE artefacts per frame:
+
+    <labels>/<stem>.txt         YOLO-POSE row per gate  (unchanged; byte-compatible with the
+                                synthetic writer -- off-frame corners clamped, v=0)
+    <labels>/seg/<stem>.txt     YOLO-SEG polygons: THE AREA, clipped from the quads as drawn.
+                                This is the training target for the line/segmentation path and it
+                                does NOT go through the pose row, so a gate whose corners are all
+                                off screen still labels perfectly.
+    <labels>/geom/<stem>.json   the exact unclamped handles, so reopening a frame restores what
+                                was drawn instead of the border-snapped version the pose row keeps.
+
+Existing work is loaded back onto the canvas for resume-editing -- from the sidecar when there is
+one, otherwise from the (lossy) pose label.
 
 API:
     GET  /                    -> index.html
     GET  /api/frames          -> {"frames":[{"name","labeled"}], "labels_dir"}
-    GET  /api/label?name=F    -> {"exists": bool, "gates": [...]}          (decoded to pixels)
+    GET  /api/label?name=F    -> {"exists", "seed", "geom", "gates": [...]}   (decoded to pixels)
     GET  /frames/F            -> image bytes
-    POST /api/save            -> body {"name", "img_w", "img_h", "gates":[{inner,outer,occluded}]}
-                                 gates=[] writes an EMPTY file (intentional negative frame).
+    POST /api/save            -> body {"name", "img_w", "img_h",
+                                       "gates":[{inner,outer,occluded,outer_detached}]}
+                                 gates=[] writes EMPTY pose + seg files (intentional negative).
+                              -> {"ok", "rows", "seg_rows", "seg": [per-gate area report]}
 """
 from __future__ import annotations
 
@@ -54,6 +66,17 @@ def safe_frame(name: str) -> Path:
 
 def label_path(name: str) -> Path:
     return LABELS_DIR / (Path(name).stem + ".txt")
+
+
+# Subdirectories, not "<stem>.seg.txt" beside the pose label: /api/frames counts labelled frames
+# with a non-recursive LABELS_DIR.glob("*.txt"), and the dataset builders walk labels/ trees for
+# pose rows. Sibling files with a .txt suffix would land in both.
+def seg_path(name: str) -> Path:
+    return LABELS_DIR / "seg" / (Path(name).stem + ".txt")
+
+
+def geom_path(name: str) -> Path:
+    return LABELS_DIR / "geom" / (Path(name).stem + ".json")
 
 
 def seed_path(name: str) -> Path | None:
@@ -115,16 +138,24 @@ class Handler(BaseHTTPRequestHandler):
                 safe_frame(name)
                 lp = label_path(name)
                 if lp.exists():
-                    self._json({"exists": True, "seed": False,
-                                "gates": labelio.decode_label(lp.read_text())})
+                    # Prefer the sidecar: the pose row snapped every off-frame handle onto the
+                    # border, so reloading from it and re-saving would quietly shrink the drawn
+                    # area to its clipped silhouette. ``geom: false`` tells the UI to say so.
+                    gp = geom_path(name)
+                    if gp.exists():
+                        self._json({"exists": True, "seed": False, "geom": True,
+                                    "gates": labelio.decode_geometry(json.loads(gp.read_text()))})
+                    else:
+                        self._json({"exists": True, "seed": False, "geom": False,
+                                    "gates": labelio.decode_label(lp.read_text())})
                 else:
                     sp = seed_path(name)
                     if sp is None:
-                        self._json({"exists": False, "seed": False, "gates": []})
+                        self._json({"exists": False, "seed": False, "geom": False, "gates": []})
                     else:
                         # exists:false keeps the frame UNLABELED; seed:true tells the UI these
                         # points are unverified detector output to be corrected, not accepted.
-                        self._json({"exists": False, "seed": True,
+                        self._json({"exists": False, "seed": True, "geom": False,
                                     "gates": labelio.decode_label(sp.read_text())})
             elif url.path.startswith("/frames/"):
                 p = safe_frame(url.path[len("/frames/"):])
@@ -152,11 +183,21 @@ class Handler(BaseHTTPRequestHandler):
                 warning = (f"frame is {img_w}x{img_h}, contract is "
                            f"{labelio.IMAGE_WIDTH}x{labelio.IMAGE_HEIGHT}")
                 sys.stderr.write(f"WARNING [{name}]: {warning}\n")
-            text = labelio.encode_label(body.get("gates", []), img_w, img_h)
-            lp = label_path(name)
-            lp.write_text(text)  # "" for negatives: empty file marks intentional background
-            self._json({"ok": True, "path": str(lp),
-                        "rows": len(text.splitlines()), "warning": warning})
+            gates = body.get("gates", [])
+            text = labelio.encode_label(gates, img_w, img_h)
+            seg_text, seg_report = labelio.encode_seg_label(gates, img_w, img_h)
+            lp, sp, gp = label_path(name), seg_path(name), geom_path(name)
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            gp.parent.mkdir(parents=True, exist_ok=True)
+            # "" for negatives: the empty file is what marks intentional background. Both targets
+            # get one, so a negative is a negative for the pose model AND the seg model.
+            lp.write_text(text)
+            sp.write_text(seg_text)
+            gp.write_text(json.dumps(labelio.encode_geometry(gates, img_w, img_h)))
+            self._json({"ok": True, "path": str(lp), "seg_path": str(sp),
+                        "rows": len(text.splitlines()),
+                        "seg_rows": len(seg_text.splitlines()), "seg": seg_report,
+                        "warning": warning})
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             self._err(e, 400)
         except Exception as e:

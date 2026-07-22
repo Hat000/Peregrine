@@ -40,6 +40,7 @@
   #status { padding:4px 10px; background:var(--panel); border-top:1px solid var(--line);
             color:var(--dim); display:flex; gap:16px; }
   #dirty { color:var(--warn); font-weight:700; }
+  #areainfo { color:#9fc7e8; }
   kbd { background:#2b313b; border:1px solid var(--line); border-radius:3px; padding:0 4px; }
 </style>
 </head>
@@ -64,11 +65,11 @@
     </div>
     <div id="canvaswrap"><canvas id="cv"></canvas></div>
     <div id="status">
-      <span id="frameinfo"></span><span id="dirty"></span>
+      <span id="frameinfo"></span><span id="dirty"></span><span id="areainfo"></span>
       <span style="margin-left:auto">
         wheel=zoom &middot; <kbd>Space</kbd>/mid-drag=pan &middot; drag point=adjust &middot;
-        <kbd>O</kbd>=occluded &middot; <kbd>M</kbd>=seg-target preview &middot;
-        <kbd>Z</kbd>=undo click &middot; <kbd>Esc</kbd>=cancel
+        <kbd>O</kbd>=occluded &middot; <kbd>M</kbd>=area shading &middot; <kbd>L</kbd>=edge guides
+        &middot; <kbd>Z</kbd>=undo click &middot; <kbd>Esc</kbd>=cancel
       </span>
     </div>
   </div>
@@ -78,12 +79,23 @@
 "use strict";
 /* ==========================================================================================
    VQ2 gate hand-labeler frontend.
+
+   WHAT YOU ARE LABELLING IS THE AREA. Each gate is two quads -- the 2.72 m outer square
+   (gate_frame) and the 1.5 m inner square (gate_opening) -- and the label written to disk is
+   those quads CLIPPED to the photo. Corner COUNT is irrelevant: put each handle where the corner
+   really is, off screen included, and the visible area comes out right. That is the whole point,
+   because the pose target could not express a close gate at all (off-frame keypoints are stored
+   clamped with v=0, so anything reading them back has to refit a homography, which needs >= 4
+   corners in frame -- blocked on 52.9% of ticks inside 2 m).
+
    CONVENTIONS (frozen -- must match tools/gate_labeler/labelio.py + blender_gen/contract.py):
      * keypoints 0-3 = INNER LL,LR,UR,UL ; 4-7 = OUTER LL,LR,UR,UL (gate frame Y-DOWN)
      * the labeler clicks the 4 INNER corners in guided order LL -> LR -> UR -> UL
      * outer corners are DERIVED via the 4-point plane homography (canonical inner square,
-       metres, Y-down -> clicked pixels), then applied to the canonical outer square
-     * encoding/normalization happens SERVER-side in labelio.py (single source of truth)
+       metres, Y-down -> clicked pixels), then applied to the canonical outer square -- drag any
+       of them to override, which marks it "detached" and measured
+     * encoding/normalization happens SERVER-side in labelio.py (single source of truth); this
+       page's clip/area code is a PREVIEW and is cross-checked against the server on every save
    ========================================================================================== */
 
 // ---- gate-plane geometry (mirror of labelio.INNER_PLANE / OUTER_PLANE) -------------------
@@ -174,6 +186,9 @@ let frames = [], frameIdx = -1;
 let img = new Image(), imgReady = false;
 let gates = [], selGate = -1, selPoint = -1;   // selPoint: 0-3 inner, 4-7 outer
 let isSeed = false;                            // gates came from an UNVERIFIED detector seed
+let fromGeom = false;                          // handles restored EXACTLY (sidecar), not clamped
+let lastSaved = null;                          // what the server actually wrote, for the status bar
+let segMismatch = "";                          // preview vs server area disagreement (should be "")
 let collecting = false;                        // guided-click mode for the LAST gate
 let dirty = false;
 let view = { s: 1, tx: 0, ty: 0 };             // screen = img*s + t
@@ -220,6 +235,7 @@ async function loadFrame(i) {
   if (dirty && !confirm("Unsaved changes on this frame - discard?")) return;
   frameIdx = i; imgReady = false;
   gates = []; selGate = -1; selPoint = -1; collecting = false; setDirty(false);
+  lastSaved = null; segMismatch = ""; fromGeom = false;
   const name = frames[i].name;
   img = new Image();
   img.onload = async () => {
@@ -227,7 +243,7 @@ async function loadFrame(i) {
     fitView();
     try {
       const j = await api("/api/label?name=" + encodeURIComponent(name));
-      isSeed = false;
+      isSeed = false; fromGeom = !!j.geom;
       if (j.exists || j.seed) {
         // resume (human label) OR seed (detector pre-label): rebuild gates from the decoded
         // rows; outer marked detached so a stray inner nudge won't clobber them. For a SEED the
@@ -235,7 +251,11 @@ async function loadFrame(i) {
         // inner square, since that homography extrapolation is what seeding exists to avoid.
         gates = j.gates.map(g => ({
           inner: g.inner.map(p => p.slice()), outer: g.outer.map(p => p.slice()),
-          occ: g.vis.map(v => v === 1), detached: new Array(4).fill(true),
+          occ: g.vis.map(v => v === 1),
+          // From the sidecar, ``detached`` is the truth we stored. From a pose row (or a seed) the
+          // outer corners are clamped-or-model output, so treat them as hand-placed: re-deriving
+          // them would overwrite the only positions we have.
+          detached: g.outer_detached ? g.outer_detached.slice() : new Array(4).fill(true),
         }));
         selGate = gates.length - 1;
         isSeed = !!j.seed;   // unverified: frame stays UNLABELED until the human saves
@@ -258,12 +278,30 @@ async function save(asNegative) {
   const payload = {
     name: frames[frameIdx].name,
     img_w: img.naturalWidth, img_h: img.naturalHeight,
-    gates: done.map(g => ({ inner: g.inner, outer: g.outer, occluded: g.occ })),
+    gates: done.map(g => ({ inner: g.inner, outer: g.outer, occluded: g.occ,
+                            outer_detached: g.detached })),
   };
   try {
     const j = await api("/api/save", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     if (j.warning) alert("Saved, but: " + j.warning);
+    // The SERVER's areas are what got written. Report them, and cross-check against this page's
+    // preview -- the clip runs in both places, and a divergence would otherwise show up only as a
+    // model that trained on shapes nobody ever looked at.
+    lastSaved = { rows: j.rows, seg_rows: j.seg_rows, seg: j.seg || [] };
+    segMismatch = "";
+    (j.seg || []).forEach((rep, i) => {
+      const mine = segStatus(done[i]);
+      for (const [k, got] of [["gate_frame", mine.frame], ["gate_opening", mine.opening]]) {
+        const srv = (rep[k] && rep[k].area) || 0;
+        if (Math.abs(srv - got) > 0.02 * Math.max(srv, got, 1))
+          segMismatch = `preview/server area mismatch on gate ${i + 1} ${k}: ` +
+                        `${fmtArea(got)} vs ${fmtArea(srv)}`;
+      }
+    });
+    if (segMismatch) console.warn(segMismatch);
+    if (!asNegative && done.length && !j.seg_rows)
+      alert("Saved, but NO AREA was written for any gate - check the badges before moving on.");
     frames[frameIdx].labeled = true;
     frames[frameIdx].seeded = false;   // human-approved now; the seed no longer applies
     isSeed = false;
@@ -320,10 +358,14 @@ function resizeCanvas() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   draw();
 }
+// Leave WORKING ROOM around the photo. A close gate's corners are off screen and must be clicked
+// out there, so the default view can't be the image edge-to-edge -- 0.96 left nowhere to put them.
+const FIT_MARGIN = 0.62;
+
 function fitView() {
   if (!imgReady) return;
   const r = $("canvaswrap").getBoundingClientRect();
-  view.s = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight) * 0.96;
+  view.s = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight) * FIT_MARGIN;
   view.tx = (r.width - img.naturalWidth * view.s) / 2;
   view.ty = (r.height - img.naturalHeight * view.s) / 2;
   draw();
@@ -332,28 +374,63 @@ function draw() {
   const r = $("canvaswrap").getBoundingClientRect();
   ctx.clearRect(0, 0, r.width, r.height);
   if (!imgReady) return;
+  ctx.fillStyle = "#0b0d10";                // the OUTSIDE: clicks land here and that is fine
+  ctx.fillRect(0, 0, r.width, r.height);
   ctx.save();
   ctx.translate(view.tx, view.ty); ctx.scale(view.s, view.s);
   ctx.imageSmoothingEnabled = view.s < 2;   // crisp pixels when zoomed for precise clicking
   ctx.drawImage(img, 0, 0);
   ctx.restore();
-  // image border
+  // The image border is the CLIP boundary now -- everything outside it is cut from the label --
+  // so draw it as a real edge rather than a faint hint.
   const [bx, by] = toScreen([0, 0]);
-  ctx.strokeStyle = "#555"; ctx.lineWidth = 1;
+  ctx.strokeStyle = "#7d8794"; ctx.lineWidth = 1;
   ctx.strokeRect(bx, by, img.naturalWidth * view.s, img.naturalHeight * view.s);
 
   if (showSeg) gates.forEach(g => drawSegPreview(g));
+  if (showGuides && curGate()) drawGuides(curGate(), GATE_COLORS[selGate % GATE_COLORS.length]);
   gates.forEach((g, gi) => drawGate(g, gi));
 }
 
-// --- SEG PREVIEW (2026-07-22) --------------------------------------------------------------
-// The line-based gate solver is trained on a two-class SEGMENTATION target -- gate_frame (the
-// 2.72 m outer square) and gate_opening (the 1.5 m inner square) -- and that target is DERIVED
-// from these same clicks, so it needs no extra labelling (see racer/vision/seg_labels.py and
-// scripts/build_seg_dataset.py). What it does need is a way to SEE it: the polygons are clipped to
-// the frame, and a wrong click that still looks plausible as 8 keypoints can produce a badly wrong
-// mask. Press 'm' to shade what the seg label will actually contain.
-let showSeg = false;
+// --- THE AREA IS THE LABEL (2026-07-22) ----------------------------------------------------
+// The line/segmentation path trains on a two-class AREA target -- gate_frame (the 2.72 m outer
+// square) and gate_opening (the 1.5 m inner square) -- and the server now writes those polygons
+// straight from the quads as drawn, CLIPPED to the frame (labelio.encode_seg_label). Nothing is
+// reconstructed from the pose row, so there is no ">= 4 corners in frame" rule any more: place the
+// four handles wherever the corners really are, off screen included, and the visible area is the
+// label. On by default, because it IS the thing being labelled -- press 'm' to see the photo alone.
+let showSeg = true;
+let showGuides = true;    // extended edge lines: how you aim a handle you cannot see
+
+const MIN_AREA_PX = 64;   // mirrors seg_labels.MIN_VISIBLE_AREA_PX
+
+function polyArea(pts) {
+  if (pts.length < 3) return 0;
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], q = pts[(i + 1) % pts.length];
+    a += p[0] * q[1] - q[0] * p[1];
+  }
+  return Math.abs(a) / 2;
+}
+function fmtArea(a) {
+  return a >= 10000 ? (a / 1000).toFixed(0) + "k" : a >= 1000 ? (a / 1000).toFixed(1) + "k"
+                                                              : a.toFixed(0);
+}
+// Mirror of labelio.quad_is_simple: a projected square is convex, so a bow-tie means the corners
+// were clicked out of order and its shoelace "area" is meaningless. Refused, not silently written.
+function quadIsSimple(q) {
+  if (!q || q.length !== 4) return false;
+  let pos = 0, neg = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+    const ax = b[0] - a[0], ay = b[1] - a[1], bx = c[0] - b[0], by = c[1] - b[1];
+    const cross = ax * by - ay * bx;
+    const scale = Math.max(Math.abs(ax) + Math.abs(ay), 1) * Math.max(Math.abs(bx) + Math.abs(by), 1);
+    if (cross > 1e-9 * scale) pos++; else if (cross < -1e-9 * scale) neg++;
+  }
+  return pos === 0 || neg === 0 || pos === 1 || neg === 1;
+}
 
 function clipToFrame(pts) {                      // Sutherland-Hodgman, mirrors seg_labels.clip_polygon
   const W = img.naturalWidth - 1, H = img.naturalHeight - 1;
@@ -387,29 +464,34 @@ function fillPoly(pts, fill) {
 
 function drawSegPreview(g) {
   if (!gateComplete(g) || !g.outer) return;
-  fillPoly(clipToFrame(g.outer), "rgba(255,140,0,0.28)");   // class 0: gate_frame
-  fillPoly(clipToFrame(g.inner), "rgba(0,220,80,0.30)");    // class 1: gate_opening
+  const st = segStatus(g);
+  // Shade only what will actually be WRITTEN. A suppressed class (past-horizon / bow-tie) must not
+  // paint, or the preview would promise a mask the label file does not contain.
+  if (st.frame >= MIN_AREA_PX) fillPoly(clipToFrame(g.outer), "rgba(255,140,0,0.28)");   // class 0
+  if (st.opening >= MIN_AREA_PX) fillPoly(clipToFrame(g.inner), "rgba(0,220,80,0.30)");  // class 1
 }
 
-// --- WILL THIS GATE ACTUALLY BECOME A LABEL? (2026-07-22) ---------------------------------
-// The seg converter does NOT use the polygon as drawn. It refits the gate-plane homography to the
-// IN-FRAME keypoints only (off-frame ones are stored v=0 with clamped, meaningless coordinates)
-// and re-projects both squares. So a gate can look perfectly placed on screen and still convert to
-// NOTHING. Mirrors racer.vision.seg_labels + gate_pose.gate_plane_homography:
-//   * >= 4 keypoints strictly inside the frame, AND
-//   * >= 2 of them on EACH diagonal -- all 8 keypoints lie on one of two diagonals, so four points
-//     sharing one diagonal are collinear and the fit is refused rather than guessed.
-// Without this readout you can label a whole session that silently converts to zero.
-const _DIAG_A = [0, 2, 4, 6], _DIAG_B = [1, 3, 5, 7];
-
+// --- WILL THIS GATE ACTUALLY BECOME A LABEL? ----------------------------------------------
+// Mirror of labelio.seg_rows_for_gate -- ONLY the visible area decides. What used to gate a label
+// (">= 4 keypoints in frame, >= 2 per diagonal", the homography-refit rule) is gone: the polygon is
+// taken as drawn, so corner COUNT is irrelevant and a gate with nothing in frame still labels.
+// Two things can still kill a class, and both are real geometry errors rather than crops:
+//   * PAST HORIZON -- the outer square is extrapolated 1.813x from the inner clicks, and under
+//     extreme perspective that reaches the gate plane's vanishing line, where no pixel exists. The
+//     placeholder corner used there is fine for a v=0 keypoint and is NOT a polygon vertex. Drag
+//     the outer corners onto the real edge (they detach, and a measured corner is always trusted).
+//   * SELF-INTERSECTING -- corners clicked out of order.
 function drawSegBadge(g, gi) {
   const st = segStatus(g);
   if (st.why === "incomplete") return;
-  const pts = g.inner.concat(g.outer || []).filter(p => inFrame(p));
-  const anchor = pts.length ? pts.reduce((a, p) => [a[0] + p[0] / pts.length, a[1] + p[1] / pts.length], [0, 0])
-                            : g.inner[0];
+  // Anchor on the CLIPPED area, which is on screen by construction. Anchoring on a corner put the
+  // badge off canvas exactly in the close-range case this whole mode exists for.
+  const poly = st.opening >= MIN_AREA_PX ? clipToFrame(g.inner)
+             : st.frame >= MIN_AREA_PX ? clipToFrame(g.outer) : clipToFrame(g.inner);
+  const src = poly.length ? poly : [[img.naturalWidth / 2, img.naturalHeight / 2]];
+  const anchor = src.reduce((a, p) => [a[0] + p[0] / src.length, a[1] + p[1] / src.length], [0, 0]);
   const [x, y] = toScreen(anchor);
-  const txt = (st.ok ? "SEG OK  " : "SEG DROPPED  ") + st.why;
+  const txt = (st.ok ? "AREA OK  " : "NO AREA  ") + st.why;
   ctx.font = "bold 12px sans-serif";
   const w = ctx.measureText(txt).width + 10;
   ctx.fillStyle = st.ok ? "rgba(16,72,32,0.88)" : "rgba(120,20,20,0.92)";
@@ -421,15 +503,56 @@ function drawSegBadge(g, gi) {
 }
 
 function segStatus(g) {
-  if (!gateComplete(g) || !g.outer) return { ok: false, why: "incomplete", n: 0 };
-  const pts = g.inner.concat(g.outer);
-  const usable = pts.map(p => inFrame(p));
-  const n = usable.filter(Boolean).length;
-  const a = _DIAG_A.filter(i => usable[i]).length;
-  const b = _DIAG_B.filter(i => usable[i]).length;
-  if (n < 4) return { ok: false, why: `only ${n} in-frame (need 4)`, n };
-  if (a < 2 || b < 2) return { ok: false, why: `diagonals ${a}/${b} (need 2 each)`, n };
-  return { ok: true, why: `${n} in-frame, diagonals ${a}/${b}`, n };
+  const st = { ok: false, why: "incomplete", frame: 0, opening: 0, n: 0, notes: [] };
+  if (!gateComplete(g) || !g.outer) return st;
+  const W = img.naturalWidth, H = img.naturalHeight;
+  if (quadIsSimple(g.inner)) st.opening = polyArea(clipToFrame(g.inner));
+  else st.notes.push("opening self-intersecting");
+
+  let valid = [true, true, true, true];
+  try { valid = outerValidity(g.inner, W, H); } catch (e) { valid = [false, false, false, false]; }
+  const trusted = valid.every((v, i) => v || g.detached[i]);
+  if (!trusted) st.notes.push("frame past horizon – drag its corners");
+  else if (!quadIsSimple(g.outer)) st.notes.push("frame self-intersecting");
+  else st.frame = polyArea(clipToFrame(g.outer));
+
+  st.n = (st.frame >= MIN_AREA_PX ? 1 : 0) + (st.opening >= MIN_AREA_PX ? 1 : 0);
+  st.ok = st.n > 0;
+  const sizes = `frame ${fmtArea(st.frame)} · opening ${fmtArea(st.opening)} px²`;
+  st.why = st.ok ? (st.notes.length ? sizes + " · " + st.notes.join(", ") : sizes)
+                 : (st.notes.length ? st.notes.join(", ") : "nothing visible in frame");
+  return st;
+}
+
+// The INFINITE line through a,b clipped to the canvas (Liang-Barsky). Corners you are placing are
+// usually off screen; the gate EDGE they define is not, so these guides are how you aim.
+function clipLineToRect(a, b, w, h) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return null;
+  let t0 = -1e9, t1 = 1e9;
+  const clip = (p, q) => {
+    if (Math.abs(p) < 1e-12) return q >= 0;
+    const t = q / p;
+    if (p < 0) { if (t > t1) return false; if (t > t0) t0 = t; }
+    else { if (t < t0) return false; if (t < t1) t1 = t; }
+    return true;
+  };
+  if (!clip(-dx, a[0]) || !clip(dx, w - a[0]) || !clip(-dy, a[1]) || !clip(dy, h - a[1])) return null;
+  return [[a[0] + t0 * dx, a[1] + t0 * dy], [a[0] + t1 * dx, a[1] + t1 * dy]];
+}
+function drawGuides(g, color) {
+  if (!gateComplete(g)) return;
+  const r = $("canvaswrap").getBoundingClientRect();
+  ctx.save(); ctx.setLineDash([2, 6]); ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = color;
+  for (const quad of [g.inner, g.outer]) {
+    for (let i = 0; i < 4; i++) {
+      const seg = clipLineToRect(toScreen(quad[i]), toScreen(quad[(i + 1) % 4]), r.width, r.height);
+      if (!seg) continue;
+      ctx.beginPath(); ctx.moveTo(seg[0][0], seg[0][1]); ctx.lineTo(seg[1][0], seg[1][1]); ctx.stroke();
+    }
+  }
+  ctx.restore();
 }
 function drawPoly(pts, color, dashed) {
   ctx.beginPath();
@@ -463,7 +586,8 @@ function updateStatus() {
   const p = $("prompt");
   if (collecting) {
     const g = gates[gates.length - 1], k = g.inner.length;
-    p.textContent = `Gate ${gates.length}: click INNER ${CORNER[k]}  (${k + 1}/4)`;
+    p.textContent = `Gate ${gates.length}: click INNER ${CORNER[k]}  (${k + 1}/4)`
+                  + "  —  OUTSIDE the photo is fine";
     p.classList.remove("done");
   } else if (isSeed) {
     // Loud on purpose: these points are detector output, not a label. Nothing is recorded until
@@ -479,6 +603,17 @@ function updateStatus() {
   }
   $("frameinfo").textContent = frameIdx >= 0
     ? `frame ${frameIdx + 1}/${frames.length} - ${frames[frameIdx].name}` : "";
+  // Live AREA readout: this, not the corner count, is what decides whether the frame trains.
+  const live = gates.filter(gateComplete).map(segStatus);
+  const nMask = live.reduce((a, s) => a + s.n, 0);
+  let txt = live.length ? `area: ${nMask} mask(s) — `
+          + live.map((s, i) => `g${i + 1} ${fmtArea(s.frame)}/${fmtArea(s.opening)}`).join("  ") : "";
+  if (lastSaved) txt += `   ·   saved ${lastSaved.seg_rows} seg row(s), ${lastSaved.rows} pose row(s)`;
+  if (fromGeom) txt += "   ·   exact handles restored";
+  else if (frameIdx >= 0 && frames[frameIdx] && frames[frameIdx].labeled && !isSeed)
+    txt += "   ·   ⚠ loaded from CLAMPED pose label (pre-area); off-frame corners snapped to the edge";
+  if (segMismatch) txt += "   ·   ⚠ " + segMismatch;
+  $("areainfo").textContent = txt;
 }
 function renderSidebar() {
   const n = frames.filter(f => f.labeled).length;
@@ -527,7 +662,7 @@ cv.addEventListener("mousemove", e => {
     g.outer[drag.pi - 4] = p;
     g.detached[drag.pi - 4] = true;
   }
-  setDirty(true); draw();
+  setDirty(true); draw(); updateStatus();      // the area readout must track the handle live
 });
 window.addEventListener("mouseup", () => { drag = null; });
 cv.addEventListener("contextmenu", e => e.preventDefault());
@@ -559,7 +694,8 @@ window.addEventListener("keydown", e => {
     case "r": { const g = curGate(); if (g && gateComplete(g)) { recomputeOuter(g, true); setDirty(true); draw(); } break; }
     case "o": { const g = curGate();                                        // toggle occluded
       if (g && selPoint >= 0) { g.occ[selPoint] = !g.occ[selPoint]; setDirty(true); draw(); } break; }
-    case "m": showSeg = !showSeg; draw(); break;                            // seg-target preview
+    case "m": showSeg = !showSeg; draw(); break;                            // area shading
+    case "l": showGuides = !showGuides; draw(); break;                      // extended edge lines
     case "z": case "backspace": undoClick(); break;
     case "0": fitView(); break;
     case "escape":
