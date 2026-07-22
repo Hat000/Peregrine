@@ -168,6 +168,36 @@ def _build_gate_render(gate: Gate, R_cam_gate: np.ndarray, t_cam_gate: np.ndarra
     )
 
 
+# A gate is worth labelling when enough of it is ON SCREEN to see, full stop.
+MIN_LABEL_AREA_PX = 200.0
+
+
+def _clipped_area_px(pts: np.ndarray) -> float:
+    """Area of the projected quad's axis-aligned extent AFTER clipping to the frame."""
+    x0 = max(0.0, float(pts[:, 0].min())); y0 = max(0.0, float(pts[:, 1].min()))
+    x1 = min(IMAGE_WIDTH - 1.0, float(pts[:, 0].max()))
+    y1 = min(IMAGE_HEIGHT - 1.0, float(pts[:, 1].max()))
+    return max(0.0, x1 - x0) * max(0.0, y1 - y0)
+
+
+def _has_labellable_area(gr: "GateRender") -> float:
+    """Is this gate worth a label? VISIBLE AREA, not corner count.
+
+    REPLACES ">= 3 inner corners V_VIS and the centre in frame" (2026-07-22). That rule is a
+    leftover from 4-keypoint IPPE/P3P, where fewer than 3 corners could not be solved so labelling
+    was pointless. It has been actively harmful ever since: the backend RENDERS every gate in the
+    frame spec but labels.py skips any gate with ``visible=False``, so a close CROPPED gate -- the
+    exact thing we need the detector to fire on -- was drawn into the image and presented to
+    training as BACKGROUND. Signature of the damage: the render arms averaged ~1.0 labelled gates
+    per frame while hand-labelled real frames average 2.62.
+
+    Neither consumer needs 3 corners any more: the 8-keypoint partial rescue needs >=4 usable of 8,
+    and segmentation needs only pixels. So the test is simply whether enough of the gate is on
+    screen to see. Occlusion still marks individual corners V_OCC above; this only decides whether
+    the gate gets a row at all."""
+    return _clipped_area_px(np.asarray(gr.outer_px, dtype=float)) >= MIN_LABEL_AREA_PX
+
+
 def _apply_occlusion_and_visibility(renders: list[GateRender]) -> None:
     """In-place: mark a corner V_OCC when a NEARER gate's ring covers it, then set ``visible``
     (>= 3 corners V_VIS and centre in frame). Same far->near logic as synthetic.render_scene."""
@@ -182,9 +212,7 @@ def _apply_occlusion_and_visibility(renders: list[GateRender]) -> None:
                     gb.outer_px, gb.keypoints_px,
                 ):
                     ga.visibility[c] = V_OCC
-        centre = ga.keypoints_px.mean(axis=0)
-        centre_in = 0.0 <= centre[0] <= IMAGE_WIDTH and 0.0 <= centre[1] <= IMAGE_HEIGHT
-        ga.visible = bool(int((ga.visibility == V_VIS).sum()) >= 3 and centre_in)
+        ga.visible = _has_labellable_area(ga)
 
 
 def sample_frame(rng: np.random.Generator, gates: list[Gate], cfg: ViewpointConfig) -> FrameSpec:
@@ -232,7 +260,11 @@ def sample_frame(rng: np.random.Generator, gates: list[Gate], cfg: ViewpointConf
         if t_cg[2] <= 0:                                                  # behind camera
             continue
         rng_m = float(np.linalg.norm(t_cg))
-        if not (cfg.range_min_m * 0.6 <= rng_m <= cfg.range_max_m * 1.4):  # soft envelope band
+        # ONLY a far cutoff. The near end of the old envelope (range_min * 0.6) silently dropped
+        # any gate closer than that -- while the backend still RENDERED it -- so the nearest, most
+        # visually dominant gate in a frame became unlabelled background. Near gates are precisely
+        # what the detector must fire on; a gate too close to be labelled is a contradiction.
+        if rng_m > cfg.range_max_m * 1.4:
             continue
         gr = _build_gate_render(g, R_cg, t_cg)
         if gr is not None:
@@ -355,10 +387,26 @@ def sample_partial_frame(rng: np.random.Generator, gates: list[Gate], cfg: Viewp
             keypoints_px=inner, outer_px=outer, bbox_xywh=bbox,
             visibility=vis_inner, visible=True, outer_visibility=vis_outer,
         )
+        # EVERY other gate in view gets a render+label too. This arm returned gates=[gr] -- only the
+        # cropped target -- so its OTHER visible gates were rendered as unlabelled background. That
+        # is the same poisoning as sample_frame's, in the one arm built FOR cropped gates.
+        renders = [gr]
+        for g in gates:
+            if int(g.gate_id) == int(target.gate_id):
+                continue
+            R_o, t_o = optical_pose(g, body_pos, R_wb)
+            if t_o[2] <= 0.2:
+                continue
+            other = _build_gate_render(g, R_o, t_o)
+            if other is not None:
+                renders.append(other)
+        _apply_occlusion_and_visibility(renders)
+        renders[0].visible = True          # the cropped TARGET is always labelled, by construction
+        renders = [r for r in renders if r.visible]
         return FrameSpec(
             body_pos_ned=body_pos, roll=roll, pitch=pitch, yaw=yaw,
             body_vel_ned=speed * (to_gate / (np.linalg.norm(to_gate) + 1e-9)),
-            gates=[gr],
+            gates=renders,
         )
     return None
 

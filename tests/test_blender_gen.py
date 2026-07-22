@@ -22,7 +22,7 @@ from racer.frames import (
 from racer.vision.gate_pose import _rotation_geodesic, estimate_gate_pose
 from racer.vision.synthetic import SyntheticSample, to_yolo_pose_label
 
-from racer.vision.blender_gen import contract
+from racer.vision.blender_gen import contract, geometry
 from racer.vision.blender_gen.augment import AugmentConfig, augment_frame
 from racer.vision.blender_gen.config import (
     AppearanceConfig,
@@ -269,11 +269,36 @@ def test_viewpoint_envelope_and_visibility():
         count += 1
         multi += (len(labs) > 1)
         for g in labs:
-            assert 0.6 * cfg.range_min_m <= g.range_m <= 1.4 * cfg.range_max_m
+            # Far cap only. The old NEAR bound (0.6 * range_min) silently dropped any gate closer
+            # than that WHILE THE BACKEND STILL RENDERED IT, so the most visually dominant gate in
+            # the frame became unlabelled background. See _has_labellable_area.
+            assert g.range_m <= 1.4 * cfg.range_max_m
             assert set(int(v) for v in g.visibility) <= {0, 1, 2}
-            assert int((g.visibility == contract.V_VIS).sum()) >= 3
+            # A label now requires VISIBLE AREA, not >=3 in-frame corners. The corner rule was a
+            # 4-keypoint-PnP legacy: the 8-keypoint rescue needs >=4 usable of 8 and segmentation
+            # needs only pixels, so a cropped close gate showing one corner is still labellable.
+            assert geometry._clipped_area_px(np.asarray(g.outer_px, float)) >= geometry.MIN_LABEL_AREA_PX
     assert count == 120
     assert multi > 0                                                     # co-visibility appears
+
+
+def test_close_cropped_gates_are_labelled_not_left_as_background():
+    """REGRESSION (2026-07-22). The generator rendered every gate in the spec but labels.py skipped
+    any with visible=False, and visible required >=3 in-frame inner corners AND the centre in
+    frame. A close cropped gate was therefore drawn into the image and presented to training as
+    BACKGROUND -- teaching the detector to suppress exactly what it must fire on. Signature of the
+    damage: render arms averaged ~1.0 labelled gates/frame vs 2.62 for hand-labelled real frames."""
+    cfg = ViewpointConfig()
+    few_corner_labelled = no_centre_labelled = 0
+    for fs in sample_frames(200, cfg, seed=11):
+        for g in fs.labeled_gates:
+            if int((g.visibility == contract.V_VIS).sum()) < 3:
+                few_corner_labelled += 1
+            c = np.asarray(g.keypoints_px, float).mean(axis=0)
+            if not (0 <= c[0] <= contract.IMAGE_WIDTH and 0 <= c[1] <= contract.IMAGE_HEIGHT):
+                no_centre_labelled += 1
+    assert few_corner_labelled > 0, "gates with <3 in-frame corners must now be labelled"
+    assert no_centre_labelled > 0, "gates whose CENTRE is off-frame must now be labelled"
 
 
 def test_sampled_gate_label_roundtrips_through_pnp():
