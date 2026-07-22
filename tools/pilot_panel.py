@@ -115,6 +115,21 @@ SCHEMA = [
          group="Vision", default="C:/Users/Shadow/Peregrine/models/vq2_darkred_negreal42_2026-07-05_fp16_384x640.engine",
          allow_blank=True,
          help="Vision model: a TensorRT .engine (fast) or ultralytics .pt. Required for yolo."),
+    # Gate-emission port (2026-07-22). Both shipped engines are 8-KEYPOINT pose models (kpt_shape
+    # [8,3]: 4 inner corners of the 1.5 m opening + 4 outer corners of the 2.72 m frame). Until this
+    # port the flight path sliced the outer 4 off at the model boundary and threw them away, and
+    # dropped any detection with <3 confident inner corners -- the cropped close-range frames right
+    # before a pass. Defaults ON; these are A/B switches back to the old behaviour.
+    dict(key="seeker_no_outer", flag="--seeker-no-outer", action="flag", ui="bool",
+         group="Vision", default=False,
+         help="OFF (default) = fuse the model's 4 OUTER corners into the pose (task2 centre error "
+              "0.111 m vs 0.149 m inner-only). ON = discard them, the pre-port behaviour."),
+    dict(key="seeker_no_rescue", flag="--seeker-no-rescue", action="flag", ui="bool",
+         group="Vision", default=False,
+         help="OFF (default) = rescue cropped gates: any >=4 usable keypoints fit the gate-plane "
+              "homography and reconstruct the full inner square (recovers 24.8% of dropped "
+              "detections at 0.060 m median). Rescued fixes report n_corners=3 so their covariance "
+              "is inflated. ON = drop them, the pre-port behaviour."),
     dict(key="video_dedup_fastpath", flag="--video-dedup-fastpath", action="boolopt", ui="bool",
          group="Vision", default=True,
          help="Fast-drop the sim's ~33x UDP video re-send flood in the receiver (4-byte frame_id, no "

@@ -1721,6 +1721,17 @@ def _resolve_seeker_weights(args) -> str | None:
     return args.seeker_weights or args.checkpoint
 
 
+def _seeker_detector_kwargs(args) -> dict:
+    """The gate-emission kwargs for ``GateDetector.load`` (2026-07-22 vision port).
+
+    Both loader sites (the pre-warm and ``_build_casec_seeker``) MUST pass these, or the pre-warmed
+    instance the flight actually uses would silently keep the defaults and the CLI flags would be a
+    no-op on the only detector that flies. Defaults are ON: outer fusion + partial rescue are the
+    ported behaviour; the flags exist to restore the old path for an A/B."""
+    return {"use_outer": not args.seeker_no_outer,
+            "partial_rescue": not args.seeker_no_rescue}
+
+
 def _looks_like_detector_weights(spec) -> bool:
     """True when ``spec`` looks like an ultralytics YOLO weights file (``.pt``, or an ``a.pt++b.pt``
     ensemble spec) rather than the RL-actor ``.pth`` checkpoint. Every member of an ensemble spec must
@@ -1785,7 +1796,7 @@ def _prewarm_detector(args) -> None:
         from racer.contracts import Frame
         from racer.vision.detector import GateDetector
         t0 = time.monotonic()
-        detector = GateDetector.load(_resolve_seeker_weights(args))
+        detector = GateDetector.load(_resolve_seeker_weights(args), **_seeker_detector_kwargs(args))
         # A black (360, 640, 3) frame matching the live camera resolution (contracts.Frame): the
         # SHAPE is what drives cuDNN autotune + kernel compile, so warming on the true resolution
         # warms the exact kernels the flight will use. A black frame yields no detections (fine).
@@ -1825,7 +1836,8 @@ def _build_casec_seeker(args, gates):
         # so the expensive first-predict already ran at startup off the flight critical path; else
         # build it here (byte-identical to the legacy path when no pre-warm ran).
         detector = (getattr(args, "_prewarmed_detector", None)
-                    or GateDetector.load(_resolve_seeker_weights(args)))  # weights (artifact-pipe)
+                    or GateDetector.load(_resolve_seeker_weights(args),
+                                         **_seeker_detector_kwargs(args)))  # weights (artifact-pipe)
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
@@ -3402,6 +3414,26 @@ def build_parser() -> argparse.ArgumentParser:
                          "if unset. This split is what makes the yolo path deployable: --checkpoint is "
                          "consumed by the RL actor loader, so a detector spec passed there died in "
                          "load_actor (why the trained detector was never in the live gate-seeker loop).")
+    ap.add_argument("--seeker-no-outer", action="store_true",
+                    help="DISABLE outer-corner fusion (2026-07-22 port). The deployed M model is an "
+                         "8-keypoint pose model: 4 INNER (the 1.5 m opening) + 4 OUTER (the 2.72 m "
+                         "frame). Before this port the flight path sliced the outer 4 off at the model "
+                         "boundary and threw them away; now they ride along and gate_pose fuses them "
+                         "into the same 6-DOF fit (measured on the task2 GT bundle: centre error "
+                         "0.111 m fused vs 0.149 m inner-only). This flag restores the old discard, "
+                         "for an A/B.")
+    ap.add_argument("--seeker-no-rescue", action="store_true",
+                    help="DISABLE the partial-corner rescue (2026-07-22 port). A gate cropping out of "
+                         "frame loses corners to ultralytics' border clamp, and the old pipeline "
+                         "DROPPED any detection with <3 confident inner corners -- exactly the "
+                         "close-range frames just before a pass. The rescue takes ANY >=4 usable "
+                         "keypoints (inner and outer share one plane), fits the gate-plane homography "
+                         "and reconstructs the full inner square. It fires ONLY where the pipeline "
+                         "used to give up, so every pre-existing emission is bit-identical. Measured: "
+                         "recovers 24.8%% of dropped detections at 0.060 m median centre error. "
+                         "Rescued fixes report n_corners=3, so localization/navigator inflate their "
+                         "covariance (P3P_FIX_COV_INFLATION) instead of trusting them like a measured "
+                         "4-corner fix. This flag restores the old drop.")
     ap.add_argument("--seeker-speed", type=float, default=3.0,
                     help="gate-seeker cruise speed cap (m/s). SLOW first (default 3.0): more frames "
                          "per metre, no motion blur, vision yaw/z self-loc works. Ramp later.")
