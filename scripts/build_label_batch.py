@@ -75,7 +75,12 @@ def audit(frame: Path, gates, has_geom: bool, segdet, args):
         ring, see, _ = S.ring_score(inn, out, red)
         if ring < args.min_ring:
             why.append(f"ring={ring:.2f}")
-        if see < args.min_see:
+        # ring_score reports see_through = 0 when the clipped opening is under 200 px, because for
+        # SEEDING an unmeasurable opening should be rejected. Auditing a human's label is the
+        # opposite situation: "too small to measure" is not evidence of a mistake, and flagging it
+        # would accuse every correctly-labelled DISTANT gate. Only complain when it was measurable.
+        from racer.vision.seg_labels import clip_polygon, polygon_area
+        if polygon_area(clip_polygon(inn, IMG_W, IMG_H)) >= 200.0 and see < args.min_see:
             why.append(f"opening-not-see-through={see:.2f}")
     if segdet is not None:               # a confident detection where the human labelled nothing
         centres = [np.asarray(g["inner"], float).mean(axis=0) for g in gates]
@@ -116,10 +121,10 @@ def main() -> int:
         fdir = root / "frames" if (root / "frames").is_dir() else root
         for f in sorted(p for p in fdir.iterdir() if p.suffix.lower() in IMAGE_EXTS):
             stem = f.stem
-            if (out / "frames" / f.name).exists():
-                census["duplicate-name-skipped"] += 1
-                continue
-            link(f, out / "frames" / f.name)
+            # Only the LINK is skippable on a re-run -- an early `continue` here also skipped the
+            # label audit, so re-running after a fix silently produced an empty review queue.
+            if not (out / "frames" / f.name).exists():
+                link(f, out / "frames" / f.name)
             census["frames"] += 1
 
             lp = root / "labels" / f"{stem}.txt"
