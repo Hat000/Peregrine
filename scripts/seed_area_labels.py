@@ -245,6 +245,9 @@ def main() -> int:
     ap.add_argument("--min-ring", type=float, default=0.6,
                     help="reject a seed whose RING between the two quads is not mostly red structure")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--overwrite-seeds", action="store_true",
+                    help="by default an existing seed is LEFT ALONE, so a re-run is idempotent and "
+                         "cannot clobber a review entry a human's own label was written into")
     args = ap.parse_args()
 
     frames_dir, seeds_dir = Path(args.frames), Path(args.seeds)
@@ -276,6 +279,9 @@ def main() -> int:
         stem = Path(name).stem
         if labels_dir and (labels_dir / f"{stem}.txt").exists():
             census["already-labelled"] += 1
+            continue
+        if not args.overwrite_seeds and (seeds_dir / f"{stem}.txt").exists():
+            census["seed-already-present"] += 1
             continue
         bgr = cv2.imread(str(frames_dir / name))
         if bgr is None or bgr.shape[1] != IMG_W or bgr.shape[0] != IMG_H:

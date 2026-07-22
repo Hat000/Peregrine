@@ -22,7 +22,9 @@
   .fitem.cur { background:#2b3442; color:var(--fg); }
   .fitem.done { color:var(--ok); }
   .fitem.done::before { content:"\2713 "; }
-  .fitem:not(.done)::before { content:"\2022 "; opacity:.35; }
+  .fitem.seeded { color:var(--acc); }                 /* pre-filled: a nudge, not four clicks */
+  .fitem.seeded::before { content:"\25C6 "; }
+  .fitem:not(.done):not(.seeded)::before { content:"\2022 "; opacity:.35; }
 
   /* main column */
   #main { flex:1; display:flex; flex-direction:column; min-width:0; }
@@ -68,6 +70,9 @@
       <button id="bDelGate" class="danger" title="delete selected gate [X / Del]">delete gate</button>
       <button id="bRecompute" title="re-derive outer corners of selected gate from its inner 4 [R]">recompute outer</button>
       <button id="bFit" title="fit view [0]">fit</button>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer"
+             title="hide frames with no pre-fill — those need all 4 corners clicked from scratch">
+        <input type="checkbox" id="cOnlyReady" checked> pre-filled only</label>
       <span id="prompt"></span>
     </div>
     <div id="canvaswrap"><canvas id="cv"></canvas></div>
@@ -615,10 +620,17 @@ function updateStatus() {
     // Loud on purpose: these points are machine output, not a label. Nothing is recorded until
     // the human presses save -- the frame is still counted as UNLABELED. The seeder's own
     // self-check rides along so a weak seed announces itself instead of looking authoritative.
-    const s = seedInfo
-      ? ` [${seedInfo.source}, self-check IoU ${seedInfo.iou}, ${seedInfo.kpts_in_frame}/8 corners in frame]`
-      : "";
-    p.textContent = `SEEDED (UNVERIFIED)${s} - ${gates.length} gate(s): fix the AREA, then SAVE`;
+    if (seedInfo && seedInfo.reasons) {
+      // A label the audit could not trust, handed back for a second look. Say WHY, or the human
+      // has to re-derive the doubt themselves.
+      p.textContent = `RE-REVIEW your earlier label — ${seedInfo.reasons.join(", ")}`
+                    + `  (fix the AREA, then SAVE to re-approve)`;
+    } else {
+      const s = seedInfo
+        ? ` [${seedInfo.source}, ring ${seedInfo.ring}, ${seedInfo.kpts_in_frame}/8 corners in frame]`
+        : "";
+      p.textContent = `SEEDED (UNVERIFIED)${s} - ${gates.length} gate(s): fix the AREA, then SAVE`;
+    }
     p.classList.remove("done");
   } else {
     p.textContent = gates.length
@@ -643,18 +655,41 @@ function updateStatus() {
   el.textContent = txt;
   el.title = txt;                            // the bar ellipsizes; hover for the full string
 }
+// A pooled batch is mostly frames with NO pre-fill, and those cost four clicks each instead of a
+// nudge. Walking all 1598 in order would spend the evening on the expensive ones, so prev/next and
+// the list both move through the FILTERED set by default.
+let onlyReady = true;
+function visible() {
+  return frames.map((f, i) => i).filter(i => !onlyReady || frames[i].seeded || frames[i].labeled);
+}
+function step(dir) {
+  const v = visible();
+  if (!v.length) return;
+  const at = v.indexOf(frameIdx);
+  if (at < 0) return loadFrame(v[dir > 0 ? 0 : v.length - 1]);
+  const j = at + dir;
+  if (j >= 0 && j < v.length) loadFrame(v[j]);
+}
 function renderSidebar() {
   const n = frames.filter(f => f.labeled).length;
-  $("progress").textContent = `labeled ${n} / ${frames.length}`;
+  const v = visible();
+  const todo = v.filter(i => !frames[i].labeled).length;
+  $("progress").textContent = `labeled ${n} / ${frames.length}` +
+    (onlyReady ? `  ·  ${todo} pre-filled left` : "");
   const list = $("framelist"); list.innerHTML = "";
+  const shown = new Set(v);
   frames.forEach((f, i) => {
+    if (!shown.has(i)) return;
     const d = document.createElement("div");
-    d.className = "fitem" + (f.labeled ? " done" : "") + (i === frameIdx ? " cur" : "");
+    // Seeded vs not is the difference between a nudge and clicking four corners from scratch, so
+    // it belongs in the list -- it is how you decide what to work on next.
+    d.className = "fitem" + (f.labeled ? " done" : f.seeded ? " seeded" : "")
+                + (i === frameIdx ? " cur" : "");
     d.textContent = f.name; d.title = f.name;
     d.onclick = () => loadFrame(i);
     list.appendChild(d);
   });
-  const cur = list.children[frameIdx];
+  const cur = list.querySelector(".fitem.cur");   // NOT children[frameIdx]: the list is filtered
   if (cur) cur.scrollIntoView({ block: "nearest" });
 }
 
@@ -712,10 +747,10 @@ window.addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && k === "s") { e.preventDefault(); save(false); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   switch (k) {
-    case "arrowright": case "d": loadFrame(frameIdx + 1); break;
-    case "arrowleft":  case "a": loadFrame(frameIdx - 1); break;
+    case "arrowright": case "d": step(1); break;
+    case "arrowleft":  case "a": step(-1); break;
     case "s": save(false); break;
-    case "k": setDirty(false); loadFrame(frameIdx + 1); break;              // skip
+    case "k": setDirty(false); step(1); break;                              // skip
     case "n": save(true); break;                                            // negative
     case "g": startGate(); break;
     case "x": case "delete": deleteGate(); break;
@@ -741,16 +776,17 @@ function undoClickAll() {   // Esc during collection: drop the in-progress gate 
 }
 
 // ---- buttons ------------------------------------------------------------------------------
-$("bPrev").onclick = () => loadFrame(frameIdx - 1);
-$("bNext").onclick = () => loadFrame(frameIdx + 1);
+$("bPrev").onclick = () => step(-1);
+$("bNext").onclick = () => step(1);
 $("bSave").onclick = () => save(false);
-$("bSkip").onclick = () => { setDirty(false); loadFrame(frameIdx + 1); };
+$("bSkip").onclick = () => { setDirty(false); step(1); };
 $("bNoGate").onclick = () => save(true);
 $("bAddGate").onclick = startGate;
 $("bDelGate").onclick = deleteGate;
 $("bRecompute").onclick = () => { const g = curGate();
   if (g && gateComplete(g)) { recomputeOuter(g, true); setDirty(true); draw(); } };
 $("bFit").onclick = fitView;
+$("cOnlyReady").onchange = e => { onlyReady = e.target.checked; renderSidebar(); };
 window.addEventListener("resize", resizeCanvas);
 // ...and catch layout changes the window never hears about (status/toolbar reflow, zoom, devtools)
 if (window.ResizeObserver) new ResizeObserver(() => resizeCanvas()).observe($("canvaswrap"));
@@ -759,8 +795,10 @@ if (window.ResizeObserver) new ResizeObserver(() => resizeCanvas()).observe($("c
 (async () => {
   resizeCanvas();
   await refreshFrames();
-  const first = frames.findIndex(f => !f.labeled);   // resume at first unlabeled frame
-  if (frames.length) loadFrame(first >= 0 ? first : 0);
+  // resume at the first PRE-FILLED unlabeled frame: cheapest work first
+  const v = visible();
+  const first = v.find(i => !frames[i].labeled);
+  if (frames.length) loadFrame(first !== undefined ? first : (v[0] !== undefined ? v[0] : 0));
 })();
 </script>
 </body>
