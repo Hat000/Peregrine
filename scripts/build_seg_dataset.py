@@ -44,21 +44,36 @@ _NON_GATE_CENSUS = {"ok", "frames-kept", "frame-dropped", "duplicate-frame", "ne
                     "direct-area-frames", "direct-area-rows"}
 
 
-def direct_seg_path(pose_label: Path) -> Path:
-    """The AREA label the hand-labeler writes beside its pose label: ``labels/seg/<stem>.txt``.
+def direct_seg_path(pose_label: Path) -> Path | None:
+    """The AREA label written beside a pose label, or None. TWO layouts, both real:
 
-    These are authored, not derived: tools/gate_labeler clips the quads AS DRAWN, so they carry the
-    close-range gates whose corners left the frame. Re-deriving those from the pose row is not
-    merely lossy -- it drops them entirely (the refit needs >= 4 in-frame keypoints), which is the
-    exact population this corpus exists to supply.
+      hand-labeler   <labels>/<stem>.txt          -> <labels>/seg/<stem>.txt
+      blender render <root>/labels/<split>/x.txt  -> <root>/seg/<split>/x.txt
+
+    Only the first was handled, which would have silently discarded every exact-corner seg label
+    the re-render produces and re-derived them from the clamped pose rows instead -- dropping
+    exactly the cropped gates the re-render exists to supply, with no error anywhere.
+
+    These are authored, not derived: the writer clips the quads from the TRUE corners, so they
+    carry the gates whose corners left the frame. Re-deriving those from the pose row is not merely
+    lossy -- it drops them (the refit needs >= 4 in-frame keypoints).
     """
-    return pose_label.parent / "seg" / pose_label.name
+    beside = pose_label.parent / "seg" / pose_label.name
+    if beside.is_file():
+        return beside
+    parts = list(pose_label.parts)                      # swap the LAST 'labels' component for 'seg'
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() == "labels":
+            parts[i] = "seg"
+            cand = Path(*parts)
+            return cand if cand.is_file() else None
+    return None
 
 
 def seg_text_for(pose_label: Path, census: Counter):
     """(seg_text, used_direct). Prefers the authored area label; falls back to pose-row derivation."""
     direct = direct_seg_path(pose_label)
-    if direct.exists():
+    if direct is not None:
         text = direct.read_text()
         census["direct-area-frames"] += 1
         census["direct-area-rows"] += len(text.splitlines())

@@ -256,3 +256,34 @@ def test_builder_scan_skips_the_seg_subdirectory(tmp_path):
     pairs = bsd.scan_pairs(root)
     assert [lp.name for _, lp in pairs] == ["f0.txt"]
     assert all("seg" not in lp.parts for _, lp in pairs)
+
+
+def test_builder_finds_the_render_layout_seg_labels(tmp_path):
+    """Two on-disk layouts produce area labels; missing the render one would have silently
+    re-derived 3300 frames from their clamped pose rows."""
+    from collections import Counter
+
+    import build_seg_dataset as bsd
+
+    root = tmp_path / "render"
+    (root / "labels" / "train").mkdir(parents=True)
+    (root / "seg" / "train").mkdir(parents=True)
+    pose = root / "labels" / "train" / "000000.txt"
+    g = gate(400.0)
+    pose.write_text(labelio.encode_label([g]))
+    authored, _ = labelio.encode_seg_label([g])
+    (root / "seg" / "train" / "000000.txt").write_text(authored)
+
+    assert bsd.direct_seg_path(pose) == root / "seg" / "train" / "000000.txt"
+    census = Counter()
+    text, direct = bsd.seg_text_for(pose, census)
+    assert direct and text == authored and census["direct-area-rows"] == 2
+
+
+def test_direct_seg_path_is_none_when_absent(tmp_path):
+    import build_seg_dataset as bsd
+
+    (tmp_path / "labels").mkdir()
+    p = tmp_path / "labels" / "x.txt"
+    p.write_text("")
+    assert bsd.direct_seg_path(p) is None
