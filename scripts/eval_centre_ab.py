@@ -1,7 +1,11 @@
-"""A/B the two mask -> gate-centre solvers on HAND-LABELLED REAL FRAMES.
+"""A/B the mask -> gate-centre solvers on HAND-LABELLED REAL FRAMES.
 
-The question: given the same predicted seg masks, does fitting a QUAD to the whole mask boundary
-and intersecting its diagonals beat fitting LINES to contour segments and solving a homography?
+Three arms, fed the IDENTICAL predicted masks:
+  * LINE SOLVER   -- fit lines to contour segments, solve a homography (gate_lines).
+  * HULL QUAD     -- collapse the mask's convex hull to 4 vertices, intersect the diagonals.
+  * MODEL FIT     -- take the KNOWN 3-D gate and search its pose for maximum silhouette/mask
+                     overlap (gate_model_fit). The first two INFER the gate from the boundary;
+                     this one never asks the mask "which of your edges is a gate edge?".
 
 GROUND TRUTH is the diagonal intersection of the hand-labelled INNER quad, read from the labeler's
 exact unclamped geometry sidecar (labels/geom/*.json), not from the pose row -- the pose row clamps
@@ -24,6 +28,7 @@ consume the same ``pair_gate_instances`` output. Anything that differs is the so
 Usage:
   python scripts/eval_centre_ab.py                       # both models, table + gallery
   python scripts/eval_centre_ab.py --no-gallery --device cpu
+  python scripts/eval_centre_ab.py --models v2 --arms line,quad,model,model-flat
 """
 from __future__ import annotations
 
@@ -31,6 +36,7 @@ import argparse
 import html
 import json
 import sys
+import time
 from pathlib import Path
 
 import cv2
@@ -47,7 +53,11 @@ from racer.vision.gate_lines import (  # noqa: E402
     centre_from_masks_quad,
     centre_from_seg_masks,
     pair_gate_instances,
+    quad_from_mask_ex,
 )
+from racer.vision.gate_model_fit import FLAT_MODEL, fit_gate_model  # noqa: E402
+# DEFAULT_MODEL and the score internals are imported LOCALLY inside run_ambiguity / run_task2 --
+# only those two experiments need them.
 
 DEFAULT_BATCH = "C:/Users/Shadow/vq2_label_batch_2026-07-22"
 DEFAULT_VAL = ("C:/Users/Shadow/AppData/Local/Temp/claude/C--Users-Shadow-Peregrine/"
@@ -157,16 +167,63 @@ class Arm:
                 f"{self.n_pred:5d}", f"{self.n_offscreen:4d}")
 
 
-def run_model(tag, weights, truth, device, strict_quad=False):
+# --- arm registry -------------------------------------------------------------------------------
+# Each entry solves ONE gate's (frame_mask, opening_mask) and returns (centre_px, extra) or None.
+# ``extra`` is whatever the gallery needs to draw that arm; the scoring only ever uses the centre.
+# Adding an arm here is the only place a new solver has to be wired in, so the greedy one-to-one
+# matcher and the coverage/error bookkeeping below can never accidentally fork per arm.
+
+def _arm_line(f, o, wh):
+    got = centre_from_seg_masks(f, o, image_wh=wh)
+    return None if got is None else (got[0], None)
+
+
+def _arm_quad(f, o, wh):
+    got = centre_from_masks_quad(f, o, image_wh=wh)
+    return None if got is None else (got[0], got[1])
+
+
+def _arm_model(f, o, wh, **kw):
+    fit = fit_gate_model(f, o, wh, **kw)
+    return None if fit is None else (fit.centre_px, fit)
+
+
+ARMS = {
+    "line": ("line-solver (baseline)", _arm_line),
+    "quad": ("quad+diagonal", _arm_quad),
+    "model": ("MODEL FIT (3-D, depth 0.26)", _arm_model),
+    # --- ablations. Each isolates ONE design choice, so a win or a loss can be attributed. ---
+    "model-flat": ("model fit, flat (depth 0)",
+                   lambda f, o, wh: _arm_model(f, o, wh, model=FLAT_MODEL)),
+    "model-open": ("model fit, opening IoU only",
+                   lambda f, o, wh: _arm_model(f, o, wh, w_frame=0.0)),
+    "model-frame": ("model fit, frame IoU only",
+                    lambda f, o, wh: _arm_model(f, o, wh, w_open=0.0)),
+    "model-o2": ("model fit, opening weighted 2x",
+                 lambda f, o, wh: _arm_model(f, o, wh, w_open=2.0)),
+    "model-b60": ("model fit, budget 60",
+                  lambda f, o, wh: _arm_model(f, o, wh, budget=60)),
+    "model-b240": ("model fit, budget 240",
+                   lambda f, o, wh: _arm_model(f, o, wh, budget=240)),
+    "model-s4": ("model fit, coarse raster (scale 4)",
+                 lambda f, o, wh: _arm_model(f, o, wh, scales=(4.0,))),
+    "model-noline": ("model fit, no line-H init",
+                     lambda f, o, wh: _arm_model(f, o, wh, line_init=False)),
+    "model-pre": ("model fit, translation pre-search",
+                  lambda f, o, wh: _arm_model(f, o, wh, presearch=True)),
+    "quad-strict": ("quad, no clipped fits",
+                    lambda f, o, wh: (lambda g: None if g is None else (g[0], g[1]))(
+                        centre_from_masks_quad(f, o, image_wh=wh, max_border_edges=0))),
+}
+
+
+def run_model(tag, weights, truth, device, arm_ids):
     """Score every arm for one seg model. Inference runs ONCE per frame; the arms share its masks."""
     det = SegGateLineDetector.load(weights, device=device)
-    arms = {
-        f"{tag} line-solver (baseline)": Arm(f"{tag} line-solver (baseline)"),
-        f"{tag} quad+diagonal (new)": Arm(f"{tag} quad+diagonal (new)"),
-    }
-    if strict_quad:
-        n = f"{tag} quad, no clipped fits"
-        arms[n] = Arm(n)
+    arms = {a: Arm(f"{tag} {ARMS[a][0]}") for a in arm_ids}
+    timing = {a: [] for a in arm_ids}        # per-GATE wall time, ms
+    init_ms = []                             # quad_from_mask_ex alone: the model arm's shared init
+    diag = {"evals": [], "ambig": [], "iou_f": [], "iou_o": [], "init_kind": {}}
     per_frame = []
     for stem, img_path, gt_pts, gt_quads, big in truth:
         im = cv2.imread(str(img_path))
@@ -174,27 +231,31 @@ def run_model(tag, weights, truth, device, strict_quad=False):
             continue
         h, w = im.shape[:2]
         pairs = pair_gate_instances(*det.masks_for(im))
-        base, new, strict = [], [], []
+        preds = {a: [] for a in arm_ids}
         for f, o in pairs:
-            got = centre_from_seg_masks(f, o, image_wh=(w, h))
-            if got is not None:
-                base.append(got[0])
-            got = centre_from_masks_quad(f, o, image_wh=(w, h))
-            if got is not None:
-                new.append(got)
-            if strict_quad:
-                got = centre_from_masks_quad(f, o, image_wh=(w, h), max_border_edges=0)
+            if "model" in arm_ids:
+                t0 = time.perf_counter()
+                quad_from_mask_ex(o if o is not None else f)
+                init_ms.append((time.perf_counter() - t0) * 1000.0)
+            for a in arm_ids:
+                t0 = time.perf_counter()
+                got = ARMS[a][1](f, o, (w, h))
+                timing[a].append((time.perf_counter() - t0) * 1000.0)
                 if got is not None:
-                    strict.append(got[0])
-        d_base = arms[f"{tag} line-solver (baseline)"].add_frame(gt_pts, base, (w, h), big)
-        d_new = arms[f"{tag} quad+diagonal (new)"].add_frame(
-            gt_pts, [c for c, _ in new], (w, h), big)
-        if strict_quad:
-            arms[f"{tag} quad, no clipped fits"].add_frame(gt_pts, strict, (w, h), big)
+                    preds[a].append(got)
+                if a == "model" and got is not None:
+                    fit = got[1]
+                    diag["evals"].append(fit.n_evals)
+                    diag["ambig"].append(fit.ambiguity_margin)
+                    diag["iou_f"].append(fit.iou_frame)
+                    diag["iou_o"].append(fit.iou_opening)
+                    diag["init_kind"][fit.init_kind] = diag["init_kind"].get(fit.init_kind, 0) + 1
+        per_gt = {a: arms[a].add_frame(gt_pts, [c for c, _ in preds[a]], (w, h), big)
+                  for a in arm_ids}
         per_frame.append({"stem": stem, "img": img_path, "im": im, "pairs": pairs,
                           "gt": gt_pts, "gt_quads": gt_quads,
-                          "base": base, "new": new, "d_base": d_base, "d_new": d_new})
-    return arms, per_frame
+                          "preds": preds, "per_gt": per_gt})
+    return arms, per_frame, timing, init_ms, diag
 
 
 # --- gallery ----------------------------------------------------------------------------------
@@ -235,6 +296,15 @@ def _mask_outline(canvas, mask, colour):
         cv2.drawContours(canvas, [c + np.array([[PAD_X, PAD_Y]])], -1, colour, 1, cv2.LINE_AA)
 
 
+_PANEL_LABEL = {
+    "line": "lines -> homography",
+    "quad": "hull quad -> diagonals",
+    "model": "MODEL FIT: 3-D gate silhouette",
+    "model-flat": "model fit, flat (depth 0)",
+    "quad-strict": "hull quad, no clipped fits",
+}
+
+
 def _panel(rec, which):
     c = _canvas(rec["im"])
     for f, o in rec["pairs"]:
@@ -245,73 +315,263 @@ def _panel(rec, which):
         _poly(c, q, (170, 170, 170))
     for g in rec["gt"]:
         _cross(c, g, (255, 255, 255), r=11, t=2)
-    if which == "new":
-        for cen, quad in rec["new"]:
+    for cen, extra in rec["preds"].get(which, []):
+        if which.startswith("model"):
+            # Draw the FITTED SILHOUETTE, not just the centre: the whole claim of this arm is that
+            # it settled the KNOWN SHAPE onto the mask, and only the shape shows whether it did.
+            # Cyan = the amodal outer silhouette, green = the see-through opening.
+            if extra.frame_poly is not None:
+                _poly(c, extra.frame_poly, (255, 200, 0), 2)
+            if extra.opening_poly is not None and len(extra.opening_poly) >= 3:
+                _poly(c, extra.opening_poly, (120, 255, 120), 2)
+            _cross(c, cen, (255, 0, 255))
+        elif which.startswith("quad") and extra is not None:
             # ORANGE = the quad still has an image-border edge, i.e. only 3 gate edges were visible
             # and this is a fit to the crop, biased inward. Magenta = all four edges are gate edges.
-            clipped = any(_on_border(quad[i], quad[(i + 1) % 4], *rec["im"].shape[1::-1])
+            clipped = any(_on_border(extra[i], extra[(i + 1) % 4], *rec["im"].shape[1::-1])
                           for i in range(4))
             col = (0, 165, 255) if clipped else (255, 0, 255)
-            _poly(c, quad, col, 2)
+            _poly(c, extra, col, 2)
             _cross(c, cen, col)
-    else:
-        for cen in rec["base"]:
+        else:
             _cross(c, cen, (255, 0, 255))
-    label = "existing: lines -> homography" if which == "base" else "new: hull quad -> diagonals"
-    cv2.putText(c, label, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220, 220, 220), 1, cv2.LINE_AA)
+    cv2.putText(c, _PANEL_LABEL.get(which, which), (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                (220, 220, 220), 1, cv2.LINE_AA)
     return c
 
 
-def _score(rec):
-    """Worst-first key for the NEW arm: unmatched labelled gates rank above any finite error."""
-    n_unmatched = len(rec["gt"]) - len(rec["d_new"])
-    worst = max(rec["d_new"].values()) if rec["d_new"] else 0.0
-    return (-n_unmatched, -worst)
+def _score(rec, key):
+    """Worst-first key for one arm: unmatched labelled gates rank above any finite error."""
+    d = rec["per_gt"].get(key, {})
+    n_unmatched = len(rec["gt"]) - len(d)
+    return (-n_unmatched, -(max(d.values()) if d else 0.0))
 
 
-def write_gallery(out_dir: Path, per_frame, tag):
+def write_gallery(out_dir: Path, per_frame, tag, arm_ids, sort_by):
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "img").mkdir(exist_ok=True)
-    recs = sorted(per_frame, key=_score)
+    recs = sorted(per_frame, key=lambda r: _score(r, sort_by))
     cards = []
     for k, rec in enumerate(recs):
-        side = np.concatenate([_panel(rec, "base"),
-                               np.full((_panel(rec, "base").shape[0], 4, 3), 60, np.uint8),
-                               _panel(rec, "new")], axis=1)
+        panels = [_panel(rec, a) for a in arm_ids]
+        sep = np.full((panels[0].shape[0], 4, 3), 60, np.uint8)
+        side = panels[0]
+        for p in panels[1:]:
+            side = np.concatenate([side, sep, p], axis=1)
         name = f"{k:03d}_{rec['stem'][:70]}.jpg"
-        cv2.imwrite(str(out_dir / "img" / name), side, [cv2.IMWRITE_JPEG_QUALITY, 88])
-        nb = len(rec["gt"]) - len(rec["d_new"])
-        nbb = len(rec["gt"]) - len(rec["d_base"])
+        cv2.imwrite(str(out_dir / "img" / name), side, [cv2.IMWRITE_JPEG_QUALITY, 86])
+        lines = []
+        for a in arm_ids:
+            d = rec["per_gt"].get(a, {})
+            miss = len(rec["gt"]) - len(d)
+            lines.append(f'<span class=a>{html.escape(ARMS[a][0])}</span> err '
+                         f'{", ".join(f"{v:.0f}" for v in d.values()) or "-"} px'
+                         f'{f" &middot; <b>{miss} unmatched</b>" if miss else ""}')
         cards.append(
             f'<div class=c><img src="img/{html.escape(name)}" loading=lazy>'
-            f'<div class=m><b>{html.escape(rec["stem"])}</b><br>'
-            f'{len(rec["gt"])} labelled gate(s) &middot; '
-            f'<span class=n>new</span> err '
-            f'{", ".join(f"{v:.0f}" for v in rec["d_new"].values()) or "-"} px'
-            f'{f" &middot; {nb} unmatched" if nb else ""}<br>'
-            f'<span class=b>existing</span> err '
-            f'{", ".join(f"{v:.0f}" for v in rec["d_base"].values()) or "-"} px'
-            f'{f" &middot; {nbb} unmatched" if nbb else ""}</div></div>')
+            f'<div class=m><b>{html.escape(rec["stem"])}</b> &middot; '
+            f'{len(rec["gt"])} labelled gate(s)<br>' + "<br>".join(lines) + "</div></div>")
     (out_dir / "index.html").write_text(
         "<!doctype html><meta charset=utf-8><title>centre A/B " + tag + "</title>"
         "<style>body{background:#141414;color:#ddd;font:14px/1.45 system-ui,sans-serif;margin:24px}"
-        "h1{font-size:18px;font-weight:600}p{color:#999;max-width:70em}"
-        ".c{margin:0 0 26px}img{width:100%;max-width:1600px;display:block;border:1px solid #333}"
-        ".m{color:#aaa;padding:6px 2px}.n{color:#f4f}.b{color:#8cf}"
+        "h1{font-size:18px;font-weight:600}p{color:#999;max-width:78em}"
+        ".c{margin:0 0 26px}img{width:100%;max-width:2400px;display:block;border:1px solid #333}"
+        ".m{color:#aaa;padding:6px 2px}.a{color:#f4f}"
         "code{color:#ccc}</style>"
-        f"<h1>gate-centre A/B &mdash; {html.escape(tag)}, worst-first for the NEW arm</h1>"
-        "<p>Left: the existing line/homography solver. Right: the new convex-hull quad, whose "
-        "outline is drawn too. <b>White cross</b> = hand-labelled ground truth (diagonal "
-        "intersection of the labelled inner quad), <b>white outline</b> = that labelled quad, "
-        "<b>magenta</b> = the solver's centre. Olive outlines are the predicted masks BOTH arms "
-        "were fed. The frame is inset in a padded canvas so a centre that legitimately falls "
-        "outside the image is still drawn where it actually is.</p>"
-        "<p><b style='color:#fa5'>Orange</b> on the right marks a quad that still has an image "
+        f"<h1>gate-centre A/B &mdash; {html.escape(tag)}, worst-first for "
+        f"<code>{html.escape(sort_by)}</code></h1>"
+        "<p>Panels left to right: " + " &middot; ".join(
+            f"<b>{html.escape(ARMS[a][0])}</b>" for a in arm_ids) + ". "
+        "<b>White cross</b> = hand-labelled ground truth (diagonal intersection of the labelled "
+        "inner quad), <b>white outline</b> = that labelled quad, <b>magenta cross</b> = the "
+        "solver's centre. Olive outlines are the predicted masks EVERY arm was fed. The frame is "
+        "inset in a padded canvas so a centre that legitimately falls outside the image is still "
+        "drawn where it actually is.</p>"
+        "<p>On the <b>model-fit</b> panel the <b style='color:#0c8'>amber outline</b> is the fitted "
+        "3-D gate's outer silhouette and the <b style='color:#7f7'>green outline</b> is its "
+        "see-through opening &mdash; i.e. where the solver believes the known gate actually is. "
+        "Judge this arm by whether that shape settled on the gate, not only by the cross.</p>"
+        "<p><b style='color:#fa5'>Orange</b> on a quad panel marks a quad that still has an image "
         "border edge: only three gate edges were visible, so nothing could be extended and the fit "
-        "is the visible trapezoid, biased toward the middle of the frame. That is the new method's "
-        "one structural weakness &mdash; look at these first.</p>"
+        "is the visible trapezoid, biased toward the middle of the frame.</p>"
         + "".join(cards), encoding="utf-8")
     return out_dir / "index.html"
+
+
+# ==================================================================================================
+# EXPERIMENT: does the gate's 0.26 m DEPTH break the IPPE 2-fold ambiguity?
+# ==================================================================================================
+# Scope, deliberately narrow. The 2-fold ambiguity does NOT affect the centre pixel (both poses
+# project it identically -- that is what makes them ambiguous), it does NOT affect the bearing (the
+# two translations are parallel, since the gate origin must land on the same pixel), and it does not
+# affect range-from-size (it flips the SIGN of the tilt, not its magnitude). The only output it
+# corrupts is the gate's ORIENTATION -- its normal / relative yaw. So that is the only thing this
+# experiment asks about.
+#
+# The hypothesis: planar IPPE is ambiguous because a FLAT target's two poses project identically.
+# This gate is 0.26 m DEEP, so the two solutions expose different inner side walls and produce
+# genuinely different silhouettes -- an area fit may therefore break an ambiguity no planar method
+# can. The FLAT model is the control: on it the two branches must tie, or the experiment is broken.
+
+def _rot_geodesic(a, b):
+    return float(np.arccos(np.clip((np.trace(a.T @ b) - 1.0) / 2.0, -1.0, 1.0)))
+
+
+def run_ambiguity(n: int = 240, seed: int = 3, noise_px: float = 0.0):
+    from racer.frames import CAMERA_INTRINSICS_K as K
+    from racer.vision.gate_model_fit import (DEFAULT_MODEL, FLAT_MODEL, _ippe_candidates,
+                                             _Target, project_silhouette, score_pose,
+                                             range_from_apparent_size)
+    rng = np.random.default_rng(seed)
+    W, H = 640, 360
+    recs = []
+    while len(recs) < n:
+        d = rng.uniform(2.0, 14.0)
+        tilt = rng.uniform(0.05, 0.9)                    # the ambiguity is trivial at zero tilt
+        axis = rng.uniform(0, 2 * np.pi)
+        rv = np.array([np.cos(axis) * tilt, np.sin(axis) * tilt, rng.uniform(-0.2, 0.2)])
+        R = cv2.Rodrigues(rv)[0]
+        t = np.array([rng.uniform(-.2, .2) * d, rng.uniform(-.15, .15) * d, d])
+        got = project_silhouette(R, t, K, DEFAULT_MODEL)
+        if got is None:
+            continue
+        fp, op = got
+        fm = np.zeros((H, W), np.uint8); cv2.fillPoly(fm, [fp.round().astype(np.int32)], 1)
+        om = np.zeros((H, W), np.uint8)
+        if len(op) >= 3:
+            cv2.fillPoly(om, [np.asarray(op).round().astype(np.int32)], 1)
+        if fm.sum() < 800 or om.sum() < 200:
+            continue
+        # the PLANAR observation the ambiguity comes from: the 4 inner-square corners
+        h = DEFAULT_MODEL.inner_m / 2.0
+        sq = np.array([[-h, h, 0.], [h, h, 0.], [h, -h, 0.], [-h, -h, 0.]])
+        cam = sq @ R.T + t
+        uv = (cam @ K.T)[:, :2] / (cam @ K.T)[:, 2:3]
+        if noise_px > 0:
+            uv = uv + rng.normal(0, noise_px, uv.shape)
+        cands = _ippe_candidates(uv, DEFAULT_MODEL.inner_m, K)
+        if len(cands) != 2:
+            continue
+        # THE BASELINE DISCRIMINATOR, and it must be in this table or the experiment is meaningless:
+        # IPPE's own reprojection-error ranking, which gate_pose._estimate_ippe already uses. The
+        # planar 2-fold ambiguity is only EXACT under weak perspective; under full perspective the
+        # wrong branch reprojects slightly worse, and that residual is what the existing code reads.
+        # The question is therefore not "can anything break the tie" but "does the 0.26 m depth
+        # break it BETTER, and does it survive corner noise where the reprojection residual does not".
+        rep = [float(np.sqrt(np.mean(np.sum((
+            ((sq @ Rc.T + tc) @ K.T)[:, :2] / ((sq @ Rc.T + tc) @ K.T)[:, 2:3] - uv) ** 2, axis=1))))
+            for Rc, tc in cands]
+        tgt = _Target(fm, om, (W, H), 2.0)
+        s_depth = [score_pose(Rc, tc, tgt, K, DEFAULT_MODEL) for Rc, tc in cands]
+        s_flat = [score_pose(Rc, tc, tgt, K, FLAT_MODEL) for Rc, tc in cands]
+        # "true" branch = the one whose ORIENTATION matches, up to the gate's own 90-degree symmetry
+        def orient_err(Rc):
+            best = np.pi
+            for k in range(4):
+                Rz = cv2.Rodrigues(np.array([0., 0., k * np.pi / 2]))[0]
+                best = min(best, _rot_geodesic(Rc @ Rz, R))
+            return best
+        oe = [orient_err(Rc) for Rc, _ in cands]
+        true_i = int(np.argmin(oe))
+        recs.append(dict(
+            tilt=float(tilt), d=float(d),
+            ippe_ok=bool(np.argmin(rep) == true_i),
+            depth_ok=bool(np.argmax(s_depth) == true_i),
+            flat_ok=bool(np.argmax(s_flat) == true_i),
+            depth_margin=float(s_depth[true_i] - s_depth[1 - true_i]),
+            flat_margin=float(s_flat[true_i] - s_flat[1 - true_i]),
+            wrong_orient_deg=float(np.degrees(oe[1 - true_i])),
+            # branch invariance of the outputs the coordinator asked us to emit
+            d_rng_size=float(abs(range_from_apparent_size(*cands[0], K, DEFAULT_MODEL.inner_m)
+                                 - range_from_apparent_size(*cands[1], K, DEFAULT_MODEL.inner_m))),
+            d_t_norm=float(abs(np.linalg.norm(cands[0][1]) - np.linalg.norm(cands[1][1]))),
+            d_bearing_deg=float(np.degrees(np.arccos(np.clip(np.dot(
+                cands[0][1] / np.linalg.norm(cands[0][1]),
+                cands[1][1] / np.linalg.norm(cands[1][1])), -1, 1)))),
+            rng_true=float(np.linalg.norm(t)),
+        ))
+    r = {k: np.array([x[k] for x in recs]) for k in recs[0]}
+    print(f"\nAMBIGUITY EXPERIMENT -- {len(recs)} synthetic poses, 2-14 m, tilt 3-52 deg, "
+          f"corner noise {noise_px:.1f} px.\nMasks are the TRUE rendered silhouette of the 3-D "
+          f"model; the two IPPE branches are scored against them.\n")
+    print(f"  IPPE reprojection ranking (what ships today)     : {100 * r['ippe_ok'].mean():5.1f}%")
+    print(f"  FLAT silhouette IoU  -- the shape-only control   : {100 * r['flat_ok'].mean():5.1f}%"
+          f"   median IoU margin {np.median(r['flat_margin']):+.4f}")
+    print(f"  3-D silhouette IoU (depth 0.26 m)                : {100 * r['depth_ok'].mean():5.1f}%"
+          f"   median IoU margin {np.median(r['depth_margin']):+.4f}")
+    print(f"  (picking the WRONG branch costs a median "
+          f"{np.median(r['wrong_orient_deg']):.1f} deg of gate orientation)")
+    print("\n  by tilt:")
+    for lo, hi in ((0.05, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.9)):
+        m = (r["tilt"] >= lo) & (r["tilt"] < hi)
+        if m.sum():
+            print(f"    {np.degrees(lo):4.0f}-{np.degrees(hi):4.0f} deg  n={int(m.sum()):3d}  "
+                  f"IPPE {100 * r['ippe_ok'][m].mean():5.1f}%  flat {100 * r['flat_ok'][m].mean():5.1f}%"
+                  f"  3-D {100 * r['depth_ok'][m].mean():5.1f}%"
+                  f"   3-D margin {np.median(r['depth_margin'][m]):+.4f}")
+    print("\n  BRANCH INVARIANCE of the emitted quantities (difference between the two branches).")
+    print("  NB the two branches are NOT an exact tie for this target -- see the note above -- so")
+    print("  these differences are small but not zero, and they BOUND what the ambiguity can cost:")
+    print(f"    bearing direction        median {np.median(r['d_bearing_deg']):.3f} deg")
+    print(f"    range from apparent SIZE median {np.median(r['d_rng_size']):.4f} m  "
+          f"p90 {np.percentile(r['d_rng_size'], 90):.4f} m")
+    print(f"    range from ||t||         median {np.median(r['d_t_norm']):.4f} m  "
+          f"p90 {np.percentile(r['d_t_norm'], 90):.4f} m")
+    return recs
+
+
+# ==================================================================================================
+# EXPERIMENT: range from apparent SIZE vs the fitted ||t||, against task2 GROUND-TRUTH range
+# ==================================================================================================
+def run_task2(weights, device, bundle=None):
+    from racer.vision.gate_model_fit import fit_gate_model
+    bundle = Path(bundle or ROOT / "handoff/shadowpc-followups-2026-06-05/task2_frames")
+    meta = json.loads((bundle / "frames.json").read_text())
+    det = SegGateLineDetector.load(weights, device=device)
+    rows = []
+    for fr in meta["frames"]:
+        im = cv2.imread(str(bundle / fr["png"]))
+        if im is None:
+            continue
+        h, w = im.shape[:2]
+        # Take the LARGEST instance, not the best-scoring one. The bundle's ground truth is the
+        # range to GATE 0, the gate being approached; the frames also contain gates further down
+        # the course, and a tiny distant mask is TRIVIALLY easy to cover (measured: score 1.00 at
+        # 38 m), so ranking by score picks the wrong gate and manufactures a +15 m bias.
+        best, best_area = None, 0
+        for f, o in pair_gate_instances(*det.masks_for(im)):
+            a = int(np.count_nonzero(np.asarray(f)))
+            if a <= best_area:
+                continue
+            fit = fit_gate_model(f, o, (w, h))
+            if fit is not None:
+                best, best_area = fit, a
+        if best is None:
+            continue
+        rows.append((fr["range_m"], best.range_m, best.t_norm_m, best.range_from_size_ok))
+    if not rows:
+        print("task2: no fits")
+        return
+    gt = np.array([r[0] for r in rows]); rs = np.array([r[1] for r in rows])
+    rt = np.array([r[2] for r in rows]); ok = np.array([r[3] for r in rows])
+    print(f"\nTASK2 RANGE CHECK -- {len(rows)}/{len(meta['frames'])} frames fitted, "
+          f"GT range {gt.min():.1f}-{gt.max():.1f} m (bundle's own per-frame range_m).")
+    for name, v in (("range from apparent SIZE (ambiguity-safe)", rs),
+                    ("||t|| of the fitted pose  (NOT safe)     ", rt)):
+        e = v - gt
+        print(f"  {name}: bias {e.mean():+6.2f} m  median |err| {np.median(np.abs(e)):5.2f} m  "
+              f"p90 {np.percentile(np.abs(e), 90):5.2f} m  rel {np.median(np.abs(e) / gt) * 100:4.1f}%")
+    print("  by range bin (median |err| m, then as % of range):")
+    for lo, hi in ((0, 4), (4, 10), (10, 25)):
+        m = (gt >= lo) & (gt < hi)
+        if not m.any():
+            continue
+        es, et = np.abs(rs[m] - gt[m]), np.abs(rt[m] - gt[m])
+        print(f"    {lo:2d}-{hi:2d} m  n={int(m.sum()):2d}   size {np.median(es):5.2f} m "
+              f"({np.median(es / gt[m]) * 100:4.1f}%)   ||t|| {np.median(et):5.2f} m "
+              f"({np.median(et / gt[m]) * 100:4.1f}%)")
+    print(f"  ({int((~ok).sum())} frames fell back to ||t|| because the inner square could not be "
+          f"fully projected)")
 
 
 def main() -> int:
@@ -323,9 +583,29 @@ def main() -> int:
     ap.add_argument("--models", default="v2,s1")
     ap.add_argument("--gallery-model", default="v2")
     ap.add_argument("--no-gallery", action="store_true")
-    ap.add_argument("--strict-quad", action="store_true",
-                    help="also score a variant that refuses border-clipped quads (diagnostic)")
+    ap.add_argument("--arms", default="line,quad,model",
+                    help=f"comma-separated subset of {sorted(ARMS)}")
+    ap.add_argument("--gallery-sort", default="model", help="arm to order the gallery worst-first")
+    ap.add_argument("--ambiguity", action="store_true",
+                    help="run ONLY the 3-D-depth vs IPPE 2-fold ORIENTATION ambiguity experiment")
+    ap.add_argument("--ambiguity-noise", type=float, default=0.0,
+                    help="corner noise (px) fed to IPPE in the ambiguity experiment")
+    ap.add_argument("--task2", action="store_true",
+                    help="run ONLY the task2 ground-truth RANGE check (size-based vs ||t||)")
+    ap.add_argument("--task2-bundle", default=None,
+                    help="task2 frame bundle; the PNGs are gitignored, so they may live in another "
+                         "checkout (C:/Users/Shadow/Peregrine/handoff/.../task2_frames)")
     args = ap.parse_args()
+    if args.ambiguity:
+        run_ambiguity(noise_px=args.ambiguity_noise)
+        return 0
+    if args.task2:
+        run_task2(WEIGHTS[args.models.split(",")[0].strip()], args.device, args.task2_bundle)
+        return 0
+    arm_ids = [a.strip() for a in args.arms.split(",") if a.strip()]
+    bad = [a for a in arm_ids if a not in ARMS]
+    if bad:
+        ap.error(f"unknown arm(s) {bad}; known: {sorted(ARMS)}")
 
     batch = Path(args.batch)
     stems = [s.strip() for s in Path(args.val).read_text().splitlines() if s.strip()]
@@ -340,29 +620,54 @@ def main() -> int:
           f"  {n_off} have an OFF-SCREEN centre; {n_small} are below the 200 px^2 mask-area floor "
           f"both solvers apply (a few pixels across).\n")
 
-    rows, gallery = [], None
+    rows, gallery, off_rows, time_rows = [], None, [], []
     for tag in [t.strip() for t in args.models.split(",") if t.strip()]:
-        arms, per_frame = run_model(tag, WEIGHTS[tag], truth, args.device, args.strict_quad)
+        arms, per_frame, timing, init_ms, diag = run_model(
+            tag, WEIGHTS[tag], truth, args.device, arm_ids)
         rows += [a.row() for a in arms.values()]
-        offs = arms[f"{tag} quad+diagonal (new)"].err_gt_offscreen
-        base_offs = arms[f"{tag} line-solver (baseline)"].err_gt_offscreen
-        print(f"[{tag}] on the {len(offs)}/{len(base_offs)} matched gates whose LABELLED centre is "
-              f"off-screen: new med {np.median(offs) if offs else float('nan'):.1f} px, "
-              f"baseline med {np.median(base_offs) if base_offs else float('nan'):.1f} px")
+        for a in arm_ids:
+            e = arms[a].err_gt_offscreen
+            off_rows.append((f"{tag} {ARMS[a][0]}", f"{len(e)}/{n_off}",
+                             f"{np.median(e) if e else float('nan'):8.1f}",
+                             f"{np.percentile(e, 90) if e else float('nan'):8.1f}"))
+            t = np.array(timing[a]) if timing[a] else np.array([np.nan])
+            time_rows.append((f"{tag} {ARMS[a][0]}", f"{len(t):4d}",
+                              f"{np.median(t):7.1f}", f"{np.percentile(t, 90):7.1f}"))
+        if diag["evals"]:
+            ev, am = np.array(diag["evals"]), np.array(diag["ambig"])
+            print(f"[{tag}] model fit: {len(ev)} gates, evals med {np.median(ev):.0f} "
+                  f"(max {ev.max()}), final IoU frame {np.nanmedian(diag['iou_f']):.3f} / opening "
+                  f"{np.nanmedian(diag['iou_o']):.3f}; init {diag['init_kind']}; "
+                  f"IPPE-branch score margin med {np.median(am):.4f} "
+                  f"(>0 on {100.0 * float((am > 1e-6).mean()):.0f}% -- see the ambiguity note)")
+            print(f"[{tag}] shared init (quad_from_mask_ex, ALSO paid by the quad arm): "
+                  f"med {np.median(init_ms):.1f} ms of the model arm's per-gate total")
         if not args.no_gallery and tag == args.gallery_model:
-            gallery = write_gallery(Path(args.out), per_frame, tag)
+            sort_by = args.gallery_sort if args.gallery_sort in arm_ids else arm_ids[-1]
+            gallery = write_gallery(Path(args.out), per_frame, tag, arm_ids, sort_by)
 
-    hdr = ("arm", "matched", "cov", "cov>=floor", "med px", "p90 px", "preds", "off-sc")
-    wid = [max(len(str(r[i])) for r in rows + [hdr]) for i in range(len(hdr))]
-    line = "  ".join("-" * w for w in wid)
-    print("\n" + "  ".join(h.ljust(w) for h, w in zip(hdr, wid)))
-    print(line)
-    for r in rows:
-        print("  ".join(str(v).ljust(w) for v, w in zip(r, wid)))
-    print(line)
+    def _table(hdr, rows_):
+        wid = [max(len(str(r[i])) for r in rows_ + [hdr]) for i in range(len(hdr))]
+        rule = "  ".join("-" * w for w in wid)
+        print("\n" + "  ".join(h.ljust(w) for h, w in zip(hdr, wid)))
+        print(rule)
+        for r in rows_:
+            print("  ".join(str(v).ljust(w) for v, w in zip(r, wid)))
+        print(rule)
+
+    _table(("arm", "matched", "cov", "cov>=floor", "med px", "p90 px", "preds", "off-sc"), rows)
     print("cov = labelled gates that got a ONE-TO-ONE matched prediction; cov>=floor is the same "
           "over gates\nabove the 200 px^2 area floor; med/p90 are over MATCHED pairs only.\n"
           "preds = centres emitted over all frames; off-sc = those that land outside the image.")
+
+    _table(("arm", f"matched/{n_off} OFF-SCREEN gt", "med px", "p90 px"), off_rows)
+    print(f"THE OFF-SCREEN SUBSET: the {n_off} labelled gates whose TRUE centre falls outside the "
+          "640x360 image.\nThis is the configuration the quad path cannot represent (its clipped "
+          "hull is already a\nquadrilateral, so the fit is the visible trapezoid, biased inward).")
+
+    _table(("arm", "gates", "med ms", "p90 ms"), time_rows)
+    print("per-GATE wall time, single-threaded CPU, EXCLUDING seg inference (shared by all arms).")
+
     if gallery:
         print(f"\ngallery: {gallery}")
     return 0
