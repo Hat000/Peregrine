@@ -9,14 +9,25 @@ correct label rather than a corrupted one. The gate solver then fits LINES to th
 and a line is determined by the in-frame pixels it passes through -- so it survives cropping. This
 is the whole architectural argument for the second path.
 
-TWO CLASSES, BOTH CONVEX QUADS -- ``gate_frame`` (the 2.72 m outer square) and ``gate_opening``
-(the 1.5 m inner square). Deliberately NOT one annulus polygon: a ring needs a
-polygon-with-a-bridge encoding that rasterises with a seam, and it forces the solver to recover the
-opening via contour-hierarchy hole-finding (RETR_CCOMP), which is exactly the fragile step. Two
-nested convex instances give the solver both squares directly -- 8 edge lines, no hole logic -- and
-each target is an easy convex blob. ``gate_opening`` is genuinely visible (you can see through it);
-``gate_frame`` is AMODAL over its own opening, which segmentation models handle well and which
-makes its outer boundary -- the thing we actually fit -- unambiguous.
+TWO CLASSES -- ``gate_frame`` (class 0) and ``gate_opening`` (class 1). Deliberately NOT one
+annulus polygon: a ring needs a polygon-with-a-bridge encoding that rasterises with a seam, and it
+forces the solver to recover the opening via contour-hierarchy hole-finding (RETR_CCOMP), which is
+exactly the fragile step. Two nested instances give the solver both boundaries directly -- no hole
+logic -- and each target is an easy blob. ``gate_opening`` is genuinely visible (you can see
+through it); ``gate_frame`` is AMODAL over its own opening, which segmentation models handle well
+and which makes its outer boundary -- the thing we actually fit -- unambiguous.
+
+TWO WAYS TO BUILD THOSE SHAPES, and they are NOT equally good:
+  * :func:`seg_rows_from_corners` -- project two FLAT squares and clip. Exact only for a paper-thin
+    gate. The real gate is a 0.26 m deep prism, so at close range and off-axis the camera sees its
+    inner side walls: the true outer boundary is bigger than the flat outer square and the true
+    see-through hole is smaller than the flat inner square. Kept for the pose-label conversion path
+    and for the procedural renderer, which genuinely draws flat quads.
+  * :func:`seg_rows_from_silhouette` -- polygons traced off a RENDERED per-gate silhouette. No
+    approximation at all, because the render IS the truth. This is what the Blender generator
+    emits. The polygon is simplified enough to be sane but NOT straightened back into a quad; the
+    shape is the point.
+Both write the identical on-disk row format, so the downstream contract does not change.
 
 GEOMETRY IS RECONSTRUCTED, NOT READ. Stored labels clamp off-frame corners to the border with v=0,
 so their coordinates are meaningless. We never use them: we fit the gate-plane homography to the
@@ -29,6 +40,7 @@ Run the self-check:  python -m racer.vision.seg_labels
 """
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from racer.vision.gate_pose import gate_plane_homography, project_gate_squares
@@ -131,6 +143,85 @@ def seg_rows_from_corners(inner_px, outer_px, img_w: int = 640, img_h: int = 360
             continue
         rows.append(to_yolo_seg_row(cid, vis, img_w, img_h))
     return rows
+
+
+# --------------------------------------------------------------------------------------------
+# TRUE-SILHOUETTE path (rendered masks -> polygons)
+# --------------------------------------------------------------------------------------------
+# Contour simplification. eps is a FRACTION of the contour perimeter, floored/capped in pixels:
+# too small and every rasterisation stair-step becomes a vertex (300-point polygons, huge label
+# files); too large and the octagonal close-range silhouette gets straightened back into the very
+# quad this whole change exists to stop emitting.
+_SIMPLIFY_FRAC = 0.002
+_SIMPLIFY_MIN_PX = 0.75
+_SIMPLIFY_MAX_PX = 3.0
+MAX_POLY_POINTS = 48
+
+
+def polygons_from_mask(mask, *, min_area_px: float = MIN_VISIBLE_AREA_PX) -> list[np.ndarray]:
+    """Binary mask -> simplified OUTER-boundary polygons, largest first.
+
+    Holes are dropped on purpose: a YOLO-seg row is a single closed polygon and cannot express one.
+    That is not a loss here -- the gate's hole is carried by the separate ``gate_opening`` instance,
+    so ``gate_frame`` is the filled outer boundary exactly as the frozen contract says.
+
+    Components below ``min_area_px`` are dropped as slivers (the same floor the quad path uses).
+    """
+    m = np.ascontiguousarray(np.asarray(mask).astype(np.uint8))
+    if m.ndim != 2 or not m.any():
+        return []
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polys: list[tuple[float, np.ndarray]] = []
+    for c in cnts:
+        area = float(cv2.contourArea(c))
+        if area < min_area_px:
+            continue
+        eps = float(np.clip(_SIMPLIFY_FRAC * cv2.arcLength(c, True), _SIMPLIFY_MIN_PX, _SIMPLIFY_MAX_PX))
+        approx = cv2.approxPolyDP(c, eps, True)
+        # Runaway guard: a noisy boundary can still survive simplification with hundreds of points.
+        # Relax eps geometrically rather than truncating (truncation would cut a corner off).
+        while len(approx) > MAX_POLY_POINTS and eps < 64.0:
+            eps *= 1.7
+            approx = cv2.approxPolyDP(c, eps, True)
+        pts = approx.reshape(-1, 2).astype(float)
+        if len(pts) < 3:
+            continue
+        polys.append((area, pts))
+    polys.sort(key=lambda t: -t[0])
+    return [p for _, p in polys]
+
+
+def seg_rows_from_silhouette(ring_mask, opening_mask, img_w: int = 640, img_h: int = 360):
+    """Seg rows for ONE gate from its RENDERED masks. Returns ``(rows, reason)``.
+
+    ``ring_mask``    -- the pixels the gate's STRUCTURE actually covers (front face + back face +
+                        whatever side walls the camera can see), already occlusion- and
+                        border-clipped by the renderer.
+    ``opening_mask`` -- the pixels you can see THROUGH the gate.
+
+    ``gate_frame`` is the outer boundary of ``ring | opening``. The union matters: a gate cropped by
+    the image edge can have its ring split into two disconnected bars (very common inside 2 m,
+    where the gate is wider than the frame), and unioning the opening back in reconnects them into
+    the single instance the contract expects. It is also, by definition, the amodal-over-its-own-
+    opening region the frozen contract asks for -- computed, not assumed.
+
+    ``gate_opening`` is emitted only when the hole survives with real area; an oblique gate whose
+    side walls close the hole yields nothing rather than an invented quad.
+    """
+    ring = np.asarray(ring_mask).astype(bool)
+    opening = (np.zeros_like(ring) if opening_mask is None
+               else np.asarray(opening_mask).astype(bool))
+    frame_polys = polygons_from_mask(ring | opening)
+    if not frame_polys:
+        return [], "no-visible-area"
+    rows = [to_yolo_seg_row(CLASS_FRAME, frame_polys[0], img_w, img_h)]
+    open_polys = polygons_from_mask(opening)
+    if open_polys:
+        rows.append(to_yolo_seg_row(CLASS_OPENING, open_polys[0], img_w, img_h))
+        reason = "ok" if len(frame_polys) == 1 else "ok-split-frame"
+    else:
+        reason = "ok-no-opening"
+    return rows, reason
 
 
 def seg_rows_from_pose_row(row: str, img_w: int = 640, img_h: int = 360):

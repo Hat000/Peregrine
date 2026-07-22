@@ -13,6 +13,13 @@ Blender-less laptop (the laptop uses ProceduralBackend). Run it via ``render_ent
 Per-frame protocol: keep the camera + gate-mesh template across frames (cheap), rebuild the
 randomized material / lighting / world / background / gate instances each frame, render to a temp
 PNG, read it back as BGR, and delete the per-frame objects so memory does not grow over a long run.
+
+SEGMENTATION EXCEPTION to "labels are never read back from Blender". Keypoints still are not --
+geometry.py stays the single source of corner positions and the pose labels are untouched. But the
+gate's true projected SILHOUETTE cannot be computed in closed form from a flat quad (the gate is a
+0.26 m deep prism; close and off-axis you see its inner side walls), so when ``emit_silhouettes``
+is set the backend takes a second throwaway Workbench id render per frame and hands the measured
+per-gate masks to the dataset writer. See :mod:`racer.vision.blender_gen.bpy_idmask`.
 """
 from __future__ import annotations
 
@@ -55,7 +62,15 @@ class BlenderBackend:
             self.template.hide_render = True
         except Exception:
             pass
+        # Label-only proxy for the see-through hole; always built (it costs one 4-vert mesh) so the
+        # id pass never has to mutate the scene graph mid-render.
+        self.opening_template = bpy_scene.build_opening_template()
         self._frame_objects: list = []
+
+        # Set by dataset.generate_dataset when seg/mask output is requested. OFF by default so a
+        # plain pose render pays nothing and stays byte-identical to before this feature existed.
+        self.emit_silhouettes = False
+        self._silhouettes: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
         # Photoreal path: HDRI + PBR floor + real props/people (the validated look). Active only when
         # the preset asks for it AND the CC0 asset library is on disk; otherwise the legacy procedural
@@ -96,9 +111,69 @@ class BlenderBackend:
 
     # -- the RenderBackend protocol ------------------------------------------------------
     def render(self, frame: FrameSpec, preset: ScenarioPreset, rng: np.random.Generator) -> np.ndarray:
+        self._silhouettes = {}
         if self._pr_mod is not None:
             return self._render_photoreal(frame, preset, rng)
         return self._render_legacy(frame, preset, rng)
+
+    # -- true-silhouette segmentation targets (optional protocol extension) --------------
+    def gate_silhouettes(self) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+        """``{gate_id: (ring_mask, opening_mask)}`` measured on the frame just rendered.
+
+        Keyed by ``gate_id``, NOT by list position: ``augment_frame`` rebuilds and REORDERS the
+        GateRender list (labelled first, then the rest), so any index-based pairing would silently
+        hand gate A's mask to gate B under augmentation. gate_ids are unique within a frame (each
+        row of the course appears at most once), and ``augment._recompute`` preserves them.
+        """
+        return self._silhouettes
+
+    def _capture_silhouettes(self, frame: FrameSpec, gate_objs: list) -> None:
+        """Run the id pass and store per-gate (ring, opening) masks. Never raises: a failed id pass
+        must degrade to "no seg labels for this frame", not kill a multi-hour render."""
+        from .. import bpy_idmask, bpy_scene
+
+        try:
+            # Only gates that can carry a label need a mask. The rest still RENDER (and so still
+            # occlude, black, in the id pass) -- they just never become a seg instance.
+            wanted = [(i, gr) for i, gr in enumerate(frame.gates) if gr.visible]
+            ids = [int(gr.gate_id) for _, gr in wanted]
+            if not wanted:
+                return
+            if len(set(ids)) != len(ids):
+                # Duplicate gate_ids would make the dict lossy and mis-pair masks after augment.
+                # Bail loudly rather than write a poisoned label.
+                print(f"[vq2] WARNING: duplicate gate_ids {ids} in one frame -- skipping seg masks.")
+                return
+
+            # Pass A: the gate STRUCTURE. Opening proxies must be hidden here: a solid proxy sitting
+            # in a near gate's opening would black out a far gate seen through it.
+            # Registered for purge as they are CREATED, not after the loop -- a throw halfway
+            # through would otherwise leak objects into every subsequent frame of a long run.
+            openings = []
+            for _, gr in wanted:
+                obj = bpy_scene.instance_opening(self.opening_template, gr.R_cam_gate, gr.t_cam_gate)
+                self._frame_objects.append(obj)
+                openings.append(obj)
+            rings = bpy_idmask.render_id_masks(
+                self.scene, [gate_objs[i] for i, _ in wanted], hidden=openings)
+
+            # Pass B: the SEE-THROUGH HOLE, one render per group of openings that cannot overlap on
+            # screen (see bpy_idmask.disjoint_batches). Gates stay in the scene, painted black, so
+            # the hole is correctly eaten by the near-side inner wall on an oblique gate.
+            open_masks: list[np.ndarray | None] = [None] * len(wanted)
+            quads = [np.asarray(gr.keypoints_px, dtype=float) for _, gr in wanted]
+            for batch in bpy_idmask.disjoint_batches(quads):
+                targets = [openings[k] for k in batch]
+                hidden = [o for k, o in enumerate(openings) if k not in batch]
+                for k, m in zip(batch, bpy_idmask.render_id_masks(self.scene, targets, hidden=hidden)):
+                    open_masks[k] = m
+
+            for k, (_, gr) in enumerate(wanted):
+                self._silhouettes[int(gr.gate_id)] = (rings[k], open_masks[k])
+        except Exception as exc:                      # pragma: no cover - defensive on ShadowPC
+            print(f"[vq2] WARNING: gate id pass failed ({type(exc).__name__}: {exc}); "
+                  f"no seg masks for this frame.")
+            self._silhouettes = {}
 
     # -- photoreal path: HDRI world + PBR floor + real props/people (validated 2026-06-15) ---------
     def _render_photoreal(self, frame: FrameSpec, preset: ScenarioPreset,
@@ -117,11 +192,12 @@ class BlenderBackend:
         texset = texsets[int(rng.integers(len(texsets)))] if texsets else {}
         self._frame_objects.append(PR.add_floor(self.scene, floor_y, texset, rng))
 
-        # 3. solid vivid gate(s) at their exact optical poses (labels unchanged)
+        # 3. solid vivid gate(s) at their exact optical poses (labels unchanged). Keep the object
+        #    list POSITIONALLY aligned with frame.gates -- the id pass indexes into it.
         gate_mat = PR.solid_gate_material(rng, ap)
-        for gr in frame.gates:
-            self._frame_objects.append(
-                self._scene_mod.instance_gate(self.template, gr.R_cam_gate, gr.t_cam_gate, gate_mat))
+        gate_objs = [self._scene_mod.instance_gate(self.template, gr.R_cam_gate, gr.t_cam_gate, gate_mat)
+                     for gr in frame.gates]
+        self._frame_objects += gate_objs
 
         # 4. real props + mannequin people, scattered OFF the gate corridor (sides/background).
         #    Props are spawned as duplicates of the once-imported cache (shared mesh data -> fast).
@@ -141,6 +217,9 @@ class BlenderBackend:
         # 6. clean render (NO in-render motion blur / glare; AgX + exposure variety)
         PR.configure_clean_render(self.scene, rng, rc, ap)
         image = self._render_mod.render_to_bgr(self.scene)
+        # 7. id pass BEFORE the purge -- it needs the very objects we are about to delete.
+        if self.emit_silhouettes:
+            self._capture_silhouettes(frame, gate_objs)
         self._purge_frame_objects()
         return np.ascontiguousarray(image)
 
@@ -176,5 +255,7 @@ class BlenderBackend:
 
         # 4. render -> BGR, then tear down this frame's objects
         image = self._render_mod.render_to_bgr(self.scene)
+        if self.emit_silhouettes:
+            self._capture_silhouettes(frame, gate_objs)   # before the purge; see the photoreal path
         self._purge_frame_objects()
         return np.ascontiguousarray(image)

@@ -149,27 +149,54 @@ def augment_frame(
     ``partial`` routes the crop arm's relaxed positive rule through :func:`_recompute` (None =
     the frozen full-gate rule).
     """
+    img, out_gates, _ = augment_frame_with_masks(image_bgr, gates, cfg, rng, partial=partial)
+    return img, out_gates
+
+
+def augment_frame_with_masks(
+    image_bgr: np.ndarray, gates: list[GateRender], cfg: AugmentConfig,
+    rng: np.random.Generator | None = None, *, partial: tuple[int, float] | None = None,
+    mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, list[GateRender], np.ndarray | None]:
+    """As :func:`augment_frame`, but ALSO carries a per-instance mask stack through the warp.
+
+    ``mask`` is an (H, W, C) uint8 stack -- one channel per segmentation instance. It is handed to
+    albumentations as the ``mask`` target, so any geometric transform applies to it with NEAREST
+    interpolation and the instance ids survive; photometric/sensor transforms leave it alone.
+
+    THIS IS LOAD-BEARING, not a convenience. The rendered silhouettes are measured on the CLEAN
+    render; ``dataset`` then writes the AUGMENTED image. Four of the seven presets enable geometric
+    warps (appearance_broad 0.2, hard_visual 0.35, terminal_approach 0.15, long_range 0.1), so
+    without this the mask would describe a frame that no longer exists -- a whole dataset of
+    plausible-looking, systematically offset labels. If albumentations is missing entirely we fall
+    back to the OpenCV photometric-only path, which never moves a pixel, so the mask is returned
+    unchanged and is still correct.
+    """
     if not cfg.enable:
-        return image_bgr, gates
+        return image_bgr, gates, mask
     labeled = [g for g in gates if g.visible]
     others = [g for g in gates if not g.visible]
     pipeline = _build_pipeline(cfg)
     if pipeline is None:                                                 # OpenCV photometric fallback
         from racer.vision.synthetic import _chaos_cv2
         gen = np.random.default_rng() if rng is None else rng
-        return _chaos_cv2(image_bgr, gen), gates
+        return _chaos_cv2(image_bgr, gen), gates, mask
 
     # 8 keypoints per labelled gate: inner 0..3 then outer 0..3.
     kps: list = []
     for g in labeled:
         kps.extend([tuple(map(float, p)) for p in g.keypoints_px])
         kps.extend([tuple(map(float, p)) for p in g.outer_px])
-    out = pipeline(image=image_bgr, keypoints=kps)
+    call = {"image": image_bgr, "keypoints": kps}
+    if mask is not None:
+        call["mask"] = np.ascontiguousarray(mask)
+    out = pipeline(**call)
     img = out["image"]
     warped = np.asarray(out["keypoints"], dtype=float).reshape(-1, 2) if out["keypoints"] else np.zeros((0, 2))
+    out_mask = out.get("mask") if mask is not None else None
 
     new_labeled: list[GateRender] = []
     for i, g in enumerate(labeled):
         block = warped[8 * i: 8 * i + 8]
         new_labeled.append(_recompute(g, block[0:4], block[4:8], partial=partial))
-    return img, new_labeled + others
+    return img, new_labeled + others, out_mask

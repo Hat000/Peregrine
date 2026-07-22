@@ -85,8 +85,30 @@ Args after the standalone `--` go to `render_entry.py`:
 | `--eevee` | fast preview (maps to the build's EEVEE engine) |
 | `--engine` | `CYCLES` \| `BLENDER_EEVEE_NEXT` (override the preset) |
 | `--samples` | override Cycles/EEVEE samples |
-| `--masks` | **also** emit gate-ring instance masks → `masks/<split>/*.png` |
+| `--masks` | **also** emit gate instance masks → `masks/<split>/*.png` |
+| `--seg` | **also** emit 2-class YOLO-seg polygons → `seg/<split>/*.txt` |
 | `--max-intrinsics-err-px` | abort threshold (default 1.0 — **do not raise to mask a real failure**) |
+
+### What `--seg` / `--masks` actually label (read before mixing datasets)
+Under the **Blender** backend both are the gate's **rendered silhouette**, measured per gate with a
+Workbench object-id pass (`bpy_idmask`) taken right after the beauty render: class 0 `gate_frame` is
+the true projected outer boundary — *including the inner side walls the 0.26 m frame depth exposes at
+close range and off-axis* — and class 1 `gate_opening` is the genuinely see-through hole, measured
+with an invisible opening-plane proxy so an oblique gate whose walls close the hole emits **no**
+opening rather than an invented quad. Cost is ~2–3 extra Workbench renders per frame (~0.19 s,
+about **+6 %** on a 128-sample Cycles frame). Pose labels are byte-identical with or without it.
+
+Under the **procedural** backend there is no 3D scene, so both fall back to the old flat-quad
+approximation (projected inner/outer squares, clipped). That is a *different target*: it omits the
+side walls and over-states the opening. The run prints a loud warning and stamps `seg/SOURCE.txt`
+with `rendered-silhouette` or `flat-quad-fallback` — **check that file before merging arms.**
+
+Look at the result, do not trust a census:
+```powershell
+python scripts\seg_overlay_sheet.py --data <out> --split train --limit 24 --cols 4
+```
+It reads image + seg file back **off disk**, draws the polygons, and prints the gates/frame
+signature. A collapse toward 1.0 gates/frame means gates are being dropped again.
 
 ### The built-in safety gate
 Before rendering a single frame, `render_entry` runs the **intrinsics self-check**: it projects known

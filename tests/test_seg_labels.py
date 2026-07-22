@@ -20,10 +20,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from racer.vision.seg_labels import (  # noqa: E402
     CLASS_FRAME,
     CLASS_OPENING,
+    MIN_VISIBLE_AREA_PX,
     clip_polygon,
     polygon_area,
+    polygons_from_mask,
     seg_label_from_pose_label,
     seg_rows_from_pose_row,
+    seg_rows_from_silhouette,
 )
 
 W, H = 640, 360
@@ -160,3 +163,119 @@ def test_builder_label_lives_beside_its_own_image(tmp_path):
     derived = Path(str(img).replace("images", "labels")).with_suffix(".txt")
     assert derived.exists(), f"ultralytics would look for {derived}"
     assert derived.read_text().strip(), "and it must not be empty"
+
+
+# ==========================================================================================
+# TRUE-SILHOUETTE path: rendered masks -> polygons
+# ==========================================================================================
+def _ring_mask(h=H, w=W, outer=(200, 60, 440, 300), inner=(260, 110, 380, 250)):
+    """A head-on gate: filled outer rect with the inner rect carved out. (x0,y0,x1,y1)."""
+    m = np.zeros((h, w), bool)
+    m[outer[1]:outer[3], outer[0]:outer[2]] = True
+    m[inner[1]:inner[3], inner[0]:inner[2]] = False
+    return m
+
+
+def _rect_mask(rect, h=H, w=W):
+    m = np.zeros((h, w), bool)
+    m[rect[1]:rect[3], rect[0]:rect[2]] = True
+    return m
+
+
+def test_polygons_from_mask_traces_the_outer_boundary_and_fills_holes():
+    """A YOLO-seg row is ONE closed polygon and cannot carry a hole, so the annulus must come back
+    as its filled outer boundary -- otherwise the rasterised target would have a bridge seam."""
+    polys = polygons_from_mask(_ring_mask())
+    assert len(polys) == 1
+    assert abs(polygon_area(polys[0]) - 240 * 240) < 0.02 * 240 * 240   # the FILLED outer square
+    assert len(polys[0]) == 4                                          # a real square stays a square
+
+
+def test_polygons_from_mask_drops_slivers_and_orders_by_area():
+    big, small = _rect_mask((100, 100, 200, 200)), _rect_mask((10, 10, 15, 15))   # 25 px < 64 floor
+    polys = polygons_from_mask(big | small)
+    assert len(polys) == 1, "a sub-MIN_VISIBLE_AREA_PX blob must not become an instance"
+    assert polygon_area(polys[0]) > MIN_VISIBLE_AREA_PX
+    two = polygons_from_mask(big | _rect_mask((10, 10, 40, 40)))
+    assert len(two) == 2 and polygon_area(two[0]) > polygon_area(two[1]), "largest first"
+
+
+def test_polygons_from_mask_does_not_straighten_a_non_quad():
+    """The whole point of the rendered silhouette is that a close gate is NOT a quad -- the depth
+    of the frame adds extra silhouette edges. Simplification must keep them."""
+    oct_mask = np.zeros((H, W), bool)
+    yy, xx = np.mgrid[0:H, 0:W]
+    cx, cy = 320.0, 180.0
+    oct_mask[(np.abs(xx - cx) < 120) & (np.abs(yy - cy) < 120)
+             & (np.abs(xx - cx) + np.abs(yy - cy) < 190)] = True        # a regular-ish octagon
+    poly = polygons_from_mask(oct_mask)[0]
+    assert len(poly) >= 8, f"octagon collapsed to {len(poly)} vertices -- it was straightened"
+
+
+def test_silhouette_rows_are_frame_plus_opening():
+    ring = _ring_mask()
+    opening = _rect_mask((260, 110, 380, 250))
+    rows, why = seg_rows_from_silhouette(ring, opening, W, H)
+    assert why == "ok" and len(rows) == 2
+    assert rows[0].startswith(f"{CLASS_FRAME} ") and rows[1].startswith(f"{CLASS_OPENING} ")
+    frame_poly = np.array([float(v) for v in rows[0].split()[1:]]).reshape(-1, 2) * [W, H]
+    open_poly = np.array([float(v) for v in rows[1].split()[1:]]).reshape(-1, 2) * [W, H]
+    assert abs(polygon_area(frame_poly) - 240 * 240) < 0.02 * 240 * 240
+    assert abs(polygon_area(open_poly) - 120 * 140) < 0.02 * 120 * 140
+
+
+def test_opening_matches_contour_hierarchy_when_the_gate_is_fully_in_frame():
+    """The opening is derived from a rendered PROXY PLANE rather than RETR_CCOMP hole-finding,
+    because the hole stops being a topological hole the moment the gate is cropped. This pins that
+    the proxy answers the SAME question when contour hierarchy can also answer it."""
+    import cv2
+
+    ring = _ring_mask()
+    cnts, hier = cv2.findContours(ring.astype(np.uint8), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    holes = [c for c, h in zip(cnts, hier[0]) if h[3] != -1]
+    assert len(holes) == 1, "sanity: an uncropped ring really does have one contour-hierarchy hole"
+    hole_mask = np.zeros((H, W), np.uint8)
+    cv2.drawContours(hole_mask, holes, -1, 1, -1)
+    proxy = _rect_mask((260, 110, 380, 250))
+    iou = (hole_mask.astype(bool) & proxy).sum() / (hole_mask.astype(bool) | proxy).sum()
+    # Not 1.0 by construction: a hole contour is traced through the pixel CENTRES of the ring's
+    # inner boundary, so filling it insets the region by ~1 px on each side (0.97 for a 120x140
+    # hole). Anything below ~0.96 would mean a real disagreement, not the tracing convention.
+    assert iou > 0.96, f"proxy opening disagrees with the contour hole (IoU {iou:.3f})"
+
+
+def test_cropped_gate_split_into_two_bars_still_yields_ONE_frame_instance():
+    """Inside ~2 m the gate is wider than the image, so the visible ring can be two disconnected
+    vertical bars. Unioning the opening back in reconnects them -- otherwise one gate would emit two
+    class-0 instances and the association downstream would see a gate that is not there."""
+    ring = _rect_mask((0, 0, 40, H)) | _rect_mask((600, 0, W, H))
+    assert len(polygons_from_mask(ring)) == 2, "sanity: the ring alone really is two components"
+    opening = _rect_mask((40, 0, 600, H))
+    rows, why = seg_rows_from_silhouette(ring, opening, W, H)
+    assert sum(1 for r in rows if r.startswith(f"{CLASS_FRAME} ")) == 1, rows
+    assert why == "ok"
+
+
+def test_closed_hole_emits_no_opening_rather_than_inventing_one():
+    """A gate oblique enough that its own side walls close the hole has NO see-through region. The
+    honest label is 'no opening', never a quad projected on faith."""
+    rows, why = seg_rows_from_silhouette(_rect_mask((200, 60, 440, 300)), None, W, H)
+    assert why == "ok-no-opening"
+    assert len(rows) == 1 and rows[0].startswith(f"{CLASS_FRAME} ")
+    # ... and the same when the hole survives but is a sub-floor sliver (a distant gate)
+    _, why2 = seg_rows_from_silhouette(_rect_mask((200, 60, 440, 300)),
+                                       _rect_mask((300, 150, 306, 156)), W, H)
+    assert why2 == "ok-no-opening"
+
+
+def test_empty_silhouette_is_reported_not_emitted():
+    rows, why = seg_rows_from_silhouette(np.zeros((H, W), bool), np.zeros((H, W), bool), W, H)
+    assert rows == [] and why == "no-visible-area"
+
+
+def test_silhouette_rows_are_normalised_into_frame():
+    ring = _ring_mask(outer=(0, 0, 300, 300), inner=(50, 50, 250, 250))    # touching the border
+    rows, _ = seg_rows_from_silhouette(ring, _rect_mask((50, 50, 250, 250)), W, H)
+    for r in rows:
+        v = np.array([float(x) for x in r.split()[1:]])
+        assert (v >= 0.0).all() and (v <= 1.0).all(), r

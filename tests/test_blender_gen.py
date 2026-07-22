@@ -437,3 +437,159 @@ def test_generate_dataset_determinism(tmp_path):
         a = (tmp_path / "a" / "labels" / "train" / f"{i:06d}.txt").read_text()
         b = (tmp_path / "b" / "labels" / "train" / f"{i:06d}.txt").read_text()
         assert a == b
+
+
+# ==========================================================================================
+# TRUE-SILHOUETTE seg target: backend routing + the augmentation mask warp
+# ==========================================================================================
+def test_augment_carries_the_mask_through_the_geometric_warp():
+    """THE trap this feature can fall into. The silhouettes are measured on the CLEAN render but the
+    AUGMENTED image is what gets written, and four presets enable geometric warps. If the mask does
+    not ride the same transform, every label in those runs is plausibly-shaped and systematically
+    offset -- the kind of poisoning no census can see."""
+    from racer.vision.blender_gen.augment import augment_frame_with_masks
+
+    # A head-on gate at 8 m: small and well inside the frame, so nothing is clipped either before or
+    # after the warp and the comparison below is exact rather than confounded by border clipping.
+    import cv2
+    R, t = np.eye(3), np.array([0.0, 0.0, 8.0])
+    inner = project_gate_corners(R, t, GATE_INNER_SIZE_M)
+    outer = project_gate_corners(R, t, contract.GATE_OUTER_SIZE_M)
+    g = GateRender(gate_id=0, R_cam_gate=R, t_cam_gate=t, keypoints_px=inner, outer_px=outer,
+                   bbox_xywh=np.array([0.0, 0.0, 640.0, 360.0]),
+                   visibility=np.array([2, 2, 2, 2]), visible=True,
+                   outer_visibility=np.array([2, 2, 2, 2]))
+    cfg = AugmentConfig(enable=True, photometric_p=0.0, lighting_p=0.0,
+                        brightness_p=0.0, geometric_p=1.0)
+    img = np.full((contract.IMAGE_HEIGHT, contract.IMAGE_WIDTH, 3), 120, np.uint8)
+
+    ring = np.zeros((contract.IMAGE_HEIGHT, contract.IMAGE_WIDTH), np.uint8)
+    hole = np.zeros_like(ring)
+    cv2.fillPoly(ring, [g.outer_px.round().astype(np.int32)], 1)           # "ring" stand-in
+    cv2.fillPoly(hole, [g.keypoints_px.round().astype(np.int32)], 1)
+    mask = np.ascontiguousarray(np.dstack([ring, hole]))
+    before = np.argwhere(mask[..., 1] > 0).mean(axis=0)[::-1]              # (x, y) centroid
+
+    _, out_gates, out_mask = augment_frame_with_masks(
+        img, [g], cfg, np.random.default_rng(7), mask=mask)
+    g2 = [x for x in out_gates if x.gate_id == g.gate_id][0]
+    assert out_mask is not None and out_mask.shape == mask.shape
+    assert out_mask[..., 1].any(), "the warp emptied the mask"
+    after = np.argwhere(out_mask[..., 1] > 0).mean(axis=0)[::-1]
+    assert float(np.linalg.norm(after - before)) > 1.0, \
+        "geometric_p=1.0 did not actually warp anything -- the test would be vacuous"
+
+    # The warped mask must agree with the WARPED keypoints. Compare against a fresh rasterisation
+    # of them rather than centroids: a warp routinely pushes corners off-frame, and a clipped
+    # polygon's centroid is not its quad's centroid.
+    expect = np.zeros_like(hole)
+    cv2.fillPoly(expect, [g2.keypoints_px.round().astype(np.int32)], 1)
+    got = out_mask[..., 1] > 0
+    iou = float((got & (expect > 0)).sum()) / float(max((got | (expect > 0)).sum(), 1))
+    assert iou > 0.9, f"mask and keypoints disagree after the warp (IoU {iou:.3f})"
+
+
+def test_augment_frame_still_returns_two_values():
+    """Back-compat: the mask arm is additive; the frozen 2-tuple caller must be untouched."""
+    gates = load_course_gates()
+    fs = _frame_with_label(gates)
+    cfg = AugmentConfig(enable=True, photometric_p=1.0, lighting_p=0.0,
+                        brightness_p=0.0, geometric_p=0.0)
+    img = np.full((contract.IMAGE_HEIGHT, contract.IMAGE_WIDTH, 3), 120, np.uint8)
+    out = augment_frame(img, fs.gates, cfg, np.random.default_rng(0))
+    assert isinstance(out, tuple) and len(out) == 2
+
+
+def test_procedural_backend_falls_back_to_flat_quads_LOUDLY(tmp_path, capsys):
+    """The procedural backend has no 3D scene, so it cannot measure a silhouette. It must say so and
+    stamp the target on disk -- a run that quietly emits a DIFFERENT target than the Blender run
+    would contaminate any merged dataset with no trace."""
+    from racer.vision.blender_gen.dataset import SEG_SOURCE_FLAT_QUAD
+
+    preset = load_preset("vq1_faithful")
+    generate_dataset(tmp_path, preset, ProceduralBackend(), n_train=3, n_val=1, seed=0,
+                     emit_seg=True)
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "FLAT" in out
+    assert (tmp_path / "seg" / "SOURCE.txt").read_text().startswith(SEG_SOURCE_FLAT_QUAD)
+    assert list((tmp_path / "seg" / "train").glob("*.txt")), "fallback must still emit labels"
+
+
+def test_silhouette_backend_target_comes_from_the_masks_not_the_quads(tmp_path, capsys):
+    """A backend that CAN measure silhouettes must have them used verbatim. The fake below returns a
+    mask deliberately unlike the projected quads (a plain rectangle), so if the writer quietly fell
+    back to seg_rows_from_corners the polygon would not match."""
+    import cv2
+    from racer.vision.blender_gen.dataset import SEG_SOURCE_SILHOUETTE
+
+    RING = (100, 40, 300, 240)      # x0,y0,x1,y1 -- nothing like a projected gate
+    HOLE = (150, 90, 250, 190)
+
+    class FakeSilhouetteBackend(ProceduralBackend):
+        emit_silhouettes = False
+
+        def __init__(self):
+            self._sil = {}
+
+        def render(self, frame, preset, rng):
+            img = ProceduralBackend.render(self, frame, preset, rng)
+            self._sil = {}
+            for gr in frame.gates:
+                if not gr.visible:
+                    continue
+                ring = np.zeros((contract.IMAGE_HEIGHT, contract.IMAGE_WIDTH), bool)
+                ring[RING[1]:RING[3], RING[0]:RING[2]] = True
+                ring[HOLE[1]:HOLE[3], HOLE[0]:HOLE[2]] = False
+                opening = np.zeros_like(ring)
+                opening[HOLE[1]:HOLE[3], HOLE[0]:HOLE[2]] = True
+                self._sil[int(gr.gate_id)] = (ring, opening)
+                break                                    # one gate is enough for the identity check
+            return img
+
+        def gate_silhouettes(self):
+            return self._sil
+
+    preset = load_preset("vq1_faithful")
+    generate_dataset(tmp_path, preset, FakeSilhouetteBackend(), n_train=4, n_val=1, seed=0,
+                     emit_seg=True, emit_masks=True)
+    assert (tmp_path / "seg" / "SOURCE.txt").read_text().startswith(SEG_SOURCE_SILHOUETTE)
+    assert "WARNING" not in capsys.readouterr().out
+
+    texts = [p.read_text() for p in sorted((tmp_path / "seg" / "train").glob("*.txt"))]
+    hits = 0
+    for t in texts:
+        for line in t.splitlines():
+            f = line.split()
+            if int(f[0]) != 0:
+                continue
+            poly = np.array([float(v) for v in f[1:]]).reshape(-1, 2) * [contract.IMAGE_WIDTH,
+                                                                        contract.IMAGE_HEIGHT]
+            if abs(poly[:, 0].min() - RING[0]) < 2 and abs(poly[:, 1].max() - (RING[3] - 1)) < 2:
+                hits += 1
+    assert hits >= 1, f"no class-0 polygon matched the injected silhouette:\n{texts}"
+
+    # and the instance raster is the silhouette too, not the flat annulus
+    m = cv2.imread(str(tmp_path / "masks" / "train" / "000000.png"), cv2.IMREAD_UNCHANGED)
+    assert m[(RING[1] + HOLE[1]) // 2, (RING[0] + RING[2]) // 2] > 0     # on the injected ring
+    assert m[(HOLE[1] + HOLE[3]) // 2, (HOLE[0] + HOLE[2]) // 2] == 0    # inside the injected hole
+
+
+def test_disjoint_batches_separates_overlapping_openings():
+    """The opening PROXY is solid, so two proxies in one id render occlude each other. The classic
+    down-course racing shot -- a far gate framed inside a near gate's opening -- is exactly that
+    case, and batching them together would return the far opening EMPTY. Pure-python, so it is
+    testable without Blender even though it lives in a bpy leaf."""
+    from racer.vision.blender_gen.bpy_idmask import disjoint_batches
+
+    near = np.array([[100.0, 100.0], [400.0, 100.0], [400.0, 300.0], [100.0, 300.0]])
+    far_inside = np.array([[230.0, 180.0], [270.0, 180.0], [270.0, 210.0], [230.0, 210.0]])
+    elsewhere = np.array([[500.0, 20.0], [600.0, 20.0], [600.0, 80.0], [500.0, 80.0]])
+
+    batches = disjoint_batches([near, far_inside, elsewhere])
+    where = {i: b for b, ids in enumerate(batches) for i in ids}
+    assert where[0] != where[1], "a gate seen through another gate's opening must render alone"
+    assert where[0] == where[2], "non-overlapping openings should still share one render"
+    assert sorted(i for b in batches for i in b) == [0, 1, 2], "every opening must be rendered once"
+
+    assert disjoint_batches([near]) == [[0]]
+    assert disjoint_batches([]) == []

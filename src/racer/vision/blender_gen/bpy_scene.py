@@ -29,6 +29,10 @@ except Exception:                       # pragma: no cover - exercised only on S
 from .contract import GATE_DEPTH_M, GATE_INNER_SIZE_M, GATE_OUTER_SIZE_M
 
 _TEMPLATE_NAME = "VQ2Gate"
+# NOTE the shared "VQ2Gate" prefix: bpy_photoreal._is_obstacle_hit treats any object whose name
+# starts with it as gate structure rather than a prop, so the opening proxy can never be mistaken
+# for an occluder by the keypoint raycast even if one leaks into a frame.
+_OPENING_TEMPLATE_NAME = "VQ2GateOpening"
 
 
 # --------------------------------------------------------------------------------------------------
@@ -93,6 +97,37 @@ def build_gate_template(name: str = _TEMPLATE_NAME) -> "bpy.types.Object":
     return obj
 
 
+def build_opening_template(name: str = _OPENING_TEMPLATE_NAME) -> "bpy.types.Object":
+    """A flat quad filling the gate's INNER opening (1.5 m) at gate-local z = 0 -- the PROXY that
+    turns "where can the camera see THROUGH this gate" into a z-buffer query.
+
+    WHY a proxy and not contour-hierarchy hole-finding on the rendered ring. The hole is only a
+    topological hole while the ring fully encloses it. Every close/cropped gate in this dataset --
+    the ones the whole segmentation path exists for -- has its opening running off the image edge,
+    where the "hole" is connected to the background and RETR_CCOMP reports no child contour at all.
+    The proxy gives the same answer when the gate is fully in frame and the right answer when it is
+    not: rendered at the gate's own z=0 plane, it is hidden exactly where the gate's structure (or
+    anything else) is in front of it, so an oblique gate whose side walls close the hole yields an
+    empty mask -- "emit no opening" -- rather than an invented one.
+
+    Coplanar with the ring's inner edge by construction, so the two share an edge but never
+    overlap in 3D; the only depth ambiguity is a sub-pixel seam along that shared edge.
+    """
+    h = GATE_INNER_SIZE_M / 2.0
+    verts = [(-h, h, 0.0), (h, h, 0.0), (h, -h, 0.0), (-h, -h, 0.0)]
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, [], [(0, 1, 2, 3)])
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.hide_render = True
+    # Park the template far off-scene (same trick as PropCache): a template sitting at the origin
+    # is sitting ON the camera, so if hide_render ever failed to apply it would black out the whole
+    # id pass. Instances overwrite matrix_world anyway.
+    obj.location = (0.0, -5000.0, 0.0)
+    return obj
+
+
 # --------------------------------------------------------------------------------------------------
 # placement (optical world)
 # --------------------------------------------------------------------------------------------------
@@ -123,6 +158,15 @@ def instance_gate(template, R_cam_gate, t_cam_gate, material=None) -> "bpy.types
     if material is not None:
         obj.data.materials.clear()
         obj.data.materials.append(material)
+    return obj
+
+
+def instance_opening(template, R_cam_gate, t_cam_gate) -> "bpy.types.Object":
+    """An opening-plane proxy at this gate's optical pose. ``hide_render`` ON by default -- it is a
+    LABEL-ONLY object and must never contribute a single pixel to the beauty render; the id pass
+    un-hides it for the one throwaway Workbench render that measures the see-through hole."""
+    obj = instance_gate(template, R_cam_gate, t_cam_gate, material=None)
+    obj.hide_render = True
     return obj
 
 
