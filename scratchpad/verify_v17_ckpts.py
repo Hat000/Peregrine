@@ -1,4 +1,13 @@
-"""Pre-release gate for the v1.7 actors -- run through the REAL deploy loader.
+"""SUPERSEDED -- ITS CHANNEL LABELS ARE WRONG.  Use verify_v18_ckpts.py.
+
+This script unpacks the action vector as (roll, pitch, yaw, thrust).  The ego action
+vector is [thrust, roll, pitch, yaw] (fly_rl.py:748, ``rate_flu = act[1:4]``), so the
+column printed here as "pitch" is actually ROLL and the nose-DOWN verdict is meaningless.
+Kept only as the record of the error.  Its other flaw: the synthetic at-rest obs is out of
+distribution -- every arm answers it with ~zero collective -- so the launch-window question
+it claims to answer is only answerable over LOGGED obs (see replay_sweep_v18.py).
+
+Pre-release gate for the v1.7 actors -- run through the REAL deploy loader.
 
 Uses fly_rl.load_ego_actor (not a hand-rolled reconstruction), so this checks the
 exact path that will run on the wire: the 21-dim obs assertion, the hardcoded ego
