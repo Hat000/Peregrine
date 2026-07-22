@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-22T16:01:37.251Z
+  modified: 2026-07-22T16:29:45.973Z
 ---
 
 # Deploy / emission cycle — 2026-07-22
@@ -13,7 +13,44 @@ metadata:
 Companion to [[perception-sim2sim-gap-2026-07-15]] (campaign SSOT). Everything here was
 measured from wire logs or cluster runs; each claim names its instrument.
 
-## v1.8 — DONE, adjudicated, NOT YET RELEASED
+## v1.8 — SHIPPED 2026-07-22
+
+Release **`ego-ckpts-v18-2026-07-22`** (Latest), 3 assets, target `v16-mount-acq-margin`.
+Verified sha256 Adroit → local → GitHub → re-download, byte-identical, and every arm loaded
+through `fly_rl.load_ego_actor` before upload. Commit `fda75f4`.
+
+**Deploy lead `v18Qs1`. Designated alternate `v18Qs0`** — gentlest start in the fleet, for
+about 0.4 gates of training reward.
+
+### The release-dive gate (the number that justified shipping)
+
+`scratchpad/replay_sweep_v18.py`, **425 logged flights** (9 skipped), worst nose-down
+pitch-rate command in the 4 ticks after assist release. Negative = nose DOWN.
+
+| arm | mean | p90 worst | MAX DIVE | dives harder than parent |
+|---|---|---|---|---|
+| v16Qs1 parent | −0.805 | −0.934 | −2.369 | — |
+| v17 pooled | −1.225 | −1.457 | −2.194 | ~423 / 425 |
+| **v18Qs1 (lead)** | **−0.801** | −1.133 | −1.885 | 248 / 425 |
+| v18Qs0 (alternate) | −0.633 | −0.898 | −1.325 | **33 / 425** |
+| v18Ws0 | −0.900 | −1.147 | −1.367 | 323 / 425 |
+
+v1.7 dove harder than the parent on essentially every flight; **v1.8 returns the release
+dive to parent level**, and the parent is the config that flew both 9-gate runs. So M1
+**caused the release-pitch regression** even though it is **cleared on miss_rate** — two
+different claims about the same mechanism, and collapsing them loses the finding.
+
+### Connector footgun that blocked the first attempt
+
+`[daemon] unauthorized` was **not** an auth failure — **two `adroit.py serve` processes were
+both LISTENING on 127.0.0.1:8765**. `cmd_serve` sets `SO_REUSEADDR`, which on Windows lets a
+second bind succeed on an already-bound port instead of failing, so a restart leaves the
+stale daemon alive and answering with its old token while `.daemon.json` holds the new one.
+Diagnose with `netstat -ano | findstr 8765` (two PIDs = this bug) and kill the OLDER PID;
+do NOT re-run `serve` — that just adds a third. Also: `command_history.log` has reached
+**289 MB**.
+
+## v1.8 — training adjudication
 
 v1.8 = v1.7 with **M1 OFF only** (`HANDOFFFRAC=0.0`). Launcher `rl/launch_v18.sh` (`19c491a`).
 Arms 3317670/71/72 on MIG, all COMPLETED ~6 h. Converged means, last 10% of 18000 updates:
@@ -155,3 +192,16 @@ across a frame_id window) · `fence_check.py` · `dive_windows.py` (footage time
   it announced ALL ARMS TERMINAL while one was still training. Use `sacct -X`.
 * **Name which cap you mean.** "max range 22" vs Fengyou's 30 were two different knobs
   (`max_acquire_range_m` vs `max_valid_range_m`); the acquire cap has no panel field.
+* **A probe that RUNS is not a probe that MEASURES — and a hand-built obs is OOD.** The
+  v1.8 pre-release gate was first written against a synthetic at-rest observation. It ran
+  clean and ranked the arms — but every arm answered it with **~zero collective**, the tell
+  that the point is off-distribution, and its ranking disagreed with the 425-flight replay.
+  Launch-window questions are answerable ONLY over logged obs. Same family as the two
+  false-null stall detectors above.
+* **Decode channels from the wire path, never by hand.** `verify_v17_ckpts.py` unpacked the
+  action as `(roll, pitch, yaw, thrust)`; the ego action vector is
+  **`[thrust, roll, pitch, yaw]`** (`fly_rl.py:748`, `rate_flu = act[1:4]`), so its "pitch"
+  column was ROLL. `verify_v18_ckpts.py` calls `policy_step` and reports `rate_frd`, so a
+  channel cannot be mislabelled. Sign chain re-derived from code: with `virtual_flip` on,
+  `rate_frd[1] = +act[2]` (`_ACT_FLU_TO_FRD = [1,−1,1]`, `_RZ_PI_BODY = diag(−1,−1,1)`) ⇒
+  **nose-DOWN is `rate_frd[1] < 0`**, exactly the axis the fence clips.
