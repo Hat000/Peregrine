@@ -36,6 +36,7 @@ from .geometry import (
     sample_frames, sample_negative_frames, sample_partial_frames,
 )
 from .labels import frame_label_rows
+from racer.vision.seg_labels import seg_rows_from_corners
 from .masks import gate_ring_mask
 
 
@@ -114,6 +115,7 @@ class GenStats:
 def _write_split(
     out: Path, split: str, n: int, preset: ScenarioPreset, backend: RenderBackend,
     seed: int, image_ext: str, track_path: str | None, emit_masks: bool = False,
+    emit_seg: bool = False,
 ) -> GenStats:
     img_dir = out / "images" / split
     lbl_dir = out / "labels" / split
@@ -122,6 +124,13 @@ def _write_split(
     mask_dir = out / "masks" / split
     if emit_masks:
         mask_dir.mkdir(parents=True, exist_ok=True)
+    # SEG labels come from the EXACT projected corners, never from the pose row. The pose row clamps
+    # off-frame corners to the border (v=0), so deriving from it would refit a homography to the
+    # survivors and extrapolate -- 2.8-7.9 px of avoidable error on exactly the cropped gates this
+    # dataset exists to teach. The renderer knows the true corners, so use them.
+    seg_dir = out / "seg" / split
+    if emit_seg:
+        seg_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(seed)
     n_neg = int(round(n * float(preset.negative_fraction)))
     n_pos = n - n_neg
@@ -146,6 +155,11 @@ def _write_split(
         (lbl_dir / f"{made:06d}.txt").write_text("\n".join(rows) + "\n")
         if emit_masks:    # instance mask from the SAME post-augment labelled gates
             cv2.imwrite(str(mask_dir / f"{made:06d}.png"), gate_ring_mask(labeled))
+        if emit_seg:
+            srows = [r for g in labeled
+                     for r in seg_rows_from_corners(g.keypoints_px, g.outer_px)]
+            seg_text = ("\n".join(srows) + "\n") if srows else ""
+            (seg_dir / f"{made:06d}.txt").write_text(seg_text)
         made += 1
         n_labels += len(rows)
         n_gates += len(rows)
@@ -176,6 +190,7 @@ def generate_dataset(
     image_ext: str = "png",
     track_path: str | None = None,
     emit_masks: bool = False,
+    emit_seg: bool = False,
 ) -> Path:
     """Generate a YOLO-pose dataset with ``backend`` (default ProceduralBackend). Returns the
     data.yaml path. The Blender entrypoint passes a ``BlenderBackend``; everything else (geometry,
@@ -186,8 +201,10 @@ def generate_dataset(
     """
     backend = backend or ProceduralBackend()
     out = Path(out_dir)
-    train = _write_split(out, "train", n_train, preset, backend, seed, image_ext, track_path, emit_masks)
-    _write_split(out, "val", n_val, preset, backend, seed + 10_000, image_ext, track_path, emit_masks)
+    train = _write_split(out, "train", n_train, preset, backend, seed, image_ext, track_path,
+                         emit_masks, emit_seg)
+    _write_split(out, "val", n_val, preset, backend, seed + 10_000, image_ext, track_path,
+                 emit_masks, emit_seg)
     yaml_path = out / "data.yaml"
     yaml_path.write_text(DATA_YAML.format(path=str(out.resolve())))
     return yaml_path

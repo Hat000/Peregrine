@@ -51,6 +51,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--eevee", action="store_true", help="shortcut for --engine BLENDER_EEVEE_NEXT")
     ap.add_argument("--max-intrinsics-err-px", type=float, default=1.0,
                     help="abort if the Blender camera disagrees with K by more than this")
+    ap.add_argument("--seg", action="store_true",
+                    help="also emit 2-class YOLO-seg labels to seg/<split>/*.txt, built from the "
+                         "EXACT projected corners (0 gate_frame = outer square, 1 gate_opening = "
+                         "inner). Clipped to frame, never clamped.")
     ap.add_argument("--masks", action="store_true",
                     help="also emit per-frame gate-ring instance masks to masks/<split>/*.png")
     ap.add_argument("--no-augment", action="store_true",
@@ -93,7 +97,7 @@ def main() -> int:
     yaml_path = generate_dataset(
         args.out, preset, backend,
         n_train=args.n_train, n_val=args.n_val, seed=args.seed,
-        image_ext=args.image_ext, track_path=args.track, emit_masks=args.masks,
+        image_ext=args.image_ext, track_path=args.track, emit_masks=args.masks, emit_seg=args.seg,
     )
     print(f"[vq2] done. data.yaml -> {yaml_path}")
     return 0

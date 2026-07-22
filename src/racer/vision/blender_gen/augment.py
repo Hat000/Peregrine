@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .contract import IMAGE_HEIGHT, IMAGE_WIDTH, V_OCC, V_OFF, V_VIS
-from .geometry import GateRender
+from .geometry import GateRender, MIN_LABEL_AREA_PX
 
 
 @dataclass(frozen=True)
@@ -105,9 +105,8 @@ def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray,
                partial: tuple[int, float] | None = None) -> GateRender:
     """Rebuild a GateRender from warped inner/outer corners: new bbox + visibility + visible.
 
-    ``partial`` = (min_corners, min_area_frac) routes the CROP arm's relaxed positive rule
-    (>= min_corners of the 8 corners in-frame AND clipped-bbox area >= min_area_frac); None keeps
-    the frozen full-gate rule (>= 3 inner in-frame AND centre in-frame)."""
+    ``partial`` is accepted for signature compatibility but no longer gates visibility: a label now
+    requires only enough VISIBLE AREA (see the note below and geometry._has_labellable_area)."""
     vis = gr.visibility.copy()
     for c in range(4):
         x, y = float(inner[c, 0]), float(inner[c, 1])
@@ -126,15 +125,13 @@ def _recompute(gr: GateRender, inner: np.ndarray, outer: np.ndarray,
     x0, y0 = max(0.0, float(x0)), max(0.0, float(y0))
     x1, y1 = min(float(IMAGE_WIDTH), float(x1)), min(float(IMAGE_HEIGHT), float(y1))
     bbox = np.array([x0, y0, max(0.0, x1 - x0), max(0.0, y1 - y0)])
-    if partial is not None:
-        min_corners, min_area_frac = partial
-        n_inner_in = int((vis == V_VIS).sum())          # INNER (PnP) corners in-frame -- the accept floor
-        visible = bool(n_inner_in >= min_corners
-                       and bbox[2] * bbox[3] >= min_area_frac * IMAGE_WIDTH * IMAGE_HEIGHT)
-    else:
-        centre = inner.mean(axis=0)
-        centre_in = 0.0 <= centre[0] <= IMAGE_WIDTH and 0.0 <= centre[1] <= IMAGE_HEIGHT
-        visible = bool(int((vis == V_VIS).sum()) >= 3 and centre_in)
+    # VISIBLE AREA, not corner count -- the same rule geometry._has_labellable_area applies before
+    # augmentation. This function re-derived visibility AFTER the warp using the old ">=3 in-frame
+    # corners" / ">=3 + centre in frame" tests, which silently UNDID the geometry-side fix: the
+    # sampler labelled 2.58 gates per frame and the written dataset still came out at 1.00.
+    # ``partial``'s min_area_frac stays where it belongs, as the crop SAMPLER's acceptance test in
+    # geometry.sample_partial_frame; applying it here would drop every small co-visible gate.
+    visible = bool(bbox[2] * bbox[3] >= MIN_LABEL_AREA_PX)
     return GateRender(
         gate_id=gr.gate_id, R_cam_gate=gr.R_cam_gate, t_cam_gate=gr.t_cam_gate,
         keypoints_px=np.asarray(inner, dtype=float), outer_px=np.asarray(outer, dtype=float),
