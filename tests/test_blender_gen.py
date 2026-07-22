@@ -574,6 +574,114 @@ def test_silhouette_backend_target_comes_from_the_masks_not_the_quads(tmp_path, 
     assert m[(HOLE[1] + HOLE[3]) // 2, (HOLE[0] + HOLE[2]) // 2] == 0    # inside the injected hole
 
 
+# ==========================================================================================
+# OCCLUSION: which gates keep a label once something stands in FRONT of them
+# ==========================================================================================
+def _gate_at(z_m: float, gate_id: int = 0) -> GateRender:
+    """A head-on GateRender at ``z_m`` metres, accepted by the on-screen-extent rule."""
+    R, t = np.eye(3), np.array([0.0, 0.0, float(z_m)])
+    inner = project_gate_corners(R, t, GATE_INNER_SIZE_M)
+    outer = project_gate_corners(R, t, contract.GATE_OUTER_SIZE_M)
+    return GateRender(gate_id=gate_id, R_cam_gate=R, t_cam_gate=t, keypoints_px=inner,
+                      outer_px=outer, bbox_xywh=geometry._bbox(outer),
+                      visibility=np.array([2, 2, 2, 2]), visible=True)
+
+
+def _mask_of_area(n_px: int) -> np.ndarray:
+    """A boolean silhouette holding exactly ``n_px`` set pixels."""
+    m = np.zeros(contract.IMAGE_HEIGHT * contract.IMAGE_WIDTH, bool)
+    m[:n_px] = True
+    return m.reshape(contract.IMAGE_HEIGHT, contract.IMAGE_WIDTH)
+
+
+def test_occlusion_floor_is_the_seg_sliver_floor_by_import():
+    """The pose-label occlusion floor and the seg polygon sliver floor are ONE number. If they ever
+    drift, a gate can keep a pose row while the seg path refuses to draw it (or the reverse) -- two
+    answers to the same question, which is precisely how this rule ended up derived in four places."""
+    from racer.vision import seg_labels
+
+    assert geometry.MIN_UNOCCLUDED_AREA_PX == seg_labels.MIN_VISIBLE_AREA_PX
+    # ...and it is NOT the on-screen-extent floor: those measure different things (silhouette
+    # pixels vs bounding-box area) and forcing them equal would drop small distant gates.
+    assert geometry.MIN_UNOCCLUDED_AREA_PX < geometry.MIN_LABEL_AREA_PX
+
+
+def test_occlusion_drop_is_measured_area_not_a_corner_count():
+    """REGRESSION (2026-07-22, the FOURTH site). bpy_photoreal.occlude_blocked_keypoints ended with
+    ``if (visibility == V_VIS).sum() < 3: gr.visible = False`` -- the retired ">=3 in-frame corners"
+    rule wearing an occlusion costume. It counted OFF-FRAME corners too, so it re-killed the very
+    crops the area rule exists to rescue, and it ran before augment split labelled from unlabelled,
+    so the gate could never come back: rendered into the image, handed to training as background.
+
+    A gate with ZERO corners still V_VIS but a large visible silhouette must keep its label."""
+    gr = _gate_at(4.0)
+    gr.visibility = np.array([contract.V_OFF, contract.V_OFF, contract.V_OCC, contract.V_OCC])
+    census = geometry.apply_measured_occlusion([gr], [_mask_of_area(5000)])
+    assert gr.visible, "no corner is V_VIS but 5000 px of gate are on screen -- that is a label"
+    assert census == {"labelled": 1, "hidden": 0}
+
+
+def test_fully_hidden_gate_loses_its_label():
+    """The OPPOSITE poisoning, and the reason the drop was not simply deleted. A gate completely
+    behind a pillar, a wall or a nearer gate's frame is not in the image at all; labelling it would
+    teach the detector to hallucinate a gate through solid objects."""
+    hidden, half, sliver = _gate_at(30.0, 0), _gate_at(6.0, 1), _gate_at(25.0, 2)
+    census = geometry.apply_measured_occlusion(
+        [hidden, half, sliver],
+        [_mask_of_area(0),            # entirely behind something
+         _mask_of_area(900),          # a pillar takes most of it, plenty still visible
+         _mask_of_area(20)],          # a few pixels peeking past an occluder
+    )
+    assert not hidden.visible, "a gate with no visible pixels must not be labelled"
+    assert half.visible, "a half-hidden gate is still a gate"
+    assert not sliver.visible, "a 20 px sliver is below one YOLO cell of evidence"
+    assert census == {"labelled": 1, "hidden": 2}
+
+
+def test_the_threshold_sits_in_the_measured_empty_band():
+    """The threshold was chosen inside a measured GAP, not tuned on a percentile: over 80 rendered
+    frames the occluded gates landed at 0-45 px and the smallest legitimately visible gate at 100 px.
+    Anything in 46..95 gives the same verdict, so pin that the boundary behaves as advertised."""
+    for area, expect in ((45, False), (63, False), (64, True), (96, True), (100, True)):
+        g = _gate_at(20.0)
+        geometry.apply_measured_occlusion([g], [_mask_of_area(area)])
+        assert g.visible is expect, f"{area} px silhouette -> visible={g.visible}, wanted {expect}"
+
+
+def test_missing_measurement_keeps_the_label_and_is_not_treated_as_occlusion():
+    """No measurement is not evidence of occlusion. If the id pass fails, the extent rule has still
+    established the gate is on screen; silently dropping it would re-create the background poisoning
+    on every frame of a run whose id pass broke. (The backend shouts about it separately.)"""
+    gr = _gate_at(8.0)
+    census = geometry.apply_measured_occlusion([gr], [None])
+    assert gr.visible and census == {"labelled": 1, "hidden": 0}
+
+
+def test_occlude_blocked_keypoints_never_decides_whole_gate_visibility():
+    """bpy_photoreal imports bpy, so no laptop test can call it -- and that is exactly where the
+    fourth copy of this rule hid for months. Parse the source instead: the raycast may write
+    per-corner ``visibility`` (real information the pose loss uses) but must never assign
+    ``gr.visible``, which is the whole-gate label decision and belongs with the measurement."""
+    import ast
+    from pathlib import Path
+
+    src = (Path(geometry.__file__).parent / "bpy_photoreal.py").read_text()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "occlude_blocked_keypoints")
+    # Every attribute written by an assignment target, including through a subscript
+    # (``gr.visibility[c] = V_OCC`` is a Subscript wrapping the Attribute).
+    assigned = set()
+    for n in ast.walk(fn):
+        targets = (n.targets if isinstance(n, ast.Assign)
+                   else [n.target] if isinstance(n, ast.AugAssign) else [])
+        for t in targets:
+            assigned |= {sub.attr for sub in ast.walk(t) if isinstance(sub, ast.Attribute)}
+    assert "visible" not in assigned, (
+        "occlude_blocked_keypoints is dropping whole gates again -- that decision needs the measured "
+        "silhouette (backends/blender.py), not four rays through four corners")
+    assert "visibility" in assigned, "the per-corner V_OCC marking is real information; keep it"
+
+
 def test_disjoint_batches_separates_overlapping_openings():
     """The opening PROXY is solid, so two proxies in one id render occlude each other. The classic
     down-course racing shot -- a far gate framed inside a near gate's opening -- is exactly that

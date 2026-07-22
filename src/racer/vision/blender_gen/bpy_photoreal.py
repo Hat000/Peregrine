@@ -25,7 +25,7 @@ import mathutils
 from . import bpy_materials as M
 from . import bpy_render
 from .contract import (
-    GATE_INNER_SIZE_M, GATE_OUTER_SIZE_M, V_OCC, V_VIS, V_OFF,
+    GATE_INNER_SIZE_M, GATE_OUTER_SIZE_M, V_OCC, V_VIS,
     VQ1_GATE_RED_RGB_LINEAR, gate_object_points,
 )
 from .geometry import FrameSpec
@@ -277,7 +277,19 @@ def occlude_blocked_keypoints(scene, frame: FrameSpec) -> None:
     non-gate, non-floor object closer than the corner), downgrade that corner V_VIS -> V_OCC. Mutates
     frame.gates in place so the (post-augment) label rows reflect the real occlusion. Props sit off
     the corridor, so this is usually a no-op -- but it keeps the labels honest when they do block.
-    Crucially it does NOT treat a gate hitting its own angled frame/corner as occlusion."""
+    Crucially it does NOT treat a gate hitting its own angled frame/corner as occlusion.
+
+    PER-CORNER ONLY. This function marks corners; it does NOT decide whether a gate gets a label.
+    It used to end with ``if (visibility == V_VIS).sum() < 3: gr.visible = False`` -- the retired
+    ">= 3 in-frame corners" rule surviving in a fourth place after being replaced in three
+    (geometry._apply_occlusion_and_visibility, geometry.sample_partial_frame, augment._recompute).
+    It ran BEFORE augment_frame splits labelled from unlabelled, so a gate it zeroed could never
+    come back: the backend rendered a big obvious gate into the image and training was told it was
+    background. Worse, the count included corners that were merely OFF-FRAME, so it re-killed 30%
+    (partial arm) / 39% (faithful arm) of the very crops the area rule exists to rescue -- with no
+    prop anywhere near them. The whole-gate decision now lives where the honest measurement is:
+    the backend runs the object-id pass and applies geometry.has_visible_silhouette.
+    """
     deps = bpy.context.evaluated_depsgraph_get()
     obj_pts = np.asarray(gate_object_points(GATE_INNER_SIZE_M), dtype=np.float64)   # (4,3) gate frame
     origin = mathutils.Vector((0.0, 0.0, 0.0))
@@ -296,8 +308,11 @@ def occlude_blocked_keypoints(scene, frame: FrameSpec) -> None:
             hit, loc, _n, _idx, obj, _m = scene.ray_cast(deps, origin, d.normalized())
             if hit and (loc - origin).length < dist - 0.10 and _is_obstacle_hit(obj):
                 gr.visibility[c] = V_OCC
-        if int((gr.visibility == V_VIS).sum()) < 3:
-            gr.visible = False
+        # NO whole-gate drop here -- see the docstring. Four rays through four corners cannot
+        # measure how much of a gate is visible: a pillar splitting a gate down the middle leaves
+        # all four corners V_VIS, and a gate cropped to one visible corner has three V_OFF while
+        # most of its ring is on screen. Coverage is an AREA question and is answered with the
+        # rendered silhouette in backends/blender.py.
 
 
 # ----------------------------------------------------------------------------- floor height

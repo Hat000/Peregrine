@@ -23,6 +23,9 @@ import numpy as np
 from racer.frames import R_camera_from_body, R_world_from_body
 from racer.navigator import gates_from_track_records
 from racer.vision.synthetic import _bbox, _corner_visibility, _in_ring
+# The seg path's sliver floor IS this module's occlusion floor -- see MIN_UNOCCLUDED_AREA_PX. Imported
+# rather than restated so the two can never drift into disagreeing about the same gate.
+from racer.vision.seg_labels import MIN_VISIBLE_AREA_PX as SEG_MIN_VISIBLE_AREA_PX
 from racer.contracts import Gate
 
 from .contract import (
@@ -180,7 +183,7 @@ def _clipped_area_px(pts: np.ndarray) -> float:
     return max(0.0, x1 - x0) * max(0.0, y1 - y0)
 
 
-def _has_labellable_area(gr: "GateRender") -> float:
+def _has_labellable_area(gr: "GateRender") -> bool:
     """Is this gate worth a label? VISIBLE AREA, not corner count.
 
     REPLACES ">= 3 inner corners V_VIS and the centre in frame" (2026-07-22). That rule is a
@@ -194,13 +197,110 @@ def _has_labellable_area(gr: "GateRender") -> float:
     Neither consumer needs 3 corners any more: the 8-keypoint partial rescue needs >=4 usable of 8,
     and segmentation needs only pixels. So the test is simply whether enough of the gate is on
     screen to see. Occlusion still marks individual corners V_OCC above; this only decides whether
-    the gate gets a row at all."""
+    the gate gets a row at all.
+
+    This rule answers ONE question -- "is enough of the gate inside the image?" -- and it is blind
+    to anything standing in FRONT of the gate. The complementary question, "is enough of what is
+    inside the image actually still visible?", is :func:`has_visible_silhouette`; a gate must pass
+    BOTH. Keep the two apart: conflating them is how the corner count came back a fourth time."""
     return _clipped_area_px(np.asarray(gr.outer_px, dtype=float)) >= MIN_LABEL_AREA_PX
 
 
+# ...and how much of that on-screen gate has to survive whatever is standing in FRONT of it.
+#
+# THE SAME NUMBER AS THE SEG SLIVER FLOOR, ON PURPOSE, BY IMPORT. seg_labels already refuses to emit
+# a polygon for a blob below MIN_VISIBLE_AREA_PX; a pose row for a gate the seg path calls a sliver
+# would be two answers to one question, and this file's entire bug history is one rule re-derived in
+# several places until the copies disagreed. Import it, do not restate it.
+#
+# UNITS: pixels of the gate's RENDERED SILHOUETTE (bpy_idmask), not of its bounding extent. The two
+# are NOT interchangeable -- the gate is a thin square annulus, so its silhouette is roughly 0.5-0.7
+# of its bounding box head-on and far less when oblique. Applying MIN_LABEL_AREA_PX (200 px^2 of
+# BBOX) to a silhouette would drop small-but-perfectly-visible distant gates the extent rule keeps,
+# i.e. re-open the background-poisoning bug from the other side.
+#
+# THE EVIDENCE (40 frames vq1_partial + 40 frames vq1_faithful, this threshold forced to 0 so
+# nothing was dropped and every candidate's measured silhouette was recorded; see the commit):
+#   * the distribution is BIMODAL with an empty band, not a continuum. vq1_partial, 109 candidates:
+#     16 gates at exactly 0 px (all four corners occluded -- completely behind a prop or a nearer
+#     gate's frame), 7 more at 7/14/15/20/31/43/45 px, then NOTHING until 96 px and a long tail to
+#     99926 px. vq1_faithful, 55 candidates: one gate at 0 px, then nothing until 254 px.
+#   * the floor of a legitimate gate is far above the band: the smallest silhouette among gates with
+#     NO corner marked occluded is 100 px (partial) / 309 px (faithful). So 64 cannot fire on
+#     "small", only on "hidden" -- and any value in 46..95 gives the identical answer, which is what
+#     it means for a threshold to be robust rather than tuned.
+#   * 64 px is 8x8 -- one YOLO grid cell at 640x360. A label with less than one cell of evidence is
+#     a sliver whichever way you cut it.
+# Change it only with a measurement. Too high and half-hidden gates become background again (the bug
+# this file keeps re-learning); too low and a 3-pixel sliver behind a pillar teaches the model to
+# hallucinate a gate through a wall, which on a race course is a crash.
+MIN_UNOCCLUDED_AREA_PX = SEG_MIN_VISIBLE_AREA_PX
+
+
+def unoccluded_area_px(ring_mask) -> float:
+    """Pixels of gate structure the camera ACTUALLY sees, from the rendered object-id silhouette.
+
+    The silhouette comes out of the renderer's own z-buffer with every other object painted black,
+    so props, people, the floor and NEARER GATES have already taken their bite out of it and the
+    frame edge has already clipped it. That is what makes it the honest quantity: no re-derivation,
+    no flat-quad approximation, no "which corners did the raycast hit" proxy for coverage.
+    """
+    return 0.0 if ring_mask is None else float(np.count_nonzero(ring_mask))
+
+
+def has_visible_silhouette(ring_mask) -> bool:
+    """Is enough of this gate UNOCCLUDED to deserve a label? ``ring_mask`` is the measured
+    silhouette (bool array), or None when no measurement exists.
+
+    THE FAILURE THIS PREVENTS, in both directions.
+      * Too strict -> the same poisoning this codebase has now fixed in four places: a gate that is
+        rendered into the image but not labelled teaches the detector that a visible gate is
+        BACKGROUND. The retired rule here was "fewer than 3 corners still V_VIS -> drop the gate",
+        which is a corner count wearing an occlusion costume: it also counted corners that were
+        merely OFF-FRAME, so it silently re-killed 30% (partial arm) / 39% (faithful arm) of the
+        crops the area rule had just rescued, without a single prop being involved.
+      * Too loose -> the opposite poisoning. A gate completely behind a wall, a pillar or a nearer
+        gate's frame is NOT in the image; labelling it teaches the model to hallucinate a gate
+        through solid objects, which on a race course is a crash.
+
+    ``None`` (no measurement available -- the id pass failed, or the backend cannot render one)
+    means KEEP: the extent rule has already established the gate is on screen, and a missing
+    measurement is not evidence of occlusion. Callers must say so out loud rather than let a whole
+    run silently fall back to the unguarded rule.
+    """
+    if ring_mask is None:
+        return True
+    return unoccluded_area_px(ring_mask) >= MIN_UNOCCLUDED_AREA_PX
+
+
+def apply_measured_occlusion(candidates: list["GateRender"], ring_masks: list) -> dict[str, int]:
+    """In-place: keep the label only for candidates whose MEASURED silhouette survives occlusion.
+
+    ``candidates`` are the gates the on-screen-extent rule already accepted; ``ring_masks[i]`` is
+    candidate ``i``'s rendered silhouette (or None if it could not be measured). Returns a census
+    ``{labelled, hidden}`` for the caller to accumulate and print -- a run that starts reporting a
+    large ``hidden`` share is dropping gates again, which is the fingerprint of the bug this
+    package has now had four times, and a silent counter is how it survived the last three.
+
+    This lives here, in pure Python, ON PURPOSE. The measurement can only be taken inside Blender,
+    but the DECISION must be testable on a laptop: the previous round of this bug had a passing test
+    suite and an in-memory sampler reporting 2.58 gates/frame while the written dataset held 1.00,
+    because the deciding code sat in a module the tests could not import.
+    """
+    census = {"labelled": 0, "hidden": 0}
+    for gr, ring in zip(candidates, ring_masks):
+        gr.visible = has_visible_silhouette(ring)
+        census["labelled" if gr.visible else "hidden"] += 1
+    return census
+
+
 def _apply_occlusion_and_visibility(renders: list[GateRender]) -> None:
-    """In-place: mark a corner V_OCC when a NEARER gate's ring covers it, then set ``visible``
-    (>= 3 corners V_VIS and centre in frame). Same far->near logic as synthetic.render_scene."""
+    """In-place: mark a corner V_OCC when a NEARER gate's ring covers it, then set ``visible`` from
+    :func:`_has_labellable_area` (on-screen extent). Same far->near logic as synthetic.render_scene.
+
+    NOT ">= 3 corners V_VIS and the centre in frame" -- that description was left behind here when
+    the rule was replaced and is exactly the kind of stale comment that invites the corner count
+    back. Occlusion by things that are NOT gates is measured later, from the render itself."""
     order = sorted(range(len(renders)), key=lambda k: renders[k].range_m)  # near first
     for a, ia in enumerate(order):
         ga = renders[ia]

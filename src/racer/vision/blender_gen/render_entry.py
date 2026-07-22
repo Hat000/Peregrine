@@ -99,6 +99,17 @@ def main() -> int:
         n_train=args.n_train, n_val=args.n_val, seed=args.seed,
         image_ext=args.image_ext, track_path=args.track, emit_masks=args.masks, emit_seg=args.seg,
     )
+    # Occlusion census: how many on-screen gates kept their label, how many were dropped because the
+    # rendered silhouette showed them hidden, and how many were never checked (id pass failed). A
+    # large 'hidden' share or ANY 'unmeasured' means the labels on disk need looking at, not trusting.
+    census = backend.occlusion_census()
+    if census:
+        total = sum(census.values())
+        print("[vq2] occlusion census (pre-augment gates): "
+              + ", ".join(f"{k}={v} ({100.0 * v / max(total, 1):.1f}%)" for k, v in sorted(census.items())))
+        if census.get("unmeasured"):
+            print("[vq2] WARNING: some gates were labelled WITHOUT an occlusion check -- the id pass "
+                  "failed on those frames. Fully hidden gates may have been written as labels.")
     print(f"[vq2] done. data.yaml -> {yaml_path}")
     return 0
 

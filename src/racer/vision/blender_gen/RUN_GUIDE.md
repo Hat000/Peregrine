@@ -89,14 +89,40 @@ Args after the standalone `--` go to `render_entry.py`:
 | `--seg` | **also** emit 2-class YOLO-seg polygons → `seg/<split>/*.txt` |
 | `--max-intrinsics-err-px` | abort threshold (default 1.0 — **do not raise to mask a real failure**) |
 
+### Which gates get a label at all (two rules, both measured)
+A gate is labelled only if it passes **both**:
+
+1. **enough of it is on screen** — clipped outer extent ≥ `MIN_LABEL_AREA_PX` (200 px², `geometry._has_labellable_area`). Blind to anything in front of the gate;
+2. **enough of what is on screen is not hidden** — its *rendered* silhouette ≥ `MIN_UNOCCLUDED_AREA_PX` (64 px, `geometry.has_visible_silhouette`), measured with the Workbench object-id pass so props, people, the floor, nearer gates and the frame edge have all already taken their bite.
+
+Rule 2 needs the id pass, so **the structure pass runs on every frame whether or not you pass
+`--seg`** (+0.26 s/frame, +7.6 % on a 128-sample Cycles frame). That is deliberate: otherwise the
+*pose* labels would silently depend on an unrelated flag. Verified on disk — the same seed with and
+without `--seg` writes byte-identical `labels/`.
+
+Neither rule is a corner count. `>= 3 in-frame corners` was retired in 2026-07 after it was found
+rendering visible gates into the image and handing them to training as **background**; it came back
+a fourth time disguised as an occlusion test in `bpy_photoreal.occlude_blocked_keypoints` (it counted
+off-frame corners too, so it re-killed 30 % / 39 % of the labels the area rule had just rescued).
+The raycast there still marks individual corners `V_OCC` — that is real information the pose loss
+uses — but it no longer drops gates.
+
+The run prints an **occlusion census** at the end:
+```
+[vq2] occlusion census (pre-augment gates): hidden=23 (21.1%), labelled=86 (78.9%)
+```
+A large `hidden` share means gates are being dropped — look at an overlay before trusting the run.
+Any `unmeasured` means the id pass failed and those frames were written with **no** occlusion check.
+
 ### What `--seg` / `--masks` actually label (read before mixing datasets)
 Under the **Blender** backend both are the gate's **rendered silhouette**, measured per gate with a
 Workbench object-id pass (`bpy_idmask`) taken right after the beauty render: class 0 `gate_frame` is
 the true projected outer boundary — *including the inner side walls the 0.26 m frame depth exposes at
 close range and off-axis* — and class 1 `gate_opening` is the genuinely see-through hole, measured
 with an invisible opening-plane proxy so an oblique gate whose walls close the hole emits **no**
-opening rather than an invented quad. Cost is ~2–3 extra Workbench renders per frame (~0.19 s,
-about **+6 %** on a 128-sample Cycles frame). Pose labels are byte-identical with or without it.
+opening rather than an invented quad. `--seg`/`--masks` add only the **opening** pass on top of the
+structure pass that every run already does (see above); total ~2–3 extra Workbench renders per frame.
+Pose labels are byte-identical with or without it.
 
 Under the **procedural** backend there is no 3D scene, so both fall back to the old flat-quad
 approximation (projected inner/outer squares, clipped). That is a *different target*: it omits the

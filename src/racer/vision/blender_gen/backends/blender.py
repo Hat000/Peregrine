@@ -14,12 +14,18 @@ Per-frame protocol: keep the camera + gate-mesh template across frames (cheap), 
 randomized material / lighting / world / background / gate instances each frame, render to a temp
 PNG, read it back as BGR, and delete the per-frame objects so memory does not grow over a long run.
 
-SEGMENTATION EXCEPTION to "labels are never read back from Blender". Keypoints still are not --
-geometry.py stays the single source of corner positions and the pose labels are untouched. But the
-gate's true projected SILHOUETTE cannot be computed in closed form from a flat quad (the gate is a
-0.26 m deep prism; close and off-axis you see its inner side walls), so when ``emit_silhouettes``
-is set the backend takes a second throwaway Workbench id render per frame and hands the measured
-per-gate masks to the dataset writer. See :mod:`racer.vision.blender_gen.bpy_idmask`.
+SILHOUETTE EXCEPTION to "labels are never read back from Blender". Corner POSITIONS still are not --
+geometry.py stays the single source of those, and the keypoint values are untouched. But two things
+genuinely cannot be computed in closed form and are therefore MEASURED with a throwaway Workbench
+object-id render (:mod:`racer.vision.blender_gen.bpy_idmask`) taken right after the beauty render:
+
+  1. the gate's true projected SILHOUETTE -- the gate is a 0.26 m deep prism, so close and off-axis
+     the camera sees its inner side walls and no flat quad describes it (only with ``--seg``/
+     ``--masks``, which adds the second opening pass);
+  2. WHICH GATES ARE VISIBLE AT ALL. Occlusion coverage is an area question; the renderer's z-buffer
+     already answers it exactly, with props, people, the floor, nearer gates and the frame edge all
+     accounted for. This runs on EVERY frame -- pose labels must not depend on whether ``--seg`` was
+     passed -- and replaces the last surviving corner-count drop (see the method docstring).
 """
 from __future__ import annotations
 
@@ -67,10 +73,19 @@ class BlenderBackend:
         self.opening_template = bpy_scene.build_opening_template()
         self._frame_objects: list = []
 
-        # Set by dataset.generate_dataset when seg/mask output is requested. OFF by default so a
-        # plain pose render pays nothing and stays byte-identical to before this feature existed.
+        # Set by dataset.generate_dataset when seg/mask output is requested: it adds the OPENING
+        # pass (class 1) on top of the structure pass, which now runs on every frame regardless.
         self.emit_silhouettes = False
         self._silhouettes: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+        # Occlusion bookkeeping, printed once at the end of a run by render_entry. A run that
+        # suddenly reports a large 'hidden' count is dropping gates again -- the fingerprint of the
+        # bug this backend has now had four times. 'unmeasured' means the id pass failed and the
+        # occlusion check did NOT run for those gates, which is silent data damage if ignored.
+        self._census: dict[str, int] = {}
+        # (gate_id, range_m, unoccluded_px) for the frame just rendered -- diagnostics only, so a
+        # threshold study can read the raw measurement instead of guessing at it.
+        self.last_gate_areas: list[tuple[int, float, float]] = []
 
         # Photoreal path: HDRI + PBR floor + real props/people (the validated look). Active only when
         # the preset asks for it AND the CC0 asset library is on disk; otherwise the legacy procedural
@@ -127,52 +142,102 @@ class BlenderBackend:
         """
         return self._silhouettes
 
-    def _capture_silhouettes(self, frame: FrameSpec, gate_objs: list) -> None:
-        """Run the id pass and store per-gate (ring, opening) masks. Never raises: a failed id pass
-        must degrade to "no seg labels for this frame", not kill a multi-hour render."""
+    def occlusion_census(self) -> dict[str, int]:
+        """``{labelled, hidden, unmeasured}`` accumulated over the whole run (both splits).
+
+        Printed at the end of a render. Read it: a jump in ``hidden`` is the fingerprint of gates
+        being dropped again, and ANY ``unmeasured`` means some frames were written without the
+        occlusion check running at all.
+        """
+        return dict(self._census)
+
+    def _resolve_occlusion_and_silhouettes(self, frame: FrameSpec, gate_objs: list) -> None:
+        """Measure each candidate gate's TRUE unoccluded silhouette, drop the ones that are hidden,
+        and (when ``emit_silhouettes``) keep the masks as the segmentation target.
+
+        WHY THE VISIBILITY DECISION LIVES HERE. "Is enough of this gate visible to label it?" is an
+        AREA question, and once something can stand in front of the gate the only honest area is the
+        one the renderer's z-buffer produces -- props, people, the floor, nearer gates and the frame
+        edge all take their bite before we count a single pixel. Every closed-form substitute this
+        module has tried was a corner count in disguise and every one of them poisoned the dataset by
+        handing a rendered gate to training as background (see bpy_photoreal.occlude_blocked_keypoints
+        and geometry._has_labellable_area). Pass A is the measurement; we were already paying for it
+        in seg mode, so it now runs unconditionally.
+
+        UNCONDITIONALLY is load-bearing: gate this on ``emit_silhouettes`` and the POSE LABELS would
+        depend on whether ``--seg`` was passed. Two runs of the same preset and seed would disagree
+        on which gates are labelled, and nothing on disk would say why. Measured price for buying
+        that away on a pose-only run: 33.78 s -> 36.35 s per 10 vq1_partial frames, i.e. +0.26 s/frame
+        (+7.6%) on a 128-sample Cycles frame -- and pose labels then diff byte-identical with and
+        without --seg, which was verified on disk rather than assumed.
+
+        Never raises: a failed id pass must degrade to "keep every gate the extent rule accepted,
+        loudly", not kill a multi-hour render and not silently start dropping gates.
+        """
         from .. import bpy_idmask, bpy_scene
+        from ..geometry import apply_measured_occlusion, unoccluded_area_px
+
+        # Candidates = whatever the (occlusion-blind) on-screen-extent rule already accepted. The
+        # rest still RENDER, and still occlude -- painted black -- in the id pass.
+        wanted = [(i, gr) for i, gr in enumerate(frame.gates) if gr.visible]
+        self.last_gate_areas = []
+        if not wanted:
+            return
+        ids = [int(gr.gate_id) for _, gr in wanted]
+        if len(set(ids)) != len(ids):
+            # Duplicate gate_ids would make the silhouette dict lossy and mis-pair masks after
+            # augment (which reorders the gate list). Bail loudly rather than write a poisoned label.
+            print(f"[vq2] WARNING: duplicate gate_ids {ids} in one frame -- skipping the id pass.")
+            self._census["unmeasured"] = self._census.get("unmeasured", 0) + len(wanted)
+            return
 
         try:
-            # Only gates that can carry a label need a mask. The rest still RENDER (and so still
-            # occlude, black, in the id pass) -- they just never become a seg instance.
-            wanted = [(i, gr) for i, gr in enumerate(frame.gates) if gr.visible]
-            ids = [int(gr.gate_id) for _, gr in wanted]
-            if not wanted:
-                return
-            if len(set(ids)) != len(ids):
-                # Duplicate gate_ids would make the dict lossy and mis-pair masks after augment.
-                # Bail loudly rather than write a poisoned label.
-                print(f"[vq2] WARNING: duplicate gate_ids {ids} in one frame -- skipping seg masks.")
-                return
+            # Pass A: the gate STRUCTURE, as the camera sees it. No opening proxies exist yet, and
+            # they are hide_render by construction anyway -- a solid proxy sitting in a near gate's
+            # opening would black out a far gate seen through it.
+            rings = bpy_idmask.render_id_masks(self.scene, [gate_objs[i] for i, _ in wanted])
+        except Exception as exc:                      # pragma: no cover - defensive on ShadowPC
+            print(f"[vq2] WARNING: gate id pass A failed ({type(exc).__name__}: {exc}); this frame "
+                  f"keeps every on-screen gate UNCHECKED for occlusion and gets no seg masks.")
+            self._census["unmeasured"] = self._census.get("unmeasured", 0) + len(wanted)
+            return
 
-            # Pass A: the gate STRUCTURE. Opening proxies must be hidden here: a solid proxy sitting
-            # in a near gate's opening would black out a far gate seen through it.
-            # Registered for purge as they are CREATED, not after the loop -- a throw halfway
-            # through would otherwise leak objects into every subsequent frame of a long run.
+        # THE DROP. A gate whose measured silhouette is essentially gone is behind something solid;
+        # labelling it would teach the detector to see gates through walls. The decision itself is
+        # pure Python in geometry.apply_measured_occlusion so the laptop suite can test it -- the
+        # last round of this bug hid in a module the tests could not import.
+        for k, (_, gr) in enumerate(wanted):
+            self.last_gate_areas.append((int(gr.gate_id), float(gr.range_m),
+                                         unoccluded_area_px(rings[k])))
+        for key, n in apply_measured_occlusion([gr for _, gr in wanted], rings).items():
+            self._census[key] = self._census.get(key, 0) + n
+        kept = [(k, gr, rings[k]) for k, (_, gr) in enumerate(wanted) if gr.visible]
+
+        if not self.emit_silhouettes or not kept:
+            return
+        try:
+            # Pass B: the SEE-THROUGH HOLE, for the SURVIVORS only -- one render per group of
+            # openings that cannot overlap on screen (see bpy_idmask.disjoint_batches). Gates stay
+            # in the scene, painted black, so the hole is correctly eaten by the near-side inner
+            # wall on an oblique gate. Proxies are registered for purge as they are CREATED, not
+            # after the loop -- a throw halfway through would leak objects into every later frame.
             openings = []
-            for _, gr in wanted:
+            for _, gr, _ in kept:
                 obj = bpy_scene.instance_opening(self.opening_template, gr.R_cam_gate, gr.t_cam_gate)
                 self._frame_objects.append(obj)
                 openings.append(obj)
-            rings = bpy_idmask.render_id_masks(
-                self.scene, [gate_objs[i] for i, _ in wanted], hidden=openings)
-
-            # Pass B: the SEE-THROUGH HOLE, one render per group of openings that cannot overlap on
-            # screen (see bpy_idmask.disjoint_batches). Gates stay in the scene, painted black, so
-            # the hole is correctly eaten by the near-side inner wall on an oblique gate.
-            open_masks: list[np.ndarray | None] = [None] * len(wanted)
-            quads = [np.asarray(gr.keypoints_px, dtype=float) for _, gr in wanted]
+            open_masks: list[np.ndarray | None] = [None] * len(kept)
+            quads = [np.asarray(gr.keypoints_px, dtype=float) for _, gr, _ in kept]
             for batch in bpy_idmask.disjoint_batches(quads):
-                targets = [openings[k] for k in batch]
-                hidden = [o for k, o in enumerate(openings) if k not in batch]
-                for k, m in zip(batch, bpy_idmask.render_id_masks(self.scene, targets, hidden=hidden)):
-                    open_masks[k] = m
-
-            for k, (_, gr) in enumerate(wanted):
-                self._silhouettes[int(gr.gate_id)] = (rings[k], open_masks[k])
+                targets = [openings[j] for j in batch]
+                hidden = [o for j, o in enumerate(openings) if j not in batch]
+                for j, m in zip(batch, bpy_idmask.render_id_masks(self.scene, targets, hidden=hidden)):
+                    open_masks[j] = m
+            for j, (_, gr, ring) in enumerate(kept):
+                self._silhouettes[int(gr.gate_id)] = (ring, open_masks[j])
         except Exception as exc:                      # pragma: no cover - defensive on ShadowPC
-            print(f"[vq2] WARNING: gate id pass failed ({type(exc).__name__}: {exc}); "
-                  f"no seg masks for this frame.")
+            print(f"[vq2] WARNING: gate id pass B failed ({type(exc).__name__}: {exc}); "
+                  f"no seg masks for this frame (pose labels are unaffected).")
             self._silhouettes = {}
 
     # -- photoreal path: HDRI world + PBR floor + real props/people (validated 2026-06-15) ---------
@@ -217,9 +282,10 @@ class BlenderBackend:
         # 6. clean render (NO in-render motion blur / glare; AgX + exposure variety)
         PR.configure_clean_render(self.scene, rng, rc, ap)
         image = self._render_mod.render_to_bgr(self.scene)
-        # 7. id pass BEFORE the purge -- it needs the very objects we are about to delete.
-        if self.emit_silhouettes:
-            self._capture_silhouettes(frame, gate_objs)
+        # 7. id pass BEFORE the purge -- it needs the very objects we are about to delete. This is
+        #    also where a gate that is actually HIDDEN loses its label (see the method docstring);
+        #    step 5's raycast only marks corners.
+        self._resolve_occlusion_and_silhouettes(frame, gate_objs)
         self._purge_frame_objects()
         return np.ascontiguousarray(image)
 
@@ -255,7 +321,9 @@ class BlenderBackend:
 
         # 4. render -> BGR, then tear down this frame's objects
         image = self._render_mod.render_to_bgr(self.scene)
-        if self.emit_silhouettes:
-            self._capture_silhouettes(frame, gate_objs)   # before the purge; see the photoreal path
+        # Same occlusion resolution as the photoreal path, and for the same reason: this path has no
+        # props, but a far gate can still sit entirely behind a NEARER gate's frame, and it would
+        # otherwise be labelled through it. Runs before the purge; see the photoreal path.
+        self._resolve_occlusion_and_silhouettes(frame, gate_objs)
         self._purge_frame_objects()
         return np.ascontiguousarray(image)
