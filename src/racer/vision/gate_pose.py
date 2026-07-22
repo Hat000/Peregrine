@@ -261,6 +261,57 @@ _DIAG_B = np.array([1, 3, 5, 7])     # inner LR, inner UL, outer LR, outer UL
 _MIN_DERIVED_SPAN_PX = 40.0
 
 
+def gate_plane_homography(keypoints_px: np.ndarray, usable: np.ndarray) -> np.ndarray | None:
+    """The gate-plane -> image homography implied by ANY >=4 usable keypoints, or None.
+
+    The inner (1.5 m) and outer (2.72 m) squares are concentric and COPLANAR, so every keypoint --
+    inner or outer -- samples the SAME plane-to-image map. Rejects only what makes the FIT itself
+    meaningless: fewer than 4 usable points, a non-finite coordinate, or a structurally degenerate
+    subset (all 8 keypoints lie on one of two diagonals, so "no 3 collinear" reduces to >=2 usable
+    per diagonal -- see ``_DIAG_A``).
+
+    Extracted so callers that need the PLANE, not just the inner square, share one implementation:
+    ``inner_from_partial_keypoints`` (the deploy rescue) projects the inner square through it and
+    adds its own vanishing-line / span guards, while the offline segmentation-label builder projects
+    BOTH squares. Guards on the PROJECTION belong to the caller, since what counts as a usable
+    result differs (a flight fix must be sane; a training polygon is clipped to the image anyway).
+    """
+    kp = np.asarray(keypoints_px, dtype=np.float64)
+    m = np.asarray(usable, dtype=bool)
+    if kp.shape != (8, 2) or m.shape != (8,) or int(m.sum()) < 4:
+        return None
+    if not (m[_DIAG_A].sum() >= 2 and m[_DIAG_B].sum() >= 2):
+        return None                                   # degenerate: see _DIAG_A
+    src, dst = _PLANE_ALL_8[m], kp[m]
+    if not np.isfinite(dst).all():
+        return None
+    try:
+        H, _ = cv2.findHomography(src, dst, method=0)
+    except cv2.error:
+        return None
+    if H is None or not np.isfinite(H).all():
+        return None
+    return H
+
+
+def project_gate_squares(H: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """(inner_4x2, outer_4x2) image corners from a gate-plane homography, in canonical LL,LR,UR,UL
+    order. Returns None if any corner is at or past the plane's vanishing line (w -> 0, where the
+    corner wraps to the far side of the image and its pixel is meaningless). Corners may legitimately
+    be OFF-FRAME -- that is the point; the caller clips."""
+    out = []
+    for plane in (_PLANE_INNER_32, _PLANE_OUTER_32):
+        uvw = (H @ np.hstack([plane.astype(np.float64), np.ones((4, 1))]).T).T
+        w = uvw[:, 2]
+        if np.any(np.abs(w) < 1e-9) or (w.min() < 0.0 < w.max()):
+            return None
+        pts = uvw[:, :2] / w[:, None]
+        if not np.isfinite(pts).all():
+            return None
+        out.append(pts)
+    return out[0], out[1]
+
+
 def inner_from_partial_keypoints(
     keypoints_px: np.ndarray,
     usable: np.ndarray,
@@ -280,19 +331,10 @@ def inner_from_partial_keypoints(
     """
     kp = np.asarray(keypoints_px, dtype=np.float64)
     m = np.asarray(usable, dtype=bool)
-    if kp.shape != (8, 2) or m.shape != (8,) or int(m.sum()) < 4:
+    H = gate_plane_homography(kp, m)
+    if H is None:
         return None
-    if not (m[_DIAG_A].sum() >= 2 and m[_DIAG_B].sum() >= 2):
-        return None                                   # degenerate: see _DIAG_A
-    src, dst = _PLANE_ALL_8[m], kp[m]
-    if not np.isfinite(dst).all():
-        return None
-    try:
-        H, _ = cv2.findHomography(src, dst, method=0)
-    except cv2.error:
-        return None
-    if H is None or not np.isfinite(H).all():
-        return None
+    src = _PLANE_ALL_8[m]
     uvw = (H @ np.hstack([_PLANE_INNER_32.astype(np.float64), np.ones((4, 1))]).T).T
     w = uvw[:, 2]
     w_ref = float(np.median(np.abs((H @ np.hstack([src, np.ones((len(src), 1))]).T).T[:, 2])))

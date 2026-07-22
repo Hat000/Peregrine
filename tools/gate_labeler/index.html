@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VQ2 gate labeler</title>
+<style>
+  :root { --bg:#14161a; --panel:#1d2026; --line:#2c313a; --fg:#d7dce3; --dim:#8b93a1;
+          --acc:#4db6ff; --ok:#5dd964; --warn:#ffb648; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+              font:13px/1.4 "Segoe UI",system-ui,sans-serif; overflow:hidden; }
+  #app { display:flex; height:100%; }
+
+  /* sidebar: frame list + progress */
+  #side { width:240px; min-width:240px; background:var(--panel); border-right:1px solid var(--line);
+          display:flex; flex-direction:column; }
+  #progress { padding:10px 12px; border-bottom:1px solid var(--line); font-weight:600; }
+  #framelist { flex:1; overflow-y:auto; }
+  .fitem { padding:4px 12px; cursor:pointer; white-space:nowrap; overflow:hidden;
+           text-overflow:ellipsis; color:var(--dim); }
+  .fitem:hover { background:#262b33; }
+  .fitem.cur { background:#2b3442; color:var(--fg); }
+  .fitem.done { color:var(--ok); }
+  .fitem.done::before { content:"\2713 "; }
+  .fitem:not(.done)::before { content:"\2022 "; opacity:.35; }
+
+  /* main column */
+  #main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #toolbar { display:flex; align-items:center; gap:6px; padding:6px 10px;
+             background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  button { background:#2b313b; color:var(--fg); border:1px solid var(--line); border-radius:4px;
+           padding:4px 10px; cursor:pointer; font:inherit; }
+  button:hover { background:#353d4a; }
+  button.primary { background:#1f4e73; border-color:#2c6da0; }
+  button.danger  { background:#5b2b2b; border-color:#7a3a3a; }
+  #prompt { margin-left:auto; font-weight:700; color:var(--warn); }
+  #prompt.done { color:var(--ok); }
+  #canvaswrap { flex:1; position:relative; min-height:0; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+  #status { padding:4px 10px; background:var(--panel); border-top:1px solid var(--line);
+            color:var(--dim); display:flex; gap:16px; }
+  #dirty { color:var(--warn); font-weight:700; }
+  kbd { background:#2b313b; border:1px solid var(--line); border-radius:3px; padding:0 4px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <div id="progress">labeled 0 / 0</div>
+    <div id="framelist"></div>
+  </div>
+  <div id="main">
+    <div id="toolbar">
+      <button id="bPrev" title="prev [A / Left]">&#8592; prev</button>
+      <button id="bNext" title="next [D / Right]">next &#8594;</button>
+      <button id="bSave" class="primary" title="save [S]">save</button>
+      <button id="bSkip" title="skip (next without saving) [K]">skip</button>
+      <button id="bNoGate" title="save EMPTY label = negative frame [N]">NO GATE (negative)</button>
+      <button id="bAddGate" title="start clicking a new gate [G]">+ add gate</button>
+      <button id="bDelGate" class="danger" title="delete selected gate [X / Del]">delete gate</button>
+      <button id="bRecompute" title="re-derive outer corners of selected gate from its inner 4 [R]">recompute outer</button>
+      <button id="bFit" title="fit view [0]">fit</button>
+      <span id="prompt"></span>
+    </div>
+    <div id="canvaswrap"><canvas id="cv"></canvas></div>
+    <div id="status">
+      <span id="frameinfo"></span><span id="dirty"></span>
+      <span style="margin-left:auto">
+        wheel=zoom &middot; <kbd>Space</kbd>/mid-drag=pan &middot; drag point=adjust &middot;
+        <kbd>O</kbd>=occluded &middot; <kbd>M</kbd>=seg-target preview &middot;
+        <kbd>Z</kbd>=undo click &middot; <kbd>Esc</kbd>=cancel
+      </span>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ==========================================================================================
+   VQ2 gate hand-labeler frontend.
+   CONVENTIONS (frozen -- must match tools/gate_labeler/labelio.py + blender_gen/contract.py):
+     * keypoints 0-3 = INNER LL,LR,UR,UL ; 4-7 = OUTER LL,LR,UR,UL (gate frame Y-DOWN)
+     * the labeler clicks the 4 INNER corners in guided order LL -> LR -> UR -> UL
+     * outer corners are DERIVED via the 4-point plane homography (canonical inner square,
+       metres, Y-down -> clicked pixels), then applied to the canonical outer square
+     * encoding/normalization happens SERVER-side in labelio.py (single source of truth)
+   ========================================================================================== */
+
+// ---- gate-plane geometry (mirror of labelio.INNER_PLANE / OUTER_PLANE) -------------------
+const HI = 0.75;                       // GATE_INNER_SIZE_M / 2  (1.5 / 2)
+const HO = 1.36;                       // GATE_OUTER_SIZE_M / 2  (2.72 / 2)
+const IN_PLANE  = [[-HI,+HI],[+HI,+HI],[+HI,-HI],[-HI,-HI]];   // LL,LR,UR,UL  Y-DOWN
+const OUT_PLANE = [[-HO,+HO],[+HO,+HO],[+HO,-HO],[-HO,-HO]];
+const CORNER = ["LL","LR","UR","UL"];
+const GATE_COLORS = ["#00e5ff","#ffd54f","#7cff6b","#ff8ad8","#a390ff","#ff9d5c"];
+
+// ---- 4-point homography (DLT, 8x8 gaussian elimination w/ partial pivoting) --------------
+function gaussSolve(A, b) {
+  const n = b.length, M = A.map((row, i) => row.concat([b[i]]));
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-12) throw new Error("degenerate corners");
+    [M[c], M[piv]] = [M[piv], M[c]];
+    for (let r = c + 1; r < n; r++) {
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  const x = new Array(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let s = M[r][n];
+    for (let k = r + 1; k < n; k++) s -= M[r][k] * x[k];
+    x[r] = s / M[r][r];
+  }
+  return x;
+}
+function solveH(IN, P) {
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [X, Y] = IN[i], [u, v] = P[i];
+    A.push([X, Y, 1, 0, 0, 0, -u*X, -u*Y]); b.push(u);
+    A.push([0, 0, 0, X, Y, 1, -v*X, -v*Y]); b.push(v);
+  }
+  const h = gaussSolve(A, b);
+  return [[h[0],h[1],h[2]],[h[3],h[4],h[5]],[h[6],h[7],1]];
+}
+function applyH(H, X, Y) {
+  const w = H[2][0]*X + H[2][1]*Y + H[2][2];
+  return [(H[0][0]*X + H[0][1]*Y + H[0][2]) / w,
+          (H[1][0]*X + H[1][1]*Y + H[1][2]) / w];
+}
+// Horizon guard -- MUST match labelio._W_EPS / _SANE_SPAN / derive_outer_from_inner.
+// The outer square is 1.813x the inner, so deriving it EXTRAPOLATES. Under extreme perspective
+// that can reach the gate plane's VANISHING LINE: w -> 0 (point at infinity), then w < 0 and the
+// point WRAPS to the opposite side of the image. No valid pixel exists for such a corner (the real
+// gate frame there is behind the camera plane). Unguarded, a wrapped corner can land back inside
+// the frame and be stored v=2 at a meaningless position. We push it well outside the border
+// instead, so it encodes v=0 (off-frame, masked by the pose loss) and renders hollow.
+const W_EPS = 0.08, SANE_SPAN = 4.0;
+function outerValidity(innerPx, W, Hh) {
+  const H = solveH(IN_PLANE, innerPx);
+  return OUT_PLANE.map(([X, Y]) => {
+    const w = H[2][0]*X + H[2][1]*Y + H[2][2];
+    if (w <= W_EPS) return false;
+    const x = (H[0][0]*X + H[0][1]*Y + H[0][2]) / w, y = (H[1][0]*X + H[1][1]*Y + H[1][2]) / w;
+    return Math.abs(x) <= SANE_SPAN * W && Math.abs(y) <= SANE_SPAN * Hh;
+  });
+}
+function outerFromInner(innerPx) {
+  const W = (img && img.naturalWidth) || 640, Hh = (img && img.naturalHeight) || 360;
+  const H = solveH(IN_PLANE, innerPx);
+  const valid = outerValidity(innerPx, W, Hh);
+  const cx = innerPx.reduce((a, p) => a + p[0], 0) / 4;
+  const cy = innerPx.reduce((a, p) => a + p[1], 0) / 4;
+  const span = 1.5 * Math.max(W, Hh);
+  lastOuterValid = valid;
+  return OUT_PLANE.map(([X, Y], i) => {
+    if (valid[i]) return applyH(H, X, Y);
+    const dx = innerPx[i][0] - cx, dy = innerPx[i][1] - cy;
+    const n = Math.hypot(dx, dy) || 1;
+    return [cx + dx / n * span, cy + dy / n * span];
+  });
+}
+let lastOuterValid = [true, true, true, true];
+
+// ---- state --------------------------------------------------------------------------------
+// gate = { inner:[[x,y]..<=4], outer:[[x,y]x4]|null, occ:[bool x8], detached:[bool x4] }
+//   * inner grows during guided clicking; when it reaches 4, outer is auto-derived
+//   * detached[i]: user hand-dragged outer corner i -> inner-drag no longer recomputes it
+//   * occ[k]: labeler marked keypoint k occluded-but-in-frame (v=1); off-frame (v=0) is
+//     AUTOMATIC from position -- labelio computes it at save time
+let frames = [], frameIdx = -1;
+let img = new Image(), imgReady = false;
+let gates = [], selGate = -1, selPoint = -1;   // selPoint: 0-3 inner, 4-7 outer
+let isSeed = false;                            // gates came from an UNVERIFIED detector seed
+let collecting = false;                        // guided-click mode for the LAST gate
+let dirty = false;
+let view = { s: 1, tx: 0, ty: 0 };             // screen = img*s + t
+let drag = null;                               // {kind:'pan'|'point', ...}
+let spaceHeld = false;
+
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const $ = id => document.getElementById(id);
+
+// ---- helpers ------------------------------------------------------------------------------
+const toScreen = p => [p[0]*view.s + view.tx, p[1]*view.s + view.ty];
+const toImg = (x, y) => [(x - view.tx)/view.s, (y - view.ty)/view.s];
+const curGate = () => (selGate >= 0 && selGate < gates.length) ? gates[selGate] : null;
+const gateComplete = g => g.inner.length === 4 && g.outer;
+const inFrame = p => p[0] >= 0 && p[0] <= img.naturalWidth - 1 &&
+                     p[1] >= 0 && p[1] <= img.naturalHeight - 1;
+function setDirty(v) { dirty = v; $("dirty").textContent = v ? "UNSAVED" : ""; }
+function newGate() {
+  return { inner: [], outer: null, occ: new Array(8).fill(false),
+           detached: new Array(4).fill(false) };
+}
+function recomputeOuter(g, force) {
+  if (g.inner.length !== 4) return;
+  const o = outerFromInner(g.inner);
+  if (!g.outer) g.outer = o;
+  else for (let i = 0; i < 4; i++) if (force || !g.detached[i]) g.outer[i] = o[i];
+  if (force) g.detached.fill(false);
+}
+
+// ---- server io ----------------------------------------------------------------------------
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+async function refreshFrames() {
+  const j = await api("/api/frames");
+  frames = j.frames;
+  renderSidebar();
+}
+async function loadFrame(i) {
+  if (i < 0 || i >= frames.length) return;
+  if (dirty && !confirm("Unsaved changes on this frame - discard?")) return;
+  frameIdx = i; imgReady = false;
+  gates = []; selGate = -1; selPoint = -1; collecting = false; setDirty(false);
+  const name = frames[i].name;
+  img = new Image();
+  img.onload = async () => {
+    imgReady = true;
+    fitView();
+    try {
+      const j = await api("/api/label?name=" + encodeURIComponent(name));
+      isSeed = false;
+      if (j.exists || j.seed) {
+        // resume (human label) OR seed (detector pre-label): rebuild gates from the decoded
+        // rows; outer marked detached so a stray inner nudge won't clobber them. For a SEED the
+        // outer corners came DIRECTLY from the 8-keypoint model -- never re-derive them from the
+        // inner square, since that homography extrapolation is what seeding exists to avoid.
+        gates = j.gates.map(g => ({
+          inner: g.inner.map(p => p.slice()), outer: g.outer.map(p => p.slice()),
+          occ: g.vis.map(v => v === 1), detached: new Array(4).fill(true),
+        }));
+        selGate = gates.length - 1;
+        isSeed = !!j.seed;   // unverified: frame stays UNLABELED until the human saves
+      } else if (!frames[i].labeled) {
+        startGate();  // fresh frame: auto-arm guided clicking for gate 0
+      }
+    } catch (e) { console.error(e); }
+    draw(); renderSidebar(); updateStatus();
+  };
+  img.src = "/frames/" + encodeURIComponent(name) + "?t=" + Date.now();
+  renderSidebar(); updateStatus();
+}
+async function save(asNegative) {
+  if (frameIdx < 0 || !imgReady) return;
+  if (asNegative) { gates = []; selGate = -1; collecting = false; }
+  const done = gates.filter(gateComplete);
+  if (!asNegative && done.length !== gates.length) {
+    alert("A gate has fewer than 4 inner corners - finish or delete it first."); return;
+  }
+  const payload = {
+    name: frames[frameIdx].name,
+    img_w: img.naturalWidth, img_h: img.naturalHeight,
+    gates: done.map(g => ({ inner: g.inner, outer: g.outer, occluded: g.occ })),
+  };
+  try {
+    const j = await api("/api/save", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (j.warning) alert("Saved, but: " + j.warning);
+    frames[frameIdx].labeled = true;
+    frames[frameIdx].seeded = false;   // human-approved now; the seed no longer applies
+    isSeed = false;
+    setDirty(false); renderSidebar(); updateStatus(); draw();
+  } catch (e) { alert("save failed: " + e.message); }
+}
+
+// ---- gate editing -------------------------------------------------------------------------
+function startGate() {
+  if (collecting) return;
+  gates.push(newGate());
+  selGate = gates.length - 1; selPoint = -1; collecting = true;
+  updateStatus(); draw();
+}
+function deleteGate() {
+  if (selGate < 0) return;
+  gates.splice(selGate, 1);
+  collecting = false;
+  selGate = gates.length - 1; selPoint = -1;
+  setDirty(true); updateStatus(); draw();
+}
+function addClick(px) {
+  const g = gates[gates.length - 1];
+  g.inner.push(px);
+  if (g.inner.length === 4) {
+    recomputeOuter(g, true);   // derive outer via homography
+    collecting = false;
+  }
+  setDirty(true); updateStatus(); draw();
+}
+function undoClick() {
+  if (!collecting) return;
+  const g = gates[gates.length - 1];
+  if (g.inner.length > 0) g.inner.pop();
+  else { gates.pop(); collecting = false; selGate = gates.length - 1; }
+  setDirty(true); updateStatus(); draw();
+}
+function hitTest(sx, sy) {   // nearest keypoint within 10 screen px -> {gi, pi}
+  let best = null, bestD = 10;
+  gates.forEach((g, gi) => {
+    const pts = g.inner.concat(g.outer || []);
+    pts.forEach((p, pi) => {
+      const [x, y] = toScreen(p), d = Math.hypot(x - sx, y - sy);
+      if (d < bestD) { bestD = d; best = { gi, pi }; }
+    });
+  });
+  return best;
+}
+
+// ---- view / canvas ------------------------------------------------------------------------
+function resizeCanvas() {
+  const r = $("canvaswrap").getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+function fitView() {
+  if (!imgReady) return;
+  const r = $("canvaswrap").getBoundingClientRect();
+  view.s = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight) * 0.96;
+  view.tx = (r.width - img.naturalWidth * view.s) / 2;
+  view.ty = (r.height - img.naturalHeight * view.s) / 2;
+  draw();
+}
+function draw() {
+  const r = $("canvaswrap").getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+  if (!imgReady) return;
+  ctx.save();
+  ctx.translate(view.tx, view.ty); ctx.scale(view.s, view.s);
+  ctx.imageSmoothingEnabled = view.s < 2;   // crisp pixels when zoomed for precise clicking
+  ctx.drawImage(img, 0, 0);
+  ctx.restore();
+  // image border
+  const [bx, by] = toScreen([0, 0]);
+  ctx.strokeStyle = "#555"; ctx.lineWidth = 1;
+  ctx.strokeRect(bx, by, img.naturalWidth * view.s, img.naturalHeight * view.s);
+
+  if (showSeg) gates.forEach(g => drawSegPreview(g));
+  gates.forEach((g, gi) => drawGate(g, gi));
+}
+
+// --- SEG PREVIEW (2026-07-22) --------------------------------------------------------------
+// The line-based gate solver is trained on a two-class SEGMENTATION target -- gate_frame (the
+// 2.72 m outer square) and gate_opening (the 1.5 m inner square) -- and that target is DERIVED
+// from these same clicks, so it needs no extra labelling (see racer/vision/seg_labels.py and
+// scripts/build_seg_dataset.py). What it does need is a way to SEE it: the polygons are clipped to
+// the frame, and a wrong click that still looks plausible as 8 keypoints can produce a badly wrong
+// mask. Press 'm' to shade what the seg label will actually contain.
+let showSeg = false;
+
+function clipToFrame(pts) {                      // Sutherland-Hodgman, mirrors seg_labels.clip_polygon
+  const W = img.naturalWidth - 1, H = img.naturalHeight - 1;
+  const edges = [
+    [p => p[0] >= 0, (a, b) => lerp(a, b, (0 - a[0]) / (b[0] - a[0]))],
+    [p => p[0] <= W, (a, b) => lerp(a, b, (W - a[0]) / (b[0] - a[0]))],
+    [p => p[1] >= 0, (a, b) => lerp(a, b, (0 - a[1]) / (b[1] - a[1]))],
+    [p => p[1] <= H, (a, b) => lerp(a, b, (H - a[1]) / (b[1] - a[1]))],
+  ];
+  let out = pts.slice();
+  for (const [inside, cut] of edges) {
+    const src = out; out = [];
+    for (let i = 0; i < src.length; i++) {
+      const cur = src[i], prv = src[(i - 1 + src.length) % src.length];
+      const ci = inside(cur), pi = inside(prv);
+      if (ci) { if (!pi) out.push(cut(prv, cur)); out.push(cur); }
+      else if (pi) out.push(cut(prv, cur));
+    }
+    if (!out.length) return [];
+  }
+  return out;
+}
+function lerp(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; }
+
+function fillPoly(pts, fill) {
+  if (pts.length < 3) return;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const [x, y] = toScreen(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+}
+
+function drawSegPreview(g) {
+  if (!gateComplete(g) || !g.outer) return;
+  fillPoly(clipToFrame(g.outer), "rgba(255,140,0,0.28)");   // class 0: gate_frame
+  fillPoly(clipToFrame(g.inner), "rgba(0,220,80,0.30)");    // class 1: gate_opening
+}
+function drawPoly(pts, color, dashed) {
+  ctx.beginPath();
+  pts.forEach((p, i) => { const [x, y] = toScreen(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.closePath();
+  ctx.setLineDash(dashed ? [6, 4] : []);
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]);
+}
+function drawGate(g, gi) {
+  const color = GATE_COLORS[gi % GATE_COLORS.length];
+  if (g.inner.length >= 2) drawPoly(g.inner, color, false);          // inner: solid
+  if (g.outer) drawPoly(g.outer, color, true);                       // outer: dashed
+  const pts = g.inner.concat(g.outer || []);
+  pts.forEach((p, pi) => {
+    const [x, y] = toScreen(p);
+    const isSel = gi === selGate && pi === selPoint;
+    const off = !inFrame(p);                                         // v=0 at save time
+    ctx.beginPath(); ctx.arc(x, y, isSel ? 6 : 4.5, 0, 7);
+    if (off)             { ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke(); }   // hollow
+    else if (g.occ[pi])  { ctx.fillStyle = "#ff8c42"; ctx.fill(); }                      // occluded
+    else                 { ctx.fillStyle = color; ctx.fill(); }                          // visible
+    if (isSel) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke(); }
+    ctx.fillStyle = color; ctx.font = "11px sans-serif";
+    ctx.fillText((pi < 4 ? "i" : "o") + CORNER[pi % 4], x + 7, y - 6);
+  });
+}
+
+// ---- status / sidebar ---------------------------------------------------------------------
+function updateStatus() {
+  const p = $("prompt");
+  if (collecting) {
+    const g = gates[gates.length - 1], k = g.inner.length;
+    p.textContent = `Gate ${gates.length}: click INNER ${CORNER[k]}  (${k + 1}/4)`;
+    p.classList.remove("done");
+  } else if (isSeed) {
+    // Loud on purpose: these points are detector output, not a label. Nothing is recorded until
+    // the human presses save -- the frame is still counted as UNLABELED.
+    p.textContent = `SEEDED by detector (UNVERIFIED) - ${gates.length} gate(s): check every `
+                  + `corner, fix, then SAVE to accept`;
+    p.classList.remove("done");
+  } else {
+    p.textContent = gates.length
+      ? `${gates.length} gate(s) - drag points to adjust`
+      : "no gates (use + add gate, or NO GATE for a negative)";
+    p.classList.add("done");
+  }
+  $("frameinfo").textContent = frameIdx >= 0
+    ? `frame ${frameIdx + 1}/${frames.length} - ${frames[frameIdx].name}` : "";
+}
+function renderSidebar() {
+  const n = frames.filter(f => f.labeled).length;
+  $("progress").textContent = `labeled ${n} / ${frames.length}`;
+  const list = $("framelist"); list.innerHTML = "";
+  frames.forEach((f, i) => {
+    const d = document.createElement("div");
+    d.className = "fitem" + (f.labeled ? " done" : "") + (i === frameIdx ? " cur" : "");
+    d.textContent = f.name; d.title = f.name;
+    d.onclick = () => loadFrame(i);
+    list.appendChild(d);
+  });
+  const cur = list.children[frameIdx];
+  if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+
+// ---- mouse --------------------------------------------------------------------------------
+cv.addEventListener("mousedown", e => {
+  const rect = cv.getBoundingClientRect(), sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  if (e.button === 1 || e.button === 2 || spaceHeld) {          // pan
+    drag = { kind: "pan", x: sx, y: sy }; e.preventDefault(); return;
+  }
+  if (e.button !== 0 || !imgReady) return;
+  const hit = hitTest(sx, sy);
+  if (hit) {                                                    // grab a point to drag
+    selGate = hit.gi; selPoint = hit.pi;
+    drag = { kind: "point", gi: hit.gi, pi: hit.pi, moved: false };
+    updateStatus(); draw(); return;
+  }
+  if (collecting) addClick(toImg(sx, sy));                      // guided inner click
+  else { selPoint = -1; draw(); }
+});
+cv.addEventListener("mousemove", e => {
+  if (!drag) return;
+  const rect = cv.getBoundingClientRect(), sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  if (drag.kind === "pan") {
+    view.tx += sx - drag.x; view.ty += sy - drag.y;
+    drag.x = sx; drag.y = sy; draw(); return;
+  }
+  const g = gates[drag.gi], p = toImg(sx, sy);
+  drag.moved = true;
+  if (drag.pi < 4) {                       // inner drag: recompute non-detached outer live
+    g.inner[drag.pi] = p;
+    if (gateComplete(g)) recomputeOuter(g, false);
+  } else {                                 // outer drag: independent nudge -> detach
+    g.outer[drag.pi - 4] = p;
+    g.detached[drag.pi - 4] = true;
+  }
+  setDirty(true); draw();
+});
+window.addEventListener("mouseup", () => { drag = null; });
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  if (!imgReady) return;
+  const rect = cv.getBoundingClientRect(), mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const k = Math.pow(1.0015, -e.deltaY);
+  const s2 = Math.min(60, Math.max(0.05, view.s * k)), kk = s2 / view.s;
+  view.tx = mx - (mx - view.tx) * kk; view.ty = my - (my - view.ty) * kk; view.s = s2;
+  draw();
+}, { passive: false });
+
+// ---- keyboard -----------------------------------------------------------------------------
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { spaceHeld = true; cv.style.cursor = "grab"; e.preventDefault(); return; }
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === "s") { e.preventDefault(); save(false); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  switch (k) {
+    case "arrowright": case "d": loadFrame(frameIdx + 1); break;
+    case "arrowleft":  case "a": loadFrame(frameIdx - 1); break;
+    case "s": save(false); break;
+    case "k": setDirty(false); loadFrame(frameIdx + 1); break;              // skip
+    case "n": save(true); break;                                            // negative
+    case "g": startGate(); break;
+    case "x": case "delete": deleteGate(); break;
+    case "r": { const g = curGate(); if (g && gateComplete(g)) { recomputeOuter(g, true); setDirty(true); draw(); } break; }
+    case "o": { const g = curGate();                                        // toggle occluded
+      if (g && selPoint >= 0) { g.occ[selPoint] = !g.occ[selPoint]; setDirty(true); draw(); } break; }
+    case "m": showSeg = !showSeg; draw(); break;                            // seg-target preview
+    case "z": case "backspace": undoClick(); break;
+    case "0": fitView(); break;
+    case "escape":
+      if (collecting) undoClickAll();
+      else { selPoint = -1; draw(); }
+      break;
+  }
+});
+window.addEventListener("keyup", e => {
+  if (e.code === "Space") { spaceHeld = false; cv.style.cursor = "crosshair"; }
+});
+function undoClickAll() {   // Esc during collection: drop the in-progress gate entirely
+  gates.pop(); collecting = false; selGate = gates.length - 1;
+  updateStatus(); draw();
+}
+
+// ---- buttons ------------------------------------------------------------------------------
+$("bPrev").onclick = () => loadFrame(frameIdx - 1);
+$("bNext").onclick = () => loadFrame(frameIdx + 1);
+$("bSave").onclick = () => save(false);
+$("bSkip").onclick = () => { setDirty(false); loadFrame(frameIdx + 1); };
+$("bNoGate").onclick = () => save(true);
+$("bAddGate").onclick = startGate;
+$("bDelGate").onclick = deleteGate;
+$("bRecompute").onclick = () => { const g = curGate();
+  if (g && gateComplete(g)) { recomputeOuter(g, true); setDirty(true); draw(); } };
+$("bFit").onclick = fitView;
+window.addEventListener("resize", resizeCanvas);
+
+// ---- boot ---------------------------------------------------------------------------------
+(async () => {
+  resizeCanvas();
+  await refreshFrames();
+  const first = frames.findIndex(f => !f.labeled);   // resume at first unlabeled frame
+  if (frames.length) loadFrame(first >= 0 ? first : 0);
+})();
+</script>
+</body>
+</html>

@@ -206,6 +206,23 @@ def homography_from_lines(inner_segs, outer_segs, image_wh=(640, 360)):
 
     A homography maps lines by H^-T, so each identified line gives 2 linear constraints on H^-T and
     >=4 lines determine it -- no corner intersection, so foreshortened edges degrade gracefully.
+
+    KNOWN GAP, and a FAILED fix -- do not re-attempt it the same way (2026-07-22). A square
+    contributes only when BOTH its extremes are present in a pencil, so a gate cropped on two edges
+    (one line per square per pencil, e.g. outer-left + inner-left and nothing else) gets no fit at
+    all, on exactly the close-range frames this path exists to serve. Two generalisations were
+    written, unit-tested green, and MEASURED against the 998-frame failure-mined inbox:
+      * label by monotone order (concentric squares nest, so the plane coordinate is monotone in
+        signed distance): 82.4% -> 6.8% coverage. Strict monotonicity is unattainable once mask
+        noise leaves near-duplicate lines, so the whole pencil is discarded. It is also UNSOUND:
+        with both lines on the same side, "-1.36 then +0.75" and "-1.36 then -0.75" are both
+        monotone but are different geometries, not a symmetry -- the rule picks arbitrarily.
+      * sign from the gate centroid, magnitude from the source square: 82.4% -> 72.8%, a strict
+        SUBSET of the old fits (they agree to 0.00 px median where both fire, so the geometry is
+        right) plus one 104000 px outlier. Both extremes can land on the same side of a biased
+        centroid, giving two lines the SAME plane coordinate and a degenerate system.
+    The sign genuinely is not recoverable from the LINES alone here; it needs the interior direction,
+    which only the mask knows. Pass that in before trying again.
     """
     tagged = [(s, GATE_INNER_HALF) for s in inner_segs] + [(s, GATE_OUTER_HALF) for s in outer_segs]
     if len(tagged) < 4:
@@ -236,7 +253,7 @@ def homography_from_lines(inner_segs, outer_segs, image_wh=(640, 360)):
         for half, lines in per_half.items():
             lines = _merge_collinear(lines, cen)
             if len(lines) < 2:
-                continue
+                continue                 # see KNOWN GAP in the docstring
             order = sorted(lines, key=lambda l: float(l @ [cen[0], cen[1], 1.0]))
             for l, val in ((order[0], -half), (order[-1], +half)):
                 # fi picks WHICH plane axis; the choice is arbitrary but now SHARED by both
@@ -276,3 +293,137 @@ def centre_from_lines(bgr):
         return None
     c = np.array([H[0, 2] / w, H[1, 2] / w])
     return (c, H, len(inner) + len(outer)) if np.isfinite(c).all() else None
+
+
+# ---------------------------------------------------------------------------------------------
+# SEGMENTATION FRONT-END (2026-07-22) -- the replacement for gate_mask's HSV colour rule.
+#
+# Everything above this line is already measured against real ground truth (13.7 px median centre
+# on task2); the module docstring records that the ONLY weak link is the mask. A learned two-class
+# seg model (gate_frame = the 2.72 m square, gate_opening = the 1.5 m square -- see
+# racer.vision.seg_labels) removes that link, and it also removes the most fragile STEP: with the
+# opening predicted as its own instance there is no contour-hierarchy hole-finding, so
+# ``extract_gate_lines``' RETR_CCOMP pass and its 0.2*area hole heuristic are not needed at all.
+#
+# Still NOT wired into flight. The keypoint path remains the only emitter.
+# ---------------------------------------------------------------------------------------------
+
+SEG_CLASS_FRAME = 0
+SEG_CLASS_OPENING = 1
+_MIN_MASK_AREA_PX = 200.0
+
+
+def segments_from_mask(mask) -> list:
+    """Non-border edge segments of a single binary instance mask's OUTER contour.
+
+    Unlike ``extract_gate_lines`` this takes ONE convex-ish blob and never looks for holes -- the
+    seg model predicts the opening separately, so the hole logic has nothing to do."""
+    m = np.ascontiguousarray(mask.astype(np.uint8))
+    h, w = m.shape[:2]
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return []
+    c = max(cnts, key=cv2.contourArea)
+    if cv2.contourArea(c) < _MIN_MASK_AREA_PX:
+        return []
+    return _segments(c, w, h)
+
+
+def _centroid(mask):
+    ys, xs = np.nonzero(mask)
+    return None if not len(xs) else (float(xs.mean()), float(ys.mean()))
+
+
+def pair_gate_instances(frames_masks, opening_masks):
+    """Group predicted instances into gates: each opening belongs to the frame that CONTAINS it.
+
+    Containment (is the opening's centroid inside the frame mask?) rather than IoU, because a frame
+    and its own opening barely overlap in area -- the frame is amodal over the opening, so IoU-style
+    matching would rank a neighbouring gate's frame just as highly. Returns
+    [(frame_mask, opening_mask_or_None)], including frames with no opening (a gate seen so obliquely
+    that the opening closed up still gives 4 usable outer edges)."""
+    used = set()
+    out = []
+    for fi, fm in enumerate(frames_masks):
+        best, best_d = None, None
+        fc = _centroid(fm)
+        for oi, om in enumerate(opening_masks):
+            if oi in used:
+                continue
+            oc = _centroid(om)
+            if oc is None or fc is None:
+                continue
+            x, y = int(round(oc[0])), int(round(oc[1]))
+            if not (0 <= y < fm.shape[0] and 0 <= x < fm.shape[1] and fm[y, x]):
+                continue
+            d = (oc[0] - fc[0]) ** 2 + (oc[1] - fc[1]) ** 2
+            if best_d is None or d < best_d:
+                best, best_d = oi, d
+        if best is not None:
+            used.add(best)
+        out.append((fm, None if best is None else opening_masks[best]))
+    return out
+
+
+def centre_from_seg_masks(frame_mask, opening_mask=None, image_wh=(640, 360)):
+    """Gate centre + homography from ONE gate's predicted masks. Returns (centre_px, H) or None."""
+    outer = segments_from_mask(frame_mask)
+    inner = [] if opening_mask is None else segments_from_mask(opening_mask)
+    H = homography_from_lines(inner, outer, image_wh=image_wh)
+    if H is None:
+        return None
+    w = float(H[2, 2])
+    if abs(w) < 1e-12:
+        return None
+    c = np.array([H[0, 2] / w, H[1, 2] / w])
+    return (c, H) if np.isfinite(c).all() else None
+
+
+class SegGateLineDetector:
+    """yolo-seg front-end -> the validated line/homography solver. Model is injectable for tests."""
+
+    def __init__(self, model, *, conf: float = 0.25, device: str | None = None):
+        self.model = model
+        self.conf = conf
+        self.device = device
+
+    @classmethod
+    def load(cls, weights, **kw):
+        from ultralytics import YOLO   # lazy: the heavy, GPU-only [detector] dependency
+
+        task = "segment" if str(weights).lower().endswith((".engine", ".onnx")) else None
+        model = YOLO(str(weights), task=task) if task else YOLO(str(weights))
+        return cls(model, **kw)
+
+    def masks_for(self, image_bgr):
+        """(frame_masks, opening_masks) as full-resolution boolean arrays."""
+        res = self.model.predict(image_bgr, verbose=False, conf=self.conf, device=self.device)
+        if not res:
+            return [], []
+        r = res[0]
+        masks, boxes = getattr(r, "masks", None), getattr(r, "boxes", None)
+        if masks is None or boxes is None or getattr(masks, "data", None) is None:
+            return [], []
+        h, w = image_bgr.shape[:2]
+        data = masks.data
+        data = data.cpu().numpy() if hasattr(data, "cpu") else np.asarray(data)
+        cls = boxes.cls
+        cls = cls.cpu().numpy() if hasattr(cls, "cpu") else np.asarray(cls)
+        frames, openings = [], []
+        for m, c in zip(data, cls):
+            mm = (m > 0.5).astype(np.uint8)
+            if mm.shape != (h, w):
+                mm = cv2.resize(mm, (w, h), interpolation=cv2.INTER_NEAREST)
+            (frames if int(c) == SEG_CLASS_FRAME else openings).append(mm.astype(bool))
+        return frames, openings
+
+    def centres(self, image_bgr):
+        """[(centre_px, H)] -- one entry per gate the model found and the solver could fit."""
+        h, w = image_bgr.shape[:2]
+        fm, om = self.masks_for(image_bgr)
+        out = []
+        for f, o in pair_gate_instances(fm, om):
+            got = centre_from_seg_masks(f, o, image_wh=(w, h))
+            if got is not None:
+                out.append(got)
+        return out
