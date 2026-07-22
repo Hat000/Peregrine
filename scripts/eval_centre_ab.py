@@ -46,11 +46,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools" / "gate_labeler"))
 
+from racer.contracts import Frame  # noqa: E402
+from racer.vision.detector import (  # noqa: E402
+    KPT_CONF_THRESH_DEFAULT,   # 0.2 -- the deploy threshold; a keypoint below it is not "visible"
+    GateDetector,
+    _to_numpy,                 # torch->numpy without importing torch, the SAME one detect() uses
+    _unclamped_mask,           # border-clamp test, shared so the "clamped" rule can't drift from
+                               # the one the rescue path applies (ultralytics pins off-frame kpts)
+    observations_from_results,
+)
 from racer.vision.gate_lines import (  # noqa: E402
     SegGateLineDetector,
     _on_border,            # private on purpose, but the gallery must colour clipped fits with the
                            # SAME rule the solver used -- a second copy would drift
     centre_from_masks_quad,
+    centre_from_quad,      # diagonal intersection of a 4-pt quad -- M's centre, derived the SAME
+                           # way the ground truth is (load_truth applies it to the human handles)
     centre_from_seg_masks,
     pair_gate_instances,
     quad_from_mask_ex,
@@ -256,6 +267,342 @@ def run_model(tag, weights, truth, device, arm_ids):
                           "gt": gt_pts, "gt_quads": gt_quads,
                           "preds": preds, "per_gt": per_gt})
     return arms, per_frame, timing, init_ms, diag
+
+
+# ==================================================================================================
+# M ARM -- the KEYPOINT detector's own gate-centre, on the SAME 54 gates as the three mask arms.
+# ==================================================================================================
+# M is a different animal from the mask arms: an 8-keypoint YOLO-pose net, not a mask consumer, so
+# it does not fit the (frame_mask, opening_mask) signature the ARMS registry uses. It is wired in
+# HERE instead -- but it reuses the EXACT same ``Arm`` tally and ``greedy_match`` as the mask arms
+# (the load-bearing one-to-one matcher), so its coverage / median / p90 land in the same table on
+# the same footing, matched against the same ground truth the same way.
+#
+# Centre derivation MIRRORS the ground truth: the diagonal intersection of the INNER quad
+# (``centre_from_quad``, the very formula ``load_truth`` applies to the hand-labelled inner handles).
+# We read the RAW model keypoints (``model.predict``), NOT ``GateDetector.detect()``: detect() runs
+# the partial-corner rescue, which DERIVES off-frame inner corners through a homography -- exactly
+# the failure mode this measurement exists to expose. ultralytics itself clamps any off-frame
+# keypoint to the image border (scale_coords -> clip_coords), so a cropped gate returns with inner
+# corners pinned to the edge; that pinning is RECORDED (``inner_clamped``), never papered over. A
+# separate ``m-deploy`` arm DOES use detect() (rescue ON) so the current mitigation is in the table
+# too. The OUTER quad is offered as its own arm so we can report whichever square M does better on.
+
+M_WEIGHTS = {
+    "engine": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
+    "pt": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06.pt",
+}
+M_SCORE_THRESH = 0.25                          # deploy default (GateDetector.score_thresh)
+M_KPT_CONF_THRESH = KPT_CONF_THRESH_DEFAULT    # 0.2 deploy default; a corner below it is unusable
+
+M_ARMS = {
+    #  id             (label,                                     kind)
+    "m-inner":       ("M inner-quad (raw kpts)",                 "inner"),
+    "m-inner-clean": ("M inner-quad (usable kpts only)",         "inner-clean"),
+    "m-outer":       ("M outer-quad (raw kpts)",                 "outer"),
+    "m-outer-clean": ("M outer-quad (usable kpts only)",         "outer-clean"),
+    "m-deploy":      ("M deploy path (kpts+partial rescue)",     "deploy"),
+}
+
+
+def load_m(device):
+    """Load M, PREFERRING the fp16 TRT engine and falling back to the .pt if this venv has no
+    tensorrt. Returns (GateDetector, which, attempts). The engine only fails at PREDICT time (its
+    tensorrt import is lazy inside ultralytics), so a dummy predict is forced here to surface that at
+    load, not mid-loop. The two weights are the SAME net -- parity was proven at export (corner
+    median 0.01 px), so they differ in speed, not geometry."""
+    dummy = np.zeros((360, 640, 3), np.uint8)
+    attempts = []
+    for which in ("engine", "pt"):
+        try:
+            det = GateDetector.load(M_WEIGHTS[which], device=device,
+                                    score_thresh=M_SCORE_THRESH, kpt_conf_thresh=M_KPT_CONF_THRESH)
+            det.model.predict(dummy, verbose=False, device=det.device)   # force the lazy TRT import
+            return det, which, attempts
+        except Exception as ex:                                          # noqa: BLE001
+            attempts.append((which, f"{type(ex).__name__}: {ex}"))
+    raise RuntimeError(f"could not load M from any weights: {attempts}")
+
+
+def _dets_from_res(res, wh, score_thresh=M_SCORE_THRESH, conf_thresh=M_KPT_CONF_THRESH):
+    """RAW per-detection keypoint records from one ultralytics pose Result. Each record carries the
+    naive inner/outer diagonal-intersection centre AND the honest usability flags: a corner counts
+    as 'usable' only if it clears the conf threshold AND is not clamped to the image border (an
+    off-frame keypoint comes back pinned to the edge, carrying ~12 px error -- detector.py)."""
+    if not res:
+        return []
+    r = res[0]
+    kp, boxes = getattr(r, "keypoints", None), getattr(r, "boxes", None)
+    if kp is None or boxes is None:
+        return []
+    xy = _to_numpy(getattr(kp, "xy", None))
+    if xy is None or xy.size == 0:
+        return []
+    conf = _to_numpy(getattr(kp, "conf", None))
+    if conf is None:
+        conf = np.ones(xy.shape[:2])
+    scores = _to_numpy(getattr(boxes, "conf", None))
+    if scores is None:
+        scores = np.ones(xy.shape[0])
+    out = []
+    for i in range(xy.shape[0]):
+        if scores[i] < score_thresh:
+            continue
+        if xy.shape[1] == 8:
+            inner, outer = xy[i, :4], xy[i, 4:]
+            ic, oc = conf[i, :4], conf[i, 4:]
+        else:                                    # a 4-kpt model: inner only, no outer square
+            inner, outer, ic, oc = xy[i, :4], None, conf[i, :4], None
+        inner_unclamped = _unclamped_mask(inner, wh)
+        rec = {
+            "c_inner": centre_from_quad(inner),
+            "inner_usable": bool(inner_unclamped.all() and (ic >= conf_thresh).all()),
+            "inner_clamped": bool(not inner_unclamped.all()),
+            "inner_lowconf": bool((ic < conf_thresh).any()),
+            "score": float(scores[i]),
+            "c_outer": None, "outer_usable": False,
+        }
+        if outer is not None:
+            outer_unclamped = _unclamped_mask(outer, wh)
+            rec["c_outer"] = centre_from_quad(outer)
+            rec["outer_usable"] = bool(outer_unclamped.all() and (oc >= conf_thresh).all())
+        out.append(rec)
+    return out
+
+
+def _m_centre(rec, kind):
+    """The centre this M arm emits for one detection, or None to withhold (an unusable-kpt gate on a
+    -clean arm -- exactly the population a direct centre keypoint would have to cover)."""
+    if kind == "inner":
+        return rec["c_inner"]
+    if kind == "outer":
+        return rec["c_outer"]
+    if kind == "inner-clean":
+        return rec["c_inner"] if rec["inner_usable"] else None
+    if kind == "outer-clean":
+        return rec["c_outer"] if rec["outer_usable"] else None
+    return None
+
+
+def _deploy_centres(det, im, fid, res):
+    """The CURRENT deploy path's centres: detect()'s observations (partial rescue ON), each turned
+    into a centre by the same diagonal formula. Reuses the already-computed ``res`` so no second
+    inference is paid. Only a 4-corner observation yields a quad centre; a 3-corner P3P subset needs
+    a pose, not a quad, and is counted as no-centre here (honest -- this arm is the quad path)."""
+    obs = observations_from_results(
+        Frame(fid, 0, im), res[0], score_thresh=det.score_thresh,
+        kpt_conf_thresh=det.kpt_conf_thresh, use_outer=det.use_outer, partial_rescue=det.partial_rescue)
+    out = []
+    for o in obs:
+        c = np.asarray(o.corners_px, float)
+        if c.shape[0] == 4 and o.corner_ids is None:
+            cc = centre_from_quad(c)
+            if cc is not None and np.isfinite(cc).all():
+                out.append(cc)
+    return out
+
+
+def run_m(truth, device, arm_ids):
+    """Score every requested M arm on the SAME 54 gates. ONE inference per frame; all raw-keypoint
+    arms share it. Returns (arms, per_frame, which). ``per_frame`` keeps the per-detection records so
+    the structural-miss count and the cross-check against the mask arms can be computed after."""
+    det, which, attempts = load_m(device)
+    for w, e in attempts:
+        print(f"  [M] {w} weights unavailable -> {e}")
+    print(f"  [M] using {which.upper()} weights on device={det.device!r}: {M_WEIGHTS[which]}")
+    arms = {a: Arm(f"M[{which}] {M_ARMS[a][0]}") for a in arm_ids}
+    raw_ids = [a for a in arm_ids if M_ARMS[a][1] != "deploy"]
+    per_frame = []
+    for fid, (stem, img_path, gt_pts, gt_quads, big) in enumerate(truth):
+        im = cv2.imread(str(img_path))
+        if im is None:
+            continue
+        h, w = im.shape[:2]
+        res = det.model.predict(im, verbose=False, device=det.device)
+        dets = _dets_from_res(res, (w, h))
+        preds = {a: [c for c in (_m_centre(rec, M_ARMS[a][1]) for rec in dets)
+                     if c is not None and np.isfinite(c).all()] for a in raw_ids}
+        if "m-deploy" in arm_ids:
+            preds["m-deploy"] = _deploy_centres(det, im, fid, res)
+        per_gt = {a: arms[a].add_frame(gt_pts, preds[a], (w, h), big) for a in arm_ids}
+        per_frame.append({"stem": stem, "gt": gt_pts, "wh": (w, h), "dets": dets, "per_gt": per_gt})
+    return arms, per_frame, which
+
+
+def report_m_structural(m_per_frame, seg_per_frame, seg_tag, n_gates):
+    """THE crucial column: for how many of the labelled gates does M produce NO usable inner-quad
+    centre because its inner corners are off-frame/clamped (or washed out)? That set is the
+    population a direct centre keypoint would exist to cover. Then two honest cross-checks:
+      (1) on the gates where M IS clean, how do the mask arms do there? (is M's edge real or just
+          an easy subset?)
+      (2) on the gates M drops, do the mask arms recover a centre? (is the mask path already
+          covering M's blind spot?)
+    Uses ONE greedy GT<->detection match per frame (naive inner centre, every detection), so the
+    linkage is the same one-to-one rule as the scoring."""
+    # classify every labelled gate; buckets partition the 54 exactly
+    usable, clamped_off, washed, notdet = [], [], [], []   # each: (stem, gt_i, m_inner_err_or_None)
+    for r in m_per_frame:
+        gt, dets = r["gt"], r["dets"]
+        valid = [(j, d["c_inner"]) for j, d in enumerate(dets) if d["c_inner"] is not None]
+        link = {i: valid[k][0] for i, k, _d in greedy_match(gt, [c for _, c in valid])}
+        for i in range(len(gt)):
+            if i not in link:
+                notdet.append((r["stem"], i, None))
+                continue
+            rec = dets[link[i]]
+            err = float(np.linalg.norm(np.asarray(gt[i]) - np.asarray(rec["c_inner"])))
+            if rec["inner_usable"]:
+                usable.append((r["stem"], i, err))
+            elif rec["inner_clamped"]:            # >=1 inner corner off-frame (pinned to the border)
+                clamped_off.append((r["stem"], i, err))
+            else:                                 # all inner corners in-frame, but one washed out
+                washed.append((r["stem"], i, err))
+    dropped = notdet + clamped_off + washed
+    print(f"\nM STRUCTURAL MISS -- inner-quad centre on the {n_gates} labelled gates (RAW keypoints, "
+          f"NO rescue). This is a FAILURE-MINED val set (crash / pose-recover / tail frames), i.e. "
+          f"deliberately\nheavy on cropped and close gates -- the regime the keypoint path is weakest "
+          f"in.")
+    print(f"  usable inner centre (all 4 inner kpts in-frame AND conf>= {M_KPT_CONF_THRESH}) : "
+          f"{len(usable):2d}/{n_gates}   (median inner error here {np.median([e for *_, e in usable]):.1f} px)")
+    print(f"  M produced NO usable inner centre                              : "
+          f"{len(dropped):2d}/{n_gates}   <== the population a direct centre keypoint must cover")
+    print(f"    not detected by M at all                        {len(notdet):2d}")
+    print(f"    detected, >=1 inner corner OFF-FRAME (clamped)  {len(clamped_off):2d}   "
+          f"<- the direct-keypoint case; naive inner centre here misses by "
+          f"{np.median([e for *_, e in clamped_off]):.0f} px median")
+    print(f"    detected, inner in-frame but a corner washed out {len(washed):2d}   "
+          f"(glare/occlusion, conf< {M_KPT_CONF_THRESH}; not a cropping failure)")
+    # cross-check against the mask arms of one seg model
+    seg_map = {r["stem"]: r["per_gt"] for r in seg_per_frame} if seg_per_frame else {}
+    have = set().union(*[set(pg) for pg in seg_map.values()]) if seg_map else set()
+    xarms = [a for a in ("quad", "model") if a in have]
+    if not (seg_map and xarms):
+        print("  (cross-checks skipped: run the mask arms 'quad'/'model' alongside M to fill them)")
+        return
+
+    def _seg_errs(gate_set, arm):
+        return [seg_map[s][arm][i] for s, i, _ in gate_set if s in seg_map and i in seg_map[s].get(arm, {})]
+
+    print(f"  CROSS-CHECK (1) -- on the {len(usable)} WELL-FRAMED gates M nails, how do the masks do "
+          f"THERE? (mask model {seg_tag!r})")
+    for a in xarms:
+        errs = _seg_errs(usable, a)
+        print(f"    {ARMS[a][0]:26s}: {len(errs):2d}/{len(usable)} matched, median {np.median(errs):.1f} px"
+              if errs else f"    {ARMS[a][0]:26s}: none matched")
+    print(f"  CROSS-CHECK (2) -- on the {len(dropped)} gates M drops, do the masks recover a centre?")
+    for a in xarms:
+        errs = _seg_errs(dropped, a)
+        print(f"    {ARMS[a][0]:26s}: recovered {len(errs):2d}/{len(dropped)}, median error on the "
+              f"recovered {np.median(errs):.1f} px" if errs else f"    {ARMS[a][0]:26s}: recovered 0")
+
+
+# ==================================================================================================
+# TIMING (PART 2): honest per-arm latency against the 33 ms / frame (30 Hz) flight budget.
+# ==================================================================================================
+# The budget question is "inference + post-processing per frame at ~2-3 gates", so the SHARED cost
+# (one seg inference, or one M inference, per frame) is separated from the PER-GATE post-processing
+# and both are reported. Warm up (discard the first N frames), single-thread, device named. The GPU
+# is shared here (a big Blender render was running), so p90 carries the contention and the headline
+# is the MEDIAN over many samples.
+
+def _cuda_sync():
+    """Make a GPU inference's wall time honest: predict() can return before the kernels retire."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    except Exception:                            # noqa: BLE001
+        pass
+
+
+def _timing_row(label, infer_ms, post_ms):
+    """One row: shared infer (per frame) + post (per gate) -> total at 2 gates + a 33 ms verdict."""
+    im = np.array(infer_ms) if infer_ms else np.array([np.nan])
+    pm = np.array(post_ms) if post_ms else np.array([0.0])
+    infer_med, infer_p90 = float(np.median(im)), float(np.percentile(im, 90))
+    post_med, post_p90 = float(np.median(pm)), float(np.percentile(pm, 90))
+    total2 = infer_med + 2.0 * post_med
+    return (label, f"{infer_med:5.1f} / {infer_p90:5.1f}", f"{post_med:5.2f} / {post_p90:5.2f}",
+            f"{total2:5.1f}", "yes" if total2 <= 33.0 else "NO")
+
+
+def run_timing(model_tags, seg_ids, m_ids, truth, device, warmup, repeats):
+    imgs = [im for im in (cv2.imread(str(p)) for _, p, *_ in truth) if im is not None]
+    seq = imgs * repeats
+    print(f"\nTIMING -- device requested {device or 'auto (cuda:0 if avail)'!r}, single-thread, "
+          f"first {warmup} frames discarded as warmup, {repeats} pass(es) over {len(imgs)} frames "
+          f"({len(seq)} timed calls).\nThe GPU is SHARED (a large Blender render + other sessions "
+          f"were running) -- read the MEDIAN as the number, p90 as the contention tax.")
+    rows = []
+    if seg_ids:
+        for tag in model_tags:
+            det = SegGateLineDetector.load(WEIGHTS[tag], device=device)
+            infer, post = [], {a: [] for a in seg_ids}
+            for k, im in enumerate(seq):
+                h, w = im.shape[:2]
+                t0 = time.perf_counter()
+                fm, om = det.masks_for(im)
+                _cuda_sync()
+                dt = (time.perf_counter() - t0) * 1000.0
+                warm = k < warmup
+                for f, o in pair_gate_instances(fm, om):
+                    for a in seg_ids:
+                        t1 = time.perf_counter()
+                        ARMS[a][1](f, o, (w, h))
+                        if not warm:
+                            post[a].append((time.perf_counter() - t1) * 1000.0)
+                if not warm:
+                    infer.append(dt)
+            print(f"  [seg {tag}] device={det.device!r}")
+            for a in seg_ids:
+                rows.append(_timing_row(f"{tag} {ARMS[a][0]}", infer, post[a]))
+    if m_ids:
+        det, which, attempts = load_m(device)
+        for w, e in attempts:
+            print(f"  [M] {w} weights unavailable -> {e}")
+        print(f"  [M] using {which.upper()} weights on device={det.device!r}")
+        raw_ids = [a for a in m_ids if M_ARMS[a][1] != "deploy"]
+        infer, post = [], {a: [] for a in m_ids}
+        for k, im in enumerate(seq):
+            h, w = im.shape[:2]
+            t0 = time.perf_counter()
+            res = det.model.predict(im, verbose=False, device=det.device)
+            _cuda_sync()
+            dt = (time.perf_counter() - t0) * 1000.0
+            warm = k < warmup
+            dets = _dets_from_res(res, (w, h))
+            for rec in dets:
+                for a in raw_ids:
+                    t1 = time.perf_counter()
+                    _m_centre(rec, M_ARMS[a][1])
+                    if not warm:
+                        post[a].append((time.perf_counter() - t1) * 1000.0)
+            if "m-deploy" in m_ids:
+                t1 = time.perf_counter()
+                obs = observations_from_results(
+                    Frame(k, 0, im), res[0], score_thresh=det.score_thresh,
+                    kpt_conf_thresh=det.kpt_conf_thresh, use_outer=det.use_outer,
+                    partial_rescue=det.partial_rescue)
+                _cuda_sync()
+                dtp = (time.perf_counter() - t1) * 1000.0
+                if not warm:
+                    n = max(len(obs), 1)
+                    post["m-deploy"].extend([dtp / n] * n)
+            if not warm:
+                infer.append(dt)
+        for a in m_ids:
+            rows.append(_timing_row(f"M[{which}] {M_ARMS[a][0]}", infer, post[a]))
+
+    hdr = ("arm", "infer ms/frame med/p90", "post ms/gate med/p90", "total ms @2 gates", "fits 33ms?")
+    wid = [max(len(str(r[i])) for r in rows + [hdr]) for i in range(len(hdr))]
+    print("\n" + "  ".join(h.ljust(w) for h, w in zip(hdr, wid)))
+    print("  ".join("-" * w for w in wid))
+    for r in rows:
+        print("  ".join(str(v).ljust(w) for v, w in zip(r, wid)))
+    print("  ".join("-" * w for w in wid))
+    print("total @2 gates = infer(med) + 2*post(med). 33 ms = one 30 Hz frame. Raw-keypoint M post "
+          "is just\ncentre_from_quad (microseconds), so M's total IS its inference; m-deploy post is "
+          "the rescue geometry.")
 
 
 # --- gallery ----------------------------------------------------------------------------------
@@ -584,8 +931,14 @@ def main() -> int:
     ap.add_argument("--gallery-model", default="v2")
     ap.add_argument("--no-gallery", action="store_true")
     ap.add_argument("--arms", default="line,quad,model",
-                    help=f"comma-separated subset of {sorted(ARMS)}")
+                    help=f"comma-separated subset of mask arms {sorted(ARMS)} and/or keypoint "
+                         f"arms {sorted(M_ARMS)} (M is model-independent -- run once)")
     ap.add_argument("--gallery-sort", default="model", help="arm to order the gallery worst-first")
+    ap.add_argument("--timing", action="store_true",
+                    help="run ONLY the PART-2 latency table (infer + post per arm vs the 33 ms budget)")
+    ap.add_argument("--timing-warmup", type=int, default=5, help="frames discarded before timing")
+    ap.add_argument("--timing-repeats", type=int, default=3,
+                    help="passes over the frame set (medians over more samples ride out GPU contention)")
     ap.add_argument("--ambiguity", action="store_true",
                     help="run ONLY the 3-D-depth vs IPPE 2-fold ORIENTATION ambiguity experiment")
     ap.add_argument("--ambiguity-noise", type=float, default=0.0,
@@ -603,9 +956,11 @@ def main() -> int:
         run_task2(WEIGHTS[args.models.split(",")[0].strip()], args.device, args.task2_bundle)
         return 0
     arm_ids = [a.strip() for a in args.arms.split(",") if a.strip()]
-    bad = [a for a in arm_ids if a not in ARMS]
+    bad = [a for a in arm_ids if a not in ARMS and a not in M_ARMS]
     if bad:
-        ap.error(f"unknown arm(s) {bad}; known: {sorted(ARMS)}")
+        ap.error(f"unknown arm(s) {bad}; mask arms {sorted(ARMS)}, keypoint arms {sorted(M_ARMS)}")
+    seg_ids = [a for a in arm_ids if a in ARMS]       # mask arms: run per seg model
+    m_ids = [a for a in arm_ids if a in M_ARMS]       # keypoint arms: model-independent, run once
 
     batch = Path(args.batch)
     stems = [s.strip() for s in Path(args.val).read_text().splitlines() if s.strip()]
@@ -620,31 +975,50 @@ def main() -> int:
           f"  {n_off} have an OFF-SCREEN centre; {n_small} are below the 200 px^2 mask-area floor "
           f"both solvers apply (a few pixels across).\n")
 
+    if args.timing:
+        run_timing([t.strip() for t in args.models.split(",") if t.strip()],
+                   seg_ids, m_ids, truth, args.device, args.timing_warmup, args.timing_repeats)
+        return 0
+
     rows, gallery, off_rows, time_rows = [], None, [], []
-    for tag in [t.strip() for t in args.models.split(",") if t.strip()]:
-        arms, per_frame, timing, init_ms, diag = run_model(
-            tag, WEIGHTS[tag], truth, args.device, arm_ids)
-        rows += [a.row() for a in arms.values()]
-        for a in arm_ids:
-            e = arms[a].err_gt_offscreen
-            off_rows.append((f"{tag} {ARMS[a][0]}", f"{len(e)}/{n_off}",
+    seg_per_frame_first, seg_tag_first = None, None
+    if seg_ids:
+        for tag in [t.strip() for t in args.models.split(",") if t.strip()]:
+            arms, per_frame, timing, init_ms, diag = run_model(
+                tag, WEIGHTS[tag], truth, args.device, seg_ids)
+            if seg_per_frame_first is None:
+                seg_per_frame_first, seg_tag_first = per_frame, tag
+            rows += [a.row() for a in arms.values()]
+            for a in seg_ids:
+                e = arms[a].err_gt_offscreen
+                off_rows.append((f"{tag} {ARMS[a][0]}", f"{len(e)}/{n_off}",
+                                 f"{np.median(e) if e else float('nan'):8.1f}",
+                                 f"{np.percentile(e, 90) if e else float('nan'):8.1f}"))
+                t = np.array(timing[a]) if timing[a] else np.array([np.nan])
+                time_rows.append((f"{tag} {ARMS[a][0]}", f"{len(t):4d}",
+                                  f"{np.median(t):7.1f}", f"{np.percentile(t, 90):7.1f}"))
+            if diag["evals"]:
+                ev, am = np.array(diag["evals"]), np.array(diag["ambig"])
+                print(f"[{tag}] model fit: {len(ev)} gates, evals med {np.median(ev):.0f} "
+                      f"(max {ev.max()}), final IoU frame {np.nanmedian(diag['iou_f']):.3f} / opening "
+                      f"{np.nanmedian(diag['iou_o']):.3f}; init {diag['init_kind']}; "
+                      f"IPPE-branch score margin med {np.median(am):.4f} "
+                      f"(>0 on {100.0 * float((am > 1e-6).mean()):.0f}% -- see the ambiguity note)")
+                print(f"[{tag}] shared init (quad_from_mask_ex, ALSO paid by the quad arm): "
+                      f"med {np.median(init_ms):.1f} ms of the model arm's per-gate total")
+            if not args.no_gallery and tag == args.gallery_model:
+                sort_by = args.gallery_sort if args.gallery_sort in seg_ids else seg_ids[-1]
+                gallery = write_gallery(Path(args.out), per_frame, tag, seg_ids, sort_by)
+
+    m_per_frame, m_which = None, None
+    if m_ids:
+        m_arms, m_per_frame, m_which = run_m(truth, args.device, m_ids)
+        rows += [a.row() for a in m_arms.values()]
+        for a in m_ids:
+            e = m_arms[a].err_gt_offscreen
+            off_rows.append((f"M[{m_which}] {M_ARMS[a][0]}", f"{len(e)}/{n_off}",
                              f"{np.median(e) if e else float('nan'):8.1f}",
                              f"{np.percentile(e, 90) if e else float('nan'):8.1f}"))
-            t = np.array(timing[a]) if timing[a] else np.array([np.nan])
-            time_rows.append((f"{tag} {ARMS[a][0]}", f"{len(t):4d}",
-                              f"{np.median(t):7.1f}", f"{np.percentile(t, 90):7.1f}"))
-        if diag["evals"]:
-            ev, am = np.array(diag["evals"]), np.array(diag["ambig"])
-            print(f"[{tag}] model fit: {len(ev)} gates, evals med {np.median(ev):.0f} "
-                  f"(max {ev.max()}), final IoU frame {np.nanmedian(diag['iou_f']):.3f} / opening "
-                  f"{np.nanmedian(diag['iou_o']):.3f}; init {diag['init_kind']}; "
-                  f"IPPE-branch score margin med {np.median(am):.4f} "
-                  f"(>0 on {100.0 * float((am > 1e-6).mean()):.0f}% -- see the ambiguity note)")
-            print(f"[{tag}] shared init (quad_from_mask_ex, ALSO paid by the quad arm): "
-                  f"med {np.median(init_ms):.1f} ms of the model arm's per-gate total")
-        if not args.no_gallery and tag == args.gallery_model:
-            sort_by = args.gallery_sort if args.gallery_sort in arm_ids else arm_ids[-1]
-            gallery = write_gallery(Path(args.out), per_frame, tag, arm_ids, sort_by)
 
     def _table(hdr, rows_):
         wid = [max(len(str(r[i])) for r in rows_ + [hdr]) for i in range(len(hdr))]
@@ -658,15 +1032,23 @@ def main() -> int:
     _table(("arm", "matched", "cov", "cov>=floor", "med px", "p90 px", "preds", "off-sc"), rows)
     print("cov = labelled gates that got a ONE-TO-ONE matched prediction; cov>=floor is the same "
           "over gates\nabove the 200 px^2 area floor; med/p90 are over MATCHED pairs only.\n"
-          "preds = centres emitted over all frames; off-sc = those that land outside the image.")
+          "preds = centres emitted over all frames; off-sc = those that land outside the image.\n"
+          "M arms read RAW keypoints: 'raw kpts' emit a centre for every detection (a clamped inner\n"
+          "corner is scored, not hidden); '-clean' emit only when all 4 kpts are in-frame AND conf>= "
+          f"{M_KPT_CONF_THRESH}.")
 
     _table(("arm", f"matched/{n_off} OFF-SCREEN gt", "med px", "p90 px"), off_rows)
     print(f"THE OFF-SCREEN SUBSET: the {n_off} labelled gates whose TRUE centre falls outside the "
           "640x360 image.\nThis is the configuration the quad path cannot represent (its clipped "
           "hull is already a\nquadrilateral, so the fit is the visible trapezoid, biased inward).")
 
-    _table(("arm", "gates", "med ms", "p90 ms"), time_rows)
-    print("per-GATE wall time, single-threaded CPU, EXCLUDING seg inference (shared by all arms).")
+    if time_rows:
+        _table(("arm", "gates", "med ms", "p90 ms"), time_rows)
+        print("per-GATE wall time, single-threaded CPU, EXCLUDING seg inference (shared by all arms)."
+              "\nThis is the per-solver POST cost only; the full latency budget is `--timing`.")
+
+    if m_ids and m_per_frame is not None:
+        report_m_structural(m_per_frame, seg_per_frame_first, seg_tag_first or "", n_gates)
 
     if gallery:
         print(f"\ngallery: {gallery}")
