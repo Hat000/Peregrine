@@ -640,6 +640,9 @@ def _meta_seeker_constants(args) -> dict:
                                 if getattr(args, "ego_ckpt", None) else c.max_acquire_range_m),
         "max_valid_range_m": (float(getattr(args, "ego_max_valid_range", 30.0))
                               if getattr(args, "ego_ckpt", None) else float("inf")),
+        # PATCH-3 WP3a: the local-pass drop threshold (0.0 == OFF). Recorded so a flight's
+        # post-pass re-acquisition behaviour is self-documenting alongside the rest.
+        "pass_drop_range_m": getattr(c, "pass_drop_range_m", 0.0),
         "track_max_range_jump_m": c.track_max_range_jump_m,
         "track_max_bearing_jump_rad": c.track_max_bearing_jump_rad,
         "track_max_coast_ticks": c.track_max_coast_ticks,

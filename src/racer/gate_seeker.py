@@ -324,6 +324,22 @@ class GateSeekerConfig:
     advance_promote_enabled: bool = False
     supersede_range_factor: float = 0.65         # fresh cand must be nearer than this * the locked range
     supersede_min_frames: int = 3                # consecutive qualifying fresh frames before the switch
+
+    # PATCH-3 WP3a: LOCAL PASS DETECTION (0.0 == OFF == patch-2 behaviour).
+    # RACE_STATUS is 4 Hz, so ``on_gate_advance`` can learn about a pass up to 250 ms late. MEASURED on
+    # flight 20260722_031742 gate 8: the drone crossed the plane at k=455 (tracked range 0.22 m) and the
+    # track kept following the gate RECEDING behind it -- 0.22 -> 3.09 m over 8 ticks -- while gate_index
+    # stayed 8 until k=463. Throughout that 0.35 s every candidate for the NEXT gate is a >6 m step from
+    # the stale close track, so ``track_max_range_jump_m`` rejects all of them: 10 consecutive
+    # continuity_reject ticks with 1-2 live candidates on offer, ending only when the coast counter
+    # expired. Same signature at gate 0 (track frozen 2.04 m, 6 rejects).
+    # THE RULE: a track at or inside ``pass_drop_range_m`` whose candidates ALL fail continuity has been
+    # FLOWN THROUGH. At race speed a gate 2.5 m ahead is ~0.2 s away -- there is no regime where we hold a
+    # close track and simultaneously find every fresh detection inconsistent with it. So drop the track
+    # NOW and re-acquire cold next tick, instead of coasting out the full ``track_max_coast_ticks``.
+    # This does NOT loosen the continuity gate (no new false-positive surface); it only shortens how long
+    # a provably-dead close track is allowed to veto acquisition.
+    pass_drop_range_m: float = 2.5
     # GYRO-FED TRACK PREDICTION: between detector fixes, rotate the stored track bearing by the body rotation
     # -[w]x dt (mirrors the obs builder's exp(-[w]x dt)) so the continuity gate compares the next detection
     # to where the gate has ROTATED to in the frame under fast yaw/roll (91% of emit-gaps are continuity
@@ -900,12 +916,24 @@ class GateSeeker:
 
             cands = [p for p in poses if _consistent(p)]
             if not cands:
+                # PATCH-3 WP3a: a CLOSE track whose every candidate is inconsistent has been FLOWN
+                # THROUGH -- RACE_STATUS just has not said so yet (4 Hz => up to 250 ms late). Drop it
+                # immediately rather than letting a dead track veto acquisition for the full coast.
+                _pdr = float(getattr(self.config, "pass_drop_range_m", 0.0) or 0.0)
+                if (_pdr > 0.0 and self._track_range_m is not None
+                        and float(self._track_range_m) <= _pdr):
+                    self._track_range_m, self._track_bearing = None, None
+                    self._track_coast_ticks = 0
+                    self._track_ever_locked = False       # next tick is a COLD acquisition, not a re-acquire
+                    self._last_none_reason = "pass_drop"
+                    self._record_decision(0, "pass_drop", len(poses), cands=poses)
+                    return None
                 # every candidate jumped -> COAST on the track (do not lock onto a flapper).
                 self._last_none_reason = "continuity_reject"   # the dominant A13 pose=None source
                 self._track_coast_ticks += 1
                 if self._track_coast_ticks > max(1, int(self.config.track_max_coast_ticks)):
                     self._track_range_m, self._track_bearing = None, None
-                self._record_decision(0, "continuity_reject", len(poses))
+                self._record_decision(0, "continuity_reject", len(poses), cands=poses)
                 return None
             # among the consistent candidates, the one closest to the predicted bearing+range.
             chosen = min(
@@ -925,7 +953,7 @@ class GateSeeker:
         self._track_coast_ticks = 0
         self._track_ever_locked = True   # WP1a: this gate's track has now locked -> re-acquire discipline
         self._last_none_reason = None    # a usable pose this tick (clear the stale reason)
-        self._record_decision(0, None, len(poses), chosen)
+        self._record_decision(0, None, len(poses), chosen, cands=poses)
         return chosen
 
     def _first_acquisition(self, poses: list[GatePose], *, cold_start: bool = True,
@@ -1209,7 +1237,8 @@ class GateSeeker:
         return None
 
     def _record_decision(self, slot: int, reason: str | None, n_cand: int,
-                         chosen: GatePose | None = None) -> None:
+                         chosen: GatePose | None = None,
+                         cands: "list[GatePose] | None" = None) -> None:
         """WP0/WP2e: snapshot this tick's per-slot seeker decision for ``seeker.jsonl`` (logging only -- NO
         behaviour change). ``reason`` is None when a pose was emitted, else a None/switch reason
         ("valid_poses_empty" | "continuity_reject" | "other" | "reacquire_range_reject" |
@@ -1230,6 +1259,17 @@ class GateSeeker:
             "prior": (list(self._acquire_prior) if (slot == 0 and self._acquire_prior is not None)
                       else None),
             "sup_streak": (int(self._supersede_streak) if slot == 0 else 0),
+            # PATCH-3 WP3b: the CANDIDATE LIST the slot actually weighed, not just how many there were.
+            # Without it "why this gate and not the closer one in frame?" is unanswerable from the log --
+            # n_cand=2 tells us two poses existed but not their ranges, so a pilot pointing at a nearer
+            # gate on the footage could not be confirmed or refuted. Ranges + bearings only (small), and
+            # the chosen one is flagged so selection can be replayed offline.
+            "cands": (None if not cands else [
+                {"r": round(float(p.range_m), 2),
+                 "b": [round(float(x), 3) for x in self._pose_bearing(p)],
+                 "sel": bool(chosen is not None and p is chosen)}
+                for p in cands[:8]
+            ]),
         }
 
     def last_decision(self, slot: int = 0) -> dict | None:
