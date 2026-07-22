@@ -31,6 +31,7 @@ from .contract import (
     VQ1_GATE_RED_RGB,
 )
 from .augment import augment_frame_with_masks
+from .center_label import frame_centre_rows
 from .geometry import (
     FrameSpec, GateRender, ViewpointConfig,
     sample_frames, sample_negative_frames, sample_partial_frames,
@@ -181,7 +182,7 @@ def _gate_masks(stack, slots: dict[int, int], gate: GateRender):
 def _write_split(
     out: Path, split: str, n: int, preset: ScenarioPreset, backend: RenderBackend,
     seed: int, image_ext: str, track_path: str | None, emit_masks: bool = False,
-    emit_seg: bool = False,
+    emit_seg: bool = False, emit_center: bool = False,
 ) -> GenStats:
     img_dir = out / "images" / split
     lbl_dir = out / "labels" / split
@@ -190,6 +191,15 @@ def _write_split(
     mask_dir = out / "masks" / split
     if emit_masks:
         mask_dir.mkdir(parents=True, exist_ok=True)
+    # CENTRE sidecar: the additive 5th keypoint (gate-opening centre) for the M+1 detector, written
+    # 1:1 and IN ORDER with the pose rows. It is the DIAGONAL INTERSECTION of the post-augment
+    # UNCLAMPED inner corners -- exact even when a corner is off-frame, which is the regime M+1
+    # exists for (the pose row has already clamped those corners to the border with v=0). Kept out of
+    # the frozen 8-keypoint pose row on purpose; the M+1 builder assembles the 5-kpt dataset from
+    # pose label + this sidecar. See center_label.py.
+    center_dir = out / "center" / split
+    if emit_center:
+        center_dir.mkdir(parents=True, exist_ok=True)
     # SEG labels are the gate's RENDERED SILHOUETTE when the backend can measure one, and never a
     # re-derivation of the pose row (which clamps off-frame corners to the border with v=0, so a
     # homography refit to the survivors extrapolates -- 2.8-7.9 px of avoidable error on exactly the
@@ -234,6 +244,11 @@ def _write_split(
 
         cv2.imwrite(str(img_dir / f"{made:06d}.{image_ext}"), image)
         (lbl_dir / f"{made:06d}.txt").write_text("\n".join(rows) + "\n")
+        if emit_center:   # one centre row per gate, SAME post-augment `labeled` order as the pose rows
+            crows = frame_centre_rows(labeled)
+            # 1:1 with the pose rows or the builder would pair gate A's corners with gate B's centre.
+            assert len(crows) == len(rows), (len(crows), len(rows))    # frame_centre_rows guarantees this
+            (center_dir / f"{made:06d}.txt").write_text("\n".join(crows) + "\n")
         if emit_masks:    # instance mask from the SAME post-augment labelled gates
             if use_silhouettes:
                 rings = [_gate_masks(stack, slots, g)[0] for g in labeled]
@@ -269,6 +284,8 @@ def _write_split(
         image, _, _ = augment_frame_with_masks(image, [], preset.augment, rng)
         cv2.imwrite(str(img_dir / f"{made:06d}.{image_ext}"), image)
         (lbl_dir / f"{made:06d}.txt").write_text("")        # empty => background/negative
+        if emit_center:   # WRITE the empty file: a missing one means "unlabelled", not "no gates"
+            (center_dir / f"{made:06d}.txt").write_text("")
         if emit_masks:    # all-zero mask: no gate pixels in a negative
             cv2.imwrite(str(mask_dir / f"{made:06d}.png"), gate_ring_mask([]))
         if emit_seg:      # WRITE the empty file: a missing one means "unlabelled", not "negative"
@@ -293,6 +310,7 @@ def generate_dataset(
     track_path: str | None = None,
     emit_masks: bool = False,
     emit_seg: bool = False,
+    emit_center: bool = False,
 ) -> Path:
     """Generate a YOLO-pose dataset with ``backend`` (default ProceduralBackend). Returns the
     data.yaml path. The Blender entrypoint passes a ``BlenderBackend``; everything else (geometry,
@@ -302,13 +320,19 @@ def generate_dataset(
     ``emit_seg`` writes 2-class YOLO-seg polygons to ``<out>/seg/{split}/*.txt``. With the Blender
     backend both are the gate's RENDERED SILHOUETTE (true 3D shape, side walls and all); with the
     procedural backend both are the flat-quad approximation and ``<out>/seg/SOURCE.txt`` says so.
+
+    ``emit_center`` writes the gate-opening CENTRE (the additive 5th keypoint of the M+1 detector)
+    to ``<out>/center/{split}/*.txt`` -- one line ``cx_norm cy_norm v`` per labelled gate, in the
+    SAME order as the pose rows, computed as the diagonal intersection of the post-augment UNCLAMPED
+    inner corners (exact even off-frame). Backend-independent: it reads the projected corners, not
+    pixels. See center_label.py and scripts/build_m1_dataset.py.
     """
     backend = backend or ProceduralBackend()
     out = Path(out_dir)
     train = _write_split(out, "train", n_train, preset, backend, seed, image_ext, track_path,
-                         emit_masks, emit_seg)
+                         emit_masks, emit_seg, emit_center)
     _write_split(out, "val", n_val, preset, backend, seed + 10_000, image_ext, track_path,
-                 emit_masks, emit_seg)
+                 emit_masks, emit_seg, emit_center)
     yaml_path = out / "data.yaml"
     yaml_path.write_text(DATA_YAML.format(path=str(out.resolve())))
     return yaml_path

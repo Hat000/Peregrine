@@ -57,6 +57,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                          "inner). Clipped to frame, never clamped.")
     ap.add_argument("--masks", action="store_true",
                     help="also emit per-frame gate-ring instance masks to masks/<split>/*.png")
+    ap.add_argument("--center", action="store_true",
+                    help="also emit the gate-opening CENTRE (the M+1 detector's additive 5th "
+                         "keypoint) to center/<split>/*.txt: one line 'cx_norm cy_norm v' per "
+                         "labelled gate, the diagonal intersection of the UNCLAMPED inner corners "
+                         "(exact even when a corner is off-frame). See scripts/build_m1_dataset.py.")
     ap.add_argument("--no-augment", action="store_true",
                     help="render CLEAN base frames (disable the in-line albumentations pass) -- use when "
                          "the augmentation will be applied later as an offline multiplier")
@@ -98,6 +103,7 @@ def main() -> int:
         args.out, preset, backend,
         n_train=args.n_train, n_val=args.n_val, seed=args.seed,
         image_ext=args.image_ext, track_path=args.track, emit_masks=args.masks, emit_seg=args.seg,
+        emit_center=args.center,
     )
     # Occlusion census: how many on-screen gates kept their label, how many were dropped because the
     # rendered silhouette showed them hidden, and how many were never checked (id pass failed). A
