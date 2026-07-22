@@ -573,6 +573,21 @@ _RES_RE   = re.compile(r"flight\s+\d+:\s+([A-Z_]+)\s+gates=(\d+)")
 
 def _parse_log(logpath):
     session, state, gates = None, None, None
+    # mtime+size cache: refresh_pilots re-parses EVERY tracked pilot every 2 s, and pilots
+    # accumulate (1061 of them on this box), so re-reading finished logs dominated the poll --
+    # 1.44 s per refresh against a 2 s interval, and it is all under _LOCK, which launch() also
+    # needs. That is what made "Launch" take ~30 s after a few flights. Keying on the file's own
+    # mtime+size stays correct for a LIVE pilot (its log keeps growing, so the cache misses and we
+    # re-parse) including the panel-restarted-mid-flight case, where the Popen handle is gone but
+    # the detached pilot is still writing. [2026-07-22]
+    try:
+        st = os.stat(logpath)
+        key = (st.st_mtime_ns, st.st_size)
+    except Exception:
+        return session, state, gates
+    hit = _LOG_CACHE.get(logpath)
+    if hit is not None and hit[0] == key:
+        return hit[1]
     try:
         txt = Path(logpath).read_text(errors="ignore")
     except Exception:
@@ -587,29 +602,71 @@ def _parse_log(logpath):
             state = "WAITING"
         elif "Traceback" in txt or "Error" in txt:
             state = "ERROR"
+    _LOG_CACHE[logpath] = (key, (session, state, gates))
     return session, state, gates
+
+# Poll caches, both keyed on the source file's own (mtime_ns, size) so a LIVE pilot always misses
+# and a finished one is read exactly once. Unbounded by design: one small entry per pilot/session,
+# and the panel already keeps every pilot in memory anyway.
+_LOG_CACHE: dict = {}    # logpath -> ((mtime_ns, size), (session, state, gates))
+_HZ_CACHE: dict = {}     # session -> ((mtime_ns, size), hz)
+
 
 def _loop_hz(session):
     if not session:
         return None
     tf = RUNS_DIR / session / "ego_timing.jsonl"
-    if not tf.exists():
+    try:
+        st = tf.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except Exception:
         return None
+    # Same mtime+size cache as _parse_log, and this one mattered MORE: it json.loads one line per
+    # CONTROL TICK, so a finished flight was re-parsed from scratch every 2 s forever (1.00 s of
+    # the 1.44 s refresh, over 17.6 MB of timing files).
+    hit = _HZ_CACHE.get(session)
+    if hit is not None and hit[0] == key:
+        return hit[1]
     try:
         w = []
         for line in tf.read_text().splitlines()[1:]:
             if line.strip():
                 w.append(json.loads(line).get("work_ms", 0))
         if not w:
+            _HZ_CACHE[session] = (key, None)
             return None
         w = sorted(1000.0 / x for x in w if x > 0)
-        return round(w[len(w) // 2], 1)   # median hz
+        hz = round(w[len(w) // 2], 1)   # median hz
     except Exception:
         return None
+    _HZ_CACHE[session] = (key, hz)
+    return hz
+
+# How many recently-started pilots to re-examine per poll, on top of every LIVE one. A finished
+# flight's log and timing file are immutable, so re-statting all 1062 of them every 2 s bought
+# nothing; this bounds the poll's cost no matter how far the history grows. A pilot that survived a
+# panel restart is by definition recent, so it stays in the window.
+_REFRESH_RECENT = 60
+
+
+def _refresh_keys():
+    """Pilot keys worth re-examining: every live one, plus the most recently started."""
+    live = [k for k in PILOTS
+            if _procs.get(k) is not None and _procs[k].poll() is None]
+    recent = sorted(PILOTS, key=lambda k: PILOTS[k].get("started_ts") or 0.0,
+                    reverse=True)[:_REFRESH_RECENT]
+    return set(live) | set(recent)
+
 
 def refresh_pilots():
     with _LOCK:
+        dirty = False
+        todo = _refresh_keys()
         for pid_key, rec in PILOTS.items():
+            if pid_key not in todo:
+                continue
+            before = (rec.get("session"), rec.get("state"), rec.get("gates"),
+                      rec.get("running"), rec.get("hz"))
             proc = _procs.get(pid_key)
             running = proc is not None and proc.poll() is None
             sess, state, gates = _parse_log(rec["log"])
@@ -624,7 +681,13 @@ def refresh_pilots():
                 rec["state"] = rec["state"] if rec["state"] not in ("LAUNCHING",) else "EXITED"
             rec["running"] = running
             rec["hz"] = _loop_hz(rec.get("session"))
-        _save_state()
+            if (rec.get("session"), rec.get("state"), rec.get("gates"),
+                    rec.get("running"), rec.get("hz")) != before:
+                dirty = True
+        # Only persist when something actually CHANGED. This wrote a 4.16 MB pilots.json every 2 s
+        # regardless -- pure disk churn during a flight, on the same box as the sim.
+        if dirty:
+            _save_state()
         return list(PILOTS.values())
 
 def stop_pilot(pid_key):

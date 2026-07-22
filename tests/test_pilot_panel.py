@@ -111,3 +111,107 @@ def test_acquire_range_is_not_recipe_managed():
     """The acquire cap is a PROBE knob, not a recipe pin: picking a model must not silently reset it
     (unlike the ride-in knobs of WP5/WP6a), so a sweep survives a checkpoint switch."""
     assert "ego_max_acquire_range" not in P._recipe_managed_keys()
+
+
+# --- poll cost (2026-07-22 launch-latency bug) ---------------------------------------------
+# refresh_pilots() runs every 2 s from the browser and holds _LOCK, which launch() also needs.
+# It used to re-read EVERY tracked pilot's log AND json.loads every line of its ego_timing.jsonl
+# (one line per control tick) on every poll. With 1061 accumulated pilots that measured 1.44 s per
+# refresh against a 2 s interval, so polls queued and pressing Launch waited ~30 s behind them.
+# Two guards below: results must be unchanged, and the work must not scale with history.
+
+def _mk_pilot(tmp_path, key, started_ts, *, session="s1", gates=3):
+    log = tmp_path / f"{key}.log"
+    log.write_text(f"recording -> data\\runs\\{session}\nflight 1: FINISHED gates={gates}\n")
+    return dict(id=key, label="t", cmd=[], cmd_str="", log=str(log), pid=1,
+                started="00:00:00", started_ts=started_ts, session=None,
+                state="LAUNCHING", gates=None, warnings=[], config={})
+
+
+def test_parse_log_caches_on_mtime_and_reparses_when_the_log_grows(tmp_path, monkeypatch):
+    import tools.pilot_panel as pp
+    log = tmp_path / "a.log"
+    log.write_text("Waiting PASSIVELY\n")
+    pp._LOG_CACHE.clear()
+    assert pp._parse_log(str(log))[1] == "WAITING"
+    reads = {"n": 0}
+    real = pp.Path.read_text
+
+    def counting(self, *a, **k):
+        reads["n"] += 1
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(pp.Path, "read_text", counting)
+    for _ in range(5):
+        pp._parse_log(str(log))
+    assert reads["n"] == 0, "an unchanged log must not be re-read"
+
+    # a LIVE pilot keeps writing -- the cache must miss and pick the new state up
+    log.write_text("recording -> data\\runs\\sess9\nflight 1: CRASH gates=7\n")
+    sess, state, gates = pp._parse_log(str(log))
+    assert (sess, state, gates) == ("sess9", "CRASH", 7)
+
+
+def test_refresh_is_bounded_by_history_not_proportional_to_it(tmp_path, monkeypatch):
+    import tools.pilot_panel as pp
+    monkeypatch.setattr(pp, "PILOTS", {}, raising=False)
+    monkeypatch.setattr(pp, "_procs", {}, raising=False)
+    monkeypatch.setattr(pp, "_save_state", lambda: None)
+    monkeypatch.setattr(pp, "_loop_hz", lambda s: None)
+    pp._LOG_CACHE.clear()
+    for i in range(pp._REFRESH_RECENT * 4):
+        pp.PILOTS[f"p{i}"] = _mk_pilot(tmp_path, f"p{i}", float(i))
+
+    seen = []
+    real = pp._parse_log
+    monkeypatch.setattr(pp, "_parse_log", lambda p: (seen.append(p), real(p))[1])
+    rows = pp.refresh_pilots()
+
+    assert len(rows) == len(pp.PILOTS), "every pilot must still be shown in the UI"
+    assert len(seen) <= pp._REFRESH_RECENT, \
+        f"poll examined {len(seen)} pilots; must stay bounded by _REFRESH_RECENT"
+    # and it must be the NEWEST ones that got refreshed
+    assert any(f"p{len(pp.PILOTS) - 1}.log" in p for p in seen)
+
+
+def test_live_pilot_is_always_refreshed_even_when_old(tmp_path, monkeypatch):
+    """A pilot that survived a panel restart is old by started_ts but still writing. It must not
+    fall out of the refresh window, or its gate count would freeze in the UI."""
+    import tools.pilot_panel as pp
+    monkeypatch.setattr(pp, "PILOTS", {}, raising=False)
+    monkeypatch.setattr(pp, "_procs", {}, raising=False)
+    monkeypatch.setattr(pp, "_save_state", lambda: None)
+    monkeypatch.setattr(pp, "_loop_hz", lambda s: None)
+    pp._LOG_CACHE.clear()
+
+    pp.PILOTS["old_live"] = _mk_pilot(tmp_path, "old_live", 0.0, session="live", gates=1)
+    for i in range(pp._REFRESH_RECENT * 2):
+        pp.PILOTS[f"p{i}"] = _mk_pilot(tmp_path, f"p{i}", float(i + 100))
+
+    class _Live:
+        def poll(self):
+            return None
+
+    pp._procs["old_live"] = _Live()
+    assert "old_live" in pp._refresh_keys()
+    pp.refresh_pilots()
+    assert pp.PILOTS["old_live"]["running"] is True
+    assert pp.PILOTS["old_live"]["gates"] == 1
+
+
+def test_state_is_written_only_when_something_changed(tmp_path, monkeypatch):
+    """pilots.json is 4 MB here; writing it every 2 s was pure disk churn next to the sim."""
+    import tools.pilot_panel as pp
+    monkeypatch.setattr(pp, "PILOTS", {}, raising=False)
+    monkeypatch.setattr(pp, "_procs", {}, raising=False)
+    monkeypatch.setattr(pp, "_loop_hz", lambda s: None)
+    pp._LOG_CACHE.clear()
+    pp.PILOTS["p0"] = _mk_pilot(tmp_path, "p0", 1.0)
+    saves = {"n": 0}
+    monkeypatch.setattr(pp, "_save_state", lambda: saves.__setitem__("n", saves["n"] + 1))
+
+    pp.refresh_pilots()
+    assert saves["n"] == 1, "first poll learns the pilot's state and must persist it"
+    pp.refresh_pilots()
+    pp.refresh_pilots()
+    assert saves["n"] == 1, "nothing changed -> no further writes"
