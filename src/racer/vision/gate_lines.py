@@ -449,6 +449,285 @@ def centre_from_seg_masks(frame_mask, opening_mask=None, image_wh=(640, 360)):
     return (c, H)
 
 
+# ---------------------------------------------------------------------------------------------
+# QUAD FIT (2026-07-22) -- a SECOND mask -> centre path, run side by side with the line solver
+# above. Nothing above this line changes: ``centre_from_seg_masks`` stays untouched as the A/B
+# baseline, and this is measured against it on hand-labelled real frames, never swapped in blind.
+#
+# WHY IT EXISTS. yolo-seg does not predict a boundary. It predicts a low-resolution prototype mask
+# that is then upsampled, so the boundary is ragged BY CONSTRUCTION -- and mask-mAP barely notices
+# (0.9855 on the v2 model while the outlines look like coastlines), so nothing in training pushes
+# back on it. The line solver fits lines to short CONTOUR SEGMENTS, one at a time, so it inherits
+# that wobble segment by segment; and on a gate cropped by the frame edge it additionally has to
+# decide which SIDE of each line the gate interior is on, which it can get wrong -- measured on a
+# real frame: a predicted centre 136 px into empty space on the wrong side of the gate.
+#
+# The alternative is to stop treating the boundary as independent pieces of evidence. Take the
+# mask's CONVEX HULL and collapse it to exactly four vertices by repeatedly deleting the hull edge
+# whose removal adds the least area. Every boundary pixel then votes on the answer, so the
+# raggedness averages out instead of steering one segment, and the output is four straight lines BY
+# CONSTRUCTION with no interior-side decision anywhere.
+#
+# The centre then falls out for free: the centre of a projected square is the INTERSECTION OF ITS
+# DIAGONALS. That is a projective invariant -- exact, not approximate (verified elsewhere to
+# 2.3e-13 px over 300 poses) -- so it needs no PnP, no corner identity, no in-frame rule, and it
+# stays perfectly well defined when the intersection lands OFF-SCREEN, which is precisely the
+# cropped close-range case the keypoint path cannot represent at all.
+#
+# MEASURED, 2026-07-22, on the 54 hand-labelled gates in the 41-frame real val split of
+# vq2_label_batch_2026-07-22 (truth = the diagonal intersection of the labelled INNER quad; greedy
+# ONE-TO-ONE matching; scripts/eval_centre_ab.py):
+#
+#   seg model            arm                    coverage    median    p90
+#   gate_seg_v2          line solver             75.9%      68.2 px  894.2 px
+#   gate_seg_v2          hull quad + diagonals   88.9%      17.6 px  123.9 px
+#   gate_seg_s1          line solver             64.8%      65.6 px  429.6 px
+#   gate_seg_s1          hull quad + diagonals   79.6%      24.3 px  202.4 px
+#
+# So: better on BOTH models, on both axes at once, and the p90 collapse (894 -> 124 px) is the real
+# story -- the line solver's failures are not noisy, they are confidently wrong planes.
+#
+# ⚠ WHAT IT DOES NOT DELIVER, and this is the honest headline caveat. On those 41 real frames this
+# path emitted ZERO off-screen centres, on 9 gates whose labelled centre IS off-screen. The reason
+# is structural, not a bug: once a gate's centre leaves the image its far edge is entirely gone, so
+# at most 3 edges remain, the clipped hull is ALREADY a quadrilateral, nothing is merged, and the
+# fit is the visible trapezoid (see quad_from_mask_ex). It is still far better there than the
+# baseline -- 8/9 matched at 92.9 px median vs 4/9 at 338.3 px -- but it is biased inward and it
+# cannot represent that gate. The line solver's edge on this configuration is real and comes from
+# information this path throws away: a SECOND concentric square with a known metric ratio, so 3
+# inner + 3 outer edges are 6 identified lines and the plane is still determined. Feeding these
+# hull-derived (noise-averaged) edges INTO homography_from_lines is the obvious next experiment.
+# ---------------------------------------------------------------------------------------------
+
+# A merged corner further out than this many image-diagonals is a numerical blow-up (two hull edges
+# that were near-parallel), not a gate corner. Generous on purpose: a legitimately reconstructed
+# corner of a close gate can sit several image-widths outside the frame.
+_QUAD_MAX_VERTEX_MULT = 10.0
+
+
+def _cross2(u, v) -> float:
+    """2-D scalar cross product. Written out because numpy 2.x deprecated np.cross on 2-vectors."""
+    return float(u[0] * v[1] - u[1] * v[0])
+
+
+def _intersect_lines(p1, p2, p3, p4):
+    """Intersection of the INFINITE lines p1p2 and p3p4, or None if they are (near) parallel.
+
+    Both lines are normalised to a unit (a, b) first so the parallelism test is on sin(angle)
+    rather than on a product of raw pixel magnitudes -- otherwise the threshold means something
+    different for a 5 px edge than for a 500 px one."""
+    l1 = np.cross([p1[0], p1[1], 1.0], [p2[0], p2[1], 1.0])
+    l2 = np.cross([p3[0], p3[1], 1.0], [p4[0], p4[1], 1.0])
+    n1, n2 = np.hypot(l1[0], l1[1]), np.hypot(l2[0], l2[1])
+    if n1 < 1e-12 or n2 < 1e-12:
+        return None
+    x = np.cross(l1 / n1, l2 / n2)
+    if abs(x[2]) < 1e-9:
+        return None
+    v = x[:2] / x[2]
+    return v if np.isfinite(v).all() else None
+
+
+def _reduce_hull_to_quad(hull, image_wh):
+    """Collapse a convex hull to exactly 4 vertices, cheapest step first. Returns [4 pts] or None.
+
+    ONE STEP deletes edge (v_i, v_i+1) and extends its two NEIGHBOURING edges until they meet,
+    replacing those two vertices with the intersection: the count drops by one and the polygon grows
+    by the triangle (v_i, v_i+1, x). Always taking the cheapest such step is the classical greedy
+    minimum-area enclosing k-gon, and that objective is the right one here -- a ragged bump on the
+    boundary only ever costs a sliver, so it is absorbed long before any real gate edge is touched,
+    while the long edges that carry the most boundary evidence are the ones that survive.
+
+    BORDER EDGES COST NOTHING. Where the mask is cut by the frame the hull runs along the image
+    edge, and that segment is an artefact of the crop, not a gate edge (the same rule ``_on_border``
+    applies to contour segments in the line path). Deleting it first extends the two real gate edges
+    until they meet, which RECONSTRUCTS the off-screen corner rather than fitting the crop.
+    """
+    w, h = image_wh
+    pts = [np.asarray(p, float) for p in hull]
+    lim = _QUAD_MAX_VERTEX_MULT * float(np.hypot(w, h))
+    cx, cy = w / 2.0, h / 2.0
+    while len(pts) > 4:
+        n = len(pts)
+        best = None
+        for i in range(n):
+            a, b = pts[(i - 1) % n], pts[i]
+            c, d = pts[(i + 1) % n], pts[(i + 2) % n]
+            x = _intersect_lines(a, b, c, d)
+            if x is None:
+                continue
+            if abs(x[0] - cx) > lim or abs(x[1] - cy) > lim:
+                continue
+            # The new vertex must land on the OUTSIDE of the deleted edge. If it lands inside, the
+            # two neighbours converge the wrong way and the "merge" is a fold that would make the
+            # polygon non-convex -- and a projected square is always convex.
+            e = c - b
+            if _cross2(e, x - b) * _cross2(e, a - b) >= 0.0:
+                continue
+            area = 0.5 * abs(_cross2(c - b, x - b))
+            cost = 0.0 if _on_border(b, c, w, h) else area
+            if best is None or cost < best[0]:
+                best = (cost, i, x)
+        if best is None:
+            return None                       # nothing is mergeable: the hull is degenerate
+        _, i, x = best
+        j = (i + 1) % n
+        pts = (pts[1:n - 1] + [x]) if j == 0 else (pts[:i] + [x] + pts[j + 1:])
+    return pts
+
+
+def _quad_is_convex(q, eps: float = 1e-9) -> bool:
+    """Strictly convex, same turn at all four vertices. A collinear triple means the fit collapsed
+    (two of the four "edges" are the same line), which is degenerate, not a square seen edge-on."""
+    for i in range(4):
+        e1 = q[(i + 1) % 4] - q[i]
+        e2 = q[(i + 2) % 4] - q[(i + 1) % 4]
+        cr = _cross2(e1, e2)
+        scale = float(np.linalg.norm(e1) * np.linalg.norm(e2))
+        if scale < 1e-12 or abs(cr) <= eps * scale:
+            return False
+        if i == 0:
+            sign = cr > 0.0
+        elif (cr > 0.0) != sign:
+            return False
+    return True
+
+
+def quad_from_mask_ex(mask):
+    """``quad_from_mask``, plus the count of quad edges that are still IMAGE BORDER, or None.
+
+    THE HONEST LIMIT OF THIS METHOD, exposed rather than hidden. The reduction only fires while the
+    hull has more than 4 vertices, so a gate cropped down to THREE visible edges (its clipped hull
+    is already a quadrilateral, one side of which is the frame edge) is returned as-is: the fit is
+    the visible trapezoid, not the gate, and its diagonal crossing sits short of the true centre --
+    measured on a synthetic 3-edge crop, 8 px short. Nothing can be done about that from one square
+    alone; three lines do not determine a projective square. (The line solver CAN still solve those,
+    because it has a second concentric square with a KNOWN metric ratio, so 3 inner + 3 outer edges
+    are 6 identified lines. That is a genuine advantage of the baseline on this configuration.)
+
+    So the caller gets the count and can prefer a clean quad, or reject a clipped one outright."""
+    m = np.asarray(mask)
+    if m.ndim != 2:
+        return None
+    m = np.ascontiguousarray(m.astype(np.uint8))
+    if not m.any():
+        return None
+    h, w = m.shape[:2]
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+    # LARGEST contour, not the hull of every pixel: a ragged prediction throws off satellite
+    # specks, and hulling those in would drag a corner out to the speck.
+    c = max(cnts, key=cv2.contourArea)
+    if cv2.contourArea(c) < _MIN_MASK_AREA_PX:
+        return None
+    hull = cv2.convexHull(c).reshape(-1, 2).astype(float)
+    if len(hull) < 4:
+        return None
+    pts = _reduce_hull_to_quad(hull, (w, h))
+    if pts is None:
+        return None
+    quad = np.asarray(pts, float)
+    if quad.shape != (4, 2) or not np.isfinite(quad).all():
+        return None
+    if not _quad_is_convex(quad):
+        return None
+    area = 0.5 * abs(_cross2(quad[2] - quad[0], quad[3] - quad[1]))
+    if area < _MIN_MASK_AREA_PX:
+        return None
+    n_border = sum(_on_border(quad[i], quad[(i + 1) % 4], w, h) for i in range(4))
+    return (quad, int(n_border))
+
+
+def quad_from_mask(mask):
+    """The gate square as 4 pixel corners, fitted to the WHOLE mask boundary. (4,2) array or None.
+
+    Convex hull, then greedy reduction to 4 vertices (see ``_reduce_hull_to_quad``). The hull is an
+    OUTER bound, so symmetric boundary noise biases the corners outward by roughly the noise
+    amplitude -- but it biases every side outward equally, so the CENTRE is unaffected to first
+    order, which is the quantity this exists to produce.
+
+    Returns None when the hull has fewer than 4 vertices, when the mask is a speck, or when the
+    reduction lands on a non-convex / collinear quad. See ``quad_from_mask_ex`` for the clipped-quad
+    caveat."""
+    got = quad_from_mask_ex(mask)
+    return None if got is None else got[0]
+
+
+def centre_from_quad(quad):
+    """Centre of a projected square = the INTERSECTION OF ITS DIAGONALS. (2,) array or None.
+
+    Projective, therefore EXACT: a homography maps lines to lines and preserves incidence, so the
+    image of the square's centre is where the images of its diagonals cross. No PnP, no camera
+    intrinsics, no corner identity (any cyclic relabelling gives the same crossing), no interior
+    point -- and no requirement that the result lands inside the image. Returns None only when the
+    diagonals are parallel, i.e. the centre is genuinely at infinity (a square seen exactly
+    edge-on), which is not a solvable view."""
+    q = np.asarray(quad, float)
+    if q.shape != (4, 2) or not np.isfinite(q).all():
+        return None
+    d1 = np.cross([q[0][0], q[0][1], 1.0], [q[2][0], q[2][1], 1.0])
+    d2 = np.cross([q[1][0], q[1][1], 1.0], [q[3][0], q[3][1], 1.0])
+    n1, n2 = np.hypot(d1[0], d1[1]), np.hypot(d2[0], d2[1])
+    if n1 < 1e-12 or n2 < 1e-12:
+        return None
+    p = np.cross(d1 / n1, d2 / n2)
+    if abs(p[2]) < 1e-12:
+        return None
+    c = p[:2] / p[2]
+    return c if np.isfinite(c).all() else None
+
+
+def _centre_is_sane(c, image_wh) -> bool:
+    """The bound ``centre_from_seg_masks`` applies, duplicated so that function stays byte-identical
+    while it serves as the A/B baseline. Fold the two together once one path wins.
+
+    A gate centre may legitimately sit off-screen -- solving for it is the whole point -- but a
+    degenerate fit produces a "centre" tens of image-widths away (measured: -35378 px, 55 widths
+    out). Without this bound that garbage counts as coverage."""
+    w_px, h_px = image_wh
+    return not (abs(c[0]) > _SANE_CENTRE_MULT * w_px
+                or abs(c[1] - h_px / 2.0) > _SANE_CENTRE_MULT * h_px)
+
+
+def centre_from_masks_quad(frame_mask, opening_mask=None, image_wh=(640, 360),
+                           max_border_edges: int = 4):
+    """Gate centre from ONE gate's predicted masks, via the hull quad. (centre_px, quad) or None.
+
+    The OPENING is preferred: it is the same centre by construction (the two squares are concentric
+    and coplanar, so one homography projects both) but it is the cleaner target -- smaller, simpler,
+    no amodal completion asked of the model, and no neighbouring gate's frame to bleed into. The
+    frame mask is the fallback when the model predicted no opening (an oblique gate whose opening
+    closed up) or when the opening's fit failed.
+
+    A quad with NO border edge is preferred over the opening, though, because a clipped quad is a
+    fit to the crop rather than to the gate (see ``quad_from_mask_ex``) -- and the two squares are
+    not clipped equally: a gate can be cropped past the outer square's edge while the whole opening
+    is still in frame.
+
+    ``max_border_edges`` lets a caller refuse clipped fits entirely. The default KEEPS them, and
+    that is measured, not assumed: on the real val split, refusing them costs 18 points of coverage
+    (88.9% -> 70.4%) to buy 2 px of median error (17.6 -> 19.8 px). A biased centre on a gate you
+    are about to fly through beats no centre at all, so keep them -- but the flag is here because a
+    consumer that can afford to skip a tick may prefer the other side of that trade."""
+    best = None
+    for rank, mask in enumerate((opening_mask, frame_mask)):   # rank breaks ties toward the opening
+        if mask is None:
+            continue
+        got = quad_from_mask_ex(mask)
+        if got is None:
+            continue
+        quad, n_border = got
+        if n_border > max_border_edges:
+            continue
+        c = centre_from_quad(quad)
+        if c is None or not _centre_is_sane(c, image_wh):
+            continue
+        if best is None or (n_border, rank) < best[0]:
+            best = ((n_border, rank), c, quad)
+    return None if best is None else (best[1], best[2])
+
+
 class SegGateLineDetector:
     """yolo-seg front-end -> the validated line/homography solver. Model is injectable for tests."""
 
@@ -494,6 +773,18 @@ class SegGateLineDetector:
         out = []
         for f, o in pair_gate_instances(fm, om):
             got = centre_from_seg_masks(f, o, image_wh=(w, h))
+            if got is not None:
+                out.append(got)
+        return out
+
+    def quad_centres(self, image_bgr, max_border_edges: int = 4):
+        """[(centre_px, quad)] via the hull-quad path -- the A/B partner of :meth:`centres`."""
+        h, w = image_bgr.shape[:2]
+        fm, om = self.masks_for(image_bgr)
+        out = []
+        for f, o in pair_gate_instances(fm, om):
+            got = centre_from_masks_quad(f, o, image_wh=(w, h),
+                                         max_border_edges=max_border_edges)
             if got is not None:
                 out.append(got)
         return out
