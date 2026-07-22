@@ -92,17 +92,30 @@ def test_offframe_outer_corners_still_fit():
     assert np.linalg.norm(got[0] - _px(H, 0.0, 0.0)) < 8.0
 
 
-def test_cropped_on_two_edges_is_a_known_gap():
-    """Pins the documented limitation (see homography_from_lines' KNOWN GAP), so that if a future
-    change makes this case fit, the gap note gets revisited rather than quietly going stale.
+def test_cropped_on_two_edges_now_fits_via_the_interior_point():
+    """THE close-range case, and the reason the segmentation front-end exists.
 
-    Cropping on two edges leaves ONE line per square per pencil, and a square only contributes when
-    both its extremes are present. Two attempts to relax that were measured NET-NEGATIVE on real
-    frames; the sign is not recoverable from the lines alone."""
+    Cropping on two edges leaves ONE line per square per pencil. Extreme-pairing cannot label those
+    (it needs both ends), and ordering cannot either -- with both lines on the same side, two
+    different geometries are equally monotone. Both relaxations measured NET-NEGATIVE on real frames.
+    The missing information is which side the gate INTERIOR is on, and the opening mask is exactly
+    that, so each lone edge becomes usable on its own."""
     H = _pose_H(0.0, 0.0, (2.6, 0.9, 3.2))
-    outer = _mask(H, GATE_OUTER_HALF)
+    outer, inner = _mask(H, GATE_OUTER_HALF), _mask(H, GATE_INNER_HALF)
     assert outer[:, -1].any() and outer[-1, :].any(), "fixture must be cropped on TWO edges"
-    assert centre_from_seg_masks(outer, _mask(H, GATE_INNER_HALF), IMG_WH) is None
+    got = centre_from_seg_masks(outer, inner, IMG_WH)
+    assert got is not None, "the interior point should make this solvable"
+    assert np.linalg.norm(got[0] - _px(H, 0.0, 0.0)) < 2.0
+
+
+def test_interior_point_is_required_for_the_two_edge_crop():
+    """Without an interior reference the same evidence is genuinely ambiguous -- pins WHY the seg
+    masks are load-bearing rather than a convenience."""
+    from racer.vision.gate_lines import homography_from_lines, segments_from_mask
+    H = _pose_H(0.0, 0.0, (2.6, 0.9, 3.2))
+    outer_segs = segments_from_mask(_mask(H, GATE_OUTER_HALF))
+    inner_segs = segments_from_mask(_mask(H, GATE_INNER_HALF))
+    assert homography_from_lines(inner_segs, outer_segs, image_wh=IMG_WH) is None
 
 
 def test_pairing_matches_opening_to_its_containing_frame():

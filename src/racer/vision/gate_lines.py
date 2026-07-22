@@ -185,7 +185,37 @@ def _at(l, coord, value, axis):
     return None if abs(b) < 1e-9 else -(a * value + c) / b
 
 
-def homography_from_lines(inner_segs, outer_segs, image_wh=(640, 360)):
+def _coord_from_interior(line, half, interior_px):
+    """Signed plane coordinate of ``line``, decided by which side the gate INTERIOR falls on.
+
+    This is what breaks the close-range deadlock. Pairing needs BOTH extremes of a square in a
+    pencil to label them -half/+half, so a gate cropped on two edges -- one line per square per
+    pencil, the normal case inside ~2 m -- produced no fit at all. Ordering cannot supply the
+    missing sign either: with both lines on the same side, "-1.36 then +0.75" and "-1.36 then
+    -0.75" are equally monotone and are different geometries (measured: 82.4% -> 6.8% coverage).
+
+    An interior point settles it per-line, with no pairing and no ordering. The plane line at
+    coordinate +half has the gate centre (coordinate 0) on its negative side, and vice versa, so
+    ``coord = -half * sign(d(interior))``. One visible edge is now a usable constraint.
+
+    ⚠ ONLY AS GOOD AS THE INTERIOR POINT, and NOT yet validated on real imagery. Proven exact on
+    synthetic masks (recovers a two-edge-cropped gate's centre to <2 px, which extreme-pairing
+    cannot fit at all). But fed the HSV front-end on 998 real frames it went 82.4% -> 73.3%,
+    gaining ZERO frames and losing 90. Two reasons, and only the second is a warning about this
+    mechanism: (1) 51% of the HSV path's failures are frames where the mask finds NOTHING and 29%
+    yield <4 lines, so no sign rule can help them; (2) where lines DO exist, an HSV-derived interior
+    is unreliable enough to flip signs and produce a confidently wrong plane. Hence this is wired
+    ONLY to the segmentation path, where ``gate_opening`` is a learned region rather than a colour
+    guess. ``centre_from_lines`` (HSV) deliberately still passes None and keeps its 82.4%.
+    VALIDATE ON REAL FRAMES before trusting it -- that is the first job once a seg model exists.
+    """
+    d = float(line @ [interior_px[0], interior_px[1], 1.0])
+    if abs(d) < 1e-9:
+        return None                      # interior sits ON the line: side undefined, refuse it
+    return -half if d > 0.0 else half
+
+
+def homography_from_lines(inner_segs, outer_segs, image_wh=(640, 360), interior_px=None):
     """Gate-plane -> image homography from the gate's edge lines. Returns H or None.
 
     WHY THERE IS NO ORIENTATION PRIOR HERE. A square's CENTRE is invariant under every labelling
@@ -207,11 +237,18 @@ def homography_from_lines(inner_segs, outer_segs, image_wh=(640, 360)):
     A homography maps lines by H^-T, so each identified line gives 2 linear constraints on H^-T and
     >=4 lines determine it -- no corner intersection, so foreshortened edges degrade gracefully.
 
-    KNOWN GAP, and a FAILED fix -- do not re-attempt it the same way (2026-07-22). A square
-    contributes only when BOTH its extremes are present in a pencil, so a gate cropped on two edges
-    (one line per square per pencil, e.g. outer-left + inner-left and nothing else) gets no fit at
-    all, on exactly the close-range frames this path exists to serve. Two generalisations were
-    written, unit-tested green, and MEASURED against the 998-frame failure-mined inbox:
+    ``interior_px`` CLOSES the close-range gap -- pass it whenever you have a mask. Without it, a
+    square contributes only when BOTH its extremes are present in a pencil, so a gate cropped on two
+    edges (one line per square per pencil) gets no fit at all, on exactly the close-range frames
+    this path exists to serve. That matters: on 14 real flights the detector produced NO usable pose
+    on ~11% of ticks inside 3 m (vs 0.4% at 8-15 m), because the corners leave frame and ultralytics
+    cannot emit them. With an interior point every visible edge is independently usable -- see
+    ``_coord_from_interior``. The segmentation front-end supplies it for free (``gate_opening`` IS
+    the interior), which is the concrete reason that front-end is worth training.
+
+    HISTORY -- two FAILED fixes; do not re-attempt these (2026-07-22). Before the interior point,
+    two ways of guessing the sign were written, unit-tested green, and MEASURED against the
+    998-frame failure-mined inbox:
       * label by monotone order (concentric squares nest, so the plane coordinate is monotone in
         signed distance): 82.4% -> 6.8% coverage. Strict monotonicity is unattainable once mask
         noise leaves near-duplicate lines, so the whole pencil is discarded. It is also UNSOUND:
@@ -221,8 +258,9 @@ def homography_from_lines(inner_segs, outer_segs, image_wh=(640, 360)):
         SUBSET of the old fits (they agree to 0.00 px median where both fire, so the geometry is
         right) plus one 104000 px outlier. Both extremes can land on the same side of a biased
         centroid, giving two lines the SAME plane coordinate and a degenerate system.
-    The sign genuinely is not recoverable from the LINES alone here; it needs the interior direction,
-    which only the mask knows. Pass that in before trying again.
+    The lesson both share: the sign is NOT recoverable from the lines alone, so guessing it from
+    order or from a crop-biased centroid trades a missing fit for a WRONG one. ``interior_px``
+    supplies the missing fact instead of inferring it -- which is why it works where those did not.
     """
     tagged = [(s, GATE_INNER_HALF) for s in inner_segs] + [(s, GATE_OUTER_HALF) for s in outer_segs]
     if len(tagged) < 4:
@@ -252,6 +290,17 @@ def homography_from_lines(inner_segs, outer_segs, image_wh=(640, 360)):
             per_half.setdefault(half, []).append(l)
         for half, lines in per_half.items():
             lines = _merge_collinear(lines, cen)
+            if interior_px is not None:
+                # INTERIOR-SIGNED: every line is usable on its own, so a square showing only ONE
+                # edge in this pencil still contributes (the close-range, two-edge-crop case).
+                for l in lines:
+                    val = _coord_from_interior(l, half, interior_px)
+                    if val is None:
+                        continue
+                    pl = (np.array([1.0, 0.0, -val]) if fi == 0 else np.array([0.0, 1.0, -val]))
+                    rows.append((pl, l))
+                    used += 1
+                continue
             if len(lines) < 2:
                 continue                 # see KNOWN GAP in the docstring
             order = sorted(lines, key=lambda l: float(l @ [cen[0], cen[1], 1.0]))
@@ -366,10 +415,17 @@ def pair_gate_instances(frames_masks, opening_masks):
 
 
 def centre_from_seg_masks(frame_mask, opening_mask=None, image_wh=(640, 360)):
-    """Gate centre + homography from ONE gate's predicted masks. Returns (centre_px, H) or None."""
+    """Gate centre + homography from ONE gate's predicted masks. Returns (centre_px, H) or None.
+
+    The masks supply the INTERIOR POINT the line solver needs to sign a lone edge, which is the
+    whole reason the segmentation front-end unlocks close range: ``gate_opening`` IS the interior,
+    so its centroid is exactly the reference. Falls back to the frame mask's centroid when the
+    opening was not predicted (an oblique gate whose opening closed up) -- still interior to the
+    frame, and still on the correct side of every edge."""
     outer = segments_from_mask(frame_mask)
     inner = [] if opening_mask is None else segments_from_mask(opening_mask)
-    H = homography_from_lines(inner, outer, image_wh=image_wh)
+    interior = _centroid(opening_mask if opening_mask is not None else frame_mask)
+    H = homography_from_lines(inner, outer, image_wh=image_wh, interior_px=interior)
     if H is None:
         return None
     w = float(H[2, 2])
