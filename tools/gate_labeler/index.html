@@ -37,10 +37,17 @@
   #prompt.done { color:var(--ok); }
   #canvaswrap { flex:1; position:relative; min-height:0; }
   canvas { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+  /* FIXED height and NO wrapping. When #areainfo filled up, this bar wrapped to two lines and
+     shrank #canvaswrap by ~19 px -- but the canvas backing store is only re-sized on window
+     resize, so the bottom of the canvas stopped being repainted and drawing streaked over it. */
   #status { padding:4px 10px; background:var(--panel); border-top:1px solid var(--line);
-            color:var(--dim); display:flex; gap:16px; }
-  #dirty { color:var(--warn); font-weight:700; }
-  #areainfo { color:#9fc7e8; }
+            color:var(--dim); display:flex; gap:16px; height:26px; flex:0 0 26px;
+            align-items:center; white-space:nowrap; overflow:hidden; }
+  #status > span { overflow:hidden; text-overflow:ellipsis; }
+  #frameinfo { flex:0 1 auto; }
+  #dirty { color:var(--warn); font-weight:700; flex:0 0 auto; }
+  #areainfo { color:#9fc7e8; flex:1 1 auto; min-width:0; }
+  #keyhints { flex:0 0 auto; margin-left:auto; }
   kbd { background:#2b313b; border:1px solid var(--line); border-radius:3px; padding:0 4px; }
 </style>
 </head>
@@ -66,10 +73,10 @@
     <div id="canvaswrap"><canvas id="cv"></canvas></div>
     <div id="status">
       <span id="frameinfo"></span><span id="dirty"></span><span id="areainfo"></span>
-      <span style="margin-left:auto">
-        wheel=zoom &middot; <kbd>Space</kbd>/mid-drag=pan &middot; drag point=adjust &middot;
-        <kbd>O</kbd>=occluded &middot; <kbd>M</kbd>=area shading &middot; <kbd>L</kbd>=edge guides
-        &middot; <kbd>Z</kbd>=undo click &middot; <kbd>Esc</kbd>=cancel
+      <span id="keyhints">
+        wheel=zoom &middot; <kbd>Space</kbd>=pan &middot; <kbd>O</kbd>=occluded &middot;
+        <kbd>M</kbd>=area &middot; <kbd>L</kbd>=guides &middot; <kbd>Z</kbd>=undo &middot;
+        <kbd>Esc</kbd>=cancel
       </span>
     </div>
   </div>
@@ -187,6 +194,7 @@ let img = new Image(), imgReady = false;
 let gates = [], selGate = -1, selPoint = -1;   // selPoint: 0-3 inner, 4-7 outer
 let isSeed = false;                            // gates came from an UNVERIFIED detector seed
 let fromGeom = false;                          // handles restored EXACTLY (sidecar), not clamped
+let seedInfo = null;                           // the seeder's self-check: {source, iou, kpts_in_frame}
 let lastSaved = null;                          // what the server actually wrote, for the status bar
 let segMismatch = "";                          // preview vs server area disagreement (should be "")
 let collecting = false;                        // guided-click mode for the LAST gate
@@ -243,7 +251,7 @@ async function loadFrame(i) {
     fitView();
     try {
       const j = await api("/api/label?name=" + encodeURIComponent(name));
-      isSeed = false; fromGeom = !!j.geom;
+      isSeed = false; fromGeom = !!j.geom; seedInfo = j.seed_info || null;
       if (j.exists || j.seed) {
         // resume (human label) OR seed (detector pre-label): rebuild gates from the decoded
         // rows; outer marked detached so a stray inner nudge won't clobber them. For a SEED the
@@ -352,30 +360,44 @@ function hitTest(sx, sy) {   // nearest keypoint within 10 screen px -> {gi, pi}
 }
 
 // ---- view / canvas ------------------------------------------------------------------------
-function resizeCanvas() {
+// The canvas backing store must track #canvaswrap, and the wrap changes height for reasons that
+// are NOT window resizes -- the status bar reflowing was one. When it did, the backing store kept
+// its old size, CSS squashed it into the shorter box, and the bottom ~19 px stopped being repainted
+// while lines kept streaking across it. So: re-sync on every draw (it is a cheap compare) AND
+// observe the element, rather than trusting the window resize event.
+function syncCanvasSize() {
   const r = $("canvaswrap").getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
-  cv.width = r.width * dpr; cv.height = r.height * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  draw();
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (cv.width === w && cv.height === h) return false;
+  cv.width = w; cv.height = h;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // setting width/height resets the transform
+  return true;
 }
+function canvasSize() {                     // painted extent in CSS px -- the truth, not the rect
+  const dpr = window.devicePixelRatio || 1;
+  return [cv.width / dpr, cv.height / dpr];
+}
+function resizeCanvas() { syncCanvasSize(); draw(); }
 // Leave WORKING ROOM around the photo. A close gate's corners are off screen and must be clicked
 // out there, so the default view can't be the image edge-to-edge -- 0.96 left nowhere to put them.
 const FIT_MARGIN = 0.62;
 
 function fitView() {
   if (!imgReady) return;
-  const r = $("canvaswrap").getBoundingClientRect();
-  view.s = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight) * FIT_MARGIN;
-  view.tx = (r.width - img.naturalWidth * view.s) / 2;
-  view.ty = (r.height - img.naturalHeight * view.s) / 2;
+  syncCanvasSize();
+  const [cw, ch] = canvasSize();
+  view.s = Math.min(cw / img.naturalWidth, ch / img.naturalHeight) * FIT_MARGIN;
+  view.tx = (cw - img.naturalWidth * view.s) / 2;
+  view.ty = (ch - img.naturalHeight * view.s) / 2;
   draw();
 }
 function draw() {
-  const r = $("canvaswrap").getBoundingClientRect();
-  ctx.clearRect(0, 0, r.width, r.height);
+  syncCanvasSize();
+  const [cw, ch] = canvasSize();
+  ctx.clearRect(0, 0, cw, ch);
   if (!imgReady) return;
   ctx.fillStyle = "#0b0d10";                // the OUTSIDE: clicks land here and that is fine
-  ctx.fillRect(0, 0, r.width, r.height);
+  ctx.fillRect(0, 0, cw, ch);
   ctx.save();
   ctx.translate(view.tx, view.ty); ctx.scale(view.s, view.s);
   ctx.imageSmoothingEnabled = view.s < 2;   // crisp pixels when zoomed for precise clicking
@@ -542,12 +564,12 @@ function clipLineToRect(a, b, w, h) {
 }
 function drawGuides(g, color) {
   if (!gateComplete(g)) return;
-  const r = $("canvaswrap").getBoundingClientRect();
+  const [cw, ch] = canvasSize();
   ctx.save(); ctx.setLineDash([2, 6]); ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
   ctx.strokeStyle = color;
   for (const quad of [g.inner, g.outer]) {
     for (let i = 0; i < 4; i++) {
-      const seg = clipLineToRect(toScreen(quad[i]), toScreen(quad[(i + 1) % 4]), r.width, r.height);
+      const seg = clipLineToRect(toScreen(quad[i]), toScreen(quad[(i + 1) % 4]), cw, ch);
       if (!seg) continue;
       ctx.beginPath(); ctx.moveTo(seg[0][0], seg[0][1]); ctx.lineTo(seg[1][0], seg[1][1]); ctx.stroke();
     }
@@ -590,10 +612,13 @@ function updateStatus() {
                   + "  —  OUTSIDE the photo is fine";
     p.classList.remove("done");
   } else if (isSeed) {
-    // Loud on purpose: these points are detector output, not a label. Nothing is recorded until
-    // the human presses save -- the frame is still counted as UNLABELED.
-    p.textContent = `SEEDED by detector (UNVERIFIED) - ${gates.length} gate(s): check every `
-                  + `corner, fix, then SAVE to accept`;
+    // Loud on purpose: these points are machine output, not a label. Nothing is recorded until
+    // the human presses save -- the frame is still counted as UNLABELED. The seeder's own
+    // self-check rides along so a weak seed announces itself instead of looking authoritative.
+    const s = seedInfo
+      ? ` [${seedInfo.source}, self-check IoU ${seedInfo.iou}, ${seedInfo.kpts_in_frame}/8 corners in frame]`
+      : "";
+    p.textContent = `SEEDED (UNVERIFIED)${s} - ${gates.length} gate(s): fix the AREA, then SAVE`;
     p.classList.remove("done");
   } else {
     p.textContent = gates.length
@@ -606,14 +631,17 @@ function updateStatus() {
   // Live AREA readout: this, not the corner count, is what decides whether the frame trains.
   const live = gates.filter(gateComplete).map(segStatus);
   const nMask = live.reduce((a, s) => a + s.n, 0);
-  let txt = live.length ? `area: ${nMask} mask(s) — `
-          + live.map((s, i) => `g${i + 1} ${fmtArea(s.frame)}/${fmtArea(s.opening)}`).join("  ") : "";
-  if (lastSaved) txt += `   ·   saved ${lastSaved.seg_rows} seg row(s), ${lastSaved.rows} pose row(s)`;
-  if (fromGeom) txt += "   ·   exact handles restored";
+  let txt = live.length
+    ? `${nMask} mask(s): ` + live.map((s, i) => `g${i + 1} ${fmtArea(s.frame)}/${fmtArea(s.opening)}`).join(" ")
+    : "";
+  if (lastSaved) txt += ` · saved ${lastSaved.seg_rows}`;
+  if (fromGeom) txt += " · exact";
   else if (frameIdx >= 0 && frames[frameIdx] && frames[frameIdx].labeled && !isSeed)
-    txt += "   ·   ⚠ loaded from CLAMPED pose label (pre-area); off-frame corners snapped to the edge";
-  if (segMismatch) txt += "   ·   ⚠ " + segMismatch;
-  $("areainfo").textContent = txt;
+    txt += " · ⚠ clamped legacy label";
+  if (segMismatch) txt += " · ⚠ " + segMismatch;
+  const el = $("areainfo");
+  el.textContent = txt;
+  el.title = txt;                            // the bar ellipsizes; hover for the full string
 }
 function renderSidebar() {
   const n = frames.filter(f => f.labeled).length;
@@ -724,6 +752,8 @@ $("bRecompute").onclick = () => { const g = curGate();
   if (g && gateComplete(g)) { recomputeOuter(g, true); setDirty(true); draw(); } };
 $("bFit").onclick = fitView;
 window.addEventListener("resize", resizeCanvas);
+// ...and catch layout changes the window never hears about (status/toolbar reflow, zoom, devtools)
+if (window.ResizeObserver) new ResizeObserver(() => resizeCanvas()).observe($("canvaswrap"));
 
 // ---- boot ---------------------------------------------------------------------------------
 (async () => {

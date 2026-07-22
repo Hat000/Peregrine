@@ -79,6 +79,19 @@ def geom_path(name: str) -> Path:
     return LABELS_DIR / "geom" / (Path(name).stem + ".json")
 
 
+def load_gates(base: Path, name: str):
+    """(gates, exact) from ``base/<stem>.txt``, preferring ``base/geom/<stem>.json``.
+
+    Used for BOTH labels and seeds: a seed whose corners are off screen is exactly the case worth
+    seeding, and reading it from the pose row would snap those corners onto the border -- handing
+    the labeler a wrong quad to "correct"."""
+    stem = Path(name).stem
+    gp = base / "geom" / f"{stem}.json"
+    if gp.is_file():
+        return labelio.decode_geometry(json.loads(gp.read_text())), True
+    return labelio.decode_label((base / f"{stem}.txt").read_text()), False
+
+
 def seed_path(name: str) -> Path | None:
     """Detector pre-label for this frame, if seeding is enabled and one exists.
 
@@ -90,6 +103,15 @@ def seed_path(name: str) -> Path | None:
         return None
     p = SEEDS_DIR / (Path(name).stem + ".txt")
     return p if p.is_file() else None
+
+
+_SEED_MANIFEST: dict = {}
+
+
+def seed_info(name: str):
+    """The seeder's own self-check for this frame (source + IoU against the red structure), so the
+    labeler can say how much to trust what it is showing rather than presenting it flatly."""
+    return _SEED_MANIFEST.get(name)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -141,22 +163,16 @@ class Handler(BaseHTTPRequestHandler):
                     # Prefer the sidecar: the pose row snapped every off-frame handle onto the
                     # border, so reloading from it and re-saving would quietly shrink the drawn
                     # area to its clipped silhouette. ``geom: false`` tells the UI to say so.
-                    gp = geom_path(name)
-                    if gp.exists():
-                        self._json({"exists": True, "seed": False, "geom": True,
-                                    "gates": labelio.decode_geometry(json.loads(gp.read_text()))})
-                    else:
-                        self._json({"exists": True, "seed": False, "geom": False,
-                                    "gates": labelio.decode_label(lp.read_text())})
+                    gates, exact = load_gates(LABELS_DIR, name)
+                    self._json({"exists": True, "seed": False, "geom": exact, "gates": gates})
+                elif seed_path(name) is None:
+                    self._json({"exists": False, "seed": False, "geom": False, "gates": []})
                 else:
-                    sp = seed_path(name)
-                    if sp is None:
-                        self._json({"exists": False, "seed": False, "geom": False, "gates": []})
-                    else:
-                        # exists:false keeps the frame UNLABELED; seed:true tells the UI these
-                        # points are unverified detector output to be corrected, not accepted.
-                        self._json({"exists": False, "seed": True, "geom": False,
-                                    "gates": labelio.decode_label(sp.read_text())})
+                    # exists:false keeps the frame UNLABELED; seed:true tells the UI these
+                    # points are unverified detector output to be corrected, not accepted.
+                    gates, exact = load_gates(SEEDS_DIR, name)
+                    self._json({"exists": False, "seed": True, "geom": exact,
+                                "gates": gates, "seed_info": seed_info(name)})
             elif url.path.startswith("/frames/"):
                 p = safe_frame(url.path[len("/frames/"):])
                 self._send(200, p.read_bytes(), MIME[p.suffix.lower()])
@@ -234,7 +250,11 @@ def main():
     print(f"gate_labeler: labels -> {LABELS_DIR}")
     if SEEDS_DIR is not None:
         n_seed = len(list(SEEDS_DIR.glob("*.txt")))
-        print(f"gate_labeler: seeds  <- {SEEDS_DIR}  ({n_seed} unverified pre-labels)")
+        mf = SEEDS_DIR / "_manifest.json"
+        if mf.is_file():
+            _SEED_MANIFEST.update(json.loads(mf.read_text()).get("frames", {}))
+        print(f"gate_labeler: seeds  <- {SEEDS_DIR}  ({n_seed} unverified pre-labels, "
+              f"{len(_SEED_MANIFEST)} with a self-check score)")
     print(f"gate_labeler: open http://localhost:{args.port}")
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 
