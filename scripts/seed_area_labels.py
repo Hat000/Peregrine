@@ -53,6 +53,8 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 IMG_W, IMG_H = 640, 360
 SANE_SPAN = 4.0          # a corner further out than this many image widths is not a real pixel
 _CLAMP_EPS_PX = 0.51     # ultralytics clips keypoints to exactly [0,W]x[0,H]
+MIN_RING_PX = 60         # below this the red-fraction is noise, not a measurement
+MIN_OPENING_PX = 200     # below this "see-through" is unmeasurable, so it is not held against a seed
 
 
 # ---------------------------------------------------------------------------------------------
@@ -129,7 +131,12 @@ def ring_score(inner_px, outer_px, red):
     inner_m = _fill(inner_px)
     ring = _fill(outer_px) & ~inner_m
     n = int(ring.sum())
-    if n < 200:
+    # A 200 px floor here silently rejected every DISTANT gate -- a gate 15 m away has a ring only
+    # a few hundred px total, and its OPENING is smaller still. Real frames carry ~2.6 gates and
+    # seeding was emitting 1.0, which is the same signature as the blender labelling bug. The floor
+    # exists only so the ratio is not computed from a handful of pixels, so it belongs at the
+    # measurable/not-measurable boundary, not at "big enough to be the gate I am flying at".
+    if n < MIN_RING_PX:
         return 0.0, 0.0, n
     red_ring = float((red & ring).sum() / n)
     # ...AND THE OPENING MUST BE SEE-THROUGH. A red ring alone is not enough: the near gate carries
@@ -141,8 +148,11 @@ def ring_score(inner_px, outer_px, red):
     # real gate's opening usually shows the warehouse behind it -- including distant red gates --
     # so see-through sits well below the ring score even when the seed is perfect. A solid signage
     # panel, by contrast, scores near zero. So: a strict bar on the ring, a loose one on see-through.
+    # ...and when the opening is too small to measure, "not see-through" is not EVIDENCE of a
+    # signage panel -- panels are large. Report 1.0 (nothing against it) rather than 0.0, or the
+    # check condemns exactly the distant gates it was never aimed at.
     n_in = int(inner_m.sum())
-    see_through = 1.0 - float((red & inner_m).sum() / n_in) if n_in >= 200 else 0.0
+    see_through = 1.0 - float((red & inner_m).sum() / n_in) if n_in >= MIN_OPENING_PX else 1.0
     return red_ring, see_through, n
 
 
@@ -245,6 +255,9 @@ def main() -> int:
     ap.add_argument("--min-ring", type=float, default=0.6,
                     help="reject a seed whose RING between the two quads is not mostly red structure")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--protect", default=None,
+                    help="JSON of frame names never to touch -- the re-review queue holds HUMAN "
+                         "labels and a machine seed must not overwrite one")
     ap.add_argument("--overwrite-seeds", action="store_true",
                     help="by default an existing seed is LEFT ALONE, so a re-run is idempotent and "
                          "cannot clobber a review entry a human's own label was written into")
@@ -261,7 +274,7 @@ def main() -> int:
     det = None
     if args.weights:
         from racer.vision.detector import GateDetector          # heavy: only when asked for
-        det = GateDetector(weights=args.weights, use_outer=True, partial_rescue=True)
+        det = GateDetector.load(args.weights, use_outer=True, partial_rescue=True)
         print(f"M loaded: {args.weights}")
     segdet = None
     if args.seg_weights:
@@ -274,14 +287,17 @@ def main() -> int:
     if args.limit:
         names = names[:args.limit]
 
+    protected = set(json.loads(Path(args.protect).read_text())) if args.protect else set()
+    if protected:
+        print(f"protecting {len(protected)} human review entries")
     census, manifest, ious = Counter(), {}, []
     for i, name in enumerate(names):
         stem = Path(name).stem
         if labels_dir and (labels_dir / f"{stem}.txt").exists():
             census["already-labelled"] += 1
             continue
-        if not args.overwrite_seeds and (seeds_dir / f"{stem}.txt").exists():
-            census["seed-already-present"] += 1
+        if name in protected:
+            census["protected(human-review-entry)"] += 1
             continue
         bgr = cv2.imread(str(frames_dir / name))
         if bgr is None or bgr.shape[1] != IMG_W or bgr.shape[0] != IMG_H:
@@ -323,7 +339,16 @@ def main() -> int:
                            "inner": np.asarray(inn, float), "outer": np.asarray(out, float)})
         scored.sort(key=lambda c: -c["score"])
 
-        kept = []                                               # de-dup: sources often agree
+        # MERGE, do not skip. A re-run with another source should ADD the gates it can see, so the
+        # gates already on disk go in first and everything new is de-duplicated against them.
+        kept, prior = [], 0
+        sp = seeds_dir / "geom" / f"{stem}.json"
+        if sp.is_file() and not args.overwrite_seeds:
+            for g in labelio.decode_geometry(json.loads(sp.read_text())):
+                kept.append({"src": "prior", "score": 1.0, "see": 1.0, "ring": 0,
+                             "inner": np.asarray(g["inner"], float),
+                             "outer": np.asarray(g["outer"], float)})
+            prior = len(kept)
         for c in scored:
             cc, sz = c["inner"].mean(axis=0), np.ptp(c["inner"], axis=0).max()
             if any(np.linalg.norm(cc - k["inner"].mean(axis=0)) < 0.4 * max(sz, 1.0) for k in kept):
@@ -333,6 +358,11 @@ def main() -> int:
         if not kept:
             census["no-seed" if not cands else "all-candidates-rejected"] += 1
             continue
+        if prior and len(kept) == prior:
+            census["seed-unchanged"] += 1
+            continue                                            # nothing new: leave the file alone
+        if prior:
+            census["seed-gained-gates"] += 1
 
         gates, info = [], []
         for c in kept:
