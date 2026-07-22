@@ -364,7 +364,31 @@ _V17_RECIPE = {
     "ego_assist_thrust": 1.1,     # baseline-matched (_V16_RECIPE pins 1.3)
 }
 
+# ego-ckpts-v18-2026-07-22 -- ★ THE DEPLOY LEAD (supersedes v16Qs1). v1.8 = v1.7 with ONE knob
+# changed: M1 OFF (handoff_spawn_frac 0.33 -> 0.0). M1 was the SOLE cause of v1.7's release-pitch dive
+# and removing it returned the dive to PARENT LEVEL, verified on 425 real flights (worst nose-down
+# rate cmd in the 4 ticks after assist release: parent v16Qs1 mean -0.805 / max -2.369; v17 pooled
+# -1.225 / dove harder than parent on ~423/425; v18Qs1 -0.801 / 248/425; v18Qs0 -0.633 / only 33/425).
+# Deploy pick = v18Qs1 (training lead: gates 5.75, center_pen 0.163, frame_factor 0.841, dive == parent).
+# v18Qs0 = designated ALTERNATE, gentlest start in the fleet by a wide margin (33/425) -- take it if the
+# launch window looks hot, costs ~0.4 gates of reward. v18Ws0 = W arm, third seed, for completeness.
+#
+# Recipe = the SAME BASELINE the user has been flying all session (the 9-gate-record config = _V17_RECIPE
+# with only the actor swapped: pitch clamp 20, z-bias 0.4, stale 0.6, assist 1.1), so v18-vs-v17 is the
+# single-knob (M1) comparison the commander built -- fly them back to back on identical deploy knobs.
+# The release pins ONLY yaw 0.7 + virtual-flip + bimodal-per-release clamp + the re-fly/GO rules; z-bias
+# and assist are Fengyou's deploy knobs, unmentioned, so they carry the baseline. If you'd rather fly the
+# CLEAN canonical recipe (z-bias 0, assist 1.3, stale 0.5 = _V16_RECIPE) say so -- one-line change.
+# ⚠ Do NOT re-add M1, do NOT retune the training action space, do NOT mix a clamp across lineages (OOD).
+_V18_RECIPE = {**_V17_RECIPE}   # inherits the 9-gate baseline; labels below mark these as deploy PICKS
+
 MODEL_DEFAULTS = {
+    # ego-ckpts-v18-2026-07-22  -- ★ DEPLOY LEAD. See _V18_RECIPE above. Qs1 = the pick; Qs0 = gentlest
+    # alternate (hot launch window); Ws0 = third seed. Re-fly rule: ||gyro|| > 2.5 for >=3 CONSECUTIVE
+    # ticks (NOT the old 0.75 s rule -- that was a clamp detector). Settled GO >= 3 s. Contact = INVALID.
+    "v18Qs1_actor.pth": {**_V18_RECIPE, "label": "v18pick_Qs1"},
+    "v18Qs0_actor.pth": {**_V18_RECIPE, "label": "v18pick_Qs0"},
+    "v18Ws0_actor.pth": {**_V18_RECIPE, "label": "v18pick_Ws0"},
     # ego-ckpts-v17-2026-07-21  -- see _V17_RECIPE above. FALSIFICATION TEST, not a deploy lead.
     # Qs0 = the census lead AND the worst predicted diver (-1.386) = the sharpest test. Ws0 =
     # heavier-damped arm. Prediction under test: more gate-0 losses than the v16Qs1 baseline.
