@@ -390,6 +390,47 @@ function drawSegPreview(g) {
   fillPoly(clipToFrame(g.outer), "rgba(255,140,0,0.28)");   // class 0: gate_frame
   fillPoly(clipToFrame(g.inner), "rgba(0,220,80,0.30)");    // class 1: gate_opening
 }
+
+// --- WILL THIS GATE ACTUALLY BECOME A LABEL? (2026-07-22) ---------------------------------
+// The seg converter does NOT use the polygon as drawn. It refits the gate-plane homography to the
+// IN-FRAME keypoints only (off-frame ones are stored v=0 with clamped, meaningless coordinates)
+// and re-projects both squares. So a gate can look perfectly placed on screen and still convert to
+// NOTHING. Mirrors racer.vision.seg_labels + gate_pose.gate_plane_homography:
+//   * >= 4 keypoints strictly inside the frame, AND
+//   * >= 2 of them on EACH diagonal -- all 8 keypoints lie on one of two diagonals, so four points
+//     sharing one diagonal are collinear and the fit is refused rather than guessed.
+// Without this readout you can label a whole session that silently converts to zero.
+const _DIAG_A = [0, 2, 4, 6], _DIAG_B = [1, 3, 5, 7];
+
+function drawSegBadge(g, gi) {
+  const st = segStatus(g);
+  if (st.why === "incomplete") return;
+  const pts = g.inner.concat(g.outer || []).filter(p => inFrame(p));
+  const anchor = pts.length ? pts.reduce((a, p) => [a[0] + p[0] / pts.length, a[1] + p[1] / pts.length], [0, 0])
+                            : g.inner[0];
+  const [x, y] = toScreen(anchor);
+  const txt = (st.ok ? "SEG OK  " : "SEG DROPPED  ") + st.why;
+  ctx.font = "bold 12px sans-serif";
+  const w = ctx.measureText(txt).width + 10;
+  ctx.fillStyle = st.ok ? "rgba(16,72,32,0.88)" : "rgba(120,20,20,0.92)";
+  ctx.fillRect(x - w / 2, y - 9, w, 18);
+  ctx.fillStyle = st.ok ? "#7ef0a0" : "#ffb3b3";
+  ctx.textAlign = "center";
+  ctx.fillText(txt, x, y + 4);
+  ctx.textAlign = "left";
+}
+
+function segStatus(g) {
+  if (!gateComplete(g) || !g.outer) return { ok: false, why: "incomplete", n: 0 };
+  const pts = g.inner.concat(g.outer);
+  const usable = pts.map(p => inFrame(p));
+  const n = usable.filter(Boolean).length;
+  const a = _DIAG_A.filter(i => usable[i]).length;
+  const b = _DIAG_B.filter(i => usable[i]).length;
+  if (n < 4) return { ok: false, why: `only ${n} in-frame (need 4)`, n };
+  if (a < 2 || b < 2) return { ok: false, why: `diagonals ${a}/${b} (need 2 each)`, n };
+  return { ok: true, why: `${n} in-frame, diagonals ${a}/${b}`, n };
+}
 function drawPoly(pts, color, dashed) {
   ctx.beginPath();
   pts.forEach((p, i) => { const [x, y] = toScreen(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
@@ -401,6 +442,7 @@ function drawGate(g, gi) {
   const color = GATE_COLORS[gi % GATE_COLORS.length];
   if (g.inner.length >= 2) drawPoly(g.inner, color, false);          // inner: solid
   if (g.outer) drawPoly(g.outer, color, true);                       // outer: dashed
+  drawSegBadge(g, gi);
   const pts = g.inner.concat(g.outer || []);
   pts.forEach((p, pi) => {
     const [x, y] = toScreen(p);
