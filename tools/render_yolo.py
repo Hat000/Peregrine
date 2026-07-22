@@ -73,10 +73,40 @@ def _load_fed_points(session):
 _FALLBACK_WEIGHTS = "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine"
 
 
+_PILOTS_JSON = Path(__file__).resolve().parent / "pilot_panel_logs" / "pilots.json"
+
+
+def _detector_from_launch_log(session_name):
+    """(detector, weights) recovered from the panel's stored LAUNCH RECORD, or (None, None).
+
+    fly_rl only began writing the flown detector into meta.json on 2026-07-19, so 908 of 1229
+    sessions have no detector in their meta and would otherwise render off a GUESS. The panel has
+    kept the full launch argv for every flight it started since long before that -- which recovers
+    the true engine for 786 of those 908. This is the same record that holds the only surviving copy
+    of a flight's assist/arrestor knobs, so it is the authority whenever meta.json is silent."""
+    try:
+        recs = json.loads(_PILOTS_JSON.read_text())
+    except Exception:
+        return None, None
+    for p in recs if isinstance(recs, list) else []:
+        if p.get("session") != session_name:
+            continue
+        cfg = p.get("config") or {}
+        det, weights = cfg.get("seeker_detector"), cfg.get("seeker_weights")
+        if not (det or weights):        # pre-``config`` records keep only the argv
+            cmd = p.get("cmd") or []
+            if "--seeker-detector" in cmd:
+                det = cmd[cmd.index("--seeker-detector") + 1]
+            if "--seeker-weights" in cmd:
+                weights = cmd[cmd.index("--seeker-weights") + 1]
+        return det, weights
+    return None, None
+
+
 def _load_flight_detector(session, weights_override):
-    """Load the SAME detector the flight actually used, from <session>/meta.json (seeker_detector +
-    seeker_weights, written by fly_rl on the ego path). --weights forces an override. Old sessions
-    with no recorded detector fall back to the current champion M-engine with a loud warning."""
+    """Load the SAME detector the flight actually used. Source order: --weights override, then
+    <session>/meta.json (seeker_detector + seeker_weights, written by fly_rl on the ego path since
+    2026-07-19), then the panel's launch record for that session, and only then a warned fallback."""
     if weights_override:
         print(f"[render] detector OVERRIDE (--weights, may NOT match the flight): {weights_override}")
         return GateDetector.load(weights_override)
@@ -94,8 +124,19 @@ def _load_flight_detector(session, weights_override):
     if weights:
         print(f"[render] flight detector (from meta.json, matches the flight): {weights}")
         return GateDetector.load(weights)
-    print(f"[render] WARNING: {mp} has no seeker_detector/seeker_weights (pre-2026-07-19 flight). "
-          f"Falling back to the current champion M-engine, which may NOT match this flight:\n"
+    # meta.json is silent (pre-2026-07-19 flight) -- recover the flown detector from the panel's
+    # launch record before resorting to a guess.
+    detname, weights = _detector_from_launch_log(Path(session).name)
+    if detname == "red_glow":
+        print("[render] flight detector (from the panel launch record): red_glow classical")
+        return RedGlowGateDetector()
+    if weights:
+        print(f"[render] flight detector (from the panel LAUNCH RECORD, matches the flight; "
+              f"meta.json predates the seeker fields): {weights}")
+        return GateDetector.load(weights)
+    print(f"[render] WARNING: {mp} has no seeker_detector/seeker_weights and this session is not in "
+          f"the panel launch record, so the flown detector is UNKNOWN. Falling back to the current "
+          f"champion M-engine, which may NOT match this flight:\n"
           f"         {_FALLBACK_WEIGHTS}\n"
           f"         pass --weights <engine> if this flight used a different detector.")
     return GateDetector.load(_FALLBACK_WEIGHTS)

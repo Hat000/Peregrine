@@ -853,7 +853,24 @@ _renders: dict = {}   # session -> Popen
 def _render_out(session):
     return RUNS_DIR / session / "render.mp4"
 
-def start_render(session, last_seconds=9.0, slowmo=3.0):
+_RENDER_TOOL = REPO / "tools" / "render_yolo.py"
+
+
+def _render_is_stale(session) -> bool:
+    """True when an existing render.mp4 was produced by an OLDER render_yolo.py than the one on disk.
+
+    Without this the cache is permanent: 'file exists -> ready' meant a session rendered before a
+    render-tool fix kept serving the OLD video forever, so a fix to the overlay simply never appeared
+    on any flight already rendered. That is indistinguishable from the tool being broken -- e.g.
+    renders made before 2026-07-19 still show the stale hardcoded engine and no fed-point overlay."""
+    out = _render_out(session)
+    try:
+        return out.stat().st_mtime < _RENDER_TOOL.stat().st_mtime
+    except OSError:
+        return False
+
+
+def start_render(session, last_seconds=9.0, slowmo=3.0, force=False):
     d = RUNS_DIR / session
     if not d.is_dir() or not (d / "video.bin").exists():
         return {"ok": False, "error": "no video.bin for this session"}
@@ -861,7 +878,13 @@ def start_render(session, last_seconds=9.0, slowmo=3.0):
     if proc is not None and proc.poll() is None:
         return {"ok": True, "state": "rendering"}
     if _render_out(session).exists():
-        return {"ok": True, "state": "ready"}
+        if not (force or _render_is_stale(session)):
+            return {"ok": True, "state": "ready"}
+        # re-render: drop the stale file first so render_status() cannot report the OLD one ready
+        try:
+            _render_out(session).unlink()
+        except OSError as e:
+            return {"ok": False, "error": f"could not remove stale render: {e}"}
     env = os.environ.copy(); env["PYTHONPATH"] = "src"
     try:
         logf = open(LOG_DIR / f"render_{session}.log", "wb")
@@ -1023,7 +1046,8 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/clear":
             return self._send(200, clear_finished())
         if u.path == "/api/render":
-            return self._send(200, start_render(data.get("session", "")))
+            return self._send(200, start_render(data.get("session", ""),
+                                                force=bool(data.get("force"))))
         if u.path == "/api/coarse_map":
             try:
                 return self._send(200, write_coarse_map(data.get("path", ""), data.get("sector", [])))
@@ -1136,7 +1160,8 @@ small.k{color:var(--mut)}
       <div class="logbox" id="logbox">select a pilot…</div>
     </div>
     <div id="view-video" style="display:none">
-      <div class="bar"><span id="vidstatus" class="mut">pick a flight's 🎬 (Pilots or Logs→git) to render its onboard video + detector overlay</span></div>
+      <div class="bar"><span id="vidstatus" class="mut">pick a flight's 🎬 (Pilots or Logs→git) to render its onboard video + detector overlay</span>
+        <button class="sec" id="rerender" style="margin-left:auto;display:none" title="Force a fresh render of this session, discarding the cached mp4. Renders are cached, and auto-refresh only when render_yolo.py itself is newer than the file." onclick="renderVid(CUR_VID,true)">↻ re-render</button></div>
       <video id="player" controls playsinline style="width:100%;max-height:72vh;background:#000;border:1px solid var(--line);border-radius:6px"></video>
     </div>
     <div id="view-map" style="display:none">
@@ -1325,11 +1350,13 @@ async function killAll(){
 }
 async function clearFinished(){await fetch('/api/clear',{method:'POST',body:'{}'});loadPilots();}
 function tab(t){['pilots','git','log','video','map'].forEach(x=>{$('view-'+x).style.display=x==t?'':'none';$('tab-'+x).className=x==t?'on':'';});if(t=='git')loadSessions();if(t=='map')loadMap();}
-async function renderVid(session){
+var CUR_VID='';
+async function renderVid(session,force){
   if(!session||session=='—'){alert('no recorded session for this flight yet');return;}
+  CUR_VID=session; $('rerender').style.display='';
   tab('video'); const st=$('vidstatus'); $('player').removeAttribute('src'); $('player').load();
-  st.innerHTML='rendering <b>'+session+'</b> … (detector runs on every frame, ~20-40s)';
-  await fetch('/api/render',{method:'POST',body:JSON.stringify({session})});
+  st.innerHTML=(force?'re-rendering ':'rendering ')+'<b>'+session+'</b> … (detector runs on every frame, ~20-40s)';
+  await fetch('/api/render',{method:'POST',body:JSON.stringify({session,force:!!force})});
   const poll=async()=>{
     const s=await (await fetch('/api/render_status?session='+encodeURIComponent(session))).json();
     if(s.state=='ready'){
