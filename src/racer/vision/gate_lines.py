@@ -360,6 +360,10 @@ def centre_from_lines(bgr):
 SEG_CLASS_FRAME = 0
 SEG_CLASS_OPENING = 1
 _MIN_MASK_AREA_PX = 200.0
+# How far outside the frame a solved centre may sit before it is treated as a degenerate fit rather
+# than a legitimately off-screen gate. 3 image-widths is generous: at 1.5 m a gate centre is at most
+# ~1 width out, so anything beyond this is a collapsed plane, not a wide approach.
+_SANE_CENTRE_MULT = 3.0
 
 
 def segments_from_mask(mask) -> list:
@@ -432,7 +436,17 @@ def centre_from_seg_masks(frame_mask, opening_mask=None, image_wh=(640, 360)):
     if abs(w) < 1e-12:
         return None
     c = np.array([H[0, 2] / w, H[1, 2] / w])
-    return (c, H) if np.isfinite(c).all() else None
+    if not np.isfinite(c).all():
+        return None
+    # SANITY BOUND. A gate centre may legitimately sit off-screen -- that is the whole point of
+    # solving from lines -- but a near-degenerate fit produces a "centre" tens of image-widths away
+    # (measured on real close-range frames: -35378 px, i.e. 55 widths out). That is not a recovery,
+    # it is garbage wearing the shape of an answer, and without this bound it inflates every
+    # coverage number. Mirrors gate_pose._SANE_SPAN_MULT on the keypoint path.
+    w_px, h_px = image_wh
+    if abs(c[0]) > _SANE_CENTRE_MULT * w_px or abs(c[1] - h_px / 2.0) > _SANE_CENTRE_MULT * h_px:
+        return None
+    return (c, H)
 
 
 class SegGateLineDetector:

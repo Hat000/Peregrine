@@ -56,8 +56,21 @@ def keypoint_centres(detector, frame):
             continue
         c = np.asarray(obs.corners_px, float)
         if c.shape == (4, 2):
-            full.append(c.mean(axis=0))
+            full.append(_quad_centre(c))
     return full, any_fix
+
+
+def _quad_centre(q: np.ndarray) -> np.ndarray:
+    """The PROJECTIVE centre of a projected square: the intersection of its diagonals.
+
+    NOT the mean of the corners. Under perspective the corner centroid is pulled toward the near
+    edge and is simply a different point -- using it as the reference here reported an 86 px median
+    disagreement that was mostly the reference's own error, not the seg path's. The diagonal
+    intersection is exact (verified to 1e-13 px), which is the whole reason the centre needs no PnP."""
+    def _line(a, b):
+        return np.cross([a[0], a[1], 1.0], [b[0], b[1], 1.0])
+    p = np.cross(_line(q[0], q[2]), _line(q[1], q[3]))
+    return q.mean(axis=0) if abs(p[2]) < 1e-9 else p[:2] / p[2]
 
 
 def main() -> int:
@@ -67,20 +80,28 @@ def main() -> int:
     ap.add_argument("--kpt-weights", default=None,
                     help="pose weights for the cross-check arm; omit to skip AGREEMENT")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--device", default=None,
+                    help="'cpu' to score without contending with a training run on the GPU")
     args = ap.parse_args()
 
-    paths = sorted(glob.glob(str(Path(args.frames) / "*.png")))
+    # .jpg as well as .png: frames pulled straight out of video.bin are JPEG, and a *.png-only glob
+    # silently scored ZERO frames and then divided by zero.
+    paths = sorted(p for ext in ("*.png", "*.jpg", "*.jpeg")
+                   for p in glob.glob(str(Path(args.frames) / ext)))
     if args.limit:
         paths = paths[:args.limit]
     imgs = [(p, cv2.imread(p)) for p in paths]
     imgs = [(p, im) for p, im in imgs if im is not None]
+    if not imgs:
+        print(f"NO readable frames in {args.frames} -- nothing to score.")
+        return 1
     print(f"{len(imgs)} frames from {args.frames}\n")
 
-    seg = SegGateLineDetector.load(args.weights)
+    seg = SegGateLineDetector.load(args.weights, device=args.device)
     kpt = None
     if args.kpt_weights:
         from racer.vision.detector import GateDetector
-        kpt = GateDetector.load(args.kpt_weights)
+        kpt = GateDetector.load(args.kpt_weights, device=args.device)
 
     n_hsv = n_seg = 0
     n_kpt_fail = n_seg_on_kpt_fail = 0
