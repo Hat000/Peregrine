@@ -162,7 +162,15 @@ def hand_gate_rows(geom_gates, census: Counter, centre_census: Counter):
         inner = g["inner"]                            # 4 UNCLAMPED (x,y), LL,LR,UR,UL
         outer = g["outer"]
         vis_inner = list(g["vis"][:N_INNER])
-        got = solver.centre(g)
+        # One malformed gate must not abort the whole oracle build -- count it and move on. The area
+        # solvers touch cv2/SVD paths that can raise on a degenerate real polygon; an offline oracle
+        # over messy failure-mined frames should be robust to a single bad gate, loudly.
+        try:
+            got = solver.centre(g)
+        except Exception as exc:                       # noqa: BLE001 -- report, don't crash the build
+            census["hand-centre-error"] += 1
+            print(f"[m1] centre solver error on a hand gate ({type(exc).__name__}: {exc}); skipped")
+            got = None
         if got is None:
             census["hand-centre-failed"] += 1
             continue

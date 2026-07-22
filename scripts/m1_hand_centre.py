@@ -94,11 +94,16 @@ class HandCentreSolver:
                            budget=_FIT_BUDGET, scales=(2.0,), line_init=True, min_score=_MIN_FRAME_IOU)
         if f is not None:
             cands.append((self._iou(f.R_cam_gate, f.t_cam_gate, fm, om), f.centre_px))
-        gl = centre_from_seg_masks(fm, om, image_wh=(self.w, self.h))
-        if gl is not None:
-            p = _pose_from_homography(gl[1], self.K)
-            if p is not None:
-                cands.append((self._iou(p[0], p[1], fm, om), np.asarray(gl[0], float)))
+        # RAW line plane as a second candidate, scored by the same IoU so a sign-flipped plane
+        # cannot win. centre_from_seg_masks REQUIRES the frame mask (segments_from_mask(None) throws),
+        # so it is only a candidate when the outer square survived (the past-horizon-suppressed gate
+        # has no frame mask -- the fit above already covers it opening-only).
+        if fm is not None:
+            gl = centre_from_seg_masks(fm, om, image_wh=(self.w, self.h))
+            if gl is not None:
+                p = _pose_from_homography(gl[1], self.K)
+                if p is not None:
+                    cands.append((self._iou(p[0], p[1], fm, om), np.asarray(gl[0], float)))
         if not cands:
             return None
         cands.sort(key=lambda c: -c[0])
