@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-22T16:29:45.973Z
+  modified: 2026-07-23T00:25:02.129Z
 ---
 
 # Deploy / emission cycle — 2026-07-22
@@ -49,6 +49,43 @@ stale daemon alive and answering with its old token while `.daemon.json` holds t
 Diagnose with `netstat -ano | findstr 8765` (two PIDs = this bug) and kill the OLDER PID;
 do NOT re-run `serve` — that just adds a third. Also: `command_history.log` has reached
 **289 MB**.
+
+## v1.8 — WIRE RESULT (the honest test of the replay call)
+
+Fengyou flew v1.8: **13× v18Qs0 (the gentle ALTERNATE) + 1× v18Qs1 (lead)**, one session, on
+`origin/ratchet-arrestor-2026-07-18` (`v18pick_*` run dirs + `p1784764*.log` panel logs).
+Forensics: `scratchpad/v18_wire_forensic.py`, `scratchpad/roll_limitcycle.py`.
+
+* **RELEASE DIVE — FIXED on the wire, as replay predicted.** Worst post-handover nose-down
+  pitch ≈ 0.00 on all 15; **0/15 died on a release dive.** M1-off transferred replay→wire.
+* **BUT gate count flat/down.** v18Qs0 dist `[0,0,0,0,0,0,1,2,2,3,3,3,4]`, mean 1.38, median
+  1, **no tail**; v16Qs1 same session ~2.5 with the fat tail to 9. Fengyou: "not much better
+  than 1.6." The release dive was never the bottleneck.
+* 🛑🛑 **THE WIRE KILLER = a CLOSE-IN ROLL LIMIT CYCLE, fully sighted.** 9/15 flights hit
+  |roll rate|>1.4; **gate-area at peak roll median 0.95** (gate huge in frame), conf 0.74–1.00
+  — NOT blind, the estimate is clean ⇒ CONTROL, not perception. The roll command oscillates
+  with GROWING amplitude gate-over-gate (p18: ±0.3 g0 → ±1.1 g1 → ±2.0 g2 → slam); the only
+  4-gate survivor is the one where roll stayed BOUNDED (<0.5). `roll_clamp=0` ⇒ unarrested.
+  This IS Fengyou's "side gate slams."
+
+### Two corrections this forces
+1. **The coast/blind capability is NOT the top wire killer** (I had steered there). The
+   dominant death is fully sighted ⇒ **close-in LATERAL STABILITY is the #1 RL-polish target.**
+2. 🚩 **ADJUDICATION BLIND SPOT:** the census gates YAW + PITCH signflips/satur but **NEVER
+   ROLL**, so a roll limit cycle passes selection invisibly and only shows on the wire.
+
+### The fix (in flight)
+The reward has RATE penalties (duty+jerk) for yaw + pitch that tamed those oscillations, but
+ROLL has ONLY angle penalties (`rw_roll_recover`, `rw_att_roll`, `rw_cross_level`) — and
+`rw_roll_recover=0.5` was ON in v1.8, so angle penalties do NOT damp the rate limit cycle.
+**Adding `rw_roll_duty` + `rw_roll_jerk`** (mirror of pitch; ROLL_CMD_RAIL=3.0; action channel
+**1** = roll) + a `ROLL_EVAL` line so adjudication gates roll. Lead with **jerk** (a smooth
+60° turn-in has low |Δcmd|, the limit cycle has high |Δcmd|; normal roll rate <0.5 observed on
+the survivor, deaths spike to ±2 — well separated). 🛑 **NO roll ANGLE fence/cap** — it
+backfires on the course's 60° turns (`ego_reward.py`~L323). Rate penalty only, training-side.
+Open question BLOCKED on Adroit: does the limit cycle reproduce in SIM (clean pose) or is it a
+seeker-EMA-lag deploy artifact? `roll_swing` (YAW_EVAL, peak roll ANGLE) is a first proxy;
+the new rate ROLL_EVAL is the clean measure.
 
 ## v1.8 — training adjudication
 
