@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-23T00:25:02.129Z
+  modified: 2026-07-23T14:39:48.413Z
 ---
 
 # Deploy / emission cycle — 2026-07-22
@@ -86,6 +86,43 @@ backfires on the course's 60° turns (`ego_reward.py`~L323). Rate penalty only, 
 Open question BLOCKED on Adroit: does the limit cycle reproduce in SIM (clean pose) or is it a
 seeker-EMA-lag deploy artifact? `roll_swing` (YAW_EVAL, peak roll ANGLE) is a first proxy;
 the new rate ROLL_EVAL is the clean measure.
+
+## SIM-REPRO GATE (2026-07-23) — the roll limit cycle is TWO levers, not one
+
+Ran v18Qs0 + v18Qs1 through a `rollout_only` sweep emitting the new rate-based `ROLL_EVAL`
+(job 3320367; `v18_roll_sweep.sbatch`, env bit-identical to v18 training w/ handoff 0.0). Result:
+
+| axis (SIM) | signflips/s | cmd_absmean | satur | n_passed |
+|---|---|---|---|---|
+| **roll** v18Qs0 | **2.5–2.65** | **0.37–0.39** | 0.000 | 5.3–5.6 |
+| **roll** v18Qs1 | 2.55–2.60 | 0.31 | 0.000 | 5.4–5.7 |
+| yaw (ref) | 0.88 | 0.12 | 0.002 | — |
+| pitch (ref) | 1.75 | 0.25 | — | — |
+
+* **The roll oscillation REPRODUCES in sim** — roll is the MOST active axis by 1.5–3× (signflips,
+  cmd_absmean). NOT a pure deploy artifact ⇒ the reward fix has a real target. ✓
+* **BUT it's SURVIVABLE in sim: n_passed 5.3–5.7 vs ~1.4 on the wire.** The fatal SATURATION
+  slam does NOT reproduce in sim. The gap = the deploy obs pipeline: sim feeds a CLEAN pose;
+  the wire feeds the SEEKER's EMA-smoothed bearing (`track_ema_alpha=0.5`, `(1-a)·old+a·new`),
+  which LAGS. Phase-lag on the lateral estimate is what turns a bounded correction into the
+  growing-amplitude saturating limit cycle. ⇒ **TWO LEVERS, both help:**
+  1. **Reward (built, firing):** `rw_roll_jerk`/`rw_roll_duty` damp the intrinsic chatter.
+  2. **Seeker (no retrain):** RAISE `track_ema_alpha` (0.5→~0.8, less lag) — a DEPLOY-config
+     change Fengyou can FLY to test if the lag is the dominant amplifier. Fast/cheap probe.
+* 🚩 `roll_swing` (YAW_EVAL, peak roll ANGLE deg) is a BAD discriminator here — 44–57° in sim,
+  but a legit 60° turn produces that too. The RATE `ROLL_EVAL` is the right metric.
+
+## v1.9 SMOKE — CLEAN, roll penalty BITES (2026-07-23, job 3321540, MIG, 3.5 min)
+
+Config correct (rw_roll_jerk 0.05 / rw_roll_duty 0.1 / free_band 0.8 / M1 0.0 / M2 0.0 /
+pass_margin 1.0). `EGO_PRECHECK_RC=0` no NaN. `ROLL_EVAL` emits. **`env_loss/roll_jerk_pen`
+fell 0.0346→0.0180 in 100 updates (~48%)** — the policy responds immediately; `roll_duty_pen`
+0.0055→0.0028; `frame_factor` (M3) 0.57→0.82; n_passed 5.62 (not collapsed). Phase-2 GO.
+
+## v1.9 ARMS FIRING (2026-07-23): 3321541 v19Q_s0 · 3321542 v19Q_s1 · 3321543 v19W_s0 (MIG, ~6h ea,
+2 concurrent). Warm v18Qs1. ADJUDICATE on `ROLL_EVAL`: signflips DOWN from 2.6 ∧ n_passed HOLDS
+~5+ (over-damped roll can't turn). Then replay through `replay_sweep_v18.py` (release dive stays
+fixed). 🚩 Staged to Adroit `peregrine_repo/rl/` (not git): the 3 roll .py + launch_v19.sh.
 
 ## v1.8 — training adjudication
 
