@@ -99,6 +99,17 @@ def load_truth(batch: Path, stems):
     from labelio import decode_geometry            # the labeler's own decoder, not a re-derivation
     from racer.vision.seg_labels import clip_polygon, polygon_area
 
+    # THE TRUTH COMES FROM THE AREA, NOT THE HANDLES. The hand labels were drawn for AREA: the
+    # labeller placed each inner handle to make the visible CLIPPED opening correct, and an
+    # off-frame handle was nudged only so the visible edges cross the frame boundary correctly --
+    # its position ALONG the edge is arbitrary. So for the ~67% of gates with an off-frame corner,
+    # the diagonal intersection of the handles is NOT the true centre, and using it as ground truth
+    # silently mis-scores every arm on exactly the cropped population this harness exists to judge.
+    # HandCentreSolver fits the KNOWN gate model to the exact drawn opening and reads the centre off
+    # the fitted pose -- correct off-frame because it uses the true EDGES plus the known square. It
+    # still uses the plain diagonal when all four corners ARE in frame, where the handles are exact.
+    # --gt-from-handles restores the old behaviour so the two can be compared rather than argued.
+
     out, missing = [], []
     for s in stems:
         gp = batch / "labels" / "geom" / f"{s}.json"
@@ -110,7 +121,7 @@ def load_truth(batch: Path, stems):
         gates = decode_geometry(json.loads(gp.read_text()))
         cs, qs, big = [], [], []
         for g in gates:
-            c = quad_centre(g["inner"])
+            c = _truth_centre(g)
             if c is not None and np.isfinite(c).all():
                 cs.append(c)
                 qs.append(np.asarray(g["inner"], float))
@@ -120,6 +131,24 @@ def load_truth(batch: Path, stems):
         else:
             missing.append(s)                      # a negative frame: labelled, but no gate in it
     return out, missing
+
+
+_GT_FROM_HANDLES = False        # --gt-from-handles: the OLD (area-blind) ground truth
+_HAND_SOLVER = None
+
+
+def _truth_centre(g):
+    """Ground-truth centre for one decoded geom gate. See the note in load_truth."""
+    global _HAND_SOLVER
+    if _GT_FROM_HANDLES:
+        return quad_centre(g["inner"])
+    if _HAND_SOLVER is None:
+        from m1_hand_centre import HandCentreSolver
+        _HAND_SOLVER = HandCentreSolver(640, 360)
+    got = _HAND_SOLVER.centre(g)
+    if got is None:
+        return None
+    return np.array([got[0], got[1]], float)
 
 
 def greedy_match(gt_pts, pred_pts):
@@ -948,7 +977,12 @@ def main() -> int:
     ap.add_argument("--task2-bundle", default=None,
                     help="task2 frame bundle; the PNGs are gitignored, so they may live in another "
                          "checkout (C:/Users/Shadow/Peregrine/handoff/.../task2_frames)")
+    ap.add_argument("--gt-from-handles", action="store_true",
+                    help="use the OLD ground truth (diagonal of the hand handles). The handles were "
+                         "placed for AREA, so this is wrong wherever a corner is off-frame; kept "
+                         "only so the corrected and uncorrected tables can be compared.")
     args = ap.parse_args()
+    globals()["_GT_FROM_HANDLES"] = bool(args.gt_from_handles)
     if args.ambiguity:
         run_ambiguity(noise_px=args.ambiguity_noise)
         return 0
