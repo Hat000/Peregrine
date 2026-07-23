@@ -4073,6 +4073,10 @@ def main() -> int:
                     "recipe_drift": _parse_recipe_drift(getattr(args, "recipe_drift", "")),
                     # the ACTUAL detector this flight flew -> renders overlay the SAME engine
                     # (tools/render_yolo.py reads these), not a stale hardcoded default.
+                    # ALSO top-level (it is nested under seeker_constants too): the renderer read it
+                    # here and silently fell back to "pnp" for every centre-mode flight. Recorded in
+                    # both places so neither reader can be wrong again.
+                    "emit_mode": str(getattr(args, "seeker_emit", "pnp")),
                     "seeker_detector": args.seeker_detector,
                     "seeker_weights": _resolve_seeker_weights(args) or "",
                     "sysid_replay": str(args.sysid_replay),

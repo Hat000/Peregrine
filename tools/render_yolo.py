@@ -185,7 +185,15 @@ def main() -> int:
         # Render the SAME emit the flight flew. A centre-mode flight whose overlay showed PnP ranges
         # would be reporting numbers the policy never saw -- and would show NOTHING at all on exactly
         # the cropped gates that mode exists to recover (estimate_gate_pose declines <3 corners).
-        emit_mode = str(_m.get("emit_mode") or "pnp")
+        # KEY MISMATCH (fixed 2026-07-23): fly_rl writes emit_mode inside _meta_seeker_constants,
+        # i.e. NESTED under "seeker_constants" -- reading it at the top level resolved to None and
+        # silently fell back to "pnp". Every centre-mode flight was therefore rendered through the
+        # PnP path, labelling each gate with a range the policy never saw (one measured case: 20.2 m
+        # on screen vs 15.7 m actually fed, a 29% gap). That is precisely what da2e1b66 set out to
+        # prevent, so the guard has to survive the key moving: check nested FIRST (where it is
+        # today), then top level (where it is also written now, and where a human looks).
+        emit_mode = str((_m.get("seeker_constants") or {}).get("emit_mode")
+                        or _m.get("emit_mode") or "pnp")
     except Exception:
         pass
     if args.emit != "auto" and args.emit != emit_mode:
