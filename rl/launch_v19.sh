@@ -1,10 +1,27 @@
 #!/bin/bash
 # =====================================================================================================
-# v1.9 = M3 ONLY. It keeps the ONE v1.7-era mechanism that the 3-seed v1.8 census earned, and strips the
-# other three, warm-started from the v1.8 DEPLOY LEAD (v18Q_s1). Net vs v1.8: M2 OFF (blind_abort_s
-# 1.2 -> 0.0) and M4 REVERTED (pass_margin_final_m 0.75 -> 1.0). M1 stays OFF (0.0). M3 unchanged.
+# v1.9 = M3 + ROLL RATE-DAMPING. It keeps the ONE v1.7-era mechanism the 3-seed v1.8 census earned (M3),
+# strips the other three, and ADDS the roll-rate penalty that attacks the ACTUAL v1.8 WIRE KILLER: a
+# close-in ROLL LIMIT CYCLE (fully sighted -- 9/15 wire flights hit |roll rate|>1.4 at gate-area median
+# 0.95; bounded-roll flights own the entire 4-6 gate tail, spiked-roll caps at <=3). Warm-started from the
+# v1.8 DEPLOY LEAD (v18Q_s1). Net vs v1.8: + rw_roll_jerk/rw_roll_duty (NEW, the fix), M2 OFF (blind_abort_s
+# 1.2 -> 0.0), M4 REVERTED (pass_margin_final_m 0.75 -> 1.0). M1 stays OFF (0.0). M3 unchanged.
+#
+# *** LAUNCH GATE (do NOT skip): the roll fix is a TRAINING reward, so it only helps if the limit cycle
+# REPRODUCES IN SIM. Before firing the arms, confirm it: grep the v18 training .out for YAW_EVAL roll_swing
+# (peak roll ANGLE, deg) -- high == aggressive roll is in-distribution == the fix bites; and/or a
+# rollout_only pass emitting the NEW ROLL_EVAL on v18Qs0. If sim is SMOOTH but the wire oscillates, the
+# cause is the seeker's lateral EMA lag (deploy), NOT the policy -> pivot to a seeker fix, do NOT burn the
+# retrain. Detail: scratchpad/v19_rolldamp_design.md. ***
 #
 # WHY EACH VERDICT (all measured 2026-07-21..22; SSOT memory/deploy-emission-2026-07-22.md):
+#   ROLL LIMIT CYCLE (the NEW v1.9 mechanism) -- the reward had RATE penalties (duty+jerk) for yaw + pitch
+#     that tamed those oscillations, but ROLL had ONLY angle penalties (rw_roll_recover/att/cross_level) and
+#     rw_roll_recover=0.5 was ON in v1.8 while the limit cycle still fired -> angle penalties do NOT damp a
+#     RATE oscillation. rw_roll_jerk (L1 |delta roll_cmd|, PRIMARY) + rw_roll_duty (|roll_cmd| beyond a WIDE
+#     0.8 band) are the mirror of the pitch pair on action channel 1. Jerk is primary + turn-safe: a smooth
+#     60deg turn-in pays ~0, the bang-bang limit cycle pays the most. NO roll ANGLE fence (backfires on the
+#     course's 60deg turns). Verdict is the NEW ROLL_EVAL (signflips/satur) + n_passed not collapsing.
 #   M1 HANDOFF SPAWN -- OFF, and it STAYS off. Premise falsified over 161 wire flights (0/161 hand over
 #     LEVEL; gate median +2.42 deg off the optical axis, dead-centre; M1's own spawn box contains 0/161).
 #     CONVICTED on release pitch: 425-flight replay through the real deploy loader (scratchpad/
@@ -73,16 +90,20 @@
 #     CHECKLIST + the exact Phase-2 command.
 # ADJUDICATE (when the smoke COMPLETES -- a DONE log, never a live one; the absent-hook != inert footgun L16):
 #     RUNDIR=/scratch/network/fl3689/diffaero/outputs/train/ego_dual_gate_fullstack_floor_pef16_seed0_v19smoke_s0
-#     1. grep -nE 'handoff_spawn_frac|blind_abort_s|blind_abort_range_m|rw_progress_frame_mult|progress_frame_floor|progress_frame_scale_rad|pass_margin_final_m' \
-#          $RUNDIR/.hydra/config.yaml   # 0.0 (M1 OFF) / 0.0 (M2 OFF -- v1.9) / 15.0 / 1.0 / 0.5 / 0.5 / 1.0 (M4 REVERTED -- v1.9) (all under env:)
+#     1. grep -nE 'handoff_spawn_frac|blind_abort_s|rw_progress_frame_mult|progress_frame_floor|pass_margin_final_m|rw_roll_jerk|rw_roll_duty|roll_duty_free_band' \
+#          $RUNDIR/.hydra/config.yaml   # 0.0 (M1) / 0.0 (M2) / 1.0 / 0.5 / 1.0 (M4 REVERTED) / 0.05 (Q) / 0.1 (Q) / 0.8 (all env:)
 #     2. grep -nE 'rw_perception|rw_perception_next|overspeed_abort_mps|rw_progress_vcap_mps|ego_vision_detect_mode|ego_cam_mount_pitch_deg' \
 #          $RUNDIR/.hydra/config.yaml   # 0.016 / 0.004 / 12.0 / 7.5 / range / 20.0 (v15+v16 carryover; M3's additive raise stays)
-#     3. python scratchpad/tb_scalars.py <event-file>   # THE WIRING WATCHDOG. M3 is the ONLY live mechanism now:
-#          env_loss/frame_factor                                  (M3 armed; < 1.0 == it is BITING) -- THE key to watch
+#     3. python scratchpad/tb_scalars.py <event-file>   # THE WIRING WATCHDOG. Two live mechanisms now (M3 + roll):
+#          env_loss/frame_factor                                  (M3 armed; < 1.0 == BITING)
+#          env_loss/roll_jerk_pen, env_loss/roll_duty_pen         (THE v1.9 FIX -- NON-ZERO early == biting the
+#            limit cycle; if BOTH pinned 0.0 the roll knobs did not take -> re-check step 1)
 #          plus the v15/v16 keys: env_loss/pitch_duty_pen, /pitch_jerk_pen, /yaw_duty_pen,
 #          /prog_sat_forfeit, /overspeed_abort_rate
-#          env_loss/blind_abort_rate  -- EXPECT ABSENT or PINNED 0.0 (M2 is OFF in v1.9). Present-and-nonzero
-#            means blind_abort_s did NOT take the 0.0 -> re-check step 1.
+#          env_loss/blind_abort_rate  -- EXPECT ABSENT or PINNED 0.0 (M2 is OFF in v1.9).
+#        ALSO grep the .out for the NEW eval line: ROLL_EVAL[...] signflips_per_s=.. cmd_absmean=.. satur_duty=..
+#          (emitted beside PITCH_EVAL). This is the metric the ARMS are ranked on -- signflips + satur must
+#          FALL vs the v18 baseline, and n_passed_gates must NOT collapse (over-damped roll can't turn).
 #     4. grep EGO_PRECHECK_RC /scratch/network/fl3689/peregrine_vq2_ego_v19smoke_s0.out  # == 0, no NaN
 #     5. grep 'pass-margin-anneal' the .out: with PMFINAL=1.0 the end value equals the v1.6 baseline, so the
 #        anneal is a STRICT NO-OP (start == end == 1.677 -> 1.0 is the v1.6 shape). A '[pass-margin-anneal]
@@ -128,6 +149,15 @@ FREEBAND=${FREEBAND:-0.25}             # yaw_duty_free_band; the champion 0.232 
 PITCHDUTY=${PITCHDUTY:-0.1}            # CORE/Q rw_pitch_duty
 PITCHBAND=${PITCHBAND:-0.6}            # pitch_duty_free_band -- WIDE (pitch is the primary axis)
 PITCHJERK=${PITCHJERK:-0.03}           # rw_pitch_jerk (shared)
+
+# --- v1.9 ROLL RATE-DAMPING (THE close-in roll limit-cycle fix; per-arm below). JERK is the PRIMARY
+#     lever (a smooth 60deg turn-in = low |delta cmd| pays ~0; the limit cycle = high |delta cmd| pays
+#     most). DUTY is secondary with a WIDE band -- normal turning roll (<0.5 rad/s observed on the wire)
+#     stays untaxed while the +-2 rad/s saturation is priced. Q lighter / W heavier so the census reads
+#     the damping axis. NO roll ANGLE fence (backfires on the 60deg turns). See scratchpad/v19_rolldamp_design.md. ---
+ROLLJERK=${ROLLJERK:-0.05}            # CORE/Q rw_roll_jerk (PRIMARY; mirror of yaw_jerk 0.05)
+ROLLDUTY=${ROLLDUTY:-0.1}             # CORE/Q rw_roll_duty (secondary)
+ROLLBAND=${ROLLBAND:-0.8}             # roll_duty_free_band (shared) -- WIDE; leaves the turn-in roll free
 
 # --- v1.5 shared anti-runaway (A,B) + yaw jerk (D) + roll-recover (CORE, all arms) ---
 OVERSPEED=${OVERSPEED:-12.0}           # overspeed_abort_mps (A); fatal OOB-class above this GT speed
@@ -263,21 +293,22 @@ submit () {   # $1=RUNTAG  $2=SEED  $3=EXTRA  $4=n_updates-override(optional, sm
   fi
 }
 
-# per-arm EXTRA builder: yaw_dither + yaw_duty + pitch_duty are per-arm (Q vs W); the v1.8 mechanisms are
-# SHARED. Offsets the vision-cadence RNG seed by the training seed (each seed sees a DIFFERENT reproducible
-# detector-miss draw).
-extra_for () {   # $1=SEED  $2=yaw_dither  $3=yaw_duty  $4=pitch_duty
-  local SEED="$1" YD="$2" YDU="$3" PDU="$4"
+# per-arm EXTRA builder: yaw_dither + yaw_duty + pitch_duty + roll_jerk + roll_duty are per-arm (Q vs W);
+# M3 + the roll free band are SHARED. Offsets the vision-cadence RNG seed by the training seed (each seed
+# sees a DIFFERENT reproducible detector-miss draw).
+extra_for () {   # $1=SEED  $2=yaw_dither  $3=yaw_duty  $4=pitch_duty  $5=roll_jerk  $6=roll_duty
+  local SEED="$1" YD="$2" YDU="$3" PDU="$4" RJ="${5:-0.0}" RDU="${6:-0.0}"
   local ANTIDITHER="++env.rw_yaw_dither=${YD} ++env.yaw_dither_anneal=true \
 ++env.yaw_dither_start=${YDSTART} ++env.yaw_dither_hold_frac=${YDHOLDFRAC}"
   echo "${BASE_VPEFFS0} ${VPEF8NC} ${ANTIDITHER} ${FAITHFUL_SHARED} ${V15_SHARED} ${V16_SHARED} \
 ${V17_SHARED} ++env.rw_yaw_duty=${YDU} ++env.rw_pitch_duty=${PDU} \
+++env.rw_roll_jerk=${RJ} ++env.rw_roll_duty=${RDU} ++env.roll_duty_free_band=${ROLLBAND} \
 ++env.ego_vision_cadence_seed=$((20260722 + SEED)) +init_from=${WARM}"
 }
 
 if [ "${MODE}" = "smoke" ]; then
   # -------- PHASE 1: ONE smoke, CORE=Q wiring, UPD=100, seed 0 --------
-  submit "v19smoke_s0" 0 "$(extra_for 0 "${YAWDITHER}" "${YAWDUTY}" "${PITCHDUTY}")" 100
+  submit "v19smoke_s0" 0 "$(extra_for 0 "${YAWDITHER}" "${YAWDUTY}" "${PITCHDUTY}" "${ROLLJERK}" "${ROLLDUTY}")" 100
   cat <<'EOF'
 
 === v1.9 SMOKE submitted (UPD=100, CORE=Q wiring: v1.5 + v1.6 CORE + M1 OFF (0.0) + M2 OFF (0.0) +
@@ -320,8 +351,8 @@ fi
 
 for ARM in ${ARMS}; do
   case "${ARM}" in
-    Q) for s in ${SEEDS_Q}; do submit "v19Q_s${s}" "${s}" "$(extra_for "${s}" "${YAWDITHER}" "${YAWDUTY}" "${PITCHDUTY}")" "" "${DEP}"; done ;;
-    W) for s in ${SEEDS_W}; do submit "v19W_s${s}" "${s}" "$(extra_for "${s}" "0.6" "0.4" "0.2")"                        "" "${DEP}"; done ;;
+    Q) for s in ${SEEDS_Q}; do submit "v19Q_s${s}" "${s}" "$(extra_for "${s}" "${YAWDITHER}" "${YAWDUTY}" "${PITCHDUTY}" "${ROLLJERK}" "${ROLLDUTY}")" "" "${DEP}"; done ;;
+    W) for s in ${SEEDS_W}; do submit "v19W_s${s}" "${s}" "$(extra_for "${s}" "0.6" "0.4" "0.2" "0.08" "0.2")"                     "" "${DEP}"; done ;;
     *) echo "!! unknown ARM '${ARM}' (expected Q / W) -- skipping" ;;
   esac
 done
