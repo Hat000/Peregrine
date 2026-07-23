@@ -324,12 +324,28 @@ def _find_frame(frames_dir: Path, stem: str) -> Path | None:
 # oracle. Real accuracy is measured in flight; --val-negatives (fresh renders, never trained on)
 # preserves the one metric that caused this change, the false-positive rate.
 # ======================================================================================
+def _split_tag(img: Path) -> str:
+    """The sub-path under images/ (``train__``, ``val__``, or empty), for the uniqueness key.
+
+    dataset_tag() returns the corpus directory -- the parent of images/ -- which is IDENTICAL for
+    images/train and images/val within one corpus. A render root numbers both splits from 000000, so
+    every val frame collided with the train frame of the same number and was silently dropped as a
+    duplicate: 400 frames (150 + 250, the two dark-red roots' val splits) vanished from a build that
+    reported success. Same bug class dataset_tag's own docstring warns about, one level deeper."""
+    parts = list(img.parts)
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() in ("images", "frames"):
+            mid = parts[i + 1:-1]
+            return ("__".join(mid) + "__") if mid else ""
+    return ""
+
+
 def _write_frame(img: Path, text: str, ctext: str, out: Path, split: str,
                  used: set, census: Counter) -> Path | None:
     """Re-key <tag>__<stem>, hard-link the image, write the 5-kpt label + centre sidecar. Uniqueness
     is ASSERTED via ``used`` -- a duplicate key is the stem-collision bug and must never silently
     overwrite."""
-    name = f"{bsd.dataset_tag(img)}__{img.stem}"
+    name = f"{bsd.dataset_tag(img)}__{_split_tag(img)}{img.stem}"
     if name in used:
         census["duplicate-frame"] += 1
         return None
