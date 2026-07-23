@@ -121,8 +121,15 @@ def depth_from_corner_pairs(corners_px, corner_ids=None, corner_conf=None,
             ests.append(f * L / d_px)
     if not ests:
         return None, 0
-    # MINIMUM: foreshortening only shrinks d_px, which only inflates Z.
-    return float(min(ests)), len(ests)
+    # 25th PERCENTILE, not the minimum (vision session, 2026-07-23). Foreshortening only shrinks
+    # d_px, which only inflates Z, so the LOW tail is the least-foreshortened estimate and the
+    # reduction must sit down there. But a strict minimum takes the low tail of PIXEL NOISE too:
+    # noise that lengthens a pair is discarded and noise that shortens it is kept, so min is
+    # biased NEAR and the bias grows with the number of pairs (6 draws on a full quad). The 25th
+    # percentile keeps the foreshortening logic -- still firmly in the low tail -- while averaging
+    # out the noise draw. With 1-2 pairs it degrades to the min/low value, which is correct: there
+    # is no noise population to reject.
+    return float(np.percentile(np.asarray(ests, dtype=np.float64), 25.0)), len(ests)
 
 
 def depth_from_bbox(bbox_xywh, K: np.ndarray = CAMERA_INTRINSICS_K) -> float | None:

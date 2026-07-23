@@ -45,17 +45,24 @@ def test_depth_recovers_a_square_on_gate(depth):
     assert z == pytest.approx(depth, rel=1e-6)
 
 
-def test_min_over_pairs_beats_foreshortening():
-    """Foreshortening only SHRINKS an apparent length, which only INFLATES range -- so the minimum
-    over pairs is the least-foreshortened estimate. Squash one axis (a tilt) and the un-squashed
-    dimension must still carry the true range."""
+def test_low_tail_reduction_beats_foreshortening():
+    """Foreshortening only SHRINKS an apparent length, which only INFLATES range -- so the reduction
+    must sit in the LOW tail. Squash one axis (a tilt) and the estimate must stay near the
+    un-squashed truth, far below what averaging the foreshortened pairs would give.
+
+    The reduction is the 25th percentile, not the strict minimum: min also takes the low tail of
+    PIXEL NOISE (noise that lengthens a pair is discarded, noise that shortens it is kept), which
+    biases it NEAR. Measured on 79 real four-corner gates inside the 30 m cap: min |err| med 2.44% /
+    p90 10.46% / bias -3.51%, vs p25 1.97% / 6.08% / -0.03%. p25 nearly halves the tail and is
+    essentially unbiased, at the cost of a little accuracy under EXTREME tilt (below)."""
     q = _square_at(10.0)
     c = q.mean(axis=0)
     q_tilt = c + (q - c) * np.array([1.0, 0.45])     # foreshorten vertically ~ a 63 deg tilt
     z, _ = depth_from_corner_pairs(q_tilt)
-    assert z == pytest.approx(10.0, rel=0.02)        # horizontal pair is untouched -> min is right
-    # the naive average would read FAR because the squashed pairs inflate range
-    assert z < 10.0 * 1.05
+    # still anchored near the un-foreshortened truth, nowhere near the squashed pairs' ~22 m
+    assert 10.0 <= z <= 10.0 * 1.20
+    # and decisively below the mean of all six pair estimates (what averaging would give)
+    assert z < 14.0
 
 
 def test_two_corners_are_enough_when_identified():

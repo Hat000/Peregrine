@@ -98,8 +98,12 @@ def _neg(flag):  # --ego-slot1 -> --no-ego-slot1 ; --virtual-flip -> --no-virtua
 SCHEMA = [
     # ---- Flight stack -----------------------------------------------------
     dict(key="ego_ckpt", flag="--ego-ckpt", action="value", ui="select", opts="ego_ckpts",
-         group="Flight stack", default="ckpts/vpeffs0_actor.pth", allow_blank=True,
-         help="RL policy actor (.pth). This IS the flight stack. Blank = classical CTBR (non-ego)."),
+         group="Flight stack", default="ckpts/v18Qs1_actor.pth", allow_blank=True,
+         help="RL policy actor (.pth). This IS the flight stack. Blank = classical CTBR (non-ego). "
+              "DEFAULT TRACKS THE DEPLOY LEAD: on 2026-07-23 eight flights were launched on the old "
+              "vpeffs0 default (2 generations stale) + negreal42 + pitch clamp 10 after a panel "
+              "restart reset the form -- the config looked plausible and nobody noticed. Keep this "
+              "pointed at the current lead so an accidental default-launch flies something current."),
     dict(key="bridge", flag="--bridge", action="boolopt", ui="bool",
          group="Flight stack", default=False,
          help="Fly proven CTBR to ~3 m before gate 0 then hand off to the policy. Off = standing start."),
@@ -112,7 +116,7 @@ SCHEMA = [
          group="Vision", default="yolo", choices=["yolo", "red_glow"],
          help="Detector backend. 'yolo' = neural (needs seeker-weights). 'red_glow' = classical, no-GPU."),
     dict(key="seeker_weights", flag="--seeker-weights", action="value", ui="select", opts="detectors",
-         group="Vision", default="C:/Users/Shadow/Peregrine/models/vq2_darkred_negreal42_2026-07-05_fp16_384x640.engine",
+         group="Vision", default="C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
          allow_blank=True,
          help="Vision model: a TensorRT .engine (fast) or ultralytics .pt. Required for yolo."),
     # Gate-emission port (2026-07-22). Both shipped engines are 8-KEYPOINT pose models (kpt_shape
@@ -196,8 +200,12 @@ SCHEMA = [
 
     # ---- Ego control ------------------------------------------------------
     dict(key="ego_pitch_clamp", flag="--ego-pitch-clamp", action="value", ui="number",
-         group="Ego control", default=10.0, step=1,
-         help="Nose-down PITCH fence (deg, 0=off). Must exceed 17.8 resting tilt to never fence hover."),
+         group="Ego control", default=20.0, step=1,
+         help="Nose-down PITCH fence (deg, 0=off). BIMODAL, not a dial: resting obs[4] = -17.80 deg "
+              "and the fence tests obs[4] <= -clamp, so <=17.8 is FENCE-ON AT REST and >=17.9 (or 0) "
+              "is OFF -- there is no in-between. Default was 10 (fence ON, the OLD regime) and eight "
+              "flights on 2026-07-23 silently flew it after a panel restart reset the form. 20 = the "
+              "9-gate record and the v16/v17/v18 line. Blocks nose-DOWN only; nose-up always passes."),
     dict(key="ego_roll_clamp", flag="--ego-roll-clamp", action="value", ui="number",
          group="Ego control", default=0.0, step=1,
          help="SYMMETRIC roll fence (deg, 0=off). Blocks banking past +/-cap, allows return to level. "
@@ -399,6 +407,18 @@ _V17_RECIPE = {
 # ⚠ Do NOT re-add M1, do NOT retune the training action space, do NOT mix a clamp across lineages (OOD).
 _V18_RECIPE = {**_V17_RECIPE}   # inherits the 9-gate baseline; labels below mark these as deploy PICKS
 
+# CURRENT-GENERATION checkpoints. Anything outside this set gets a loud launch warning: on
+# 2026-07-23 a panel restart reset the form to schema defaults and EIGHT flights went out on
+# vpeffs0 (two generations stale) + negreal42 + pitch clamp 10 before anyone noticed -- the config
+# looked entirely plausible, and the only after-the-fact signal was reading the stored argv. A
+# ckpt merely HAVING a MODEL_DEFAULTS entry is not enough (vpeffs0 has one, for its yaw clamp);
+# membership here is the deliberate "still flown" statement. Add new releases as they ship.
+CURRENT_CKPTS = {
+    "v18Qs1_actor.pth", "v18Qs0_actor.pth", "v18Ws0_actor.pth",
+    "v17Qs0_actor.pth", "v17Qs1_actor.pth", "v17Ws0_actor.pth",
+    "v16Qs0_final_actor.pth", "v16Qs1_final_actor.pth",
+}
+
 MODEL_DEFAULTS = {
     # ego-ckpts-v18-2026-07-22  -- ★ DEPLOY LEAD. See _V18_RECIPE above. Qs1 = the pick; Qs0 = gentlest
     # alternate (hot launch window); Ws0 = third seed. Re-fly rule: ||gyro|| > 2.5 for >=3 CONSECUTIVE
@@ -545,6 +565,16 @@ def build_cmd(values: dict):
         warn.append("dev-auto-reset ON: the pilot may emit sim-control commands (submission-unsafe).")
     if values.get("seeker_detector") == "yolo" and not (values.get("seeker_weights") or "").strip():
         warn.append("yolo detector selected but no seeker-weights -- fly_rl will refuse.")
+    # UNRECOGNISED ACTOR: the 2026-07-23 silent-revert guard. A panel restart (or any page reload)
+    # resets the form to schema defaults, and eight flights were launched that way on a 2-generation
+    # -stale actor before anyone noticed -- the config looked perfectly plausible. Any ckpt with no
+    # recipe in MODEL_DEFAULTS is either obsolete or brand-new; say so LOUDLY at launch, because the
+    # only other signal is reading the argv after the fact.
+    _base = str(values.get("ego_ckpt", "") or "").replace("\\", "/").split("/")[-1]
+    if _base and _base not in CURRENT_CKPTS:
+        warn.append(f"STALE ACTOR '{_base}' -- not a current-generation checkpoint. The 2026-07-23 "
+                    f"silent revert flew vpeffs0 eight times this way. If you did not pick it "
+                    f"deliberately, the form has reverted to defaults: re-pick your model.")
     return argv, warn
 
 # --------------------------------------------------------------------------- #

@@ -823,9 +823,11 @@ class GateSeeker:
                     pose = GatePose(frame_id=obs.frame_id, sim_time_ns=obs.sim_time_ns,
                                     R_cam_gate=np.eye(3), t_cam_gate=emit.p_cam,
                                     reproj_error_px=0.0, gate_id=obs.gate_id,
-                                    n_corners=int(obs.corners_px.shape[0]))
+                                    n_corners=int(obs.corners_px.shape[0]),
+                                    range_src=emit.range_src, n_pairs=emit.n_pairs)
                 else:
-                    pose = replace(pose, t_cam_gate=emit.p_cam)
+                    pose = replace(pose, t_cam_gate=emit.p_cam,
+                                   range_src=emit.range_src, n_pairs=emit.n_pairs)
             if pose is None or not np.isfinite(pose.t_cam_gate).all():
                 continue
             if float(pose.reproj_error_px) > self.config.max_reproj_px:
@@ -1289,6 +1291,14 @@ class GateSeeker:
             "track_range_m": (None if rng is None else round(float(rng), 3)),
             "coast_ticks": int(coast),
             "emit_range_m": (None if chosen is None else round(float(chosen.range_m), 3)),
+            # WHERE that range came from. A "bbox" range is the corner-free fallback: it conflates
+            # range with tilt, reads FAR on a cropped gate (the dangerous direction) and fires on
+            # false positives that have a box but no corners. Without this in the log a bbox range
+            # misleading the policy is INVISIBLE on the wire -- one was already caught only by eye
+            # in the renderer. n_pairs says how many corner pairs voted (0 => bbox or PnP).
+            "range_src": (None if chosen is None else getattr(chosen, "range_src", None)),
+            "n_pairs": (None if chosen is None else int(getattr(chosen, "n_pairs", 0))),
+            "n_corners": (None if chosen is None else int(getattr(chosen, "n_corners", 4))),
             "emit_bearing": (None if chosen is None
                              else [round(float(b), 4) for b in self._pose_bearing(chosen)]),
             # WP2e: the active arrival prior (slot0 only -- slot1 does not consume it) + supersede streak.

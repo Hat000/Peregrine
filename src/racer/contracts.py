@@ -272,6 +272,13 @@ class GatePose:
     covariance: np.ndarray | None = None         # (6,6) pose cov [t(3), rot(3)]; from corner sampling
     ambiguity_ratio: float | None = None         # IPPE 2-fold: err2/err1 (>>1 = unambiguous); None if n/a
     n_corners: int = 4                            # corners used: 4 => IPPE_SQUARE; 3 => P3P (less constrained, trust less)
+    # M+1 centre-emit provenance (2026-07-23). "corners" = range from the identified-corner pairs
+    # (measured 2.4% rel inside the 30 m cap); "bbox" = the corner-free fallback, which conflates
+    # range with tilt and reads FAR on a cropped gate -- the DANGEROUS direction. Logged per
+    # decision so a flight can be audited for which one it flew; a bbox range that misleads the
+    # policy would otherwise be invisible on the wire. None on the PnP path.
+    range_src: str | None = None
+    n_pairs: int = 0                              # corner pairs that voted on the range (0 for bbox/PnP)
 
     def __post_init__(self) -> None:
         assert self.R_cam_gate.shape == (3, 3), f"R_cam_gate must be (3,3), got {self.R_cam_gate.shape}"
