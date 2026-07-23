@@ -69,15 +69,20 @@ def main() -> int:
     ap.add_argument("--model", default="yolo11n-pose.pt",
                     help="base weights (COCO pose); the 5-kpt head reinits, the backbone transfers. "
                          "Pass a stage-1 M+1 best.pt to fine-tune on hand-verified frames.")
-    # MEASURED 2026-07-23: a 100-epoch run PEAKED AT EPOCH 10 (pose mAP50 0.503 on the REAL
-    # hand-labelled val) and decayed to 0.282 by epoch 100 -- centre error 20.5 -> 35.6 px and
-    # coverage 98% -> 84%. The training set is synthetic-only, so the extra 90 epochs learned
-    # synthetic APPEARANCE, not gates. Until the render's domain matches the real dark warehouse,
-    # long schedules are actively harmful here: keep the budget short and let patience stop it.
-    ap.add_argument("--epochs", type=int, default=25)
-    ap.add_argument("--patience", type=int, default=8,
-                    help="early-stop after this many epochs with no val improvement (0 = off)")
-    ap.add_argument("--close-mosaic", type=int, default=6,
+    # DO NOT SHORTEN THIS ON mAP EVIDENCE -- that was tried on 2026-07-23 and was WRONG.
+    # pose-mAP on the real val peaked at epoch 10 and decayed to 0.282 by epoch 100, which looks
+    # exactly like overfitting. It is not: measured CENTRE ERROR kept improving. Head-to-head on
+    # the real hand-labelled frames --
+    #     100 epochs : 98% coverage, 20.5 px median, 24.2 px on CROPPED gates
+    #      22 epochs : 96% coverage, 32.1 px median, 50.0 px on CROPPED gates  (2x worse)
+    # mAP and centre placement are different quantities and they diverge here. Rank checkpoints on
+    # centre error (see the module docstring), never on mAP -- including ultralytics' own `fitness`,
+    # which is mAP-derived, so `patience` early-stops on the wrong signal and defaults OFF.
+    ap.add_argument("--epochs", type=int, default=100)
+    ap.add_argument("--patience", type=int, default=0,
+                    help="early-stop patience. OFF by default: it stops on mAP-derived fitness, "
+                         "which measurably mispicks for this model (see the note above)")
+    ap.add_argument("--close-mosaic", type=int, default=15,
                     help="disable mosaic for the last N epochs so training ends on clean geometry")
     ap.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ)
     ap.add_argument("--batch", type=int, default=16)
