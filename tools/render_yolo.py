@@ -179,6 +179,7 @@ def main() -> int:
     fed = _load_fed_points(session)
     z_bias = 0.0
     emit_mode = "pnp"
+    valid_cap = 0.0
     try:
         _m = json.loads((session / "meta.json").read_text())
         z_bias = float(_m.get("ego_gate_z_bias") or 0.0)
@@ -194,6 +195,8 @@ def main() -> int:
         # today), then top level (where it is also written now, and where a human looks).
         emit_mode = str((_m.get("seeker_constants") or {}).get("emit_mode")
                         or _m.get("emit_mode") or "pnp")
+        # the flight's own valid-range cap, so the overlay can mark what the seeker dropped
+        valid_cap = float((_m.get("seeker_constants") or {}).get("max_valid_range_m") or 0.0)
     except Exception:
         pass
     if args.emit != "auto" and args.emit != emit_mode:
@@ -217,6 +220,7 @@ def main() -> int:
 
     # decode + detect every captured frame once; remember recv time + frame_id
     frames = []
+    last_fp = None          # last fed point, held across video frames that carry no control tick
     for rec in idx:
         jpg = blob[rec["offset"]:rec["offset"] + rec["length"]]
         img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
@@ -278,10 +282,30 @@ def main() -> int:
                     # with tilt and reads FAR on a cropped gate, so it must never look like a measurement.
                     src = "" if emit is None or emit.range_src == "corners" else " bbox?"
                     col = (0, 255, 255) if not src else (0, 165, 255)
-                    cv2.putText(big, f"{r:.1f}m{src}", (int(c[0]) - 20, int(c[1]) - 14),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+                    # BEYOND THE FLIGHT'S RANGE CAP: this overlay re-runs the detector, so it shows
+                    # candidates the seeker DROPPED before selection. Left unmarked, an 83 m label
+                    # reads as "the cap is not working" when the cap in fact removed it from the pool
+                    # (verified on 20260723_221720: 0 of 397 candidates above 30 m). Mark them CUT.
+                    if valid_cap and r > valid_cap:
+                        cv2.putText(big, f"{r:.1f}m CUT >{valid_cap:.0f}m",
+                                    (int(c[0]) - 30, int(c[1]) - 14), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.55, (110, 110, 110), 2, cv2.LINE_AA)
+                    else:
+                        cv2.putText(big, f"{r:.1f}m{src}", (int(c[0]) - 20, int(c[1]) - 14),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
         # --- the POINT fed to the policy on this frame (slot0 active gate, z-bias offset baked in) ---
+        # HOLD the last fed point across frames that carry no control tick. There are MORE video
+        # frames than control ticks (measured 243 vs 184 on 20260723_221720), so 28.4% of frames had
+        # no tick to paint and the magenta marker simply vanished -- which reads as the policy losing
+        # the gate. It was not: rel_flu was present on 184/184 ticks, i.e. 100%. The blink was purely
+        # an artifact of this overlay. Held frames draw HOLLOW so the distinction stays honest --
+        # a held marker is the last known aim point, not a fresh one.
         fp = fed.get(rec["frame_id"])
+        fresh_fed = fp is not None
+        if fp is None:
+            fp = last_fp                      # carry the previous tick's aim point
+        else:
+            last_fp = fp
         fed_dist = None
         if fp is not None:
             flu, dist, gi = fp
@@ -291,9 +315,14 @@ def main() -> int:
                 u, v, _z = pr
                 cu, cv = int(round(u * S)), int(round(v * S))
                 # MAGENTA cross-diamond = where we're actually aiming the drone (fed to the policy).
-                cv2.drawMarker(big, (cu, cv), (255, 0, 255), cv2.MARKER_DIAMOND, 20 + 6 * S, 2, cv2.LINE_AA)
-                cv2.drawMarker(big, (cu, cv), (255, 0, 255), cv2.MARKER_CROSS, 12 + 4 * S, 1, cv2.LINE_AA)
-                label = f"FED g{gi}" + (f"  {dist:.1f} m" if dist is not None else "")
+                # FRESH = solid diamond + cross. HELD (no control tick on this video frame) = the
+                # diamond alone, thinner: same aim point, but not a new measurement.
+                cv2.drawMarker(big, (cu, cv), (255, 0, 255), cv2.MARKER_DIAMOND, 20 + 6 * S,
+                               2 if fresh_fed else 1, cv2.LINE_AA)
+                if fresh_fed:
+                    cv2.drawMarker(big, (cu, cv), (255, 0, 255), cv2.MARKER_CROSS, 12 + 4 * S, 1, cv2.LINE_AA)
+                label = (f"FED g{gi}" if fresh_fed else f"FED g{gi} (held)") + \
+                        (f"  {dist:.1f} m" if dist is not None else "")
                 cv2.putText(big, label, (cu + 12, cv + 6), cv2.FONT_HERSHEY_SIMPLEX,
                             0.6, (255, 0, 255), 2, cv2.LINE_AA)
                 if abs(z_bias) > 1e-6:
