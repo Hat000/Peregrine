@@ -24,6 +24,7 @@ import mathutils
 
 from . import bpy_materials as M
 from . import bpy_render
+from .config import _CEILING_STYLES as _CFG_CEILING_STYLES
 from .contract import (
     GATE_INNER_SIZE_M, GATE_OUTER_SIZE_M, V_OCC, V_VIS,
     VQ1_GATE_RED_RGB_LINEAR, gate_object_points,
@@ -349,3 +350,156 @@ def configure_clean_render(scene, rng, render_cfg, appearance) -> None:
         pass
     lo, hi = getattr(appearance, "exposure_range", (-0.4, 0.5))
     scene.view_settings.exposure = float(rng.uniform(float(lo), float(hi)))
+
+
+# ----------------------------------------------------------- HARD-NEGATIVE dressing (grids, panels)
+# WHY THIS EXISTS (2026-07-23). M+1 trained on 4000 frames of which ZERO were negatives, and it
+# hallucinates CONFIDENTLY: on held-out gate-free frames its median false-positive score is 0.574
+# against M's 0.293, and its 90th-percentile false positive (0.841) outscores its own MEDIAN true
+# positive (0.832). No threshold can separate that -- it has to be trained out. M got 13.1%
+# negatives (180 of them the purpose-built vq2_confuser corpus); M+1 got none.
+#
+# The legacy negatives lived on the LEGACY render path (build_background + background_material),
+# which the dark-red presets never touch -- they are photoreal, and _render_photoreal builds only
+# an HDRI world + a PBR floor. So a photoreal negative would contain NO RED AT ALL, and red panels
+# are exactly what the false positives fire on. These two helpers put the confusers back, in the
+# dark-red domain, on the path that actually runs.
+
+_CEILING_STYLES = {
+    # (tile colour, mortar/grid-line colour, TILE PITCH metres, mortar size) -- linear RGB.
+    # Fengyou asked for "white grid, tiles, ceiling tiles, dark garage ceiling tiles". The third
+    # entry is a real-world pitch, NOT a texture multiplier: the UV map carries the tiling (see
+    # add_ceiling), so these are the sizes a person would actually measure on the ceiling.
+    "white_grid":    ((0.85, 0.85, 0.87), (0.05, 0.05, 0.06), (0.35, 0.75), (0.04, 0.10)),
+    "ceiling_tiles": ((0.62, 0.60, 0.55), (0.30, 0.30, 0.31), (0.50, 1.00), (0.02, 0.06)),
+    "dark_garage":   ((0.055, 0.055, 0.06), (0.11, 0.11, 0.12), (0.80, 2.00), (0.02, 0.07)),
+    "panel_grid":    ((0.20, 0.20, 0.22), (0.02, 0.02, 0.02), (1.20, 3.00), (0.05, 0.12)),
+}
+
+
+def ceiling_tile_pitch_m(style: str, rng) -> float:
+    """Metric tile pitch for a style -- read by add_ceiling to build the UV map."""
+    return float(rng.uniform(*_CEILING_STYLES.get(style, _CEILING_STYLES["white_grid"])[2]))
+# One source of truth for the style NAMES: config.py validates presets against its own set and
+# cannot import this module (bpy). Assert rather than duplicate, so adding a style in one place and
+# forgetting the other fails loudly at import instead of silently rendering the wrong ceiling.
+assert set(_CEILING_STYLES) == set(_CFG_CEILING_STYLES), (
+    sorted(_CEILING_STYLES), sorted(_CFG_CEILING_STYLES))
+
+
+def _grid_material(name: str, style: str, rng):
+    """Rectilinear tile/grid material. A Brick node with a THIN mortar is the grid: the mortar lines
+    are the confuser, because a lit grid seen at an angle is a field of quadrilaterals and a gate
+    opening is exactly one quadrilateral."""
+    tile, mortar, _pitch_r, mort_r = _CEILING_STYLES.get(style, _CEILING_STYLES["white_grid"])
+    jit = lambda c: tuple(float(np.clip(v * rng.uniform(0.75, 1.3), 0.0, 1.0)) for v in c)
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    b = nt.nodes.get("Principled BSDF") or nt.nodes.new("ShaderNodeBsdfPrincipled")
+    tex = nt.nodes.new("ShaderNodeTexBrick")
+    tex.location = (-360.0, 0.0)
+    # DRIVE IT FROM THE UV MAP. A procedural texture with an unconnected Vector input falls back to
+    # GENERATED coordinates -- normalised to the object bounding box -- so the metric UVs computed in
+    # add_ceiling were silently ignored and the grid rendered as a handful of streaks regardless of
+    # tile pitch. This link is what makes tile_m mean metres.
+    uv = nt.nodes.new("ShaderNodeTexCoord")
+    uv.location = (-560.0, 0.0)
+    nt.links.new(uv.outputs["UV"], tex.inputs["Vector"])
+    t_lin, m_lin = jit(tile), jit(mortar)
+    M._set_socket(tex, "Color1", M._color4(t_lin))
+    M._set_socket(tex, "Color2", M._color4(jit(tile)))
+    M._set_socket(tex, "Mortar", M._color4(m_lin))
+    # Scale STAYS 1.0: the UV map already carries the tiling in metres (add_ceiling divides by the
+    # tile pitch). Leaving the style's old multiplier in here would multiply on top of that and give
+    # ~900 bricks across the plane.
+    M._set_socket(tex, "Scale", 1.0)
+    M._set_socket(tex, "Mortar Size", float(rng.uniform(*mort_r)))
+    M._set_socket(tex, "Bias", float(rng.uniform(-0.2, 0.2)))
+    M._set_socket(tex, "Brick Width", float(rng.uniform(0.4, 1.1)))
+    M._set_socket(tex, "Row Height", float(rng.uniform(0.25, 0.6)))
+    nt.links.new(tex.outputs["Color"], b.inputs["Base Color"])
+    M._set_socket(b, "Roughness", float(rng.uniform(0.45, 0.95)))
+    M._set_socket(b, "Metallic", float(rng.uniform(0.0, 0.25)))
+    # SELF-LIT, and it has to be. The plane spans the whole scene above the camera, so it OCCLUDES
+    # the HDRI that would otherwise light it -- the first render came out with the ceiling present
+    # but pitch black, i.e. the grid the preset exists to show was invisible in every frame. A real
+    # warehouse/garage ceiling carries its own strip lights, so a modest emission is the physically
+    # honest fix as well as the one that makes the tiles read.
+    nt.links.new(tex.outputs["Color"], b.inputs["Emission Color"])
+    # KEEP THIS LOW. At 0.15-0.7 the plane became a 120 x 102 m area light and dragged the whole
+    # scene from background median gray 30 to 53 against a real-frame target of ~36 -- it fixed the
+    # visibility problem by breaking the domain match, which is the more expensive of the two.
+    M._set_socket(b, ("Emission Strength", "Emission"), float(rng.uniform(0.04, 0.18)))
+    return mat
+
+
+def add_ceiling(scene, ceil_y: float, rng, style: str):
+    """A tiled/grid ceiling plane ABOVE the camera (optical up = -Y). Returns the object."""
+    X, Z0, Z1 = 60.0, -12.0, 90.0
+    mesh = bpy.data.meshes.new("VQ2_CeilMesh")
+    mesh.from_pydata([(-X, ceil_y, Z0), (X, ceil_y, Z0), (X, ceil_y, Z1), (-X, ceil_y, Z1)],
+                     [], [(0, 1, 2, 3)])
+    # METRIC UVs. A 0..1 UV over a 120 x 102 m plane made every "tile" ~15 m across, so the grid
+    # rendered as a few streaks converging on the vanishing point instead of a tiled ceiling. Tile
+    # the UV at a real ceiling-tile pitch so the texture scale means the same thing at any plane size.
+    tile_m = ceiling_tile_pitch_m(style, rng)
+    nu, nv = (2.0 * X) / tile_m, (Z1 - Z0) / tile_m
+    mesh.uv_layers.new(name="UV")
+    for i, uv in enumerate([(0.0, 0.0), (nu, 0.0), (nu, nv), (0.0, nv)]):
+        mesh.uv_layers[0].data[i].uv = uv
+    mesh.update()
+    obj = bpy.data.objects.new("VQ2_Ceiling", mesh)
+    scene.collection.objects.link(obj)
+    obj.data.materials.append(_grid_material("VQ2_Ceiling_Mat", style, rng))
+    return obj
+
+
+def add_confuser_panels(scene, floor_y: float, rng, appearance, n: int, mat=None) -> list:
+    """N gate-COLOURED, gate-BRIGHT shapes that are NOT gates: flat billboards, angled slabs and
+    discs. This is the hard negative that matters -- the measured false positives fire on red
+    textured panels, and a negative frame with no red in it does not teach that. Deliberately never
+    a square annulus: the shape is the only thing separating these from a real gate.
+
+    ``mat`` should be the frame's REAL gate material (signage decals and all). Passing it makes the
+    confuser differ from a gate in SHAPE ALONE, which is the whole point -- a solid untextured red
+    slab is separable on texture, so the detector could learn the wrong cue and still fire on the
+    printed panels it actually false-positives on. Falls back to the plain solid gate colour."""
+    objs = []
+    if n <= 0:
+        return objs
+    if mat is None:
+        mat = solid_gate_material(rng, appearance)
+    for k in range(int(n)):
+        # IN the frustum, not beside it. _side_xz deliberately places props OFF the gate corridor,
+        # which is right for background dressing and wrong here: a confuser the camera cannot see
+        # is not a hard negative. Intrinsics are f=320 on 640x360, so the half-angles are 45 deg
+        # horizontal / 29.4 deg vertical -- at depth z the frame spans |x| < z and |y| < 0.5625 z.
+        z = float(rng.uniform(3.0, 25.0))
+        x = float(rng.uniform(-0.85, 0.85)) * z
+        y = float(np.clip(rng.uniform(-0.5, 0.5) * z, -8.0, floor_y - 0.2))
+        kind = int(rng.integers(0, 3))
+        # Size the confuser by its APPARENT span, not its metric size. Sampling metres uniformly put
+        # a 3.5 m panel at 3 m depth, i.e. 370 px on a 640 px frame -- a red wall, not a confuser,
+        # and nothing like the printed panels the detector actually false-positives on. Picking the
+        # pixel span first and back-solving the metric size makes the distribution mean what it says
+        # at every depth. f = 320 for this camera.
+        span_px = float(rng.uniform(25.0, 220.0))
+        w = span_px * z / 320.0
+        h = w * float(rng.uniform(0.35, 2.2))
+        if kind == 2:                                    # disc / rounded sign
+            bpy.ops.mesh.primitive_cylinder_add(vertices=int(rng.integers(6, 24)),
+                                                radius=w * 0.5, depth=0.06, location=(x, y, z))
+            obj = bpy.context.active_object
+            obj.rotation_euler = (math.pi / 2, 0.0, float(rng.uniform(0, math.pi)))
+        else:                                            # flat billboard / angled slab
+            bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x, y, z))
+            obj = bpy.context.active_object
+            obj.scale = (w, h, 0.04 if kind == 0 else float(rng.uniform(0.1, 0.5)))
+            obj.rotation_euler = (float(rng.uniform(-0.5, 0.5)),
+                                  float(rng.uniform(-math.pi, math.pi)),
+                                  float(rng.uniform(-0.4, 0.4)))
+        obj.name = f"VQ2_Confuser_{k}"
+        obj.data.materials.append(mat)
+        objs.append(obj)
+    return objs

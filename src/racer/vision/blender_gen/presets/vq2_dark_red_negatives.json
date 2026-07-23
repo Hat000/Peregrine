@@ -1,0 +1,61 @@
+{
+  "name": "vq2_dark_red_negatives",
+  "description": "HARD NEGATIVES in the vq2_dark_red domain: on-course viewpoints with NO gate, dressed with gate-COLOURED non-gate shapes (billboards, angled slabs, discs) and tiled/grid ceilings (white grid, ceiling tiles, dark garage tiles, panel grid). Empty labels. WHY: M+1 trained on 4000 frames with ZERO negatives and hallucinates CONFIDENTLY -- on held-out gate-free frames its median false-positive score is 0.574 against M's 0.293, and its p90 false positive (0.841) outscores its own MEDIAN true positive (0.832), so no detection threshold can separate them. M had 13.1% negatives, 180 of them the purpose-built vq2_confuser corpus. That corpus is unusable here for two reasons: it predates the dark-red domain fix (bright AgX look, background median gray ~104 vs real 37), and it was rendered on the LEGACY path via build_background/background_material, which no photoreal preset ever executes. So the confusers had to be rebuilt on the photoreal path -- otherwise a dark-red negative contains no red at all, and red panels are precisely what the false positives fire on. APPEARANCE IS COPIED VERBATIM from vq2_dark_red (same HDRI set, same ambient_strength_range, same exposure_range, same Standard view transform) because a negative that does not share the positives' domain teaches the detector to separate BRIGHTNESS, not shape. The only deliberate viewpoint change is a wider pitch jitter, so the camera looks UP into the ceiling grids often enough for them to matter.",
+  "negative_fraction": 1.0,
+  "viewpoint": {
+    "range_min_m": 2.0,
+    "range_max_m": 30.0,
+    "range_skew": 2.0,
+    "lateral_sigma_m": 2.0,
+    "vertical_sigma_m": 1.4,
+    "yaw_jitter_rad": 0.5,
+    "pitch_jitter_rad": 0.45,
+    "roll_jitter_rad": 0.45
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.8,
+    "lighting_p": 0.15,
+    "brightness_p": 0.25,
+    "geometric_p": 0.0
+  },
+  "appearance": {
+    "use_vq1_red": true,
+
+    "gate_hue_jitter": 0.02,
+    "gate_hue_offset": 0.011,
+    "gate_sat_range": [0.94, 1.0],
+    "gate_val_range": [0.85, 1.0],
+    "gate_metallic_range": [0.0, 0.15],
+    "gate_roughness_range": [0.35, 0.65],
+
+    "gate_emission_range": [0.7, 2.1],
+    "gate_signage_prob": 0.9,
+
+    "use_hdri": true,
+    "photoreal": true,
+    "hdri_include": ["warehouse", "hangar", "workshop", "machine_shop",
+                     "concrete_tunnel", "factory_canteen", "garage", "construction",
+                     "metro", "squash"],
+    "ambient_strength_range": [0.03, 0.13],
+    "exposure_range": [-0.5, 0.28],
+
+    "prop_count_range": [6, 14],
+    "people_count_range": [1, 4],
+    "lighting_mode": "dark_arena",
+    "background_mode": "arena",
+
+    "ceiling_prob": 0.55,
+    "ceiling_styles": ["white_grid", "ceiling_tiles", "dark_garage", "panel_grid"],
+    "confuser_count_range": [2, 7]
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 160,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": false,
+    "use_glare": false,
+    "view_transform": "Standard"
+  }
+}

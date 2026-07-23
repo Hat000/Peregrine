@@ -340,6 +340,26 @@ class BlenderBackend:
                      for gr in frame.gates]
         self._frame_objects += gate_objs
 
+        # 3b. HARD-NEGATIVE dressing (default OFF -- every existing preset renders unchanged).
+        #     A photoreal frame is an HDRI + a floor, so a NEGATIVE built on this path had no red
+        #     and no rectilinear structure in it: nothing for the detector to learn not to fire on.
+        #     M+1 shipped with 0 negatives and hallucinates at median confidence 0.574 vs M's 0.293.
+        #     These two put the confusers back IN the dark-red domain. They are dressing only --
+        #     they carry no label and never touch frame.gates.
+        if float(rng.random()) < float(getattr(ap, "ceiling_prob", 0.0)):
+            styles = tuple(getattr(ap, "ceiling_styles", ()) or ("white_grid",))
+            self._frame_objects.append(PR.add_ceiling(
+                self.scene, -float(rng.uniform(2.5, 7.5)), rng,
+                styles[int(rng.integers(len(styles)))]))
+        c_lo, c_hi = getattr(ap, "confuser_count_range", (0, 0))
+        if int(c_hi) > 0:
+            # the frame's OWN gate material, signage and all -- so a confuser differs from a gate in
+            # SHAPE ALONE. A solid untextured slab would be separable on texture, which is the one
+            # cue that must not work: the false positives fire on PRINTED red panels.
+            self._frame_objects += PR.add_confuser_panels(
+                self.scene, floor_y, rng, ap, int(rng.integers(int(c_lo), int(c_hi) + 1)),
+                mat=gate_mat)
+
         # 4. real props + mannequin people, scattered OFF the gate corridor (sides/background).
         #    Props are spawned as duplicates of the once-imported cache (shared mesh data -> fast).
         n_prop = int(rng.integers(int(ap.prop_count_range[0]), int(ap.prop_count_range[1]) + 1)) \

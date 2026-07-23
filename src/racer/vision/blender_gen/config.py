@@ -21,6 +21,10 @@ PRESETS_DIR = Path(__file__).resolve().parent / "presets"
 _ENGINES = {"CYCLES", "BLENDER_EEVEE_NEXT", "BLENDER_EEVEE"}
 _BG_MODES = {"arena", "indoor", "outdoor", "mixed"}
 _LIGHTING_MODES = {"daylight", "dark_arena", "auto"}
+# Tiled/grid ceiling styles for hard negatives. Declared HERE, not in bpy_photoreal, because this
+# module must import outside Blender -- and bpy_photoreal ASSERTS its parameter table matches this
+# set, so a style can never exist in one place and not the other.
+_CEILING_STYLES = {"white_grid", "ceiling_tiles", "dark_garage", "panel_grid"}
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,14 @@ class AppearanceConfig:
     background_mode: str = "arena"         # arena|indoor|outdoor|mixed
     clutter_max: int = 6                   # random background props
     floor_wall_texture_prob: float = 0.5
+
+    # HARD-NEGATIVE dressing, PHOTOREAL path only (2026-07-23). The legacy confuser corpus lived on
+    # the legacy path (build_background), which no photoreal preset ever executes -- so a dark-red
+    # negative frame contained no red and no rectilinear structure, and taught nothing. Both default
+    # OFF so every existing preset renders byte-identically; only the negatives preset turns them on.
+    ceiling_prob: float = 0.0              # chance of a tiled/grid ceiling plane above the camera
+    ceiling_styles: tuple = ("white_grid", "ceiling_tiles", "dark_garage", "panel_grid")
+    confuser_count_range: tuple = (0, 0)   # gate-COLOURED non-gate shapes (billboards/slabs/discs)
 
     exposure_range: tuple = (-0.5, 0.5)    # film exposure EV
     gamma_range: tuple = (0.9, 1.1)
@@ -174,9 +186,14 @@ def _validate(p: ScenarioPreset) -> ScenarioPreset:
     if not (0.0 <= ap.colored_light_prob <= 1.0):
         raise ValueError("appearance.colored_light_prob must be in [0, 1]")
     for lo_hi in (ap.gate_sat_range, ap.gate_val_range, ap.sun_intensity_range,
-                  ap.color_temp_range_k, ap.exposure_range, ap.gamma_range):
+                  ap.color_temp_range_k, ap.exposure_range, ap.gamma_range,
+                  ap.confuser_count_range):
         if not (len(lo_hi) == 2 and lo_hi[0] <= lo_hi[1]):
             raise ValueError(f"appearance range must be (lo<=hi), got {lo_hi}")
+    if not (0.0 <= ap.ceiling_prob <= 1.0):
+        raise ValueError("appearance.ceiling_prob must be in [0, 1]")
+    if not all(s in _CEILING_STYLES for s in ap.ceiling_styles):
+        raise ValueError(f"appearance.ceiling_styles must be a subset of {sorted(_CEILING_STYLES)}")
     rc = p.render
     if rc.engine not in _ENGINES:
         raise ValueError(f"render.engine must be one of {sorted(_ENGINES)}")
