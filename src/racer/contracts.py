@@ -171,6 +171,17 @@ class GateObservation:
     outer_corners_px: np.ndarray | None = None   # (4,2) OUTER-square corners px (8-kpt models), or None
     outer_corner_confidence: np.ndarray | None = None  # (4,) per-outer-keypoint confidence, or None
     derived_corners: bool = False                # corners_px RECONSTRUCTED, not measured (see below)
+    # --- M+1 DIRECTLY-REGRESSED CENTRE (5-kpt models, 2026-07-23) ---------------------------------
+    # The 5th keypoint of the M+1 model: the gate-opening centre regressed by its OWN head slot, not
+    # derived from the corners. That independence is the entire point -- a keypoint head emits each
+    # slot separately, so the centre survives corner cropping and only fails when the CENTRE itself
+    # leaves frame. Measured on real hand labels: 55.7% of gate views have the centre in frame while
+    # >=1 inner corner is cropped -- the population an 8-kpt corner-derived centre is structurally
+    # blind to (M coverage 52.8% vs M+1 99%, and 100% on cropped gates).
+    # These are METADATA in exactly the sense outer_corners_px is: corners_px REMAINS the inner
+    # square and every existing consumer is unchanged. A 4/8-kpt model simply leaves them None.
+    centre_px: np.ndarray | None = None          # (2,) regressed gate-opening centre, pixels
+    centre_confidence: float | None = None       # scalar keypoint confidence for that centre
 
     def __post_init__(self) -> None:
         c = self.corners_px
@@ -194,6 +205,11 @@ class GateObservation:
             assert self.outer_corners_px is not None, "outer confidence requires outer_corners_px"
             assert self.outer_corner_confidence.shape == (4,), \
                 f"outer_corner_confidence must be (4,), got {self.outer_corner_confidence.shape}"
+        if self.centre_px is not None:
+            c2 = np.asarray(self.centre_px)
+            assert c2.shape == (2,), f"centre_px must be (2,) when present, got {c2.shape}"
+        if self.centre_confidence is not None:
+            assert self.centre_px is not None, "centre_confidence requires centre_px"
 
     # --- egocentric alignment byproduct (RL deploy obs contract, 2026-07-06) --------------------
     # DERIVED from the inner-4 corners (no PnP, no flip), so a property not a field. None when <4

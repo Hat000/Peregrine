@@ -166,6 +166,8 @@ def observations_from_keypoints(
     bboxes_xywh: np.ndarray | None = None,
     outer_xy: np.ndarray | None = None,
     outer_conf: np.ndarray | None = None,
+    centre_xy: np.ndarray | None = None,
+    centre_conf: np.ndarray | None = None,
     partial_rescue: bool = True,
     image_wh: tuple[int, int] | None = None,
 ) -> list[GateObservation]:
@@ -248,6 +250,15 @@ def observations_from_keypoints(
         else:
             continue  # < 3 usable corners and no recoverable geometry: pose is unrecoverable
         bbox = None if bboxes_xywh is None else np.asarray(bboxes_xywh[i], dtype=np.float64)
+        # M+1 regressed centre for THIS detection, if the model emitted one. Carried unconditionally
+        # (no confidence gate here): the centre is emitted by its own head slot and is exactly the
+        # measurement that survives when the corners above were cropped or rescued, so filtering it
+        # on the corner path's terms would discard the case it exists for. Consumers gate on
+        # ``centre_confidence`` themselves.
+        c_xy = c_conf = None
+        if centre_xy is not None:
+            c_xy = np.asarray(centre_xy[i], dtype=np.float64)
+            c_conf = None if centre_conf is None else float(centre_conf[i])
         out.append(
             GateObservation(
                 frame_id=frame.frame_id,
@@ -260,6 +271,8 @@ def observations_from_keypoints(
                 outer_corners_px=o_xy,
                 outer_corner_confidence=o_conf,
                 derived_corners=derived_corners,
+                centre_px=c_xy,
+                centre_confidence=c_conf,
             )
         )
     return out
@@ -302,6 +315,17 @@ def observations_from_results(
     # boundary — but the OUTER 4 now RIDE ALONG (outer_corners_px) and gate_pose fuses them into
     # the same pose fit (use_outer=False restores the discard, the pre-2026-07-05 behaviour).
     # The native 4-keypoint path is unchanged (this branch is a no-op when xy has 4 keypoints).
+    # M+1 5-KEYPOINT models (2026-07-23) emit 4 INNER corners (0..3) then the gate-opening CENTRE (4)
+    # -- kpt_shape [5,3], flip_idx [1,0,3,2,4]. WITHOUT this branch the centre falls through as a 5th
+    # "corner" and is consumed by PnP as if it were one, silently corrupting the pose. Split it off
+    # here so corners_px stays the inner-4 (every downstream consumer unchanged) and the regressed
+    # centre rides along as metadata, exactly like the outer-4 of an 8-kpt model.
+    centre_xy = centre_conf = None
+    if xy.shape[1] == 5:
+        centre_xy = xy[:, N_CORNERS, :]          # (n_det, 2)
+        centre_conf = conf[:, N_CORNERS]         # (n_det,)
+        xy = xy[:, :N_CORNERS, :]
+        conf = conf[:, :N_CORNERS]
     outer_xy = outer_conf = None
     if xy.shape[1] == 8:
         if use_outer:
@@ -319,6 +343,7 @@ def observations_from_results(
         frame, xy, conf, scores,
         score_thresh=score_thresh, kpt_conf_thresh=kpt_conf_thresh, bboxes_xywh=bboxes,
         outer_xy=outer_xy, outer_conf=outer_conf,
+        centre_xy=centre_xy, centre_conf=centre_conf,
         partial_rescue=partial_rescue, image_wh=image_wh,
     )
 
