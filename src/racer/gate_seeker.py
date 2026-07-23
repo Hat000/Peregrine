@@ -106,6 +106,7 @@ from racer.frames import R_camera_from_body, R_world_from_body
 # SAME detector instance. Routing the seeker's detect through detect_cached reuses the navigator's
 # per-frame_id detections (computed first, same tick) instead of running YOLO a SECOND time.
 from racer.vision.detector import detect_cached
+from racer.vision.centre_emit import emit_from_observation
 from racer.vision.gate_pose import estimate_gate_pose
 
 
@@ -257,6 +258,14 @@ class GateSeekerConfig:
     # The track's range/bearing are smoothed (EMA) so a single noisy-but-accepted PnP depth does not
     # yank the prediction. 1.0 => snap to the new measurement; small => heavy smoothing.
     track_ema_alpha: float = 0.5
+    # GATE-EMIT SOURCE (M+1, 2026-07-23). "pnp" = today's path, the IPPE/P3P translation (DEFAULT,
+    # byte-identical). "centre" = rel_pos from the M+1 model's directly-regressed centre keypoint
+    # (bearing) x apparent corner size (range) -- see racer.vision.centre_emit. Both terms are free
+    # of the IPPE 2-fold ambiguity, so "centre" also deletes the ~1.2 m task2 translation error at
+    # the root, AND it emits for gates whose corners cropped (PnP declines <3 corners; measured
+    # 92% -> 100% of observations on 300 real frames). REQUIRES a 5-keypoint M+1 model: an 8-kpt
+    # model never fills centre_px, so every candidate would be dropped.
+    emit_mode: str = "pnp"
     # Drop the track after this many CONSECUTIVE ticks with no consistent candidate (gate genuinely
     # lost / between gates) so re-acquisition can re-centre on a fresh gate.
     track_max_coast_ticks: int = 8
@@ -794,6 +803,26 @@ class GateSeeker:
             if float(getattr(obs, "score", 1.0)) < self.config.min_detect_score:
                 continue
             pose = estimate_gate_pose(obs, compute_covariance=False)
+            if self.config.emit_mode == "centre":
+                # M+1 CENTRE EMIT (2026-07-23): replace the ambiguous PnP TRANSLATION with
+                # range x bearing built from the regressed centre + apparent size. Substituting
+                # t_cam_gate is the whole change -- it is the one quantity every consumer below
+                # derives from (bearing, body-FRD lever, track, ego_obs), so the frame and meaning
+                # are identical and nothing downstream needs to know. Where PnP DECLINED (fewer than
+                # 3 corners: the cropped-gate population M+1 exists for) we synthesise the pose,
+                # keeping identity rotation -- the 21-dim obs carries no rel-yaw, so no consumer
+                # reads R_cam_gate on the ego path. n_corners reports the honest corner count so the
+                # existing low-trust branches still fire.
+                emit = emit_from_observation(obs, conf_thresh=0.0)
+                if emit is None:
+                    continue                    # no centre keypoint -> nothing this mode can use
+                if pose is None:
+                    pose = GatePose(frame_id=obs.frame_id, sim_time_ns=obs.sim_time_ns,
+                                    R_cam_gate=np.eye(3), t_cam_gate=emit.p_cam,
+                                    reproj_error_px=0.0, gate_id=obs.gate_id,
+                                    n_corners=int(obs.corners_px.shape[0]))
+                else:
+                    pose = replace(pose, t_cam_gate=emit.p_cam)
             if pose is None or not np.isfinite(pose.t_cam_gate).all():
                 continue
             if float(pose.reproj_error_px) > self.config.max_reproj_px:

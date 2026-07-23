@@ -160,6 +160,15 @@ SCHEMA = [
               "valid-but-unlockable -- a blind window on any leg longer than 22 m. 22 = the 9-gate "
               "record. Raise toward the valid cap to close a long-leg window; too high re-admits the "
               "far off-axis downrange gate this exists to reject."),
+    dict(key="seeker_emit", flag="--seeker-emit", action="value", ui="select",
+         group="Ego perception", default="pnp", choices=["pnp", "centre"],
+         help="Where the gate's 3-D position comes from. 'pnp' = today's IPPE/P3P translation. "
+              "'centre' = M+1's directly-regressed centre (bearing) x apparent corner size (range) -- "
+              "both ambiguity-free, so it also deletes the ~1.2 m task2 error, and it keeps emitting "
+              "when corners crop (92%->100% of observations on 300 real frames; depth within 0.425 m "
+              "median of PnP inside 30 m). ⚠ 'centre' REQUIRES the 5-kpt M+1 engine in Vision->seeker "
+              "weights (vq2_m1_darkred_*): with an 8-kpt model every candidate is dropped and the "
+              "flight is BLIND. fly_rl hard-fails on the pad if they disagree."),
     dict(key="ego_track_ema_alpha", flag="--ego-track-ema-alpha", action="value", ui="number",
          group="Ego perception", default=0.5, step=0.05,
          help="Gate-TRACK smoothing, both slots: new = (1-a)*old + a*measurement. 1.0 = SNAP to the "

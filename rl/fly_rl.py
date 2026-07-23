@@ -635,6 +635,9 @@ def _meta_seeker_constants(args) -> dict:
     from racer.gate_seeker import GateSeekerConfig
     c = GateSeekerConfig()
     return {
+        # where rel_pos came from this flight: "pnp" (IPPE/P3P translation) or "centre" (M+1)
+        "emit_mode": (str(getattr(args, "seeker_emit", "pnp"))
+                      if getattr(args, "ego_ckpt", None) else "pnp"),
         # the ACQUIRE cap (what may be LOCKED), distinct from the valid cap (what enters the pool)
         "max_acquire_range_m": (float(getattr(args, "ego_max_acquire_range", 22.0))
                                 if getattr(args, "ego_ckpt", None) else c.max_acquire_range_m),
@@ -1775,6 +1778,32 @@ def _validate_seeker_detector(args) -> None:
         )
 
 
+def _detector_keypoint_count(detector) -> int | None:
+    """Keypoints per detection the loaded model emits, or None if it cannot be determined.
+
+    MEASURED, not read from metadata. A TRT engine carries NO ``kpt_shape`` anywhere in the
+    ultralytics object graph (verified on both the M and M+1 engines: model.kpt_shape,
+    model.model.kpt_shape and model.args are all None), so introspection silently returns "unknown"
+    and a guard built on it never fires -- which is exactly how a blind-flight check fails open.
+
+    One dummy inference settles it instead: the keypoint tensor carries the K dimension even when
+    there are ZERO detections, so a black frame is enough -- (0, 8, 2) for M, (0, 5, 2) for M+1.
+    None still means "unknown" and callers must treat it as non-fatal."""
+    model = getattr(detector, "model", None)
+    if model is None or not hasattr(model, "predict"):
+        return None
+    try:
+        import numpy as _np
+        res = model.predict(_np.zeros((360, 640, 3), dtype=_np.uint8),
+                            verbose=False, imgsz=(384, 640))
+        xy = getattr(getattr(res[0], "keypoints", None), "xy", None)
+        if xy is None or len(getattr(xy, "shape", ())) < 2:
+            return None
+        return int(xy.shape[1])
+    except Exception:
+        return None
+
+
 def _prewarm_detector(args) -> None:
     """PRE-WARM the YOLO gate detector BEFORE arm (the A15 launch-window-freeze fix).
 
@@ -1809,6 +1838,22 @@ def _prewarm_detector(args) -> None:
                       image_bgr=np.zeros((360, 640, 3), dtype=np.uint8))
         detector.detect(dummy)   # the expensive first-predict -> now off the flight critical path
         args._prewarmed_detector = detector
+        # FAIL LOUD on the one combination that flies BLIND: --seeker-emit centre needs the M+1
+        # 5-keypoint model to fill centre_px. Point it at an 8-kpt model and EVERY candidate is
+        # dropped in _valid_poses -- the drone would arm, take off and see no gate at all, with
+        # nothing in the log saying why. Cheap to check here (the model is already loaded), and a
+        # crash on the pad beats a blind flight.
+        if str(getattr(args, "seeker_emit", "pnp")) == "centre":
+            n_kpt = _detector_keypoint_count(detector)
+            if n_kpt is not None and n_kpt != 5:
+                raise SystemExit(
+                    f"--seeker-emit centre requires a 5-keypoint M+1 model (inner 4 + centre), but "
+                    f"{_resolve_seeker_weights(args)} emits {n_kpt} keypoints. That model never "
+                    f"fills the centre keypoint, so every gate candidate would be dropped and the "
+                    f"flight would be blind. Use --seeker-emit pnp, or point --seeker-weights at the "
+                    f"M+1 engine.")
+            print(f"  [prewarm] emit=centre CONFIRMED: model emits {n_kpt} keypoints "
+                  f"(inner 4 + regressed centre).")
         print(f"  [prewarm] YOLO detector warmed in {(time.monotonic() - t0):.2f}s "
               f"(first-predict off the launch window; tick-0 stall eliminated).")
     except Exception as exc:
@@ -1843,6 +1888,19 @@ def _build_casec_seeker(args, gates):
         detector = (getattr(args, "_prewarmed_detector", None)
                     or GateDetector.load(_resolve_seeker_weights(args),
                                          **_seeker_detector_kwargs(args)))  # weights (artifact-pipe)
+    # AUTHORITATIVE emit/model agreement check. The same check in _prewarm_detector is an EARLY
+    # convenience only -- it lives inside a try/except that swallows any load failure, so it can be
+    # skipped entirely. THIS path always runs, and this is the last point before the drone arms.
+    # --seeker-emit centre with a non-5-keypoint model drops every candidate in _valid_poses: the
+    # drone would take off and see no gate at all, with nothing in the log explaining it.
+    if str(getattr(args, "seeker_emit", "pnp")) == "centre" and detector is not None:
+        _nk = _detector_keypoint_count(detector)
+        if _nk is not None and _nk != 5:
+            raise SystemExit(
+                f"--seeker-emit centre requires a 5-keypoint M+1 model (inner 4 + centre), but "
+                f"{_resolve_seeker_weights(args)} emits {_nk} keypoints -- every gate candidate "
+                f"would be dropped and the flight would be BLIND. Use --seeker-emit pnp, or point "
+                f"--seeker-weights at the M+1 engine (vq2_m1_darkred_*).")
     nav = Navigator(gates=gates, detector=detector, config=profile.nav_config)
     # The seeker shares the SAME detector instance: it runs its OWN detect+PnP each tick to recover
     # the SEEN gate's relative bearing (the MAP-FREE visual servo, command_visual) -- it does NOT
@@ -1883,6 +1941,9 @@ def _build_casec_seeker(args, gates):
             # 22-style constant with no flag; default 0.5 == the old constant == byte-identical.
             **({"track_ema_alpha": float(getattr(args, "ego_track_ema_alpha", 0.5))}
                if _ego_path else {}),
+            # M+1 emit source (2026-07-23), ego only: "centre" swaps the ambiguous PnP translation for
+            # regressed-centre bearing x apparent-size range. Default "pnp" == byte-identical.
+            **({"emit_mode": str(getattr(args, "seeker_emit", "pnp"))} if _ego_path else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
                                         if getattr(args, "ego_ckpt", None) else 0.0),
@@ -3551,6 +3612,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "--ego-max-valid-range to close a long-leg blind window (the A5 far-gate trap "
                          "is what it guards against: too high re-admits a distant off-axis downrange "
                          "gate as the lock). Never exceeds the valid-range cap in effect.")
+    ap.add_argument("--seeker-emit", choices=["pnp", "centre"], default="pnp",
+                    help="Where the gate's 3-D position comes from (ego path). 'pnp' (default) = "
+                         "today's IPPE/P3P translation, byte-identical. 'centre' = the M+1 model's "
+                         "DIRECTLY-REGRESSED centre keypoint for bearing x apparent corner size for "
+                         "range: both terms are free of the IPPE 2-fold ambiguity, so it also deletes "
+                         "the ~1.2 m task2 translation error at the root, and it still emits when the "
+                         "corners crop out of frame (PnP declines <3 corners). Measured on 300 real "
+                         "frames: 92%% -> 100%% of observations emit, depth within 0.425 m median "
+                         "(2.4%%) of PnP inside the 30 m cap. REQUIRES a 5-keypoint M+1 model via "
+                         "--seeker-weights; an 8-kpt model never fills the centre keypoint, so every "
+                         "candidate would be dropped and the drone would fly blind.")
     ap.add_argument("--ego-track-ema-alpha", type=float, default=0.5,
                     help="EGO gate-TRACK smoothing factor (ego path only), applied to BOTH the active "
                          "(slot0) and next-gate (slot1) tracks. The track's range/bearing are EMA'd so "
