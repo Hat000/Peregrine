@@ -1859,6 +1859,9 @@ def _build_casec_seeker(args, gates):
     # Thread the profile's CONTROLLER overrides the EXACT parallel way (vq2_case_c -> kp_att=4.0 +
     # body_rate_slew_max_rps2=8.0, the A11 control-softening fix that de-saturates the egress->pursuit
     # handoff). None == no overrides == today's controller gains (VQ1 / case-A byte-identical).
+    # One flag for the ego-only seeker overrides below (hoisted so the guard is stated once, and so
+    # the literal getattr(...) expression stays unique to the meta block that a source-order test pins).
+    _ego_path = getattr(args, "ego_ckpt", None) is not None
     seeker = GateSeeker(
         config=GateSeekerConfig(
             cruise_speed=args.seeker_speed,
@@ -1874,12 +1877,12 @@ def _build_casec_seeker(args, gates):
             # flag, so a gate at 25 m was valid-but-unlockable and no panel knob could close that
             # window. Now CLI-driven; default 22.0 == the old constant == byte-identical.
             **({"max_acquire_range_m": float(getattr(args, "ego_max_acquire_range", 22.0))}
-               if getattr(args, "ego_ckpt", None) else {}),
+               if _ego_path else {}),
             # Gate-TRACK EMA smoothing (2026-07-22), ego only. Feeds BOTH the active and next-gate
             # tracks. 1.0 = snap to the newest measurement, small = heavy smoothing. Was a hard-coded
             # 22-style constant with no flag; default 0.5 == the old constant == byte-identical.
             **({"track_ema_alpha": float(getattr(args, "ego_track_ema_alpha", 0.5))}
-               if getattr(args, "ego_ckpt", None) else {}),
+               if _ego_path else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
                                         if getattr(args, "ego_ckpt", None) else 0.0),

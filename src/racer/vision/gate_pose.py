@@ -545,6 +545,12 @@ def estimate_gate_pose(
     """
     if not np.isfinite(obs.corners_px).all():
         return None
+    # M+1 CENTRE-BEARING observations (2026-07-23) legitimately carry <3 inner corners -- the
+    # regressed centre survives corner cropping, the pose does not. No pose is recoverable from
+    # fewer than 3 points, so decline here rather than let P3P be handed a degenerate set; the
+    # caller reads the 3-D emit off ``centre_px`` via racer.vision.centre_emit instead.
+    if obs.corners_px.shape[0] < 3:
+        return None
     K = CAMERA_INTRINSICS_K if camera_matrix is None else camera_matrix
     corners, ids, conf = _ordered_corners(obs)
     obj_full = gate_object_points(inner_size_m)

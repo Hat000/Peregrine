@@ -187,9 +187,20 @@ class GateObservation:
         c = self.corners_px
         assert c.ndim == 2 and c.shape[1] == 2, f"corners_px must be (N,2), got {c.shape}"
         n = c.shape[0]
-        assert 3 <= n <= 4, f"need 3 or 4 corners, got {n}"
+        # A CENTRE-BEARING observation (M+1, 2026-07-23) is valid with FEWER than 3 corners -- that is
+        # the whole point of the directly-regressed centre, which emits from its own head slot and so
+        # survives corner cropping. 55.7% of real gate views have the centre in frame with >=1 inner
+        # corner cropped; the old floor of 3 discarded exactly that population. Corners still cap at 4
+        # and still must be identified. Without a centre the floor stands: a corner-only observation
+        # with <3 corners has neither a pose nor a bearing and is unusable.
+        # NOTE for PnP consumers: n < 3 means NO pose is recoverable -- gate_pose must skip these and
+        # read the emit off centre_px instead (racer.vision.centre_emit).
+        if self.centre_px is None:
+            assert 3 <= n <= 4, f"need 3 or 4 corners without a centre, got {n}"
+        else:
+            assert n <= 4, f"at most 4 inner corners, got {n}"
         if self.corner_ids is None:
-            assert n == 4, "corner_ids is required when fewer than 4 corners are given"
+            assert n in (0, 4), "corner_ids is required when 1-3 corners are given"
         else:
             ids = np.asarray(self.corner_ids)
             assert ids.shape == (n,), f"corner_ids must be ({n},), got {ids.shape}"

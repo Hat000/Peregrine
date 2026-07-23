@@ -247,8 +247,21 @@ def observations_from_keypoints(
             derived_corners = True
             o_xy = o_conf = None   # the outer measurements are already baked into ``derived``;
             #                        re-offering them to the pose fit would double-count them
+        elif centre_xy is not None and (centre_conf is None
+                                        or float(centre_conf[i]) >= kpt_conf_thresh):
+            # M+1 CENTRE-BEARING EMIT (2026-07-23): no pose is recoverable, but the directly-regressed
+            # centre still is -- it comes from its own head slot, so it does not care that the corners
+            # cropped. KEEP the detection and carry whatever corners ARE usable (0-2): the emit needs
+            # only a bearing from the centre, and any 2 identified corners still pin the scale via the
+            # min-over-pairs rule (racer.vision.centre_emit). This is the population the old
+            # `continue` silently discarded -- 55.7% of real gate views have the centre in frame with
+            # >=1 inner corner cropped, and it is precisely the close-range regime where the gate
+            # matters most. Consumers MUST branch on len(corners_px) < 3 => no PnP.
+            corners = kxy[visible].copy() if visible.size else np.zeros((0, 2), dtype=np.float64)
+            corner_ids = visible.astype(int) if visible.size else np.zeros((0,), dtype=int)
+            conf = kconf[visible].copy() if visible.size else np.zeros((0,), dtype=np.float64)
         else:
-            continue  # < 3 usable corners and no recoverable geometry: pose is unrecoverable
+            continue  # no corners, no recoverable geometry AND no centre: nothing to emit
         bbox = None if bboxes_xywh is None else np.asarray(bboxes_xywh[i], dtype=np.float64)
         # M+1 regressed centre for THIS detection, if the model emitted one. Carried unconditionally
         # (no confidence gate here): the centre is emitted by its own head slot and is exactly the
