@@ -26,6 +26,7 @@ from racer.contracts import Frame
 from racer.vision.red_glow_detector import RedGlowGateDetector
 from racer.vision.detector import GateDetector
 from racer.vision.gate_pose import estimate_gate_pose
+from racer.vision.centre_emit import emit_from_observation
 from racer.frames import CAMERA_INTRINSICS_K as _K, R_camera_from_body
 
 GAP_MS = 60.0   # a recv hole bigger than this is flagged as a stream gap / dropped frames
@@ -153,6 +154,12 @@ def main() -> int:
                          "detector the flight flew, read from <session>/meta.json (seeker_detector "
                          "+ seeker_weights), so the overlay matches the pilot's view. Only set this "
                          "to force a different engine than the flight used.")
+    ap.add_argument("--emit", choices=["auto", "pnp", "centre"], default="auto",
+                    help="Gate-emit mode for the overlay. 'auto' (default) reads emit_mode from "
+                         "meta.json so the render matches the flight. Force one to A/B the SAME "
+                         "recording both ways -- e.g. re-render a PnP flight with --weights <M+1 "
+                         "engine> --emit centre to see what the centre path would have seen. "
+                         "'centre' needs a 5-keypoint model or every gate goes unlabelled.")
     ap.add_argument("--last-seconds", type=float, default=0.0,
                     help="render only the last N seconds (by recv_monotonic_ns); 0 = whole recording. "
                          "The flight is at the END of the recording (the long pre-GO wait precedes it).")
@@ -171,10 +178,23 @@ def main() -> int:
     # the POINT the policy was fed on each frame (slot0 active gate, z-bias offset baked in) + distance
     fed = _load_fed_points(session)
     z_bias = 0.0
+    emit_mode = "pnp"
     try:
-        z_bias = float((json.loads((session / "meta.json").read_text()).get("ego_gate_z_bias") or 0.0))
+        _m = json.loads((session / "meta.json").read_text())
+        z_bias = float(_m.get("ego_gate_z_bias") or 0.0)
+        # Render the SAME emit the flight flew. A centre-mode flight whose overlay showed PnP ranges
+        # would be reporting numbers the policy never saw -- and would show NOTHING at all on exactly
+        # the cropped gates that mode exists to recover (estimate_gate_pose declines <3 corners).
+        emit_mode = str(_m.get("emit_mode") or "pnp")
     except Exception:
         pass
+    if args.emit != "auto" and args.emit != emit_mode:
+        print(f"[render] emit OVERRIDE: {emit_mode} (flown) -> {args.emit} (rendered). Ranges below "
+              f"are NOT what this flight fed the policy.")
+        emit_mode = args.emit
+    else:
+        print(f"[render] gate emit mode (from meta.json, matches the flight): {emit_mode}"
+              + ("  -- ranges below are centre+size, as flown" if emit_mode == "centre" else ""))
     if fed:
         print(f"[render] fed-point overlay: {len(fed)} frames with a policy target; z-bias offset {z_bias:+.2f} m")
     else:
@@ -199,20 +219,59 @@ def main() -> int:
         obs = det.detect(fr)
         big = cv2.resize(img, (W, H), interpolation=cv2.INTER_NEAREST)
         best = None
+        best_trusted = False       # is `best` corner-sourced (a measurement) or a bbox guess?
         for o in obs:
             pts = (np.asarray(o.corners_px, dtype=np.float32) * S).astype(np.int32)
-            cv2.polylines(big, [pts.reshape(-1, 1, 2)], True, (0, 255, 0), 2, cv2.LINE_AA)
+            # M+1 carries 0-4 inner corners (the centre survives cropping, the corners do not), so the
+            # quad is only closed when there IS one. Fewer than 3 => just mark the corners that made it.
+            if pts.shape[0] >= 3:
+                cv2.polylines(big, [pts.reshape(-1, 1, 2)], True, (0, 255, 0), 2, cv2.LINE_AA)
+            elif pts.shape[0] == 2:
+                cv2.line(big, tuple(pts[0]), tuple(pts[1]), (0, 255, 0), 2, cv2.LINE_AA)
             for (x, y) in pts:
                 cv2.circle(big, (int(x), int(y)), 4, (0, 200, 255), -1)
-            try:
-                pose = estimate_gate_pose(o, compute_covariance=False)
-                if pose is not None and np.isfinite(pose.range_m):
-                    r = float(pose.range_m); best = r if best is None else min(best, r)
-                    c = pts.mean(axis=0).astype(int)
-                    cv2.putText(big, f"{r:.1f}m", (c[0] - 20, c[1]), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.6, (0, 255, 255), 2, cv2.LINE_AA)
-            except Exception:
-                pass
+
+            # --- the M+1 REGRESSED CENTRE: the measurement the flight actually steered on ----------
+            emit = emit_from_observation(o) if getattr(o, "centre_px", None) is not None else None
+            anchor = None
+            if emit is not None:
+                ecu = int(round(float(o.centre_px[0]) * S)); ecv = int(round(float(o.centre_px[1]) * S))
+                # CYAN circle+dot = the regressed centre keypoint (distinct from the magenta FED point,
+                # which is what the POLICY got after the z-bias offset and any track smoothing).
+                cv2.circle(big, (ecu, ecv), 7 + 2 * S, (255, 255, 0), 2, cv2.LINE_AA)
+                cv2.circle(big, (ecu, ecv), 2, (255, 255, 0), -1, cv2.LINE_AA)
+                anchor = (ecu, ecv)
+
+            r = None
+            if emit_mode == "centre" and emit is not None:
+                r = float(emit.depth_m)          # as flown: min-over-pairs (or bbox) + centre bearing
+            else:
+                try:
+                    pose = estimate_gate_pose(o, compute_covariance=False)
+                    if pose is not None and np.isfinite(pose.range_m):
+                        r = float(pose.range_m)
+                except Exception:
+                    r = None
+            if r is not None:
+                # The header's R~ must not be driven by a bbox GUESS. A corner-sourced range is a
+                # measurement; a bbox one conflates range with tilt and fires on false positives
+                # (a wall panel with no corners still has a box). Prefer corners; fall back to bbox
+                # only when nothing this frame had corners at all.
+                trust = emit is None or emit.range_src == "corners"
+                if trust:
+                    best = r if (best is None or not best_trusted) else min(best, r)
+                    best_trusted = True
+                elif not best_trusted:
+                    best = r if best is None else min(best, r)
+                c = anchor if anchor is not None else (pts.mean(axis=0).astype(int)
+                                                       if pts.shape[0] else None)
+                if c is not None:
+                    # Tag the SOURCE when it is the coarse one: a bbox-derived range conflates range
+                    # with tilt and reads FAR on a cropped gate, so it must never look like a measurement.
+                    src = "" if emit is None or emit.range_src == "corners" else " bbox?"
+                    col = (0, 255, 255) if not src else (0, 165, 255)
+                    cv2.putText(big, f"{r:.1f}m{src}", (int(c[0]) - 20, int(c[1]) - 14),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
         # --- the POINT fed to the policy on this frame (slot0 active gate, z-bias offset baked in) ---
         fp = fed.get(rec["frame_id"])
         fed_dist = None
@@ -259,8 +318,20 @@ def main() -> int:
         cv2.rectangle(canvas, (0, 0), (W, 26), (0, 0, 0), -1)
         hdr = (f"VQ2 cam  t+{(cur['recv_ms']-t0)/1000:5.2f}s  fid={cur['fid']}  "
                f"dets={cur['dets']}" + (f"  R~{cur['best']:.1f}m" if cur['best'] else "")
+               + f"  emit={emit_mode}"
+               + (f"  fed {cur['fed_dist']:.1f}m" if cur.get("fed_dist") is not None else "")
                + f"   dropped so far: {dropped_cum}")
         cv2.putText(canvas, hdr, (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        # LEGEND: the two markers mean different things and the difference is the whole diagnostic --
+        # cyan is what the DETECTOR saw this frame, magenta is what the POLICY was fed (after the
+        # z-bias offset, the det-hold and any track smoothing). They separating is the signal.
+        cv2.rectangle(canvas, (0, 26), (W, 46), (0, 0, 0), -1)
+        cv2.circle(canvas, (14, 36), 5, (255, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(canvas, "regressed centre (detector)", (26, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1, cv2.LINE_AA)
+        cv2.drawMarker(canvas, (250, 36), (255, 0, 255), cv2.MARKER_DIAMOND, 12, 2, cv2.LINE_AA)
+        cv2.putText(canvas, "FED to policy", (262, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 0, 255), 1, cv2.LINE_AA)
         # gap banner: are we sitting in a hole (next captured frame is far ahead in real time)?
         nxt = frames[j + 1] if j + 1 < len(frames) else None
         if nxt is not None:
