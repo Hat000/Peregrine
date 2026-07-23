@@ -1179,6 +1179,51 @@ def test_yaw_dither_default_off_and_parity_with_pefcap_inputs():
 
 
 # ================================================================================================
+# ROLL-RATE quietness (close-in roll limit-cycle fix 2026-07-22): the pitch duty/jerk mirror on channel 1.
+#   * OFF-by-default byte-identical (roll_duty=roll_jerk=0 -> exactly 0; None input -> the reward term is 0)
+#     AND draws NO RNG (pure tensor math) -- the reward + RNG-stream guarantee.
+#   * jerk (the PRIMARY lever) prices |delta roll_cmd| (a steady bank -> 0); duty prices |roll_cmd| beyond
+#     the WIDE 0.8 free band; both NEGATIVE, non-farmable.
+# ================================================================================================
+def test_roll_rate_wired_into_compute_ego_reward_off_is_byte_identical_and_no_rng():
+    """roll_duty=roll_jerk=0.0 (default): passing roll_cmd + roll_cmd_delta is BYTE-identical to not passing
+    them AND draws NO RNG (pure tensor math; the env's None-gated extraction allocates nothing when off) --
+    the default-OFF guarantee for the reward + RNG stream. ARMED, a limit-cycle jerk drops the reward by
+    EXACTLY the penalty and a steady bank pays 0."""
+    n = 1
+    base = R.EgoRewardWeights()                                     # roll_duty / roll_jerk 0 (default)
+    assert base.roll_duty == 0.0 and base.roll_jerk == 0.0 and base.roll_duty_free_band == 0.8
+    r_none, _, _ = R.compute_ego_reward(base, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                        **_spin_kw(n, [0.0]))
+    # passing a big roll cmd + delta with BOTH weights 0 -> BYTE-identical, AND no RNG drawn
+    rng_before = torch.random.get_rng_state()
+    r_off, c_off, _ = R.compute_ego_reward(base, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                           roll_cmd=_t([2.4]), roll_cmd_delta=_t([2.06]),
+                                           **_spin_kw(n, [0.0]))
+    assert r_off.item() == r_none.item()
+    assert c_off["roll_duty_pen"] == 0.0 and c_off["roll_jerk_pen"] == 0.0
+    assert torch.equal(torch.random.get_rng_state(), rng_before)    # NOTHING drawn (byte-identical stream)
+    # ARMED jerk (the primary lever): a rail-class flip drops the reward by EXACTLY the penalty; steady -> 0.
+    w = R.EgoRewardWeights(roll_jerk=0.05)
+    r_steady, c_steady, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                                 roll_cmd_delta=_t([0.0]), **_spin_kw(n, [0.0]))
+    r_flip, c_flip, _ = R.compute_ego_reward(w, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                             roll_cmd_delta=_t([2.06]), **_spin_kw(n, [0.0]))
+    pen = 0.05 * 2.06                                               # L1: the limit-cycle |delta cmd|
+    assert c_steady["roll_jerk_pen"] == pytest.approx(0.0)          # steady bank pays 0 (turns are free)
+    assert c_flip["roll_jerk_pen"] == pytest.approx(pen, abs=1e-9)
+    assert (r_steady.item() - r_flip.item()) == pytest.approx(pen, abs=1e-9)   # reward drops by the penalty
+    # ARMED duty: a SUSTAINED |roll_cmd| at the rail pays the full weight; inside the 0.8 band pays 0.
+    wd = R.EgoRewardWeights(roll_duty=0.1)
+    _, c_in, _ = R.compute_ego_reward(wd, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                      roll_cmd=_t([0.8]), **_spin_kw(n, [0.0]))
+    _, c_ex, _ = R.compute_ego_reward(wd, gate_collision=torch.zeros(n, dtype=torch.bool),
+                                      roll_cmd=_t([3.0]), **_spin_kw(n, [0.0]))
+    assert c_in["roll_duty_pen"] == pytest.approx(0.0)              # in-band free (turn-in roll untaxed)
+    assert c_ex["roll_duty_pen"] == pytest.approx(0.1, abs=1e-9)    # at the rail -> full weight
+
+
+# ================================================================================================
 # VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12): -rw_vel_smooth * ||jerk||^2,
 # jerk = accel_curr - accel_prev (1st diff of the WORLD CoM acceleration = 2nd diff of velocity).
 #   * ZERO at a steady ACCELERATION (accel_curr == accel_prev) -> steady speed AND smooth hard accel free.

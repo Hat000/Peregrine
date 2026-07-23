@@ -94,3 +94,34 @@ def test_accum_yaw_flip_counting_still_works_through_guard():
         ys = te._accum_yaw(wrapped, phys, None, ys)
     # 6 steps alternating -> 5 flips per env
     assert float(ys["flips"].sum()) == 5.0 * n
+
+
+def test_accum_roll_reads_channel_1_and_emits_three_field_line(capsys):
+    """Close-in roll limit-cycle fix: _accum_roll reads channel 1 (roll) with the SAME 0.05 rad/s deadband
+    as yaw/pitch -- NOT the yaw path, so no unwrap/clamp is needed (roll, like pitch, is unclamped). 6
+    alternating steps -> 5 flips per env; a pure PITCH command (channel 2) registers ZERO roll activity
+    (the action-channel guard); a |roll|>=3.0 tick lands in satur_sum; and _emit_roll_eval prints the
+    greppable ROLL_EVAL line with the three fields."""
+    te = _import_train_ego()
+    n = 2
+    rs = None
+    for k in range(6):
+        phys = torch.zeros((n, 4))
+        phys[:, 1] = 0.6 if k % 2 == 0 else -0.6  # channel 1 == roll; alternate above the deadband
+        rs = te._accum_roll(None, phys, None, rs)  # env arg unused by _accum_roll (like _accum_pitch)
+    assert float(rs["flips"].sum()) == 5.0 * n     # 6 steps alternating -> 5 flips per env
+    # ACTION-CHANNEL guard: a pure PITCH command (channel 2) must NOT register as roll activity
+    rs2 = None
+    pitch_only = torch.zeros((n, 4)); pitch_only[:, 2] = 2.0
+    rs2 = te._accum_roll(None, pitch_only, None, rs2)
+    assert float(rs2["flips"].sum()) == 0.0 and float(rs2["cmd_abs_sum"]) == 0.0
+    # a saturating roll (|cmd| >= 3.0 == ROLL_CMD_RAIL) lands in satur_sum
+    rs2 = te._accum_roll(None, torch.full((n, 4), 3.0), None, rs2)
+    assert float(rs2["satur_sum"]) == float(n)
+    # _emit_roll_eval prints the greppable ROLL_EVAL line with the three fields
+    env = type("E", (), {"dt": 1.0 / 30.0})()
+    te._emit_roll_eval(env, "unit/roll", 6, rs)
+    out = capsys.readouterr().out
+    assert "ROLL_EVAL[unit/roll]" in out
+    for tok in ("signflips_per_s=", "cmd_absmean=", "satur_duty="):
+        assert tok in out

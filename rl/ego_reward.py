@@ -473,6 +473,28 @@ class EgoRewardWeights:
     pitch_duty_free_band: float = 0.6  # (rad/s) free band; |pitch_cmd| <= this pays EXACTLY 0 (wide: pitch is primary)
     pitch_jerk: float = 0.0          # rw_pitch_jerk; L1 weight on |delta pitch_cmd| [per (rad/s)]; 0 == OFF
 
+    # --- ROLL-CHANNEL quietness (close-in roll limit-cycle fix, 2026-07-22; AUTHORIZED anti-chatter, NOT
+    # energy). The ROLL mirror of the pitch duty/jerk pair, on the APPLIED roll-rate command (action channel
+    # 1, rad/s), defending against the CLOSE-IN ROLL LIMIT CYCLE: with the gate fully in view (confidence ~1,
+    # gate large in frame) the commanded roll RATE oscillates with GROWING amplitude and saturates, slamming
+    # the drone into the gate SIDE (9/15 wire flights hit |roll rate| > 1.4). The ANGLE penalties
+    # (rw_roll_recover / rw_att_roll / rw_cross_level) were ALREADY armed on the flights that limit-cycled and
+    # do NOT damp the RATE oscillation -- these RATE terms are the missing lever, the direct analogue of what
+    # tamed the yaw + pitch chatter. roll_jerk (L1 |delta roll_cmd|) is the PRIMARY lever: roll is NOT the
+    # primary control axis and the course NEEDS transient roll for its ~60 deg turns, so a smooth turn-in
+    # (LOW |delta cmd|) pays ~0 while the limit cycle (HIGH |delta cmd|) pays the most. roll_duty prices the
+    # SUSTAINED roll amplitude beyond a WIDE free band: R_rollduty = -roll_duty * relu(|roll_cmd| -
+    # roll_duty_free_band) / (ROLL_CMD_RAIL - roll_duty_free_band). The WIDE free band (default 0.8) is
+    # LOAD-BEARING: normal turning roll (< ~0.5 rad/s observed) stays UNTAXED -- only CHATTER above the band
+    # pays. Normalised by the +-ROLL_CMD_RAIL (3.0) authority rail (roll has no configurable clamp, like
+    # pitch), so roll_duty is the penalty magnitude at the rail. NO deploy-side roll ANGLE cap/fence (a roll
+    # angle cap backfires on the 60 deg turns -- see ~L323) -- this is TRAINING reward only. NON-farmable
+    # (min 0 in-band / steady roll), vanishes at convergence. 0 == OFF (byte-identical). Tune via
+    # +env.rw_roll_duty / +env.roll_duty_free_band / +env.rw_roll_jerk.
+    roll_duty: float = 0.0           # rw_roll_duty; weight on the |roll_cmd| excess beyond the band; 0 == OFF
+    roll_duty_free_band: float = 0.8   # (rad/s) free band; |roll_cmd| <= this pays EXACTLY 0 (wide: leaves turns free)
+    roll_jerk: float = 0.0           # rw_roll_jerk; L1 weight on |delta roll_cmd| [per (rad/s)]; 0 == OFF
+
     # --- VELOCITY-JERK smoothness prior (R0 still-yaw hover boot, 2026-07-12; AUTHORIZED smoothness, NOT
     # energy/speed). A SMOOTHNESS penalty on the temporal CHANGE of the WORLD-frame CoM acceleration:
     # R_velsmooth = -vel_smooth * ||jerk||^2, jerk = accel_curr - accel_prev (the 1st difference of
@@ -1164,6 +1186,47 @@ def pitch_jerk_penalty(pitch_cmd_delta: Tensor, rw_pitch_jerk: float) -> Tensor:
     return -rw_pitch_jerk * pitch_cmd_delta.abs()
 
 
+# Roll, like pitch, has NO configurable command clamp (only yaw does, via ego_yaw_cmd_clamp_rad_s), so the
+# roll duty penalty normalises its excess against the SAME fixed authority rail = the |roll_cmd| the
+# ROLL_EVAL satur_duty also treats as railed. Just inside the +-3.14 action space.
+ROLL_CMD_RAIL = 3.0
+
+
+def roll_duty_penalty(roll_cmd: Tensor, rw_roll_duty: float, free_band: float,
+                      rail: float = ROLL_CMD_RAIL) -> Tensor:
+    """ROLL AMPLITUDE / DUTY penalty (close-in roll limit-cycle fix, 2026-07-22): R_rollduty = -rw_roll_duty
+    * relu(|roll_cmd| - free_band) / (rail - free_band), on the APPLIED roll-rate command (action channel 1,
+    rad/s). The roll mirror of ``pitch_duty_penalty`` with the fixed +-``rail`` authority (ROLL_CMD_RAIL=3.0;
+    roll, like pitch, has no configurable clamp). ZERO at |roll_cmd| <= ``free_band`` (WIDE by default, 0.8,
+    because roll is NOT the primary axis and the course NEEDS transient roll for its ~60 deg turns -- normal
+    turning roll (< ~0.5 rad/s observed) stays UNTAXED) and grows LINEARLY to -rw_roll_duty at the +-rail.
+    Prices the SUSTAINED near-gate roll amplitude the jerk term (the PRIMARY lever) under-prices between
+    flips. NON-farmable (min 0 in-band), vanishes at convergence. Sign NEGATIVE. rw_roll_duty==0 -> OFF
+    (zeros -> byte-identical). Returns the (<=0) penalty (N,)."""
+    assert torch is not None
+    if rw_roll_duty == 0.0:
+        return torch.zeros_like(roll_cmd)
+    span = max(float(rail) - float(free_band), 1e-6)
+    excess = (roll_cmd.abs() - float(free_band)).clamp(min=0.0) / span
+    return -rw_roll_duty * excess
+
+
+def roll_jerk_penalty(roll_cmd_delta: Tensor, rw_roll_jerk: float) -> Tensor:
+    """ROLL JERK penalty (close-in roll limit-cycle fix, 2026-07-22; the PRIMARY roll lever): R_rolljerk =
+    -rw_roll_jerk * |roll_cmd_t - roll_cmd_{t-1}|, on the L1 temporal change of the APPLIED roll-rate command
+    (action channel 1). The roll mirror of ``pitch_jerk_penalty``. This is the PRIMARY defence because roll
+    is NOT the primary control axis and the course NEEDS transient roll for its ~60 deg turns: a SMOOTH
+    turn-in has LOW |delta roll_cmd| and pays ~0, while the close-in limit cycle (the growing-amplitude
+    roll-rate oscillation that slams the gate side) has HIGH |delta roll_cmd| and pays the most. A SUSTAINED
+    / steady roll (a needed bank -> delta ~0) pays 0, so smooth rolling is NEVER penalised -- only chatter.
+    NON-farmable, vanishes at convergence. Sign NEGATIVE. rw_roll_jerk==0 -> OFF (zeros -> byte-identical).
+    (N,)."""
+    assert torch is not None
+    if rw_roll_jerk == 0.0:
+        return torch.zeros_like(roll_cmd_delta)
+    return -rw_roll_jerk * roll_cmd_delta.abs()
+
+
 def velocity_jerk_penalty(accel_curr: Tensor, accel_prev: Tensor, rw_vel_smooth: float) -> Tensor:
     """VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12): R_velsmooth = -rw_vel_smooth *
     ||jerk||^2, where jerk = ``accel_curr`` - ``accel_prev`` (the 1st difference of acceleration == the 2nd
@@ -1390,6 +1453,8 @@ def compute_ego_reward(
     yaw_clamp: float = 0.0,
     pitch_cmd: "Tensor | None" = None,
     pitch_cmd_delta: "Tensor | None" = None,
+    roll_cmd: "Tensor | None" = None,
+    roll_cmd_delta: "Tensor | None" = None,
     accel_curr: "Tensor | None" = None,
     accel_prev: "Tensor | None" = None,
     los_world: "Tensor | None" = None,
@@ -1524,6 +1589,15 @@ def compute_ego_reward(
                     if pitch_cmd is not None else torch.zeros_like(r_prog))
     r_pitch_jerk = (pitch_jerk_penalty(pitch_cmd_delta, w.pitch_jerk)
                     if pitch_cmd_delta is not None else torch.zeros_like(r_prog))
+    # ROLL DUTY + JERK (close-in roll limit-cycle fix; OFF unless w.roll_duty/w.roll_jerk>0 -> byte-
+    # identical): the roll mirror of the pitch duty/jerk terms on the applied channel-1 command (a WIDE free
+    # band -- roll is NOT the primary axis, its transient turn-in roll stays free; the JERK term is the
+    # primary lever). The env passes roll_cmd (None unless rw_roll_duty>0) + roll_cmd_delta (None unless
+    # rw_roll_jerk>0). Defends against the close-in roll limit cycle that slams the drone into the gate side.
+    r_roll_duty = (roll_duty_penalty(roll_cmd, w.roll_duty, w.roll_duty_free_band)
+                   if roll_cmd is not None else torch.zeros_like(r_prog))
+    r_roll_jerk = (roll_jerk_penalty(roll_cmd_delta, w.roll_jerk)
+                   if roll_cmd_delta is not None else torch.zeros_like(r_prog))
     # VELOCITY-JERK smoothness prior (R0 still-yaw hover boot 2026-07-12; OFF unless w.vel_smooth>0 ->
     # byte-identical): penalise the temporal CHANGE of the world-frame CoM acceleration (a snappy spike pays;
     # steady speed AND smooth hard accel both pay ~0). The env passes accel_curr = (v_t - v_{t-1})/dt +
@@ -1562,7 +1636,7 @@ def compute_ego_reward(
 
     reward = (r_prog + r_pass + r_cross + r_center + r_alt + r_gvhold + r_corr + r_align + r_perc
               + r_perc_next + r_att + r_roll_recover + r_cross_level + r_yawdith + r_yaw_duty + r_yaw_jerk
-              + r_pitch_duty + r_pitch_jerk
+              + r_pitch_duty + r_pitch_jerk + r_roll_duty + r_roll_jerk
               + r_velsmooth + r_vcap + r_fin + r_cone + r_smooth + r_exit + r_time - term)
 
     components = {
@@ -1584,6 +1658,8 @@ def compute_ego_reward(
         "yaw_jerk_pen": float((-r_yaw_jerk).mean()),
         "pitch_duty_pen": float((-r_pitch_duty).mean()),
         "pitch_jerk_pen": float((-r_pitch_jerk).mean()),
+        "roll_duty_pen": float((-r_roll_duty).mean()),
+        "roll_jerk_pen": float((-r_roll_jerk).mean()),
         "prog_sat_forfeit": float(prog_sat_forfeit.mean()),
         "velsmooth_pen": float((-r_velsmooth).mean()),
         "vcap_pen": float((-r_vcap).mean()),
