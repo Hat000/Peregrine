@@ -266,6 +266,16 @@ class GateSeekerConfig:
     # 92% -> 100% of observations on 300 real frames). REQUIRES a 5-keypoint M+1 model: an 8-kpt
     # model never fills centre_px, so every candidate would be dropped.
     emit_mode: str = "pnp"
+    # FORESHORTENING SOURCE (2026-07-23). "pnp" = today's path: ego_obs projects the gate model
+    # through R_cam_gate (DEFAULT, byte-identical). "corners" = carry the MEASURED
+    # GateObservation.visible_area_ratio and let ego_obs consume that instead. Why it matters: the
+    # PnP-derived area measured median 0.990 / max 1.000 over 184 real ticks -- "perfectly head-on"
+    # on ~90% of ticks while the drone was banking 50-61 deg through turns, i.e. the approach-angle
+    # cue carried NO information, and it correlated 0.44 with distance despite being defined
+    # range-free. Root cause: it is derived from the gate ORIENTATION, the one term IPPE leaves
+    # genuinely ambiguous. The corner measurement needs no pose at all. Both normalisations agree to
+    # <=0.073 across 0-60 deg tilt (verified), so this does not move the policy onto a new scale.
+    area_src: str = "pnp"
     # Drop the track after this many CONSECUTIVE ticks with no consistent candidate (gate genuinely
     # lost / between gates) so re-acquisition can re-centre on a fresh gate.
     track_max_coast_ticks: int = 8
@@ -836,6 +846,12 @@ class GateSeeker:
                 continue                        # beyond the hard range cap: unreliable PnP / far FP
             if pose.t_cam_gate[2] <= 0.05:      # gate behind / on the image plane -> unusable bearing
                 continue
+            # Carry the MEASURED foreshortening off the corner quad (no PnP, no range coupling) so
+            # ego_obs can use it instead of re-deriving area from the ambiguous pose rotation.
+            if self.config.area_src == "corners":
+                _va = obs.visible_area_ratio      # None below 4 corners: a partial quad has no area
+                if _va is not None:
+                    pose = replace(pose, visible_area_meas=float(_va))
             # VISION-side vertical aim bias: lower EVERY emitted gate by a constant (camera +Y = down).
             b = self.config.perceived_gate_down_bias_m
             if b != 0.0:

@@ -279,6 +279,13 @@ class GatePose:
     # policy would otherwise be invisible on the wire. None on the PnP path.
     range_src: str | None = None
     n_pairs: int = 0                              # corner pairs that voted on the range (0 for bbox/PnP)
+    # MEASURED foreshortening (2026-07-23): GateObservation.visible_area_ratio, straight off the
+    # observed corner quad -- no PnP, no range coupling. Carried so ego_obs can consume the CORNER
+    # measurement instead of re-deriving area by projecting the model through R_cam_gate, which is
+    # the one genuinely ambiguous part of the pose fit (IPPE's two solutions differ in tilt SIGN)
+    # and which measured a near-constant 0.99 in flight -- i.e. "always head-on", no information.
+    # None when the observation had <4 corners (a partial quad has no apparent area).
+    visible_area_meas: float | None = None
 
     def __post_init__(self) -> None:
         assert self.R_cam_gate.shape == (3, 3), f"R_cam_gate must be (3,3), got {self.R_cam_gate.shape}"

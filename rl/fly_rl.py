@@ -1944,6 +1944,7 @@ def _build_casec_seeker(args, gates):
             # M+1 emit source (2026-07-23), ego only: "centre" swaps the ambiguous PnP translation for
             # regressed-centre bearing x apparent-size range. Default "pnp" == byte-identical.
             **({"emit_mode": str(getattr(args, "seeker_emit", "pnp"))} if _ego_path else {}),
+            **({"area_src": str(getattr(args, "ego_area_src", "pnp"))} if _ego_path else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
                                         if getattr(args, "ego_ckpt", None) else 0.0),
@@ -3623,6 +3624,16 @@ def build_parser() -> argparse.ArgumentParser:
                          "(2.4%%) of PnP inside the 30 m cap. REQUIRES a 5-keypoint M+1 model via "
                          "--seeker-weights; an 8-kpt model never fills the centre keypoint, so every "
                          "candidate would be dropped and the drone would fly blind.")
+    ap.add_argument("--ego-area-src", choices=["pnp", "corners"], default="pnp",
+                    help="Source of the visible_area foreshortening cue the policy consumes. 'pnp' "
+                         "(default, byte-identical) re-derives it by projecting the gate model "
+                         "through R_cam_gate. 'corners' uses the MEASURED corner-quad ratio instead. "
+                         "Measured over 184 real ticks the pnp form sat at median 0.990 / max 1.000 "
+                         "-- reporting head-on on ~90%% of ticks while the drone banked 50-61 deg, so "
+                         "the approach-angle cue carried NO information -- and correlated 0.44 with "
+                         "distance despite being range-free by definition. Root cause: it derives "
+                         "from the gate ORIENTATION, the one term IPPE leaves ambiguous. Both "
+                         "normalisations agree to <=0.073 across 0-60 deg tilt.")
     ap.add_argument("--ego-track-ema-alpha", type=float, default=0.5,
                     help="EGO gate-TRACK smoothing factor (ego path only), applied to BOTH the active "
                          "(slot0) and next-gate (slot1) tracks. The track's range/bearing are EMA'd so "
@@ -4077,6 +4088,7 @@ def main() -> int:
                     # here and silently fell back to "pnp" for every centre-mode flight. Recorded in
                     # both places so neither reader can be wrong again.
                     "emit_mode": str(getattr(args, "seeker_emit", "pnp")),
+                    "area_src": str(getattr(args, "ego_area_src", "pnp")),
                     "seeker_detector": args.seeker_detector,
                     "seeker_weights": _resolve_seeker_weights(args) or "",
                     "sysid_replay": str(args.sysid_replay),

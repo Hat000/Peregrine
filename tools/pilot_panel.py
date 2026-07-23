@@ -173,6 +173,14 @@ SCHEMA = [
               "median of PnP inside 30 m). ⚠ 'centre' REQUIRES the 5-kpt M+1 engine in Vision->seeker "
               "weights (vq2_m1_darkred_*): with an 8-kpt model every candidate is dropped and the "
               "flight is BLIND. fly_rl hard-fails on the pad if they disagree."),
+    dict(key="ego_area_src", flag="--ego-area-src", action="value", ui="select",
+         group="Ego perception", default="pnp", choices=["pnp", "corners"],
+         help="Source of the visible_area (approach-angle) cue. 'pnp' re-derives it from the pose "
+              "rotation -- MEASURED at median 0.990 / max 1.000 over 184 real ticks, i.e. it reports "
+              "head-on on ~90%% of ticks while banking 50-61 deg, so it tells the policy nothing "
+              "about angle, and it correlates 0.44 with distance despite being range-free. "
+              "'corners' uses the measured corner-quad ratio (no PnP, no range coupling). Scales "
+              "agree to <=0.073 over 0-60 deg tilt. Needs 4 corners; below that the cue is masked."),
     dict(key="ego_track_ema_alpha", flag="--ego-track-ema-alpha", action="value", ui="number",
          group="Ego perception", default=0.5, step=0.05,
          help="Gate-TRACK smoothing, both slots: new = (1-a)*old + a*measurement. 1.0 = SNAP to the "

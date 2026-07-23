@@ -434,8 +434,21 @@ class EgoObsBuilder:
                 # is still delivered -- only the foreshortening cue is withheld, and withholding it
                 # is what training saw. n_corners < 3 uniquely marks the orientation-free poses
                 # (real IPPE fits are 4, P3P 3).
-                self._area[slot] = (0.0 if int(getattr(sp, "n_corners", 4)) < 3
-                                    else visible_area_from_gatepose(sp.R_cam_gate, sp.t_cam_gate))
+                # PREFER the MEASURED corner foreshortening when the seeker carried one
+                # (--ego-area-src corners). It comes straight off the observed quad -- no PnP and no
+                # range coupling -- whereas the projection below re-derives area from R_cam_gate,
+                # the one genuinely ambiguous term of the fit. Measured in flight, the projected
+                # form sat at median 0.990 / max 1.000 across 184 ticks while the drone banked
+                # 50-61 deg: it reported "head-on" essentially always and told the policy nothing
+                # about approach angle, and it correlated 0.44 with distance despite being defined
+                # range-free. The two normalisations agree to <=0.073 over 0-60 deg tilt, so this
+                # swaps the SOURCE without moving the policy onto a different scale.
+                _meas = getattr(sp, "visible_area_meas", None)
+                if _meas is not None:
+                    self._area[slot] = float(_meas)
+                else:
+                    self._area[slot] = (0.0 if int(getattr(sp, "n_corners", 4)) < 3
+                                        else visible_area_from_gatepose(sp.R_cam_gate, sp.t_cam_gate))
                 self._last_fix_sim_ns[slot] = t_ns
                 # coarse sector (auto) is the ACTIVE gate's first-fix elevation bucket -- slot0 ONLY.
                 if slot == 0 and self._sector is None and cfg.sector_mode == "auto":
