@@ -1,0 +1,10 @@
+{"k": 0, "work_ms": 104.44, "nav_ms": 65.8, "infer_ms": 63.39, "detect_ms": 36.56, "fresh_detect": true}
+{"k": 1, "work_ms": 31.39, "nav_ms": 22.48, "infer_ms": 21.67, "detect_ms": 6.43, "fresh_detect": true}
+{"k": 2, "work_ms": 76.92, "nav_ms": 67.66, "infer_ms": 20.63, "detect_ms": 7.46, "fresh_detect": true}
+{"k": 3, "work_ms": 26.16, "nav_ms": 17.31, "infer_ms": 16.67, "detect_ms": 5.93, "fresh_detect": true}
+{"k": 4, "work_ms": 84.58, "nav_ms": 76.32, "infer_ms": 26.8, "detect_ms": 6.49, "fresh_detect": true}
+{"k": 5, "work_ms": 61.89, "nav_ms": 50.46, "infer_ms": 22.77, "detect_ms": 8.94, "fresh_detect": true}
+{"k": 6, "work_ms": 36.32, "nav_ms": 23.66, "infer_ms": 22.74, "detect_ms": 9.2, "fresh_detect": true}
+{"k": 7, "work_ms": 35.47, "nav_ms": 22.69, "infer_ms": 21.61, "detect_ms": 10.44, "fresh_detect": true}
+{"k": 8, "work_ms": 61.95, "nav_ms": 51.48, "infer_ms": 21.13, "detect_ms": 8.26, "fresh_detect": true}
+{"k": 9, "work_ms": 71.86, "nav_ms": 61.71, "infer_ms": 14.88, "detect_ms": 8.15, "fresh_detect": true}
