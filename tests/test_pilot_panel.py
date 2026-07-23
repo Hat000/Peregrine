@@ -215,3 +215,27 @@ def test_state_is_written_only_when_something_changed(tmp_path, monkeypatch):
     pp.refresh_pilots()
     pp.refresh_pilots()
     assert saves["n"] == 1, "nothing changed -> no further writes"
+
+
+def test_track_ema_alpha_is_a_knob_and_defaults_to_the_flown_value():
+    """2026-07-22: the gate-TRACK EMA smoothing was a hard-coded GateSeekerConfig default (0.5) with no
+    flag and no panel field, so the one knob that decides whether the track SNAPS to the newest PnP or
+    lags behind a fast-closing gate could not be flown. It feeds BOTH the active and next-gate tracks,
+    and because the jump gates test against the PREDICTED value it also moves what counts as a
+    consistent candidate. Default 0.5 reproduces every flight to date incl. the 9-gate record."""
+    spec = P.BY_KEY["ego_track_ema_alpha"]
+    assert spec["flag"] == "--ego-track-ema-alpha"
+    assert spec["default"] == 0.5
+    assert spec["group"] == P.BY_KEY["ego_gate_z_bias"]["group"]   # sits with the other seeker knobs
+
+    argv, _ = P.build_cmd({"ego_ckpt": "ckpts/v18Qs1_actor.pth"})
+    assert argv[argv.index("--ego-track-ema-alpha") + 1] == "0.5"
+    argv, _ = P.build_cmd({"ego_ckpt": "ckpts/v18Qs1_actor.pth",
+                           "ego_track_ema_alpha": "0.9"})
+    assert argv[argv.index("--ego-track-ema-alpha") + 1] == "0.9"
+
+
+def test_track_ema_alpha_is_not_recipe_managed():
+    """A PROBE knob, like the acquire cap: picking a model must not reset it, so a sweep survives a
+    checkpoint switch."""
+    assert "ego_track_ema_alpha" not in P._recipe_managed_keys()

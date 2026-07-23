@@ -646,7 +646,9 @@ def _meta_seeker_constants(args) -> dict:
         "track_max_range_jump_m": c.track_max_range_jump_m,
         "track_max_bearing_jump_rad": c.track_max_bearing_jump_rad,
         "track_max_coast_ticks": c.track_max_coast_ticks,
-        "track_ema_alpha": c.track_ema_alpha,
+        # the FLOWN track smoothing (CLI-driven on the ego path), not the dataclass default
+        "track_ema_alpha": (float(getattr(args, "ego_track_ema_alpha", 0.5))
+                            if getattr(args, "ego_ckpt", None) else c.track_ema_alpha),
         "reacquire_hint_max_bearing_rad": c.reacquire_hint_max_bearing_rad,
     }
 
@@ -1872,6 +1874,11 @@ def _build_casec_seeker(args, gates):
             # flag, so a gate at 25 m was valid-but-unlockable and no panel knob could close that
             # window. Now CLI-driven; default 22.0 == the old constant == byte-identical.
             **({"max_acquire_range_m": float(getattr(args, "ego_max_acquire_range", 22.0))}
+               if getattr(args, "ego_ckpt", None) else {}),
+            # Gate-TRACK EMA smoothing (2026-07-22), ego only. Feeds BOTH the active and next-gate
+            # tracks. 1.0 = snap to the newest measurement, small = heavy smoothing. Was a hard-coded
+            # 22-style constant with no flag; default 0.5 == the old constant == byte-identical.
+            **({"track_ema_alpha": float(getattr(args, "ego_track_ema_alpha", 0.5))}
                if getattr(args, "ego_ckpt", None) else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
@@ -3541,6 +3548,17 @@ def build_parser() -> argparse.ArgumentParser:
                          "--ego-max-valid-range to close a long-leg blind window (the A5 far-gate trap "
                          "is what it guards against: too high re-admits a distant off-axis downrange "
                          "gate as the lock). Never exceeds the valid-range cap in effect.")
+    ap.add_argument("--ego-track-ema-alpha", type=float, default=0.5,
+                    help="EGO gate-TRACK smoothing factor (ego path only), applied to BOTH the active "
+                         "(slot0) and next-gate (slot1) tracks. The track's range/bearing are EMA'd so "
+                         "one noisy-but-accepted PnP depth cannot yank the prediction: new = (1-a)*old "
+                         "+ a*measurement. 1.0 = SNAP to the latest measurement (no smoothing); small = "
+                         "heavy smoothing/laggy. Was a hard-coded GateSeekerConfig default with no flag "
+                         "until 2026-07-22; 0.5 reproduces every flight to date. RAISE it when the "
+                         "smoothed track LAGS a fast-closing gate (the prediction trails the real gate "
+                         "and honest candidates start failing the jump gates); LOWER it if a noisy depth "
+                         "makes the track jitter. Note the jump gates (--track_max_range_jump_m etc.) "
+                         "test against the PREDICTED value, so alpha changes what counts as consistent.")
     ap.add_argument("--ego-gate-z-bias", type=float, default=0.0,
                     help="EGO perceived-gate VERTICAL bias in METRES, applied at the VISION emission "
                          "(GateSeeker._valid_poses adds it to the camera-frame +Y/down of EVERY emitted "

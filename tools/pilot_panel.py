@@ -160,6 +160,14 @@ SCHEMA = [
               "valid-but-unlockable -- a blind window on any leg longer than 22 m. 22 = the 9-gate "
               "record. Raise toward the valid cap to close a long-leg window; too high re-admits the "
               "far off-axis downrange gate this exists to reject."),
+    dict(key="ego_track_ema_alpha", flag="--ego-track-ema-alpha", action="value", ui="number",
+         group="Ego perception", default=0.5, step=0.05,
+         help="Gate-TRACK smoothing, both slots: new = (1-a)*old + a*measurement. 1.0 = SNAP to the "
+              "latest measurement (no smoothing), small = heavy/laggy. Was HARD-CODED at 0.5 with no "
+              "knob until 2026-07-22; 0.5 = every flight to date incl. the 9-gate record. RAISE when "
+              "the track LAGS a fast-closing gate (prediction trails, honest candidates start failing "
+              "the jump gates); LOWER if noisy depth makes it jitter. The jump gates test against the "
+              "PREDICTED value, so this also changes what counts as a consistent candidate."),
     dict(key="ego_gate_z_bias", flag="--ego-gate-z-bias", action="value", ui="number",
          group="Ego perception", default=0.0, step=0.1,
          help="Perceived-gate VERTICAL bias (m) added to EVERY vision emission (both slots). "
