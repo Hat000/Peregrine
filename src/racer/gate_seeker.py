@@ -667,6 +667,9 @@ class GateSeeker:
     _next_track_range_m: float | None = field(default=None, repr=False)
     _next_track_bearing: np.ndarray | None = field(default=None, repr=False)
     _next_track_coast_ticks: int = field(default=0, repr=False)
+    # The RAW pose slot0 emitted this tick (None when it coasted). slot1 dedups against THIS, not the
+    # EMA track -- the track lags the emitted pose and the gap let the active gate into slot1.
+    _active_emitted: GatePose | None = field(default=None, repr=False)
     # -- WP2 (Patch-2): the ARRIVAL PRIOR latched by on_gate_advance -- the just-passed gate's coarse-map
     #    (horiz, vert) bucket (where the CURRENT gate should sit relative to the incoming leg). None => no
     #    prior (gate 0, sector_mode!=map, or fly_rl passed None) -> the prior veto is inert. Persists until
@@ -873,6 +876,9 @@ class GateSeeker:
 
         With tracking OFF the legacy behaviour returns: pick the CLOSEST (smallest PnP range) gate
         each frame, no continuity."""
+        # The pose slot0 EMITS this tick, for slot1's dedup. Cleared first so a tick where slot0
+        # returns None cannot leave a stale pose behind for detect_next_gate_lever to dedup against.
+        self._active_emitted = None
         if self.detector is None or frame is None or getattr(frame, "image_bgr", None) is None:
             self._last_none_reason = "other"     # no detector / no frame -> nothing to localize
             self._record_decision(0, "other", 0)
@@ -983,6 +989,7 @@ class GateSeeker:
         self._track_ever_locked = True   # WP1a: this gate's track has now locked -> re-acquire discipline
         self._last_none_reason = None    # a usable pose this tick (clear the stale reason)
         self._record_decision(0, None, len(poses), chosen, cands=poses)
+        self._active_emitted = chosen        # what slot1 must dedup against (see _is_active_gate)
         return chosen
 
     def _first_acquisition(self, poses: list[GatePose], *, cold_start: bool = True,
@@ -1316,11 +1323,27 @@ class GateSeeker:
         same (range, bearing) proximity the track-continuity gate uses. Such a candidate is excluded
         from the slot1 set so the next-gate slot never re-locks the active gate. With no active track
         yet (nothing locked / just reset) nothing is excluded."""
-        if self._track_range_m is None or self._track_bearing is None:
+        # Dedup against the pose slot0 ACTUALLY EMITTED this tick, not the EMA-smoothed track.
+        # THE BUG (measured 2026-07-23): detect_gate_lever returns the RAW chosen pose, while the
+        # track is EMA-smoothed -- so dedup was comparing candidates to a point slot0 never emitted.
+        # On a fast approach the smoothed track LAGS the raw pose (measured p90 1.35-2.52 m against a
+        # 3.0 m dedup radius, and the 0.10 rad bearing gate is tighter still), so the ACTIVE gate
+        # escaped its own dedup and was re-admitted as the slot1 candidate: 37-60% of two-slot ticks
+        # fed the SAME physical gate to BOTH slots. Training fed slot1 only the true tg+1 or zero, so
+        # a duplicate is OOD. Comparing against the emitted pose removes the lag coupling entirely --
+        # and makes the dedup independent of track_ema_alpha, which was silently tuning it.
+        ref = self._active_emitted
+        if ref is not None:
+            dr = abs(float(pose.range_m) - float(ref.range_m))
+            db = float(np.linalg.norm(self._pose_bearing(pose) - self._pose_bearing(ref)))
+        elif self._track_range_m is not None and self._track_bearing is not None:
+            # slot0 emitted nothing this tick (coasting): the smoothed track is the only reference
+            # left, and a lagging guard still beats no guard.
+            dr = abs(float(pose.range_m) - float(self._track_range_m))
+            db = float(np.linalg.norm(self._pose_bearing(pose)
+                                      - np.asarray(self._track_bearing, dtype=np.float64)))
+        else:
             return False
-        dr = abs(float(pose.range_m) - float(self._track_range_m))
-        db = float(np.linalg.norm(self._pose_bearing(pose)
-                                  - np.asarray(self._track_bearing, dtype=np.float64)))
         return (dr <= self.config.next_gate_dedup_range_m
                 and db <= self.config.next_gate_dedup_bearing_rad)
 

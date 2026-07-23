@@ -126,3 +126,56 @@ def test_pnp_declines_a_corner_free_observation():
     from racer.vision.gate_pose import estimate_gate_pose
     obs = _obs(np.zeros((0, 2)), ids=np.zeros((0,), dtype=int))
     assert estimate_gate_pose(obs) is None
+
+
+# --- slot1 dedup + the orientation-free visible_area mask (2026-07-23) ----------------------------
+
+def test_slot1_dedups_against_the_emitted_pose_not_the_lagging_track():
+    """THE BUG: detect_gate_lever returns the RAW chosen pose while the track is EMA-smoothed, so
+    dedup compared candidates to a point slot0 never emitted. On a fast approach the smoothed track
+    lags (measured p90 1.35-2.52 m against a 3.0 m radius), the ACTIVE gate escaped its own dedup and
+    was re-admitted into slot1 -- 37-60% of two-slot ticks fed the SAME gate to BOTH slots, which is
+    OOD (training fed slot1 only the true tg+1 or zero)."""
+    from racer.contracts import GatePose
+    from racer.gate_seeker import GateSeeker, GateSeekerConfig
+    s = GateSeeker(config=GateSeekerConfig(), detector=None)
+
+    def pose(z):
+        return GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3),
+                        t_cam_gate=np.array([0.0, 0.0, float(z)]), reproj_error_px=0.0)
+
+    emitted = pose(10.0)
+    s._active_emitted = emitted
+    s._track_range_m, s._track_bearing = 6.0, np.zeros(2)   # track lagging 4 m behind the emission
+    # The emitted gate must be recognised as the active one DESPITE the stale track...
+    assert s._is_active_gate(pose(10.0)) is True
+    # ...and a genuinely different gate 8 m beyond it must still pass through to slot1.
+    assert s._is_active_gate(pose(18.0)) is False
+    # Without the fix the 4 m lag would have put the emitted gate outside the 3 m radius of the
+    # track and let it into slot1; assert the track is NOT what decides while an emission exists.
+    assert s._is_active_gate(pose(6.0)) is False
+
+    s._active_emitted = None            # slot0 coasted -> fall back to the track, still guarded
+    assert s._is_active_gate(pose(6.0)) is True
+
+
+def test_orientation_free_pose_masks_visible_area_instead_of_fabricating_it():
+    """visible_area is derived by PROJECTING the gate model through R_cam_gate. A centre-emit pose
+    with <3 corners has NO orientation (synthesised with identity rotation), and identity reads as a
+    perfectly square-on gate -- a fabricated ~1.0 area on exactly the cropped gates the centre path
+    recovers. It must be masked, not invented."""
+    from racer.contracts import GatePose
+    from racer.ego_obs import visible_area_from_gatepose
+    t = np.array([0.0, 0.0, 8.0])
+    # identity rotation genuinely does read near square-on -- which is why trusting it is wrong
+    assert visible_area_from_gatepose(np.eye(3), t) > 0.5
+    synth = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3), t_cam_gate=t,
+                     reproj_error_px=0.0, n_corners=1)
+    real = GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3), t_cam_gate=t,
+                    reproj_error_px=0.0, n_corners=4)
+    masked = (0.0 if int(getattr(synth, "n_corners", 4)) < 3
+              else visible_area_from_gatepose(synth.R_cam_gate, synth.t_cam_gate))
+    kept = (0.0 if int(getattr(real, "n_corners", 4)) < 3
+            else visible_area_from_gatepose(real.R_cam_gate, real.t_cam_gate))
+    assert masked == 0.0            # synthesised: withheld
+    assert kept > 0.5               # a real 4-corner fit still reports its area

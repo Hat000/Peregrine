@@ -423,7 +423,19 @@ class EgoObsBuilder:
             if seen:
                 rel_frd = rel_pos_body_frd_from_gatepose(sp.t_cam_gate)
                 self._rel_flu[slot] = _FLIP_FRD_FLU * rel_frd
-                self._area[slot] = visible_area_from_gatepose(sp.R_cam_gate, sp.t_cam_gate)
+                # visible_area is derived by PROJECTING the gate model through R_cam_gate, so it is
+                # only meaningful when the pose carries a real ORIENTATION. An M+1 centre-emit pose
+                # with <3 corners has none -- it is synthesised with identity rotation because the
+                # regressed centre gives position without orientation -- and identity reads as a
+                # perfectly square-on gate, i.e. a FABRICATED ~1.0 area on exactly the cropped gates
+                # the centre path recovers. Mask it instead (0.0), which is what this contract has
+                # always done for a cropped gate: the partial-rescue path reports n_corners=3 and
+                # GateObservation.visible_area_ratio already returns None below 4 corners. Position
+                # is still delivered -- only the foreshortening cue is withheld, and withholding it
+                # is what training saw. n_corners < 3 uniquely marks the orientation-free poses
+                # (real IPPE fits are 4, P3P 3).
+                self._area[slot] = (0.0 if int(getattr(sp, "n_corners", 4)) < 3
+                                    else visible_area_from_gatepose(sp.R_cam_gate, sp.t_cam_gate))
                 self._last_fix_sim_ns[slot] = t_ns
                 # coarse sector (auto) is the ACTIVE gate's first-fix elevation bucket -- slot0 ONLY.
                 if slot == 0 and self._sector is None and cfg.sector_mode == "auto":
