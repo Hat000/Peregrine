@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-23T14:39:48.413Z
+  modified: 2026-07-23T21:34:51.213Z
 ---
 
 # Deploy / emission cycle — 2026-07-22
@@ -107,10 +107,32 @@ Ran v18Qs0 + v18Qs1 through a `rollout_only` sweep emitting the new rate-based `
   which LAGS. Phase-lag on the lateral estimate is what turns a bounded correction into the
   growing-amplitude saturating limit cycle. ⇒ **TWO LEVERS, both help:**
   1. **Reward (built, firing):** `rw_roll_jerk`/`rw_roll_duty` damp the intrinsic chatter.
-  2. **Seeker (no retrain):** RAISE `track_ema_alpha` (0.5→~0.8, less lag) — a DEPLOY-config
-     change Fengyou can FLY to test if the lag is the dominant amplifier. Fast/cheap probe.
+  2. ~~Seeker EMA lag~~ **REFUTED — see below.**
 * 🚩 `roll_swing` (YAW_EVAL, peak roll ANGLE deg) is a BAD discriminator here — 44–57° in sim,
   but a legit 60° turn produces that too. The RATE `ROLL_EVAL` is the right metric.
+
+### CORRECTION 2026-07-23 — the amplifier is the CLOSE-IN PERCEPTION BLACKOUT, NOT the EMA
+Fengyou flew v18Qs0 at `track_ema_alpha` 0.8 (×4) + 0.2 (×1). **0.8 = WORSE** (gates [1,0,0,2]
+mean 0.75; roll STILL saturates −1.5 to −2.1 close-in at area~1.0); 0.2 = 1 gate, peak −0.95.
+Changing alpha across a 4× range did NOT stop the saturation ⇒ **the EMA is a DEAD LEVER.**
+`seeker.jsonl` at the death ticks (3 flights) shows WHY: the roll saturates exactly where the
+detector returns **`valid_poses_empty` (ncand=0)** — the gate fills the frame so no complete
+gate is detectable — or the one candidate is **`continuity_reject`**'d (close-in the bearing
+swings faster than the 0.35 rad gate allows). **There is nothing to smooth**, so alpha is inert.
+* **THE REAL AMPLIFIER = the last ~0.2 s CLOSE-IN PERCEPTION BLACKOUT.** Sim feeds a clean pose
+  all the way through the gate (n_passed 5.6); the wire goes BLIND right as the gate fills the
+  frame (precision moment) → actor flies open-loop → over-corrects lateral → roll runs away →
+  slams the gate SIDE (n_passed 1.4). This IS the sim↔wire gap.
+* **VINDICATES Fengyou's original coast question** (2026-07-22, was wrongly DEMOTED): "give a
+  gate centre, cut the camera, coast a few seconds" is EXACTLY the close-in blackout fix.
+* **Levers, re-ranked:** (1) **reward v1.9 (running)** — damps the over-reaction, amplifier-
+  AGNOSTIC, main bet; (2) **close-in coast** — gyro-propagate the gate centre through the
+  `valid_poses_empty` window (caveat: close-in parallax is TRANSLATION-driven and wire velocity
+  is weak, so coast BRIDGES, doesn't replace detection); (3) **partial-gate close-in detection**
+  (Fengyou's new vision system — the clean fix). 🛑 **NO more EMA tuning.** Keep flying ema=0.5.
+* 🚩 `continuity_reject` close-in is a SECOND sub-mode: a REAL detection (ncand≥1) rejected
+  because the bearing jumped >0.35 rad as the gate neared — the continuity gate is too strict
+  close-in (pass_drop only partly helps).
 
 ## v1.9 SMOKE — CLEAN, roll penalty BITES (2026-07-23, job 3321540, MIG, 3.5 min)
 
