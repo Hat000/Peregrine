@@ -69,7 +69,16 @@ def main() -> int:
     ap.add_argument("--model", default="yolo11n-pose.pt",
                     help="base weights (COCO pose); the 5-kpt head reinits, the backbone transfers. "
                          "Pass a stage-1 M+1 best.pt to fine-tune on hand-verified frames.")
-    ap.add_argument("--epochs", type=int, default=100)     # more than seg: the centre kpt is the point
+    # MEASURED 2026-07-23: a 100-epoch run PEAKED AT EPOCH 10 (pose mAP50 0.503 on the REAL
+    # hand-labelled val) and decayed to 0.282 by epoch 100 -- centre error 20.5 -> 35.6 px and
+    # coverage 98% -> 84%. The training set is synthetic-only, so the extra 90 epochs learned
+    # synthetic APPEARANCE, not gates. Until the render's domain matches the real dark warehouse,
+    # long schedules are actively harmful here: keep the budget short and let patience stop it.
+    ap.add_argument("--epochs", type=int, default=25)
+    ap.add_argument("--patience", type=int, default=8,
+                    help="early-stop after this many epochs with no val improvement (0 = off)")
+    ap.add_argument("--close-mosaic", type=int, default=6,
+                    help="disable mosaic for the last N epochs so training ends on clean geometry")
     ap.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr0", type=float, default=None,
@@ -100,8 +109,10 @@ def main() -> int:
         # Mosaic manufactures the CROPPED gates that are M+1's entire reason to exist -- a gate
         # sliced by a mosaic tile boundary is a free centre-in-frame-corners-out example. Close it
         # for the last epochs so training finishes on undistorted geometry.
-        mosaic=1.0, close_mosaic=15,
+        mosaic=1.0, close_mosaic=args.close_mosaic,
     )
+    if args.patience:
+        kw["patience"] = args.patience
     if args.lr0 is not None:
         kw["lr0"] = args.lr0
 
