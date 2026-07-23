@@ -33,7 +33,8 @@
     "people_count_range": [2, 5],
     "lighting_mode": "auto",
     "background_mode": "mixed",
-    "exposure_range": [-0.4, 0.5]
+    "exposure_range": [-0.4, 0.5],
+    "ambient_strength_range": [0.7, 1.3]
   },
   "render": {
     "engine": "CYCLES",

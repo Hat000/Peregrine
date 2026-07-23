@@ -1,0 +1,56 @@
+{
+  "name": "vq2_dark_red_partial",
+  "description": "The CROPPED/PARTIAL arm of vq2_dark_red: IDENTICAL real-matched appearance (dark industrial hangar, glowing signage-printed gates), vq1_partial's camera envelope. Camera CLOSE (1.2-6 m) with the boresight pushed ~half-FOV off the target so the gate spills over a frame edge and its CENTRE is often off-frame -- the regime the M+1 centre head and the partial-corner rescue exist for, and per vq2-corner-free-centre-architecture 52.9% of ticks inside 2 m are un-hand-labelable for exactly this reason. Crop behaviour lives in viewpoint.partial_gates, so this is a separate preset rather than a flag on the base one, mirroring how vq1_partial pairs with vq1_faithful. Measured over 24 rendered frames against 400 real frames: background median gray 34.3 vs 36.7 real, gate hue 17.9 vs 17.8 deg, saturation 213 vs 205, value 210 vs 206. Label pipeline verified OFF DISK on the same batch: 2.167 gates/frame, centre sidecars 24/24 and row-for-row with the pose labels, occlusion census hidden=8 (13.3%) -- byte-identical to a vq1_partial control rendered at the same seed, which is the proof that this appearance change does not touch geometry or labels. See vq2_dark_red for the knob-interaction notes.",
+  "negative_fraction": 0.0,
+  "viewpoint": {
+    "partial_gates": true,
+    "crop_range_min_m": 1.2,
+    "crop_range_max_m": 6.0,
+    "partial_min_corners": 3,
+    "partial_min_area_frac": 0.03,
+    "roll_jitter_rad": 0.35,
+    "speed_min_mps": 6.0,
+    "speed_max_mps": 35.0
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.8,
+    "lighting_p": 0.15,
+    "brightness_p": 0.25,
+    "geometric_p": 0.0
+  },
+  "appearance": {
+    "use_vq1_red": true,
+
+    "gate_hue_jitter": 0.02,
+    "gate_hue_offset": 0.011,
+    "gate_sat_range": [0.94, 1.0],
+    "gate_val_range": [0.85, 1.0],
+    "gate_metallic_range": [0.0, 0.15],
+    "gate_roughness_range": [0.35, 0.65],
+
+    "gate_emission_range": [0.7, 2.1],
+    "gate_signage_prob": 0.9,
+
+    "use_hdri": true,
+    "photoreal": true,
+    "hdri_include": ["warehouse", "hangar", "workshop", "machine_shop",
+                     "concrete_tunnel", "factory_canteen"],
+    "ambient_strength_range": [0.03, 0.13],
+    "exposure_range": [-0.5, 0.28],
+
+    "prop_count_range": [6, 12],
+    "people_count_range": [1, 4],
+    "lighting_mode": "dark_arena",
+    "background_mode": "arena"
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 160,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": false,
+    "use_glare": false,
+    "view_transform": "Standard"
+  }
+}

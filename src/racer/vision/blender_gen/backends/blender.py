@@ -93,6 +93,9 @@ class BlenderBackend:
         self._pr_mod = None
         self._lib = None
         self._prop_cache = None
+        self._hdris: list[str] = []
+        self._sig_mod = None
+        self._decals = None
         if getattr(preset.appearance, "photoreal", False):
             from .. import assets, bpy_photoreal
             self._pr_mod = bpy_photoreal
@@ -104,6 +107,61 @@ class BlenderBackend:
             else:
                 # import every prop glTF ONCE; per-frame spawns duplicate (shared mesh) -- cheap
                 self._prop_cache = bpy_photoreal.PropCache(self.scene, self._lib.prop_gltfs())
+                self._hdris = self._select_hdris(preset.appearance)
+                self._setup_signage(preset.appearance)
+
+    # -- HDRI selection ------------------------------------------------------------------
+    def _select_hdris(self, ap) -> list[str]:
+        """The environment maps this preset is allowed to use (``hdri_include`` substring filter).
+
+        The shipped set spans an aquarium, white photo studios and a train station alongside the
+        hangars and workshops. A preset that is deliberately CENTRED on the real venue names the
+        industrial maps; one that wants maximum domain randomization leaves the filter empty and
+        gets all 26, exactly as before. An empty MATCH is a preset typo, so it falls back to the
+        full set loudly rather than crashing a long render or silently rendering one environment.
+        """
+        import os
+        all_hdris = list(self._lib.hdris())
+        want = tuple(s.lower() for s in getattr(ap, "hdri_include", ()) or ())
+        if not want:
+            return all_hdris
+        keep = [p for p in all_hdris if any(w in os.path.basename(p).lower() for w in want)]
+        if not keep:
+            print(f"[vq2] WARNING: appearance.hdri_include={list(want)} matched NO env map under "
+                  f"{self._lib.root}/hdris -- using all {len(all_hdris)}.")
+            return all_hdris
+        print(f"[vq2] hdri_include -> {len(keep)}/{len(all_hdris)} env maps: "
+              + ", ".join(sorted(os.path.basename(p) for p in keep)))
+        return keep
+
+    # -- colour management ---------------------------------------------------------------
+    def _apply_view_transform(self, rc) -> None:
+        """Override the view transform the photoreal render config just set (see RenderConfig).
+
+        Runs AFTER ``configure_clean_render`` on purpose: that function hardcodes AgX, and this is
+        the seam that lets a preset choose the tonemap without editing it. A name Blender does not
+        know is reported once and ignored rather than crashing a long render.
+        """
+        want = str(getattr(rc, "view_transform", "AgX") or "AgX")
+        if want == "AgX":
+            return                                  # already what configure_clean_render set
+        try:
+            self.scene.view_settings.view_transform = want
+        except Exception as exc:                    # pragma: no cover - defensive on ShadowPC
+            if not getattr(self, "_vt_warned", False):
+                print(f"[vq2] WARNING: view_transform={want!r} rejected by Blender "
+                      f"({type(exc).__name__}: {exc}); keeping AgX.")
+                self._vt_warned = True
+
+    # -- signage decal pool --------------------------------------------------------------
+    def _setup_signage(self, ap) -> None:
+        """Build the printed-signage atlas pool ONCE (see bpy_signage for why gates need signage)."""
+        from .. import bpy_signage
+        if not bpy_signage.wants_signage_material(ap):
+            return
+        self._sig_mod = bpy_signage
+        if float(getattr(ap, "gate_signage_prob", 0.0)) > 0.0:
+            self._decals = bpy_signage.DecalPool()
 
     # -- intrinsics self-check (the ShadowPC <=1 px gate) --------------------------------
     def intrinsics_error_px(self) -> float:
@@ -246,10 +304,25 @@ class BlenderBackend:
         ap, rc = preset.appearance, preset.render
         PR = self._pr_mod
 
-        # 1. HDRI environment (image-based lighting + photographic background, optical-frame oriented)
-        hdris = self._lib.hdris()
+        # 1. HDRI environment (image-based lighting + photographic background, optical-frame oriented).
+        #    STRENGTH COMES FROM THE PRESET. It used to be hardcoded rng.uniform(0.7, 1.3), which
+        #    silently made `ambient_strength_range` a dead key on the photoreal path -- so NO preset
+        #    could darken the world, and every photoreal render came out as a brightly-lit room. The
+        #    measured cost: background median gray 104 on the synthetic set against 37 on 400 real
+        #    VQ2 frames, i.e. the synthetic world was ~3x too bright.
+        #
+        #    The three legacy photoreal presets (vq1_faithful / vq1_partial / appearance_broad) now
+        #    PIN [0.7, 1.3] explicitly: the constant MOVED from here into the presets rather than
+        #    being replaced by the (0.2, 2.0) default, so those arms keep the appearance
+        #    distribution their on-disk datasets were rendered with. Verified by re-rendering
+        #    vq1_partial at the same seed -- LABELS come back byte-identical (12/12) and the
+        #    background/gate statistics land inside this path's own run-to-run spread. Do not delete
+        #    those pins. (Byte-identical PIXELS are not a check anyone can make here: two runs of
+        #    identical code and seed already differ by up to 57 mean abs levels, so the photoreal
+        #    path is not reproducible frame-for-frame independently of this change.)
+        hdris = self._hdris or self._lib.hdris()
         PR.setup_hdri_world(self.scene, rng, hdris[int(rng.integers(len(hdris)))],
-                            strength=float(rng.uniform(0.7, 1.3)))
+                            strength=float(rng.uniform(*ap.ambient_strength_range)))
 
         # 2. PBR floor a good way BELOW the gates (so gates float in the air, ground visible below)
         floor_y = PR.floor_below_gates(frame, rng)
@@ -257,9 +330,12 @@ class BlenderBackend:
         texset = texsets[int(rng.integers(len(texsets)))] if texsets else {}
         self._frame_objects.append(PR.add_floor(self.scene, floor_y, texset, rng))
 
-        # 3. solid vivid gate(s) at their exact optical poses (labels unchanged). Keep the object
-        #    list POSITIONALLY aligned with frame.gates -- the id pass indexes into it.
-        gate_mat = PR.solid_gate_material(rng, ap)
+        # 3. gate(s) at their exact optical poses (labels unchanged). Keep the object list
+        #    POSITIONALLY aligned with frame.gates -- the id pass indexes into it.
+        #    ONE material per frame: every gate on a real course is the same printed panel, and a
+        #    per-gate material would teach the detector that gates come in assorted colours.
+        gate_mat = (self._sig_mod.signage_gate_material(rng, ap, self._decals)
+                    if self._sig_mod is not None else PR.solid_gate_material(rng, ap))
         gate_objs = [self._scene_mod.instance_gate(self.template, gr.R_cam_gate, gr.t_cam_gate, gate_mat)
                      for gr in frame.gates]
         self._frame_objects += gate_objs
@@ -279,8 +355,9 @@ class BlenderBackend:
         # 5. honest labels: downgrade any gate corner a prop/person actually blocks (raycast)
         PR.occlude_blocked_keypoints(self.scene, frame)
 
-        # 6. clean render (NO in-render motion blur / glare; AgX + exposure variety)
+        # 6. clean render (NO in-render motion blur / glare; tonemap + exposure variety)
         PR.configure_clean_render(self.scene, rng, rc, ap)
+        self._apply_view_transform(rc)
         image = self._render_mod.render_to_bgr(self.scene)
         # 7. id pass BEFORE the purge -- it needs the very objects we are about to delete. This is
         #    also where a gate that is actually HIDDEN loses its label (see the method docstring);

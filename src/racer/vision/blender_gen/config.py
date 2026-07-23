@@ -29,17 +29,32 @@ class AppearanceConfig:
 
     use_vq1_red: bool = True               # anchor gate colour at the extracted VQ1 orange-red
     gate_hue_jitter: float = 0.0           # fraction of the hue wheel sampled around the base (0..0.5)
+    # Signed hue shift (in TURNS) applied to the anchor BEFORE jitter. The anchor
+    # contract.VQ1_GATE_RED_RGB = (255, 50, 0) sits at hue 11.8 deg, but gate pixels measured over
+    # 400 REAL VQ2 frames average 17.8 deg -- the real gate reads slightly more orange. The anchor
+    # is contract-FROZEN, so the correction is declared per preset instead of edited into it.
+    # 0.0 (default) reproduces the historical colour exactly. Honoured by bpy_signage's material.
+    gate_hue_offset: float = 0.0
     gate_sat_range: tuple = (0.85, 1.0)    # HSV saturation range
     gate_val_range: tuple = (0.75, 1.0)    # HSV value range
     gate_metallic_range: tuple = (0.0, 0.3)
     gate_roughness_range: tuple = (0.2, 0.7)
     gate_emission_prob: float = 0.0        # chance the gate is slightly emissive (self-lit look)
+    # Chance a gate carries a PRINTED SIGNAGE decal (AI-GP marquee / checkerboard strips / DCL +
+    # ANDURIL + VQ-01 brand panels), as the real gates all do. 0.0 = bare frame (the legacy look
+    # that the sim-to-real study showed the detector overfits to). See bpy_signage for the WHY.
+    gate_signage_prob: float = 0.0
 
     sun_elevation_range_deg: tuple = (15.0, 80.0)
     sun_intensity_range: tuple = (1.0, 6.0)
     color_temp_range_k: tuple = (4500.0, 7500.0)
     use_hdri: bool = False
     hdri_dir: str | None = None            # folder of .hdr/.exr env maps (ShadowPC-local); None -> sky
+    # Substring allow-list over the HDRI filenames (empty = use them all, the legacy behaviour).
+    # The shipped 26-map set includes an AQUARIUM, several WHITE PHOTO STUDIOS and a train station.
+    # Real VQ2 is an industrial hangar, so a realism-centred preset names the industrial maps rather
+    # than averaging over environments the drone will never fly in. Matching is case-insensitive.
+    hdri_include: tuple = ()
 
     # --- photoreal real-asset dressing (Blender backend; see bpy_photoreal + assets) -------------
     photoreal: bool = False                # True -> HDRI world + PBR floor + real props/people (the
@@ -80,6 +95,15 @@ class RenderConfig:
     motion_blur_shutter: float = 0.5       # frames; longer -> more streak
     use_glare: bool = True                 # compositor glare/bloom for bright lights
     film_transparent: bool = False
+    # Colour-management view transform. 'AgX' (the default, and what every legacy preset gets) is a
+    # FILM tonemap: it rolls highlights off and DESATURATES them on the way to white. That is the
+    # wrong physics for this target. Real VQ2 frames come out of a GAME renderer that clips instead,
+    # so its glowing gates stay saturated at high brightness -- measured over 400 real frames, gate
+    # pixels sit at saturation 205 AND value 206 simultaneously, a combination AgX cannot output.
+    # Rendering the same emissive gate through AgX measured saturation 137 (visibly salmon, not red).
+    # 'Standard' reproduces the clipping behaviour and lands the saturation on target. Applied by the
+    # backend AFTER the photoreal render config, so leaving this alone changes nothing.
+    view_transform: str = "AgX"            # AgX | Standard | Filmic | Khronos PBR Neutral
 
 
 @dataclass(frozen=True)
@@ -137,6 +161,12 @@ def _validate(p: ScenarioPreset) -> ScenarioPreset:
     ap = p.appearance
     if not (0.0 <= ap.gate_hue_jitter <= 0.5):
         raise ValueError("appearance.gate_hue_jitter must be in [0, 0.5]")
+    if not (-0.5 <= ap.gate_hue_offset <= 0.5):
+        raise ValueError("appearance.gate_hue_offset must be in [-0.5, 0.5] (turns)")
+    if not (0.0 <= ap.gate_signage_prob <= 1.0):
+        raise ValueError("appearance.gate_signage_prob must be in [0, 1]")
+    if not all(isinstance(s, str) and s for s in ap.hdri_include):
+        raise ValueError("appearance.hdri_include must be a list of non-empty substrings")
     if ap.background_mode not in _BG_MODES:
         raise ValueError(f"appearance.background_mode must be one of {sorted(_BG_MODES)}")
     if ap.lighting_mode not in _LIGHTING_MODES:

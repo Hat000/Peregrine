@@ -701,3 +701,150 @@ def test_disjoint_batches_separates_overlapping_openings():
 
     assert disjoint_batches([near]) == [[0]]
     assert disjoint_batches([]) == []
+
+
+# ------------------------------------------------------------------------------------------------
+# vq2_dark_red: the appearance-matched preset + the printed-signage decal (bpy_signage)
+#
+# The domain gap these cover was MEASURED, not assumed: an M+1 model trained on the old synthetic
+# data and validated on real hand-labelled frames peaked at epoch 10 (pose mAP50 0.503) and decayed
+# to 0.282 by epoch 100, and background median gray was 104 synthetic against 37 real.
+# ------------------------------------------------------------------------------------------------
+def test_dark_red_presets_are_centred_on_the_real_venue():
+    """The two new presets must actually encode the measured real-VQ2 look, not merely load.
+
+    Each assertion below is a number someone could quietly regress while 'tidying' a preset, and
+    every one of them was calibrated against the real-frame statistics.
+    """
+    from racer.vision.blender_gen.config import load_preset
+
+    for name in ("vq2_dark_red", "vq2_dark_red_partial"):
+        ap = load_preset(name).appearance
+        rc = load_preset(name).render
+        # DARK. The old presets left this at the (0.2, 2.0) default and rendered a lit room.
+        assert ap.ambient_strength_range[1] <= 0.3, f"{name}: world too bright to be a dark hangar"
+        # SELF-LIT. Real gates glow hard enough to light the floor; 0.25-0.5 does not read at all
+        # against a dark world.
+        assert ap.gate_emission_range[0] >= 0.5, f"{name}: gate is not emissive enough to glow"
+        # RED STAYS RED. vq1_partial's 0.1 (+/-18 deg) plus bright lighting washed it to salmon.
+        assert ap.gate_hue_jitter <= 0.04, f"{name}: hue jitter too wide, red will drift"
+        # PRINTED. A bare gate is the texture the detector overfits to.
+        assert ap.gate_signage_prob >= 0.5, f"{name}: gates would render mostly bare"
+        # CLIPPING, not film. AgX cannot output saturation 205 AND value 206 at once; real does.
+        assert rc.view_transform == "Standard", f"{name}: film tonemap desaturates the glowing gate"
+        # CENTRED BUT NOT COLLAPSED -- every randomization axis must still have width.
+        assert ap.ambient_strength_range[0] < ap.ambient_strength_range[1]
+        assert ap.gate_emission_range[0] < ap.gate_emission_range[1]
+        assert ap.exposure_range[0] < ap.exposure_range[1]
+        assert len(ap.hdri_include) >= 3, f"{name}: too few environments left to vary over"
+
+
+def test_legacy_presets_keep_the_old_appearance_defaults():
+    """The new appearance keys must be strictly OPT-IN: any preset that does not name them has to
+    keep byte-identical behaviour, or this change silently re-renders every existing arm."""
+    from racer.vision.blender_gen.bpy_signage import wants_signage_material
+    from racer.vision.blender_gen.config import load_preset
+
+    for name in ("vq1_faithful", "vq1_partial", "appearance_broad", "terminal_approach",
+                 "long_range", "hard_visual", "negatives"):
+        p = load_preset(name)
+        assert p.appearance.gate_signage_prob == 0.0, f"{name} unexpectedly opted into signage"
+        assert p.appearance.gate_hue_offset == 0.0, f"{name} unexpectedly opted into a hue shift"
+        assert p.appearance.hdri_include == (), f"{name} unexpectedly filtered its env maps"
+        assert p.render.view_transform == "AgX", f"{name} unexpectedly changed tonemap"
+        assert not wants_signage_material(p.appearance), f"{name} must keep the plain material path"
+
+    # The photoreal path used to HARDCODE the HDRI strength to rng.uniform(0.7, 1.3) and ignore
+    # ambient_strength_range entirely. Making the key live is the fix, but the three legacy
+    # photoreal arms must keep the appearance distribution their on-disk datasets were rendered
+    # with -- so the ex-hardcoded constant MOVED into those presets rather than being replaced by
+    # the (0.2, 2.0) default. Drop these pins and those arms silently re-render nearly twice as
+    # bright at the top of the range, with no diff anywhere to say why the pixels moved.
+    for name in ("vq1_faithful", "vq1_partial", "appearance_broad"):
+        ap = load_preset(name).appearance
+        assert ap.photoreal is True, f"{name} is expected to be a photoreal preset"
+        assert ap.ambient_strength_range == (0.7, 1.3), (
+            f"{name} must pin the ex-hardcoded HDRI strength to stay reproducible")
+
+
+def test_signage_new_keys_are_validated():
+    from racer.vision.blender_gen.config import preset_from_dict
+
+    base = {"name": "t", "appearance": {}}
+    for bad in ({"gate_signage_prob": 1.5}, {"gate_hue_offset": 0.9}, {"hdri_include": [""]}):
+        with pytest.raises(ValueError):
+            preset_from_dict({**base, "appearance": bad})
+    # and the good values round-trip
+    p = preset_from_dict({**base, "appearance": {"gate_signage_prob": 0.9, "gate_hue_offset": 0.011,
+                                                 "hdri_include": ["hangar"]}})
+    assert p.appearance.hdri_include == ("hangar",)
+
+
+def test_signage_decal_lands_only_on_the_gate_ring():
+    """Ink must never sit where the gate has a HOLE.
+
+    The decal is mapped through OBJECT coordinates over the gate's outer square, so the opening
+    occupies the central (1 - INNER/OUTER)/2 .. 1 - that band. Ink inside it is invisible at best,
+    and a sign that the layout constants drifted away from the frozen gate geometry at worst.
+    """
+    from racer.vision.blender_gen.bpy_signage import BAND, build_decal_alpha
+
+    assert BAND == pytest.approx(
+        (1.0 - contract.GATE_INNER_SIZE_M / contract.GATE_OUTER_SIZE_M) / 2.0)
+    n = 512
+    lo, hi = int(BAND * n) + 3, int((1.0 - BAND) * n) - 3     # 3 px in from the opening edge
+    for seed in range(6):
+        a = build_decal_alpha(seed, n)
+        assert a.shape == (n, n)
+        assert float(a[lo:hi, lo:hi].max()) == 0.0, f"seed {seed}: ink inside the gate OPENING"
+        assert 0.01 < float(a.mean()) < 0.35, f"seed {seed}: coverage {a.mean():.3f} implausible"
+
+
+def test_signage_decals_vary_between_gates():
+    """Eight identical atlases would be a single memorisable texture -- the failure this replaces."""
+    from racer.vision.blender_gen.bpy_signage import build_decal_alpha
+
+    sigs = {build_decal_alpha(s, 256).tobytes() for s in range(8)}
+    assert len(sigs) == 8, "signage atlases are not varying with the seed"
+
+
+def test_signage_marquee_sits_on_the_top_bar():
+    """The AI-GP wordmark is the most recognisable marking on the real gate; it belongs on the TOP
+    bar. This also pins the image-space orientation -- if the layout ever flips, the glyphs render
+    upside down in Blender and nothing else in the suite would catch it."""
+    from racer.vision.blender_gen.bpy_signage import BAND, build_decal_alpha
+
+    n = 512
+    top = int(BAND * n)
+    ink_top = sum(float(build_decal_alpha(s, n)[:top, :].sum()) for s in range(6))
+    ink_bottom = sum(float(build_decal_alpha(s, n)[n - top:, :].sum()) for s in range(6))
+    assert ink_top > ink_bottom, "top bar should carry the heaviest marking (the marquee)"
+
+
+def test_gate_hue_offset_shifts_the_anchor_and_defaults_to_a_no_op():
+    """gate_hue_offset exists because the contract-FROZEN anchor (255, 50, 0) sits at hue 11.8 deg
+    while gate pixels over 400 real frames average 17.8 deg. Zero must reproduce the anchor exactly
+    so no existing preset moves."""
+    import colorsys
+
+    from racer.vision.blender_gen.bpy_signage import gate_base_rgb_linear
+
+    class _Ap:
+        gate_hue_jitter = 0.0
+        gate_hue_offset = 0.0
+        gate_sat_range = (1.0, 1.0)
+        gate_val_range = (1.0, 1.0)
+
+    rng = np.random.default_rng(0)
+    anchor_h = colorsys.rgb_to_hsv(*[c / 255.0 for c in contract.VQ1_GATE_RED_RGB])[0]
+
+    def hue_of(ap):
+        lin = gate_base_rgb_linear(rng, ap)
+        srgb = [1.055 * (c ** (1 / 2.4)) - 0.055 if c > 0.0031308 else c * 12.92 for c in lin]
+        return colorsys.rgb_to_hsv(*srgb)[0]
+
+    assert hue_of(_Ap()) == pytest.approx(anchor_h, abs=1e-6)
+
+    shifted = _Ap()
+    shifted.gate_hue_offset = 0.011
+    assert hue_of(shifted) == pytest.approx(anchor_h + 0.011, abs=1e-6)

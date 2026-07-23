@@ -78,7 +78,7 @@ Args after the standalone `--` go to `render_entry.py`:
 
 | flag | meaning |
 |------|---------|
-| `--preset` | `vq1_faithful` \| `appearance_broad` \| `hard_visual` \| `long_range` \| `terminal_approach` \| `negatives`, or a path |
+| `--preset` | **`vq2_dark_red` \| `vq2_dark_red_partial`** (the real-matched pair — start here) \| `vq1_faithful` \| `vq1_partial` \| `appearance_broad` \| `hard_visual` \| `long_range` \| `terminal_approach` \| `negatives`, or a path |
 | `--out` | dataset dir (`images/`, `labels/`, `data.yaml`, plus `masks/` with `--masks`) |
 | `--n-train` / `--n-val` | frame counts per split |
 | `--seed` | RNG seed (use **distinct** seeds per arm) |
@@ -215,6 +215,43 @@ props). Idempotent. `assets_vq2/` is gitignored (large). The render path then re
   augmentation will be applied later as an offline multiplier. Omit it for the normal 1-render-1-augment.
 - The HDRI is rotated **−90° about X** so its vertical aligns with the optical frame (else the back wall
   renders as a ceiling — a real bug that was here). Handled in `bpy_photoreal.setup_hdri_world`.
+
+### 7b-bis. Matching the REAL look (`vq2_dark_red`, `vq2_dark_red_partial`) — prefer these
+
+The 2026-06-15 photoreal look is **bright**, and that turned out to be the sim-to-real bottleneck.
+Measured over 400 real frames (`C:\Users\Shadow\vq2_label_batch_2026-07-22\frames`) against 400
+frames of `vq1_partial`:
+
+| statistic | REAL VQ2 | old synthetic | `vq2_dark_red(_partial)` |
+|---|---|---|---|
+| background median gray | **36.7** | 104.4 (≈3× too bright) | 34.3 / 36.3 |
+| background mean gray | 50.3 | 109.9 | 49.0 / 49.6 |
+| gate hue (deg) | 17.8 | 14.5 | 17.9 / 20.8 |
+| gate saturation | 205 | 183 | 213 / 191 |
+| gate value | 206 | 169 | 210 / 181 |
+
+Four levers get there, and they **interact** — retune one, re-measure all of them:
+
+1. **`ambient_strength_range` now actually works.** The photoreal path used to hardcode the HDRI
+   strength to `rng.uniform(0.7, 1.3)`, so the key was dead and *no* preset could darken the world.
+   Fixed in `backends/blender.py`; the default range brackets the old constant, so legacy presets
+   are unaffected.
+2. **`render.view_transform: "Standard"`.** AgX is a *film* tonemap: it desaturates highlights on
+   the way to white, and cannot output saturation 205 *and* value 206 at once — which real frames
+   do, because they come out of a game renderer that clips. The same emissive gate measured
+   saturation 137 (visibly salmon) under AgX and 213 under Standard.
+3. **`gate_emission_range` up to ~[0.7, 2.1]** so the gate is genuinely self-lit against the dark
+   and spills light onto the floor, as on the real course. Under a clipping transform this single
+   knob drives hue, saturation *and* value together (red pins at 1.0 while green keeps climbing).
+4. **`hdri_include`** — a substring allow-list over the 26 env maps. The shipped set contains an
+   aquarium, white photo studios and an outdoor racetrack; `skylit_garage` alone is 2× brighter than
+   every other map (13.5 % blown texels). Six substrings select the 7 industrial interiors.
+
+Gates are also **printed** now (`gate_signage_prob`): AI-GP marquee, checkerboard strips, DCL /
+ANDURIL / VQ-01 panels, built procedurally in `bpy_signage.py` and mapped through **object**
+coordinates (the gate mesh has no UVs, and unwrapping it would touch the frozen keypoint geometry).
+The old bare red frame is a texture the detector overfits to, and the auto-seeder kept locking onto
+those white panels as if they were gates.
 
 ### 7c. Labels: 8 keypoints
 The YOLO-pose label carries **8 keypoints**: inner 0..3 (the gate opening / PnP corners) then outer 4..7

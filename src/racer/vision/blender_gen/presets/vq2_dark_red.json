@@ -1,0 +1,56 @@
+{
+  "name": "vq2_dark_red",
+  "description": "APPEARANCE-MATCHED to real VQ2: a DARK industrial hangar, gates that GLOW orange-red and carry printed AI-GP / checkerboard / DCL / ANDURIL / VQ-01 signage. Replaces the bright-HDRI bare-red look whose domain gap was MEASURED, not guessed. (1) An M+1 keypoint model trained on the old synthetic data and validated on REAL hand-labelled frames PEAKED AT EPOCH 10 (pose mAP50 0.503) then decayed to 0.282 by epoch 100, centre error 20.5 -> 35.6 px, coverage 98% -> 84% -- the extra epochs learned synthetic APPEARANCE, not gates. (2) A segmentation model scored 28.5 px centre error on synthetic val against 80 px on real frames. (3) Population statistics, 400 real frames vs 400 old-synthetic: background MEDIAN GRAY 36.7 real vs 104.4 synthetic (~3x too bright), gate hue 17.8 vs 14.5 deg, gate saturation 205 vs 183, gate value 206 vs 169. After this preset, measured over 24 frames: background median 36.3, hue 20.8, sat 191, value 181 -- real is bracketed on every axis by this arm together with vq2_dark_red_partial. NOTES ON THE KNOBS. The appearance numbers were calibrated in 5 passes and they INTERACT: under the Standard (clipping) view transform the red channel pins at 1.0 while green keeps climbing, so gate_emission_range drives hue, saturation AND value together -- retune it and re-measure all three. augment.brightness_p is cut from vq1_partial's 0.5 because RandomBrightnessContrast is a +/-0.25 ADDITIVE shift, i.e. up to 64 gray levels on a population whose target median is 36, which would undo the point of the preset; brightness variety comes from appearance.exposure_range instead, where it is a physical pre-tonemap scale. photometric_p stays high because that is the LOAD-BEARING sensor aug (good-fix 80% -> 22% without it). General-purpose envelope (vq1_faithful geometry); blend with vq2_dark_red_partial the way vq1_faithful blends with vq1_partial.",
+  "negative_fraction": 0.0,
+  "viewpoint": {
+    "range_min_m": 2.0,
+    "range_max_m": 30.0,
+    "range_skew": 2.0,
+    "lateral_sigma_m": 1.0,
+    "vertical_sigma_m": 0.7,
+    "yaw_jitter_rad": 0.25,
+    "pitch_jitter_rad": 0.2,
+    "roll_jitter_rad": 0.3
+  },
+  "augment": {
+    "enable": true,
+    "photometric_p": 0.8,
+    "lighting_p": 0.15,
+    "brightness_p": 0.25,
+    "geometric_p": 0.0
+  },
+  "appearance": {
+    "use_vq1_red": true,
+
+    "gate_hue_jitter": 0.02,
+    "gate_hue_offset": 0.011,
+    "gate_sat_range": [0.94, 1.0],
+    "gate_val_range": [0.85, 1.0],
+    "gate_metallic_range": [0.0, 0.15],
+    "gate_roughness_range": [0.35, 0.65],
+
+    "gate_emission_range": [0.7, 2.1],
+    "gate_signage_prob": 0.9,
+
+    "use_hdri": true,
+    "photoreal": true,
+    "hdri_include": ["warehouse", "hangar", "workshop", "machine_shop",
+                     "concrete_tunnel", "factory_canteen"],
+    "ambient_strength_range": [0.03, 0.13],
+    "exposure_range": [-0.5, 0.28],
+
+    "prop_count_range": [6, 12],
+    "people_count_range": [1, 4],
+    "lighting_mode": "dark_arena",
+    "background_mode": "arena"
+  },
+  "render": {
+    "engine": "CYCLES",
+    "samples": 160,
+    "use_gpu": true,
+    "use_denoise": true,
+    "motion_blur": false,
+    "use_glare": false,
+    "view_transform": "Standard"
+  }
+}
