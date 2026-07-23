@@ -14,7 +14,8 @@ TWO SOURCES, and the centre is derived DIFFERENTLY from each -- this is the crux
     from the pose label slots 0-3 with their v flags as-is (a v=0 cropped corner is correctly masked
     by the pose loss).
 
-  * HAND LABELS (-> VAL, the 264-gate ORACLE). These were drawn for AREA, not for keypoint position:
+  * HAND LABELS (-> TRAIN as of 2026-07-23; see the SPLIT POLICY note below). Drawn for AREA, not
+    for keypoint position:
     the labeller placed each inner handle to make the visible CLIPPED opening correct, and any
     off-frame handle was nudged only so the visible edges cross the frame boundary correctly -- its
     position ALONG the edge is arbitrary. So for the ~67% of hand gates with an off-frame inner
@@ -224,6 +225,79 @@ def collect_hand(batch: Path, census: Counter, centre_census: Counter):
     return items
 
 
+def collect_pose_hand(root: Path, census: Counter, centre_census: Counter):
+    """Hand corpora that carry only 8-kpt POSE rows and no geom sidecars (e.g. the 2026-07-02 real
+    set, images/ + labels/).
+
+    THE CENTRE RULE IS THE WHOLE POINT HERE. Fengyou: the hand labels were drawn for AREA, so an
+    off-frame handle's position ALONG its edge is arbitrary -- the diagonal of the handles is NOT
+    the centre for a cropped gate. Without a geom sidecar there is no drawn opening to fit, so the
+    area-fit derivation is unavailable and the only sound centre is the diagonal intersection of
+    four handles that are ALL in frame (v=2), where the handles are exact. Gates with any clamped
+    corner are DROPPED rather than given a fabricated centre -- that is precisely the poisoning
+    this whole rebuild exists to undo."""
+    items = []
+    for img, lab in bsd.scan_pairs(root):
+        text = lab.read_text()
+        if not text.strip():
+            census["posehand-negative"] += 1
+            items.append((img, "", ""))
+            continue
+        rows, crows = [], []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            r, c = pose_row_all_inframe(line, census, centre_census)
+            if r is None:
+                continue
+            rows.append(r)
+            crows.append(c)
+        if not rows:
+            census["posehand-frame-dropped"] += 1
+            continue
+        items.append((img, "\n".join(rows) + "\n", "\n".join(crows) + "\n"))
+    return items
+
+
+def pose_row_all_inframe(pose_row: str, census: Counter, centre_census: Counter):
+    """One 8-kpt pose row -> (5-kpt row, centre row), or (None, None) if any inner corner is
+    clamped. Centre = intersection of the inner diagonals, exact when all four are in frame."""
+    p = pose_row.split()
+    if len(p) < 5 + 8 * 3:
+        census["posehand-short-row"] += 1
+        return None, None
+    kp = [(float(p[5 + 3 * i]), float(p[6 + 3 * i]), float(p[7 + 3 * i])) for i in range(8)]
+    inner = kp[:4]
+    if any(v < 2 for (_, _, v) in inner):
+        census["posehand-dropped-cropped"] += 1     # no geom -> no sound centre; see the docstring
+        return None, None
+    c = _diag_intersection([(x, y) for (x, y, _) in inner])
+    if c is None:
+        census["posehand-degenerate-quad"] += 1
+        return None, None
+    centre_census["diag-handles (all 4 in frame)"] += 1
+    kv = " ".join(f"{x:.6f} {y:.6f} {int(v)}" for (x, y, v) in inner)
+    return (f"{' '.join(p[:5])} {kv} {c[0]:.6f} {c[1]:.6f} 2",
+            f"{c[0]:.6f} {c[1]:.6f} 2")
+
+
+def _diag_intersection(q):
+    """Intersection of the diagonals of quad q=[LL,LR,UR,UL] -- the projective centre of a square."""
+    import numpy as _np
+    (x1, y1), (x2, y2) = q[0], q[2]
+    (x3, y3), (x4, y4) = q[1], q[3]
+    d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(d) < 1e-12:
+        return None
+    a = x1 * y2 - y1 * x2
+    b = x3 * y4 - y3 * x4
+    cx = (a * (x3 - x4) - (x1 - x2) * b) / d
+    cy = (a * (y3 - y4) - (y1 - y2) * b) / d
+    if not (_np.isfinite(cx) and _np.isfinite(cy)):
+        return None
+    return float(cx), float(cy)
+
+
 def _find_frame(frames_dir: Path, stem: str) -> Path | None:
     for ext in (".png", ".jpg", ".jpeg"):
         cand = frames_dir / (stem + ext)
@@ -233,7 +307,22 @@ def _find_frame(frames_dir: Path, stem: str) -> Path | None:
 
 
 # ======================================================================================
-# assembly (collision-safe, image tree mirrored) -- render -> train, hand -> val
+# assembly (collision-safe, image tree mirrored)
+#
+# SPLIT POLICY CHANGED 2026-07-23 (Fengyou: "do not gatekeep hand label to just val, we NEED ALL
+# the data we can during train, ALL hand drawn gates get sent to training").
+#
+# The old policy was render -> train, hand -> val. It had a consequence nobody intended: renders
+# ALWAYS contain a gate, so every negative that existed lived in the hand set, and the hand set was
+# val-only. The shipped M+1 therefore trained on 4000 frames with ZERO negatives and 38 negatives
+# (17.3%) sat unused in val. It hallucinates confidently as a direct result -- p90 false positive
+# 0.841 against a MEDIAN true positive of 0.832, i.e. unseparable by any threshold.
+#
+# Now: hand + renders + negative corpora ALL go to train. VAL is built from explicitly held-out
+# sources (--val-render / --val-negatives) so it never overlaps train. Note the cost, deliberately
+# accepted: with every hand frame in train there is no longer an uncontaminated REAL-frame accuracy
+# oracle. Real accuracy is measured in flight; --val-negatives (fresh renders, never trained on)
+# preserves the one metric that caused this change, the false-positive rate.
 # ======================================================================================
 def _write_frame(img: Path, text: str, ctext: str, out: Path, split: str,
                  used: set, census: Counter) -> Path | None:
@@ -262,27 +351,64 @@ def build(args) -> int:
     used: set = set()
     kept = {"train": [], "val": []}
 
-    # ---- TRAIN: synthetic render frames (centre read from the sidecar) --------------------------
-    for root in (args.render or []):
-        for img, pose_label in bsd.scan_pairs(Path(root)):
-            cpath = center_path_for(pose_label)
-            if cpath is None and pose_label.read_text().strip():
-                census["render-missing-center"] += 1
-                continue
-            text, ctext = convert_render_frame(
-                pose_label.read_text(), cpath.read_text() if cpath else "", census)
-            if text is None:
-                continue
-            p = _write_frame(img, text, ctext, out, "train", used, census)
-            if p is not None:
-                kept["train"].append(p)
+    def _add_render(roots, split):
+        for root in (roots or []):
+            for img, pose_label in bsd.scan_pairs(Path(root)):
+                cpath = center_path_for(pose_label)
+                if cpath is None and pose_label.read_text().strip():
+                    census["render-missing-center"] += 1
+                    continue
+                text, ctext = convert_render_frame(
+                    pose_label.read_text(), cpath.read_text() if cpath else "", census)
+                if text is None:
+                    continue
+                p = _write_frame(img, text, ctext, out, split, used, census)
+                if p is not None:
+                    kept[split].append(p)
 
-    # ---- VAL: hand-labelled oracle (centre from the AREA) ---------------------------------------
-    for batch in (args.hand or []):
-        for img, text, ctext in collect_hand(Path(batch), census, centre_census):
-            p = _write_frame(img, text, ctext, out, "val", used, census)
-            if p is not None:
-                kept["val"].append(p)
+    def _add_negatives(roots, split, tag):
+        """Frames whose label file exists and is EMPTY. Anything unlabelled is skipped: a missing
+        label means 'nobody looked', not 'no gate', and feeding those as background would teach the
+        detector to suppress real gates."""
+        for root in (roots or []):
+            for img, lab in bsd.scan_pairs(Path(root)):
+                if lab.read_text().strip():
+                    census[f"{tag}-skipped-has-gate"] += 1
+                    continue
+                p = _write_frame(img, "", "", out, split, used, census)
+                if p is not None:
+                    census[f"{tag}-negative"] += 1
+                    kept[split].append(p)
+
+    # ---- TRAIN ----------------------------------------------------------------------------------
+    _add_render(args.render, "train")
+
+    # Hand corpora share FRAMES but not LABELS, so dedup on the frame STEM, not on _write_frame's
+    # <corpus-tag>__<stem> key -- the same picture under two corpus tags passes that check and would
+    # be emitted twice, once per labelling. Measured across the three inboxes: 43 stems are labelled
+    # in more than one, and exactly ONE disagrees (positive in the 07-22 batch, negative in the 07-21
+    # inbox). FIRST LISTED WINS, so pass the newest corpus first. Nothing is lost by preferring it:
+    # all 25 inbox-only positives already carry a batch geom sidecar.
+    hand_seen: set = set()
+
+    def _add_hand(roots, collector):
+        for batch in (roots or []):
+            for img, text, ctext in collector(Path(batch), census, centre_census):
+                if img.stem in hand_seen:
+                    census["hand-superseded-by-newer-corpus"] += 1
+                    continue
+                hand_seen.add(img.stem)
+                p = _write_frame(img, text, ctext, out, "train", used, census)
+                if p is not None:
+                    kept["train"].append(p)
+
+    _add_hand(args.hand, collect_hand)                    # hand gates: centre from the AREA
+    _add_hand(args.hand_pose, collect_pose_hand)          # pose-row corpora with no geom sidecars
+    _add_negatives(args.negatives, "train", "neg")
+
+    # ---- VAL: explicitly held-out sources only, never a slice of the above ----------------------
+    _add_render(args.val_render, "val")
+    _add_negatives(args.val_negatives, "val", "valneg")
 
     for split in ("train", "val"):
         (out / f"{split}.txt").write_text(
@@ -312,7 +438,7 @@ def _report(census: Counter, centre_census: Counter, kept, out: Path) -> None:
     for k, v in census.most_common():
         print(f"  {k:28s} {v}")
     if centre_census:
-        print("\nhand-label CENTRE derivation (the val oracle):")
+        print("\nhand-label CENTRE derivation:")
         tot = sum(centre_census.values())
         for k, v in centre_census.most_common():
             print(f"  {k:28s} {v}  ({100 * v / tot:.1f}%)")
@@ -326,11 +452,26 @@ def main() -> int:
     ap.add_argument("--render", nargs="*", default=None,
                     help="render dataset root(s) with labels/ + center/ + images/ -> TRAIN")
     ap.add_argument("--hand", nargs="*", default=None,
-                    help="hand-label batch root(s) with frames/ + labels/geom/ -> VAL (the oracle)")
+                    help="hand-label batch root(s) with frames/ + labels/geom/ -> TRAIN. Pass every "
+                         "inbox: they are NOT nested. vq2_label_batch_2026-07-22 holds the same "
+                         "FRAMES as the two inboxes but not the same LABELS -- 4 positives exist "
+                         "only in close_inbox and 11 negatives only in inbox_2026-07-21.")
+    ap.add_argument("--hand-pose", nargs="*", default=None,
+                    help="hand corpora with 8-kpt pose rows but NO geom sidecars -> TRAIN. Only "
+                         "gates with all 4 inner corners in frame are kept (see collect_pose_hand).")
+    ap.add_argument("--negatives", nargs="*", default=None,
+                    help="gate-free corpora (empty label files) -> TRAIN. Frames with no label file "
+                         "at all are skipped: unlabelled is not the same as gate-free.")
+    ap.add_argument("--val-render", nargs="*", default=None,
+                    help="held-out render root(s) -> VAL")
+    ap.add_argument("--val-negatives", nargs="*", default=None,
+                    help="held-out gate-free root(s) -> VAL. This is the false-positive benchmark; "
+                         "keep it disjoint from --negatives or the number is meaningless.")
     ap.add_argument("--out", required=True, help="output 5-keypoint pose dataset root")
     args = ap.parse_args()
-    if not args.render and not args.hand:
-        ap.error("need at least one of --render / --hand")
+    if not any((args.render, args.hand, args.hand_pose, args.negatives,
+                args.val_render, args.val_negatives)):
+        ap.error("need at least one input source")
     return build(args)
 
 
