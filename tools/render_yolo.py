@@ -64,7 +64,10 @@ def _load_fed_points(session):
         fid, flu = r.get("frame_id"), r.get("rel_flu")
         if fid is None or flu is None:
             continue
-        fed[int(fid)] = (flu, r.get("dist"), r.get("gate_index"))
+        # rel_flu1 = the SLOT1 (next-gate) lever fed alongside it. Carried so the overlay can show
+        # what slot1 was actually filled with -- the slot that fed the SAME gate as slot0 on 37-60%
+        # of two-slot ticks before b518441d, and whose tg+1 identity is still a heuristic.
+        fed[int(fid)] = (flu, r.get("dist"), r.get("gate_index"), r.get("rel_flu1"))
     return fed
 
 
@@ -232,7 +235,26 @@ def main() -> int:
         big = cv2.resize(img, (W, H), interpolation=cv2.INTER_NEAREST)
         best = None
         best_trusted = False       # is `best` corner-sourced (a measurement) or a bbox guess?
+        n_drawn = 0                # detections that SURVIVED the range cap -- what the header reports
         for o in obs:
+            # RANGE-CAP FILTER, applied BEFORE anything is drawn. This overlay re-runs the detector,
+            # so without it the frame shows candidates the seeker had already dropped -- an 83.1 m
+            # label on screen reads as "the cap is not working" when in fact the cap removed it from
+            # the pool before selection (verified on 20260723_221720: 0 of 397 candidates above 30 m
+            # ever reached selection). Render what the FLIGHT considered, nothing more.
+            _e = emit_from_observation(o) if getattr(o, "centre_px", None) is not None else None
+            _r = None
+            if emit_mode == "centre" and _e is not None:
+                _r = float(_e.depth_m)
+            else:
+                try:
+                    _p = estimate_gate_pose(o, compute_covariance=False)
+                    _r = None if _p is None or not np.isfinite(_p.range_m) else float(_p.range_m)
+                except Exception:
+                    _r = None
+            if valid_cap and _r is not None and _r > valid_cap:
+                continue                     # dropped by the flight's own cap -> not drawn at all
+            n_drawn += 1
             pts = (np.asarray(o.corners_px, dtype=np.float32) * S).astype(np.int32)
             # M+1 carries 0-4 inner corners (the centre survives cropping, the corners do not), so the
             # quad is only closed when there IS one. Fewer than 3 => just mark the corners that made it.
@@ -286,13 +308,8 @@ def main() -> int:
                     # candidates the seeker DROPPED before selection. Left unmarked, an 83 m label
                     # reads as "the cap is not working" when the cap in fact removed it from the pool
                     # (verified on 20260723_221720: 0 of 397 candidates above 30 m). Mark them CUT.
-                    if valid_cap and r > valid_cap:
-                        cv2.putText(big, f"{r:.1f}m CUT >{valid_cap:.0f}m",
-                                    (int(c[0]) - 30, int(c[1]) - 14), cv2.FONT_HERSHEY_SIMPLEX,
-                                    0.55, (110, 110, 110), 2, cv2.LINE_AA)
-                    else:
-                        cv2.putText(big, f"{r:.1f}m{src}", (int(c[0]) - 20, int(c[1]) - 14),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+                    cv2.putText(big, f"{r:.1f}m{src}", (int(c[0]) - 20, int(c[1]) - 14),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
         # --- the POINT fed to the policy on this frame (slot0 active gate, z-bias offset baked in) ---
         # HOLD the last fed point across frames that carry no control tick. There are MORE video
         # frames than control ticks (measured 243 vs 184 on 20260723_221720), so 28.4% of frames had
@@ -308,7 +325,7 @@ def main() -> int:
             last_fp = fp
         fed_dist = None
         if fp is not None:
-            flu, dist, gi = fp
+            flu, dist, gi, flu1 = fp
             fed_dist = dist
             pr = _project_flu(flu)
             if pr is not None:
@@ -328,8 +345,23 @@ def main() -> int:
                 if abs(z_bias) > 1e-6:
                     cv2.putText(big, f"z-off {z_bias:+.2f}m", (cu + 12, cv + 26),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 120, 255), 1, cv2.LINE_AA)
+            # --- SLOT1: the NEXT-gate lever fed alongside slot0 (--ego-slot1) --------------------
+            # Drawn separately and in ORANGE because slot0 and slot1 pointing at the SAME gate is a
+            # real failure mode (37-60% of two-slot ticks before b518441d), and the tg+1 identity is
+            # still only "nearest non-active" -- no map prior, no notion of which gate is truly next.
+            # Seeing both markers at once is the only way to catch that by eye.
+            if flu1 is not None:
+                pr1 = _project_flu(flu1)
+                if pr1 is not None:
+                    u1, v1, _z1 = pr1
+                    c1u, c1v = int(round(u1 * S)), int(round(v1 * S))
+                    d1 = float(np.linalg.norm(np.asarray(flu1, dtype=np.float64)))
+                    cv2.drawMarker(big, (c1u, c1v), (0, 165, 255), cv2.MARKER_SQUARE,
+                                   16 + 5 * S, 2 if fresh_fed else 1, cv2.LINE_AA)
+                    cv2.putText(big, f"SLOT1  {d1:.1f} m", (c1u + 12, c1v + 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 165, 255), 2, cv2.LINE_AA)
         frames.append({"recv_ms": rec["recv_monotonic_ns"] / 1e6, "fid": rec["frame_id"],
-                       "img": big, "dets": len(obs), "best": best, "fed_dist": fed_dist})
+                       "img": big, "dets": n_drawn, "best": best, "fed_dist": fed_dist})
 
     if len(frames) < 2:
         raise SystemExit("too few frames")
