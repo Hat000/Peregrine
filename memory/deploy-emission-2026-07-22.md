@@ -5,13 +5,59 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-23T21:34:51.213Z
+  modified: 2026-07-24T20:41:24.434Z
 ---
 
 # Deploy / emission cycle — 2026-07-22
 
 Companion to [[perception-sim2sim-gap-2026-07-15]] (campaign SSOT). Everything here was
 measured from wire logs or cluster runs; each claim names its instrument.
+
+## v1.9 — SHIPPED 2026-07-24 · deploy lead `v19Ws0`
+
+Release **`ego-ckpts-v19-2026-07-24`**, single asset `v19Ws0_actor.pth` (sha `0de906c6…`,
+byte-identical Adroit→local→GitHub, loaded through `fly_rl.load_ego_actor` over 451 replay
+flights before upload). v1.9 = v1.8 **W arm** + roll-rate penalties (`rw_roll_jerk` 0.08 /
+`rw_roll_duty` 0.2 on ch1). Arms 3321541/42/43, launcher `ea5bbb6`, mechanism `def5ab0`.
+
+**Adjudication — two instruments, both name v19Ws0 the winner:**
+1. Deterministic sweep (job 3322027, same eval env as the v1.8 baseline): roll signflips
+   2.595→**2.255**, roll cmd_absmean 0.306→**0.289**, n_passed 5.72→**6.03**. Q arms:
+   Qs1 signflips 2.253 but duty 0.323 / n_passed 5.46; Qs0 signflips 2.052 (lowest) but
+   duty **0.356** / n_passed **5.18** = over-damp (fewer flips, BIGGER rolls, fewer gates —
+   `n_passed` is the guard that catches it).
+2. Release-dive replay (451 logged flights, `scratchpad/replay_v19.py`): v19Ws0 mean
+   **−0.547** / MAX −1.561 / **1/451** worse than v1.8 — IMPROVED beyond the fix. **Qs1
+   −1.383 / 450/451 worse (catastrophic regression); Qs0 −1.006 / 422/451.** → Q arms
+   REJECTED, not shipped (roll eval alone would have shipped Qs1 into the floor).
+
+v19Ws0 is strictly ≥ v1.8 on every axis (roll rate↓ duty↓ gates↑ dive↓). Magnitudes modest
+(roll ~13% down) — a SAFE increment, not a silver bullet; the gate-3 wall still needs coast.
+
+## GATE-1 FAILURE — RESOLVED 2026-07-24 (record9 v16 vs v18pick)
+
+Fengyou pushed 0-gate flights (branch `ratchet-arrestor-2026-07-18`, `data/runs/`). Triage
+scripts `scratchpad/{triage,gate1_trace,seeker_trace,launch_window,death_window}.py`.
+
+* **The gate-1 wall was v16-SPECIFIC.** record9 = **v16Qs1** → **0/8** cleared gate 1.
+  v18pick = v18Qs1+darkred → **18/22** (82%); best config **v18Qs1+darkred+z_bias 0.30 →
+  11/12**. v16 predates the handoff/launch training (v17+), so the violent handoff pitch
+  spike (q_rate −3.47, pitch →−0.60) is launch-OOD for it.
+* **Mechanism (why v16 disperses high/low):** gate 1 is really ~3.7 m up / 10 m fwd. The obs
+  vertical target `rel_flu[2]` is **body-frame** and tracks pitch ~1:1 (launch window: pitch
+  −0.31→−0.60, gate_up 3.7→5.9, drone hasn't moved). CORRECT, not a bug — training builds
+  `R_wb^T@(gate−drone)` (body frame, `wt-fix/rl/ego_estimator.py:26`), deploy builds
+  `R_camera_from_body().T@t_cam` (body frame, `wt-mapfix/src/racer/ego_obs.py:161`) — MATCH;
+  only the coarse sector obs[9:11] is gravity-leveled. On top of the correct frame:
+  **corner-based RANGE noise** (scales the whole vector incl. vertical) + **close-in
+  blackout** (fwd<2.5 m: range_src corners→bbox, elevation garbage −7°..+42°). v16 can't fly
+  the jitter; v18 (launch-trained) can. `z_bias` is a CONSTANT offset — centers v18's small
+  residual (0.30 optimal), useless against v16's swinging error.
+* **Frontier moved to gate 3-4.** Deep v18 flights die in the **gate-to-gate transition**:
+  after passing a gate, `valid_poses_empty` ~15 ticks (blind) while roll thrashes (sign-flips
+  3.0/s, |roll| 2.2, pitch spikes 2.3) → tumble before re-acquiring the next gate. SAME
+  close-in blackout + roll limit cycle as the v1.8 wire adjudication. **v19Ws0 (roll damp) +
+  close-in coast (gyro-propagate the gate through the blind) = the exact fix.**
 
 ## v1.8 — SHIPPED 2026-07-22
 
