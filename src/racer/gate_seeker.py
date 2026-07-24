@@ -845,6 +845,24 @@ class GateSeeker:
                                     n_corners=int(obs.corners_px.shape[0]),
                                     range_src=emit.range_src, n_pairs=emit.n_pairs)
                 else:
+                    # AREA FROM THE ORIGINAL, COHERENT POSE -- before t is substituted.
+                    # visible_area is derived by projecting the gate model through (R, t) and
+                    # normalising by the square-on area at |t|. Swapping t for the centre-emit
+                    # vector while keeping R from PnP leaves a MISMATCHED pair, and because the new
+                    # t points exactly along the centre bearing the projection comes out
+                    # artificially symmetric -- i.e. it reads head-on. Measured: emit=centre gave
+                    # area median 1.000 with 62% of ticks above 0.98, against median 0.917 / 6% on
+                    # the honest pnp path. That is a fabricated "perfectly square-on" cue, and it is
+                    # an artifact of the substitution, not a property of the gate. Compute it here
+                    # from the pose PnP actually solved, then substitute. (When area_src=="corners"
+                    # the measured quad below wins and this is skipped.)
+                    if self.config.area_src != "corners":
+                        from racer.ego_obs import visible_area_from_gatepose
+                        try:
+                            _a = float(visible_area_from_gatepose(pose.R_cam_gate, pose.t_cam_gate))
+                            pose = replace(pose, visible_area_meas=_a)
+                        except Exception:
+                            pass
                     pose = replace(pose, t_cam_gate=emit.p_cam,
                                    range_src=emit.range_src, n_pairs=emit.n_pairs)
             if pose is None or not np.isfinite(pose.t_cam_gate).all():

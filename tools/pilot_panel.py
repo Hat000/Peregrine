@@ -95,6 +95,13 @@ NEG_RE = re.compile(r"^--")
 def _neg(flag):  # --ego-slot1 -> --no-ego-slot1 ; --virtual-flip -> --no-virtual-flip
     return NEG_RE.sub("--no-", flag, count=1)
 
+# This file's own mtime, served with /api/schema. The browser caches MODEL_DEFAULTS at page load, so
+# after a panel restart an OPEN TAB still applies the OLD recipe on a model-pick -- silently, because
+# the form looks entirely normal. That has now cost flights twice: eight runs on a 2-generation-stale
+# actor (2026-07-23), then a batch flown on M with the merge off while the server had M+1 pinned
+# (2026-07-24). The page compares this against its own copy and tells the pilot to reload.
+_BUILD_ID = str(int(os.path.getmtime(__file__)))
+
 SCHEMA = [
     # ---- Flight stack -----------------------------------------------------
     dict(key="ego_ckpt", flag="--ego-ckpt", action="value", ui="select", opts="ego_ckpts",
@@ -450,6 +457,15 @@ _V18_RECIPE = {
     "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_m1_darkred_2026-07-23_fp16_384x640.engine",
     "seeker_emit": "centre",          # REQUIRES the 5-kpt model above; centre+8-kpt aborts at launch
     "ego_dup_merge_bearing": 0.10,
+    # Fengyou 2026-07-24, flying the M+1 stack:
+    #   TAKEOFF ASSIST OFF. The thrust floor was a ground-unstick crutch; with the assist armed the
+    #   release is thrust-floored for up to 1.5 s, which fights the policy's own launch behaviour on
+    #   this lineage. ego_assist_thrust stays pinned only so a stale form cannot ride a value in --
+    #   it is inert while the toggle is off.
+    "ego_takeoff_assist": False,
+    #   Z-BIAS 0.4 -> 0.25. Lowers every emitted gate by 0.25 m instead of 0.4 (the 9-gate record's
+    #   value), i.e. aim less far under the gate now that the centre emit is supplying the position.
+    "ego_gate_z_bias": 0.25,
 }
 
 # CURRENT-GENERATION checkpoints. Anything outside this set gets a loud launch warning: on
@@ -1147,7 +1163,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, HTML, "text/html; charset=utf-8")
         if u.path == "/api/schema":
             return self._send(200, {"schema": SCHEMA, "groups": GROUP_ORDER,
-                                    "assets": discover(), "model_defaults": MODEL_DEFAULTS})
+                                    "assets": discover(), "model_defaults": MODEL_DEFAULTS,
+                                    "build": _BUILD_ID})
         if u.path == "/api/pilots":
             return self._send(200, {"pilots": refresh_pilots(), "sys_flyrl": sys_flyrl_count()})
         if u.path == "/api/sessions":
@@ -1258,6 +1275,7 @@ small.k{color:var(--mut)}
 .gc:hover{border-color:var(--acc);color:var(--fg)}
 .gc.on{background:var(--acc);color:#04121f;border-color:var(--acc);font-weight:700}
 </style></head><body>
+<div id="stalebar" style="display:none;background:#7a1520;color:#fff;padding:10px 14px;font-weight:600;border-bottom:2px solid #ff4d5e"></div>
 <h1>🚁 VQ2 Pilot Control Panel <span class="sub" id="sub">launch pilots in the background · logs local · commit to git on demand</span></h1>
 <div class="wrap">
   <div class="col left">
@@ -1331,12 +1349,31 @@ small.k{color:var(--mut)}
 </div>
 <script>
 let SCHEMA=[], GROUPS=[], ASSETS={}, curLog=null, PBID={}, PBSESS={}, MODEL_DEFAULTS={}, MAP=null;
+let BUILD=null;
 const $=id=>document.getElementById(id);
 async function boot(){
   const r=await (await fetch('/api/schema')).json();
   SCHEMA=r.schema; GROUPS=r.groups; ASSETS=r.assets; MODEL_DEFAULTS=r.model_defaults||{};
+  BUILD=r.build||null;
   renderForm(); preview(); loadPilots(); loadSessions();
   setInterval(loadPilots,2000);
+  setInterval(checkBuild,5000);
+}
+// STALE-PAGE GUARD. MODEL_DEFAULTS is captured at page load, so an open tab keeps applying the OLD
+// recipe after a panel restart -- silently, because the form looks normal. That shipped two bad
+// batches (a 2-generation-stale actor, then M-with-merge-off while the server had M+1 pinned).
+// Poll the build id and refuse to be quiet about it.
+async function checkBuild(){
+  try{
+    const r=await (await fetch('/api/schema')).json();
+    if(BUILD && r.build && r.build!==BUILD){
+      const b=$('stalebar');
+      b.style.display='';
+      b.innerHTML='⚠ THIS PAGE IS STALE — the panel restarted with a different recipe. '
+        +'Model-picks here apply the OLD settings. <button onclick="location.reload(true)" '
+        +'style="margin-left:8px">Reload now</button>';
+    }
+  }catch(e){}
 }
 function optList(key){return (ASSETS[key]||[])}
 function renderForm(){
