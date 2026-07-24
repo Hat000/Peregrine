@@ -353,12 +353,15 @@ class BlenderBackend:
                 styles[int(rng.integers(len(styles)))]))
         c_lo, c_hi = getattr(ap, "confuser_count_range", (0, 0))
         if int(c_hi) > 0:
-            # the frame's OWN gate material, signage and all -- so a confuser differs from a gate in
-            # SHAPE ALONE. A solid untextured slab would be separable on texture, which is the one
-            # cue that must not work: the false positives fire on PRINTED red panels.
+            # PLAIN solid red, NOT the signage gate material. Passing the signage material (my first
+            # attempt, "differ in shape alone") backfired: the printed white checkerboards/logos
+            # SHATTER each large solid panel into dozens of small red fragments, and small red
+            # fragments are exactly what poison distant-gate recall. A large solid red slab is
+            # already the right hard negative -- big red with no opening is precisely the
+            # signage-FP / duplicate-FP failure mode -- so mat=None -> solid_gate_material.
             self._frame_objects += PR.add_confuser_panels(
                 self.scene, floor_y, rng, ap, int(rng.integers(int(c_lo), int(c_hi) + 1)),
-                mat=gate_mat)
+                mat=None, min_span_px=float(getattr(ap, "confuser_min_span_px", 70.0)))
 
         # 4. real props + mannequin people, scattered OFF the gate corridor (sides/background).
         #    Props are spawned as duplicates of the once-imported cache (shared mesh data -> fast).

@@ -137,19 +137,49 @@ def test_end_to_end_build_collision_safe(tmp_path):
     assert "kpt_shape: [5, 3]" in yaml
     assert "flip_idx: [1, 0, 3, 2, 4]" in yaml
 
-    # BOTH same-stem render frames survived, re-keyed apart (not one overwriting the other)
+    # ALL sources now go to TRAIN (2026-07-23 policy: "ALL hand drawn gates get sent to training").
+    # BOTH same-stem render frames survived, re-keyed apart by corpus AND split (not one
+    # overwriting the other), and the hand frame joins them in train.
     train_labels = sorted((out / "labels" / "train").glob("*.txt"))
-    assert len(train_labels) == 2, [p.name for p in train_labels]
-    assert {p.stem for p in train_labels} == {"dsA__000000", "dsB__000000"}
-    # every train label is a well-formed 5-kpt row, and its image is mirrored beside it
+    assert len(train_labels) == 3, [p.name for p in train_labels]
+    assert {p.stem for p in train_labels} == {
+        "dsA__train__000000", "dsB__train__000000", "hand__handframe"}
+    # every train label is a well-formed 5-kpt row, and its image + centre are mirrored beside it
     for lp in train_labels:
         assert len(lp.read_text().split()) == 5 + 3 * 5
         assert (out / "images" / "train" / (lp.stem + ".png")).exists()
         assert (out / "center" / "train" / (lp.stem + ".txt")).exists()
 
-    # the hand frame is the VAL oracle
-    val_labels = list((out / "labels" / "val").glob("*.txt"))
-    assert len(val_labels) == 1 and len(val_labels[0].read_text().split()) == 5 + 3 * 5
+    # nothing in val: this build supplied no --val-render / --val-negatives
+    assert not list((out / "labels" / "val").glob("*.txt"))
+
+
+def test_negatives_go_to_train_and_small_red_filter(tmp_path):
+    """--negatives frames (empty labels) join TRAIN; --neg-min-red-blob-px drops a negative whose
+    largest red blob is too small (a distant-gate-sized red confuser poisons small-gate recall)."""
+    import cv2, numpy as np
+    negs = tmp_path / "negs"
+    (negs / "images").mkdir(parents=True); (negs / "labels").mkdir()
+    # one BIG red blob (keep) and one TINY red blob (drop under a 60 px floor)
+    for name, side in (("big", 120), ("tiny", 20)):
+        im = np.full((360, 640, 3), 30, np.uint8)
+        im[40:40 + side, 40:40 + side] = (40, 40, 230)          # BGR red square
+        cv2.imwrite(str(negs / "images" / f"{name}.png"), im)
+        (negs / "labels" / f"{name}.txt").write_text("")        # empty => negative
+    out = tmp_path / "m1n"
+
+    class Args:
+        render = None; hand = None; hand_pose = None
+        negatives = [str(negs)]; val_render = None; val_negatives = None
+        neg_min_red_blob_px = 60.0
+        out = None
+    Args.out = str(out)
+    assert m1.build(Args) == 0
+    train = sorted(p.stem for p in (out / "labels" / "train").glob("*.txt"))
+    # both negatives are empty-label; the tiny-red one is filtered, the big-red one kept in TRAIN
+    assert any("big" in s for s in train), train
+    assert not any("tiny" in s for s in train), train
+    assert all((out / "labels" / "train" / (s + ".txt")).read_text() == "" for s in train)
 
 
 if __name__ == "__main__":

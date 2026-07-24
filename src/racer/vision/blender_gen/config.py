@@ -89,6 +89,10 @@ class AppearanceConfig:
     ceiling_prob: float = 0.0              # chance of a tiled/grid ceiling plane above the camera
     ceiling_styles: tuple = ("white_grid", "ceiling_tiles", "dark_garage", "panel_grid")
     confuser_count_range: tuple = (0, 0)   # gate-COLOURED non-gate shapes (billboards/slabs/discs)
+    # MINIMUM confuser apparent span in px. Below ~60 a red confuser is pixel-indistinguishable from
+    # a distant GATE, so small confusers teach the detector to suppress distant gates (measured:
+    # small-gate recall 98% -> 38%). Kept high so negatives never occupy the acquirable-gate band.
+    confuser_min_span_px: float = 70.0
 
     exposure_range: tuple = (-0.5, 0.5)    # film exposure EV
     gamma_range: tuple = (0.9, 1.1)

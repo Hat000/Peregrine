@@ -306,6 +306,26 @@ def _find_frame(frames_dir: Path, stem: str) -> Path | None:
     return None
 
 
+def _largest_red_blob_px(img_path: Path) -> float:
+    """Longest side of the biggest gate-RED contour in the image, in px. Used to reject a negative
+    whose largest red content is small: a small red blob is pixel-indistinguishable from a distant
+    GATE, so training on it teaches the detector to suppress distant gates (measured small-gate
+    recall 98% -> 38%). Only LARGE red confusers carry the 'this is not a gate' signal safely."""
+    import cv2
+    im = cv2.imread(str(img_path))
+    if im is None:
+        return 0.0
+    hsv = cv2.cvtColor(im, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    mask = (((h < 15) | (h > 165)) & (s > 120) & (v > 80)).astype("uint8")
+    cs, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = 0.0
+    for c in cs:
+        _, _, w, hh = cv2.boundingRect(c)
+        best = max(best, float(max(w, hh)))
+    return best
+
+
 # ======================================================================================
 # assembly (collision-safe, image tree mirrored)
 #
@@ -367,6 +387,16 @@ def build(args) -> int:
     used: set = set()
     kept = {"train": [], "val": []}
 
+    # OPTIONAL sources, normalised once. build() is called DIRECTLY by the tests with a minimal Args
+    # that predates these fields, so reading them off `args` unguarded would AttributeError on a
+    # legitimate caller. Defaults reproduce the pre-2026-07-23 behaviour (render + hand only).
+    g = lambda k, d=None: getattr(args, k, d)
+    a_hand_pose = g("hand_pose")
+    a_negatives = g("negatives")
+    a_val_render = g("val_render")
+    a_val_negatives = g("val_negatives")
+    min_red = float(g("neg_min_red_blob_px", 0.0) or 0.0)
+
     def _add_render(roots, split):
         for root in (roots or []):
             for img, pose_label in bsd.scan_pairs(Path(root)):
@@ -382,14 +412,21 @@ def build(args) -> int:
                 if p is not None:
                     kept[split].append(p)
 
-    def _add_negatives(roots, split, tag):
+    def _add_negatives(roots, split, tag, min_red_blob_px=0.0):
         """Frames whose label file exists and is EMPTY. Anything unlabelled is skipped: a missing
         label means 'nobody looked', not 'no gate', and feeding those as background would teach the
-        detector to suppress real gates."""
+        detector to suppress real gates.
+
+        ``min_red_blob_px`` rejects a negative whose largest red content is smaller than this: a
+        small red blob reads as a distant gate, so keeping it collapses small-gate recall. 0 keeps
+        every negative (the hand + ceiling sets have little red and pass anyway)."""
         for root in (roots or []):
             for img, lab in bsd.scan_pairs(Path(root)):
                 if lab.read_text().strip():
                     census[f"{tag}-skipped-has-gate"] += 1
+                    continue
+                if min_red_blob_px > 0.0 and _largest_red_blob_px(img) < min_red_blob_px:
+                    census[f"{tag}-skipped-small-red"] += 1
                     continue
                 p = _write_frame(img, "", "", out, split, used, census)
                 if p is not None:
@@ -419,12 +456,12 @@ def build(args) -> int:
                     kept["train"].append(p)
 
     _add_hand(args.hand, collect_hand)                    # hand gates: centre from the AREA
-    _add_hand(args.hand_pose, collect_pose_hand)          # pose-row corpora with no geom sidecars
-    _add_negatives(args.negatives, "train", "neg")
+    _add_hand(a_hand_pose, collect_pose_hand)             # pose-row corpora with no geom sidecars
+    _add_negatives(a_negatives, "train", "neg", min_red_blob_px=min_red)
 
     # ---- VAL: explicitly held-out sources only, never a slice of the above ----------------------
-    _add_render(args.val_render, "val")
-    _add_negatives(args.val_negatives, "val", "valneg")
+    _add_render(a_val_render, "val")
+    _add_negatives(a_val_negatives, "val", "valneg", min_red_blob_px=min_red)
 
     for split in ("train", "val"):
         (out / f"{split}.txt").write_text(
@@ -483,6 +520,12 @@ def main() -> int:
     ap.add_argument("--val-negatives", nargs="*", default=None,
                     help="held-out gate-free root(s) -> VAL. This is the false-positive benchmark; "
                          "keep it disjoint from --negatives or the number is meaningless.")
+    ap.add_argument("--neg-min-red-blob-px", type=float, default=0.0,
+                    help="drop any negative whose largest gate-red blob is smaller than this (px). A "
+                         "small red blob is pixel-indistinguishable from a DISTANT GATE, so keeping "
+                         "small-red negatives collapsed small-gate recall 98%% -> 38%% on the "
+                         "2026-07-23 retrain. Set ~60 to keep only LARGE red confusers (the "
+                         "duplicate/signage FPs they fix are all large red). 0 = keep all.")
     ap.add_argument("--out", required=True, help="output 5-keypoint pose dataset root")
     args = ap.parse_args()
     if not any((args.render, args.hand, args.hand_pose, args.negatives,

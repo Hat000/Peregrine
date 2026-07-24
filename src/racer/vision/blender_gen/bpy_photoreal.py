@@ -455,7 +455,8 @@ def add_ceiling(scene, ceil_y: float, rng, style: str):
     return obj
 
 
-def add_confuser_panels(scene, floor_y: float, rng, appearance, n: int, mat=None) -> list:
+def add_confuser_panels(scene, floor_y: float, rng, appearance, n: int, mat=None,
+                        min_span_px: float = 25.0) -> list:
     """N gate-COLOURED, gate-BRIGHT shapes that are NOT gates: flat billboards, angled slabs and
     discs. This is the hard negative that matters -- the measured false positives fire on red
     textured panels, and a negative frame with no red in it does not teach that. Deliberately never
@@ -484,7 +485,15 @@ def add_confuser_panels(scene, floor_y: float, rng, appearance, n: int, mat=None
         # and nothing like the printed panels the detector actually false-positives on. Picking the
         # pixel span first and back-solving the metric size makes the distribution mean what it says
         # at every depth. f = 320 for this camera.
-        span_px = float(rng.uniform(25.0, 220.0))
+        #
+        # min_span_px is LOAD-BEARING (raised from 25 -> 70 for the 2026-07-23 retrain). A confuser
+        # SMALLER than ~60 px is pixel-indistinguishable from a DISTANT GATE -- both are a few px of
+        # red with no resolvable opening -- so training on small red confusers taught the detector to
+        # suppress small red things and collapsed small-gate recall 98% -> 38% under 30 px. The
+        # duplicate and signage false positives this corpus exists to fix are all LARGE red, so
+        # confusers only need to be large. Keep the floor at/above the acquire-cap gate span (~40 px
+        # at 22 m).
+        span_px = float(rng.uniform(min_span_px, max(min_span_px + 40.0, 220.0)))
         w = span_px * z / 320.0
         h = w * float(rng.uniform(0.35, 2.2))
         if kind == 2:                                    # disc / rounded sign
