@@ -306,6 +306,12 @@ def _find_frame(frames_dir: Path, stem: str) -> Path | None:
     return None
 
 
+# Red content below this many px is sensor noise / anti-alias fringe, not an object -- a frame whose
+# ONLY red is this small is effectively red-free and stays a valid negative. The reject band is
+# [_RED_NOISE_PX, min_red_blob_px): big enough to be an object, small enough to look like a distant gate.
+_RED_NOISE_PX = 12.0
+
+
 def _largest_red_blob_px(img_path: Path) -> float:
     """Longest side of the biggest gate-RED contour in the image, in px. Used to reject a negative
     whose largest red content is small: a small red blob is pixel-indistinguishable from a distant
@@ -417,17 +423,24 @@ def build(args) -> int:
         label means 'nobody looked', not 'no gate', and feeding those as background would teach the
         detector to suppress real gates.
 
-        ``min_red_blob_px`` rejects a negative whose largest red content is smaller than this: a
-        small red blob reads as a distant gate, so keeping it collapses small-gate recall. 0 keeps
-        every negative (the hand + ceiling sets have little red and pass anyway)."""
+        ``min_red_blob_px`` rejects a negative ONLY when its largest red blob is in the
+        distant-gate BAND: [_RED_NOISE_PX, min_red_blob_px). That is the poison -- a red object
+        sized like a gate at range, which a detector cannot tell from a real distant gate, so
+        keeping it collapses small-gate recall (measured 98% -> 38%). A frame with NO red (a blank
+        ceiling, an empty floor) or only sub-noise red specks is a PERFECTLY GOOD negative and is
+        KEPT -- an earlier version that dropped everything below the floor would have thrown away
+        every red-free negative, which is most of them. A frame with a LARGE red blob is kept too:
+        big red with no opening is exactly the confuser signal we want."""
         for root in (roots or []):
             for img, lab in bsd.scan_pairs(Path(root)):
                 if lab.read_text().strip():
                     census[f"{tag}-skipped-has-gate"] += 1
                     continue
-                if min_red_blob_px > 0.0 and _largest_red_blob_px(img) < min_red_blob_px:
-                    census[f"{tag}-skipped-small-red"] += 1
-                    continue
+                if min_red_blob_px > 0.0:
+                    lr = _largest_red_blob_px(img)
+                    if _RED_NOISE_PX <= lr < min_red_blob_px:   # gate-at-range-sized red -> poison
+                        census[f"{tag}-skipped-small-red"] += 1
+                        continue
                 p = _write_frame(img, "", "", out, split, used, census)
                 if p is not None:
                     census[f"{tag}-negative"] += 1

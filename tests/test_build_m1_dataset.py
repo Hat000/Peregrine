@@ -160,10 +160,12 @@ def test_negatives_go_to_train_and_small_red_filter(tmp_path):
     import cv2, numpy as np
     negs = tmp_path / "negs"
     (negs / "images").mkdir(parents=True); (negs / "labels").mkdir()
-    # one BIG red blob (keep) and one TINY red blob (drop under a 60 px floor)
-    for name, side in (("big", 120), ("tiny", 20)):
+    # BIG red (keep), distant-gate-sized red (drop), and NO red at all (keep -- a blank negative
+    # must survive the filter; an earlier version dropped every red-free frame).
+    for name, side in (("big", 120), ("tiny", 20), ("nored", 0)):
         im = np.full((360, 640, 3), 30, np.uint8)
-        im[40:40 + side, 40:40 + side] = (40, 40, 230)          # BGR red square
+        if side:
+            im[40:40 + side, 40:40 + side] = (40, 40, 230)      # BGR red square
         cv2.imwrite(str(negs / "images" / f"{name}.png"), im)
         (negs / "labels" / f"{name}.txt").write_text("")        # empty => negative
     out = tmp_path / "m1n"
@@ -176,8 +178,9 @@ def test_negatives_go_to_train_and_small_red_filter(tmp_path):
     Args.out = str(out)
     assert m1.build(Args) == 0
     train = sorted(p.stem for p in (out / "labels" / "train").glob("*.txt"))
-    # both negatives are empty-label; the tiny-red one is filtered, the big-red one kept in TRAIN
+    # big-red and no-red kept; only the distant-gate-sized red is filtered
     assert any("big" in s for s in train), train
+    assert any("nored" in s for s in train), train
     assert not any("tiny" in s for s in train), train
     assert all((out / "labels" / "train" / (s + ".txt")).read_text() == "" for s in train)
 
