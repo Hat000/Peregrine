@@ -728,6 +728,30 @@ _LOG_CACHE: dict = {}    # logpath -> ((mtime_ns, size), (session, state, gates)
 _HZ_CACHE: dict = {}     # session -> ((mtime_ns, size), hz)
 
 
+_LOOPRATE_RE = re.compile(r"\[loop-rate\]\s+([\d.]+)\s+Hz over\s+(\d+)\s+ticks")
+
+
+def _achieved_hz_from_log(session):
+    """The pilot's OWN measured loop rate for ``session`` (ticks / elapsed), or None.
+
+    fly_rl prints '[loop-rate] X Hz over N ticks (target T)' at the end of every flight -- the
+    authoritative achieved rate. Scans this session's pilot log for it. Ignores runs shorter than
+    ~40 ticks, where the figure is dominated by startup."""
+    try:
+        for lp in sorted(LOG_DIR.glob("p*.log"), key=lambda p: -p.stat().st_mtime):
+            txt = lp.read_text(errors="ignore")
+            if session not in txt:
+                continue
+            hits = _LOOPRATE_RE.findall(txt)
+            for hz, ticks in reversed(hits):
+                if int(ticks) >= 40:
+                    return round(float(hz), 1)
+            return None
+    except Exception:
+        return None
+    return None
+
+
 def _loop_hz(session):
     if not session:
         return None
@@ -751,8 +775,19 @@ def _loop_hz(session):
         if not w:
             _HZ_CACHE[session] = (key, None)
             return None
-        w = sorted(1000.0 / x for x in w if x > 0)
-        hz = round(w[len(w) // 2], 1)   # median hz
+        # ACHIEVED loop rate, not a capability figure. This used to report
+        # median(1000 / work_ms) -- the rate the loop COULD hit if per-tick work were the only
+        # cost -- which ignores pacing entirely and reported 40.9 median / 980.4 max across 1190
+        # flights while the pilot's own [loop-rate] line said 22-26 Hz for every one of them. That
+        # gap read as "the loop used to do 40+ and now does 30" when the achieved rate had never
+        # moved (24.3 pre-M+1 vs 24.1 with it); what actually changed was median work_ms 24.5 ->
+        # 27.0, i.e. 1000/24.5=40.8 -> 1000/27.0=37.0. A number whose max is 980 Hz cannot be a
+        # loop rate. fly_rl already computes the real one, so take THAT and fall back to the old
+        # estimate only when the line is absent (a live flight that has not printed it yet).
+        hz = _achieved_hz_from_log(session)
+        if hz is None:
+            w = sorted(1000.0 / x for x in w if x > 0)
+            hz = round(w[len(w) // 2], 1)   # capability estimate, flagged in the UI as such
     except Exception:
         return None
     _HZ_CACHE[session] = (key, hz)
@@ -1251,7 +1286,7 @@ small.k{color:var(--mut)}
         <span id="procbadge" class="pill" style="background:#232a34">fly_rl procs: ?</span>
         <span class="mut">stale pilots choke the loop rate</span>
       </div>
-      <table><thead><tr><th>label</th><th>state</th><th>gates</th><th>Hz</th><th>session</th><th></th></tr></thead>
+      <table><thead><tr><th>label</th><th>state</th><th>gates</th><th title="ACHIEVED loop rate (ticks/elapsed), taken from the pilot's own [loop-rate] line. Was previously median(1000/work_ms) -- a capability figure that read ~41 while the real rate was ~24.">Hz</th><th>session</th><th></th></tr></thead>
       <tbody id="ptbody"></tbody></table>
     </div>
     <div id="view-git" style="display:none">
