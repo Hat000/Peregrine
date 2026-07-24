@@ -1355,7 +1355,16 @@ async function boot(){
   const r=await (await fetch('/api/schema')).json();
   SCHEMA=r.schema; GROUPS=r.groups; ASSETS=r.assets; MODEL_DEFAULTS=r.model_defaults||{};
   BUILD=r.build||null;
-  renderForm(); preview(); loadPilots(); loadSessions();
+  renderForm();
+  // APPLY THE SELECTED MODEL'S RECIPE ON LOAD. renderForm() paints SCHEMA defaults, and the recipe
+  // only ever fired from the dropdown's 'change' event -- so once ego_ckpt's schema default became
+  // the deploy lead (v18Qs1), picking it was a NO-OP and the recipe never applied. A fresh page then
+  // showed v18Qs1 sitting next to seeker_weights=partial_m (M), emit=pnp and merge=0: a plausible-
+  // looking form that is NOT the shipped recipe. That is exactly "reloaded but it did not
+  // automatically load the correct vision engine". A page load now produces the same state as a
+  // deliberate pick.
+  await onCkptChange();
+  preview(); loadPilots(); loadSessions();
   setInterval(loadPilots,2000);
   setInterval(checkBuild,5000);
 }
