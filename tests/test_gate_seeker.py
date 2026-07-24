@@ -1960,3 +1960,35 @@ def test_perceived_gate_down_bias_lowers_every_emission_unchanged():
     assert float(px.t_cam_gate[1] - pb.t_cam_gate[1]) == pytest.approx(0.5, abs=1e-6)   # lowered by the bias
     assert float(px.t_cam_gate[0]) == pytest.approx(float(pb.t_cam_gate[0]), abs=1e-6)  # x unchanged
     assert float(px.t_cam_gate[2]) == pytest.approx(float(pb.t_cam_gate[2]), abs=1e-6)  # z unchanged
+
+
+def test_duplicate_gate_merge_collapses_same_gate_keeps_distinct():
+    """2026-07-23: a gate larger than the frame is found by several anchors on different fragments;
+    their boxes overlap too little for NMS (measured IoU 0.287). _merge_duplicate_poses folds poses
+    that agree in BOTH bearing and range into one, keeping the most-corners representative, and must
+    NOT touch genuinely distinct gates. Recall-safe by construction: it only removes a pose that has
+    a near-twin."""
+    from racer.contracts import GatePose
+    cfg = GateSeekerConfig(dup_merge_bearing_rad=0.10, dup_merge_range_frac=0.25)
+    s = GateSeeker(config=cfg, detector=_level_multi([_gate([12.0, 0.0, 0.0], normal=[1, 0, 0])]))
+
+    def pose(x, y, z, n=4):
+        return GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3),
+                        t_cam_gate=np.array([x, y, z], float), reproj_error_px=0.0, n_corners=n)
+
+    # three detections of ONE close gate (~same bearing+range) + one genuinely distinct far gate
+    dupA = pose(0.10, 0.0, 5.0, n=4)
+    dupB = pose(0.14, 0.05, 5.2, n=2)          # fewer corners -> should be the one dropped
+    dupC = pose(0.08, -0.03, 4.9, n=3)
+    other = pose(6.0, 0.0, 10.0, n=4)          # bearing ~0.54 rad away -> distinct
+    merged = s._merge_duplicate_poses([dupA, dupB, dupC, other])
+    assert len(merged) == 2, [p.n_corners for p in merged]
+    kept = {round(float(p.t_cam_gate[2]), 1) for p in merged}
+    assert 10.0 in kept                        # the distinct gate survives
+    rep = [p for p in merged if float(p.t_cam_gate[2]) < 8.0][0]
+    assert rep.n_corners == 4                  # the fullest quad is the representative
+
+    # OFF by default -> byte-identical passthrough
+    off = GateSeeker(config=GateSeekerConfig(), detector=_level_multi([_gate([12.0, 0, 0], normal=[1, 0, 0])]))
+    same = [dupA, dupB, dupC, other]
+    assert off._merge_duplicate_poses(same) is same

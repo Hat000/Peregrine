@@ -191,6 +191,15 @@ class GateSeekerConfig:
     # (reject weak / mis-localised gates -> treat as "no detection" -> hold).
     min_detect_score: float = 0.0
     max_reproj_px: float = 12.0
+    # --- DUPLICATE-GATE MERGE (2026-07-23) ---
+    # Collapse multiple detections of one physical gate (a gate larger than the frame gets found by
+    # several anchors on different fragments; the boxes overlap too little for detector NMS -- IoU
+    # 0.287 measured). Two candidates merge when bearing is within dup_merge_bearing_rad AND range
+    # within dup_merge_range_frac. OFF by default (0.0) so the incumbent path is byte-identical.
+    # This is the RECALL-SAFE alternative to training duplicates out with negatives, which cost
+    # 98% -> 38% small-gate recall. See GateSeeker._merge_duplicate_poses.
+    dup_merge_bearing_rad: float = 0.0
+    dup_merge_range_frac: float = 0.25
     # --- HARD RANGE CAP on valid detections (2026-07-12, the billboard-FP fix) ---
     # Drop ANY detection whose PnP range exceeds this from the candidate pool (_valid_poses), for BOTH
     # the active (slot0) and next-gate (slot1) tracks, BEFORE any selection. Beyond ~30 m the PnP range
@@ -857,9 +866,58 @@ class GateSeeker:
             if b != 0.0:
                 pose = replace(pose, t_cam_gate=pose.t_cam_gate + np.array([0.0, b, 0.0]))
             out.append(pose)
+        out = self._merge_duplicate_poses(out)
         self._valid_poses_fid = fid
         self._valid_poses_cache = out
         return out
+
+    def _merge_duplicate_poses(self, poses: "list[GatePose]") -> "list[GatePose]":
+        """Collapse multiple detections of the SAME physical gate into one candidate.
+
+        A gate LARGER THAN THE FRAME gets found by several anchors, each latching a different
+        FRAGMENT of it; their boxes overlap too little for the detector's NMS to merge (measured IoU
+        0.287 between the top-half and bottom-half detections of one close gate). The M+1 model made
+        this far worse than M -- 1.00 duplicate pairs/frame vs 0.10, >3 detections on 65% of frames
+        -- and the clean fix is here, NOT in training: retraining it out with hard negatives
+        (2026-07-23) DID kill the duplicates but also collapsed small-gate recall (98% -> 38% under
+        30 px), because a distant gate and a small red confuser occupy the same pixels. Consolidation
+        is a post-detection problem, so it is solved post-detection, at zero recall cost.
+
+        Two poses are the same gate when their bearings are within ``dup_merge_bearing_rad`` AND
+        their ranges agree within ``dup_merge_range_frac``. Kept representative = the one with the
+        most corners (a fuller quad has a better centre and a real visible_area), ties broken by the
+        nearer range (a gate you are flying at). Off by default (bearing 0.0) so the incumbent path
+        is byte-identical until asked for."""
+        thr = float(self.config.dup_merge_bearing_rad)
+        if thr <= 0.0 or len(poses) < 2:
+            return poses
+        rfrac = float(self.config.dup_merge_range_frac)
+        bearings = [self._pose_bearing(p) for p in poses]
+
+        def _rank(i):                              # higher is the better representative
+            p = poses[i]
+            return (int(getattr(p, "n_corners", 4) or 4), -float(p.range_m))
+
+        order = sorted(range(len(poses)), key=_rank, reverse=True)
+        keep: list[int] = []
+        claimed = [False] * len(poses)
+        for i in order:
+            if claimed[i]:
+                continue
+            keep.append(i)
+            claimed[i] = True
+            bi, ri = bearings[i], float(poses[i].range_m)
+            for j in order:
+                if claimed[j]:
+                    continue
+                bj, rj = bearings[j], float(poses[j].range_m)
+                dbear = float(np.hypot(bi[0] - bj[0], bi[1] - bj[1]))
+                dr = abs(ri - rj) / max(ri, rj, 1e-6)
+                if dbear <= thr and dr <= rfrac:
+                    claimed[j] = True              # same physical gate -> folded into i
+        if len(keep) == len(poses):
+            return poses
+        return [poses[i] for i in sorted(keep)]    # preserve detection order among survivors
 
     def detect_gate_lever(self, frame: Frame | None, *,
                           hint_rel_body_frd: np.ndarray | None = None,

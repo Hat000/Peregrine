@@ -653,6 +653,10 @@ def _meta_seeker_constants(args) -> dict:
         "track_ema_alpha": (float(getattr(args, "ego_track_ema_alpha", 0.5))
                             if getattr(args, "ego_ckpt", None) else c.track_ema_alpha),
         "reacquire_hint_max_bearing_rad": c.reacquire_hint_max_bearing_rad,
+        # duplicate-gate merge threshold as FLOWN (0.0 == off); self-documents whether this flight's
+        # candidate pool was de-duplicated.
+        "dup_merge_bearing_rad": (float(getattr(args, "ego_dup_merge_bearing", 0.0))
+                                  if getattr(args, "ego_ckpt", None) else c.dup_merge_bearing_rad),
     }
 
 
@@ -1945,6 +1949,15 @@ def _build_casec_seeker(args, gates):
             # regressed-centre bearing x apparent-size range. Default "pnp" == byte-identical.
             **({"emit_mode": str(getattr(args, "seeker_emit", "pnp"))} if _ego_path else {}),
             **({"area_src": str(getattr(args, "ego_area_src", "pnp"))} if _ego_path else {}),
+            # DUPLICATE-GATE MERGE (2026-07-23), ego only. A gate larger than the frame is found by
+            # several anchors on different fragments whose boxes overlap too little for NMS; M+1
+            # emits 1.00 such duplicate pairs/frame vs M's 0.10. Merge folds same-bearing+same-range
+            # poses to one, recall-safe (only removes a pose with a near-twin). Default 0.0 == OFF ==
+            # byte-identical. 0.10 rad (6 deg) measured: residual dups 0.000, distinct gates sit at
+            # 0.33 rad so none are touched. The recall-safe alternative to training it out, which
+            # cost 98% -> 38% small-gate recall.
+            **({"dup_merge_bearing_rad": float(getattr(args, "ego_dup_merge_bearing", 0.0))}
+               if _ego_path else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
                                         if getattr(args, "ego_ckpt", None) else 0.0),
@@ -3645,6 +3658,18 @@ def build_parser() -> argparse.ArgumentParser:
                          "and honest candidates start failing the jump gates); LOWER it if a noisy depth "
                          "makes the track jitter. Note the jump gates (--track_max_range_jump_m etc.) "
                          "test against the PREDICTED value, so alpha changes what counts as consistent.")
+    ap.add_argument("--ego-dup-merge-bearing", type=float, default=0.0,
+                    help="EGO duplicate-gate MERGE threshold in RADIANS (ego path only). A gate LARGER "
+                         "than the frame is found by several anchors on different fragments whose boxes "
+                         "overlap too little for the detector's NMS to merge (measured IoU 0.287); M+1 "
+                         "emits 1.00 such duplicate pairs/frame against M's 0.10, and >3 detections on "
+                         "65%% of frames. Two candidate poses are merged into one when their bearings "
+                         "are within this angle AND their ranges agree within 25%%, keeping the "
+                         "most-corners representative. 0.0 = OFF (byte-identical). 0.10 (6 deg) is the "
+                         "calibrated value: residual duplicates 0.000, and genuinely distinct gates sit "
+                         "at 0.33 rad so none are touched. This is the RECALL-SAFE fix -- it only ever "
+                         "removes a pose that has a near-twin -- unlike training duplicates out with "
+                         "hard negatives, which collapsed small-gate recall 98%% -> 38%%.")
     ap.add_argument("--ego-gate-z-bias", type=float, default=0.0,
                     help="EGO perceived-gate VERTICAL bias in METRES, applied at the VISION emission "
                          "(GateSeeker._valid_poses adds it to the camera-frame +Y/down of EVERY emitted "

@@ -189,6 +189,15 @@ SCHEMA = [
               "the track LAGS a fast-closing gate (prediction trails, honest candidates start failing "
               "the jump gates); LOWER if noisy depth makes it jitter. The jump gates test against the "
               "PREDICTED value, so this also changes what counts as a consistent candidate."),
+    dict(key="ego_dup_merge_bearing", flag="--ego-dup-merge-bearing", action="value", ui="number",
+         group="Ego perception", default=0.0, step=0.02,
+         help="Duplicate-gate MERGE, radians. A gate bigger than the frame is found by several "
+              "anchors on different fragments that NMS cannot merge (IoU 0.287); M+1 emits 1.00 such "
+              "duplicate pairs/frame vs M's 0.10. Folds poses agreeing in bearing (within this) AND "
+              "range (within 25%) into one, keeping the fullest quad. 0.0 = OFF. 0.10 (6 deg) is the "
+              "calibrated value: 0.000 residual dups, distinct gates sit at 0.33 rad so none merge. "
+              "RECALL-SAFE (only removes a pose with a near-twin) -- unlike training it out with hard "
+              "negatives, which collapsed small-gate recall 98% -> 38%."),
     dict(key="ego_gate_z_bias", flag="--ego-gate-z-bias", action="value", ui="number",
          group="Ego perception", default=0.0, step=0.1,
          help="Perceived-gate VERTICAL bias (m) added to EVERY vision emission (both slots). "
