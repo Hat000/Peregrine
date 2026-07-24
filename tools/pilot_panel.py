@@ -422,7 +422,35 @@ _V17_RECIPE = {
 # and assist are Fengyou's deploy knobs, unmentioned, so they carry the baseline. If you'd rather fly the
 # CLEAN canonical recipe (z-bias 0, assist 1.3, stale 0.5 = _V16_RECIPE) say so -- one-line change.
 # ⚠ Do NOT re-add M1, do NOT retune the training action space, do NOT mix a clamp across lineages (OOD).
-_V18_RECIPE = {**_V17_RECIPE}   # inherits the 9-gate baseline; labels below mark these as deploy PICKS
+_V18_RECIPE = {
+    **_V17_RECIPE,   # inherits the 9-gate baseline; labels below mark these as deploy PICKS
+    # ---- VISION SHIPPED 2026-07-24: M+1 centre-emit + the duplicate MERGE ----------------------
+    # Scoped to the DEPLOY LEAD only. Every older checkpoint keeps M + pnp + merge OFF, so nothing
+    # already flown changes and no stale model meets a detector it was never flown with.
+    #
+    # M+1 (5 kpt: inner 4 + regressed CENTRE) replaces M as the deploy detector. It emits for the
+    # 55.7% of real gate views whose centre is in frame while a corner is cropped -- the population
+    # M is structurally blind to -- and in flight it lifted the 2-4 m fix rate 47.2% -> 90.1% while
+    # halving loop time (46.0 -> 23.9 ms, i.e. 21.8 -> 41.8 Hz).
+    #
+    # Its ONE regression was duplicate detections: a gate larger than the frame is found by several
+    # anchors on different fragments whose boxes overlap too little for NMS (measured IoU 0.287), so
+    # M+1 emitted 4.53 detections/frame against 2.62 real gates and 1.00 duplicate PAIRS/frame (M:
+    # 0.10). Fixed HERE, in the seeker, not in training: dup_merge folds candidates agreeing in
+    # bearing (<=0.10 rad) AND range (<=25%) into one, measured residual 0.000 pairs/frame with gates
+    # >=60 px preserved at 98-99%. It is recall-safe by construction -- it only ever drops a pose that
+    # has a near-twin, and genuinely distinct gates sit at 0.33 rad, far outside the threshold.
+    #
+    # TRAINING THE DUPLICATES OUT WAS TRIED TWICE AND REJECTED (2026-07-23/24). Hard negatives at
+    # yolo11s killed them (1.00 -> 0.02) but COLLAPSED distant-gate recall in the acquisition band:
+    # 30-60 px (~15-29 m) fell 99% -> 50%, verified by eye as REAL gates missed (177/400 frames), not
+    # a metric artifact. Confuser size was not the lever -- large-solid negatives suppressed just as
+    # hard. If confident FPs on non-gate red ever prove to matter, retrain at yolo11m (M's size, which
+    # carries negatives fine) -- NOT more negatives at this capacity.
+    "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_m1_darkred_2026-07-23_fp16_384x640.engine",
+    "seeker_emit": "centre",          # REQUIRES the 5-kpt model above; centre+8-kpt aborts at launch
+    "ego_dup_merge_bearing": 0.10,
+}
 
 # CURRENT-GENERATION checkpoints. Anything outside this set gets a loud launch warning: on
 # 2026-07-23 a panel restart reset the form to schema defaults and EIGHT flights went out on
