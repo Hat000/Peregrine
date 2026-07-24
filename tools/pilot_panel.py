@@ -105,7 +105,7 @@ _BUILD_ID = str(int(os.path.getmtime(__file__)))
 SCHEMA = [
     # ---- Flight stack -----------------------------------------------------
     dict(key="ego_ckpt", flag="--ego-ckpt", action="value", ui="select", opts="ego_ckpts",
-         group="Flight stack", default="ckpts/v18Qs1_actor.pth", allow_blank=True,
+         group="Flight stack", default="ckpts/v19Ws0_actor.pth", allow_blank=True,
          help="RL policy actor (.pth). This IS the flight stack. Blank = classical CTBR (non-ego). "
               "DEFAULT TRACKS THE DEPLOY LEAD: on 2026-07-23 eight flights were launched on the old "
               "vpeffs0 default (2 generations stale) + negreal42 + pitch clamp 10 after a panel "
@@ -475,13 +475,36 @@ _V18_RECIPE = {
 # ckpt merely HAVING a MODEL_DEFAULTS entry is not enough (vpeffs0 has one, for its yaw clamp);
 # membership here is the deliberate "still flown" statement. Add new releases as they ship.
 CURRENT_CKPTS = {
+    "v19Ws0_actor.pth",
     "v18Qs1_actor.pth", "v18Qs0_actor.pth", "v18Ws0_actor.pth",
     "v17Qs0_actor.pth", "v17Qs1_actor.pth", "v17Ws0_actor.pth",
     "v16Qs0_final_actor.pth", "v16Qs1_final_actor.pth",
 }
 
+# ego-ckpts-v19-2026-07-24 -- ★ DEPLOY LEAD per the release. v1.9 = v1.8's W arm + roll-rate
+# penalties (rw_roll_jerk / rw_roll_duty on ch1), which DAMP the close-in roll limit cycle -- the
+# exact thrash diagnosed on the wire 2026-07-24 (roll cmd saturating to +-3.14 with sign-flips ~3/s
+# while valid_poses_empty, then tumble). Release measures it strictly better than v1.8 on every axis:
+# roll signflips/s 2.595->2.255, roll cmd_absmean 0.306->0.289, gates 5.72->6.03, AND the release
+# dive IMPROVED (worst -1.561 vs v1.8 -1.885, dove harder on only 1/451 replayed flights).
+# LINEAGE: this is the W arm; you have been flying the Q arm (v18Qs1). The Q v19 arms were REJECTED
+# and are NOT downloaded -- v19Qs1 dove harder than v1.8 on 450/451 flights (floor-planting), v19Qs0
+# over-damped (roll magnitude UP, gates DOWN). Only Ws0 shipped.
+#
+# Recipe = the release's "fly it EXACTLY like the best v1.8 config, swap only the checkpoint": M+1
+# darkred + emit centre + merge inherited from _V18_RECIPE, with the ONE listed delta z_bias 0.30
+# (the v1.8 wire sweet spot, 11/12 gate-1; _V18 currently holds Fengyou's 0.25). pitch 20, yaw 0.7,
+# ema 0.5 (schema default, unpinned), stale 0.6, det-hold 0.2, coast off, map -- all already match.
+# TAKEOFF ASSIST: inherited OFF from _V18 (Fengyou's 2026-07-24 setting). The release does not mention
+# assist, so this is the one knob not pinned by it; if the vision session's 11/12 config flew assist
+# ON, that is the first thing to try. FLAGGED to Fengyou, not silently chosen.
+_V19_RECIPE = {**_V18_RECIPE, "ego_gate_z_bias": 0.30}
+
 MODEL_DEFAULTS = {
-    # ego-ckpts-v18-2026-07-22  -- ★ DEPLOY LEAD. See _V18_RECIPE above. Qs1 = the pick; Qs0 = gentlest
+    # ego-ckpts-v19-2026-07-24  -- ★ DEPLOY LEAD. See _V19_RECIPE above. W lineage; the Q arms were
+    # rejected (dive / over-damp) and not shipped. Re-fly rule + settled GO + contact=INVALID as v18.
+    "v19Ws0_actor.pth": {**_V19_RECIPE, "label": "v19pick_Ws0"},
+    # ego-ckpts-v18-2026-07-22  -- prior lead. See _V18_RECIPE above. Qs1 = the pick; Qs0 = gentlest
     # alternate (hot launch window); Ws0 = third seed. Re-fly rule: ||gyro|| > 2.5 for >=3 CONSECUTIVE
     # ticks (NOT the old 0.75 s rule -- that was a clamp detector). Settled GO >= 3 s. Contact = INVALID.
     "v18Qs1_actor.pth": {**_V18_RECIPE, "label": "v18pick_Qs1"},
