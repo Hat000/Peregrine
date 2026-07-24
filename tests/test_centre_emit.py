@@ -186,3 +186,33 @@ def test_orientation_free_pose_masks_visible_area_instead_of_fabricating_it():
             else visible_area_from_gatepose(real.R_cam_gate, real.t_cam_gate))
     assert masked == 0.0            # synthesised: withheld
     assert kept > 0.5               # a real 4-corner fit still reports its area
+
+
+def test_orientation_free_pose_HOLDS_the_last_area_instead_of_zeroing_it():
+    """THE 2026-07-24 FLIGHT REGRESSION. Writing visible_area=0.0 for an orientation-free centre-emit
+    pose (<3 corners) is a TRAINING MISMATCH: training's shoelace ratio is unclipped, so a close
+    square-on gate whose corners have cropped reads ~1.0 there, never 0.0. Feeding 0.0 at the moment
+    the drone commits to the gate is OOD -- measured 0.0% of close ticks fed area==0 on pnp vs 24-73%
+    on centre, and the centre flights crashed at ~2.9 m with rates diverging (record9 config: 5,5
+    gates on pnp vs 0,0,0,1,0,1,0 on centre). The held value was MEASURED a few ticks earlier and is
+    far closer to truth than either 0.0 or a fabricated 1.0."""
+    import numpy as np
+    from racer.contracts import GatePose
+    from racer.ego_obs import EgoObsBuilder
+
+    def pose(n_corners, z):
+        return GatePose(frame_id=0, sim_time_ns=0, R_cam_gate=np.eye(3),
+                        t_cam_gate=np.array([0.0, 0.0, float(z)]), reproj_error_px=0.0,
+                        n_corners=n_corners)
+
+    b = EgoObsBuilder()
+    R = np.eye(3)
+    kw = dict(R_frd2ned=R, vel_ned=np.zeros(3), gyro_frd=np.zeros(3), last_normed_thrust=0.5)
+    # a good 4-corner fix at 8 m establishes a real area...
+    b.update(sim_time_ns=0, gate_index=0, pose=pose(4, 8.0), **kw)
+    established = b._area[0]
+    assert established > 0.5, "4-corner fix should measure a real area"
+    # ...then the gate crops to a 1-corner centre-emit pose as we close on it
+    b.update(sim_time_ns=25_000_000, gate_index=0, pose=pose(1, 2.9), **kw)
+    assert b._area[0] == established, "orientation-free pose must HOLD, not zero, the area"
+    assert b._area[0] != 0.0, "feeding 0.0 here is the regression this test pins"

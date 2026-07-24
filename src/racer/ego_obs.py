@@ -446,9 +446,30 @@ class EgoObsBuilder:
                 _meas = getattr(sp, "visible_area_meas", None)
                 if _meas is not None:
                     self._area[slot] = float(_meas)
+                elif int(getattr(sp, "n_corners", 4)) >= 3:
+                    self._area[slot] = visible_area_from_gatepose(sp.R_cam_gate, sp.t_cam_gate)
                 else:
-                    self._area[slot] = (0.0 if int(getattr(sp, "n_corners", 4)) < 3
-                                        else visible_area_from_gatepose(sp.R_cam_gate, sp.t_cam_gate))
+                    # ORIENTATION-FREE POSE (M+1 centre emit, <3 corners): HOLD the last measured
+                    # area -- do NOT write 0.0, and do NOT project through the synthesised identity
+                    # rotation (that fabricates ~1.0).
+                    #
+                    # Writing 0.0 here CAUSED A FLIGHT REGRESSION (2026-07-24). Measured: 0.0% of
+                    # close-range ticks fed area==0 on the pnp path vs 24-73% on centre, and the
+                    # crashes matched exactly -- area fell 1.0 -> 0.0 at ~2.9 m, never recovered,
+                    # and the commanded rates diverged within a few ticks. record9 config scored
+                    # 5,5 gates on pnp and 0,0,0,1,0,1,0 on centre. The cause is a TRAINING
+                    # MISMATCH, flagged in advance by the vision session: training's shoelace ratio
+                    # is UNCLIPPED, so a close square-on gate whose corners have cropped reads ~1.0
+                    # there -- never 0.0. Feeding 0.0 tells the policy "edge-on / no opening" at the
+                    # exact moment it is committing to the gate, which is out of distribution.
+                    #
+                    # HOLDING is what the rest of this contract already does through a blackout, and
+                    # the held value was MEASURED a few ticks earlier when the corners were still in
+                    # frame. Foreshortening changes slowly next to the crop transition, so the stale
+                    # value is close to true -- and far closer than either 0.0 or a fabricated 1.0.
+                    # (Deliberately no decay: this is a geometry cue, not a freshness one, and
+                    # ``confidence`` already carries staleness.)
+                    pass
                 self._last_fix_sim_ns[slot] = t_ns
                 # coarse sector (auto) is the ACTIVE gate's first-fix elevation bucket -- slot0 ONLY.
                 if slot == 0 and self._sector is None and cfg.sector_mode == "auto":
