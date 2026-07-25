@@ -1,0 +1,52 @@
+loading EGO actor: ckpts/v19Ws0_actor.pth
+[load_ego_actor] EGO action bounds HARDCODED: thrust [0,3.765] rates +-3.14 rad/s (no sidecar consulted; the ego launcher writes none and the legacy [0,5] fallback would overdrive thrust ~33%).
+  type: _ActorMean
+  obs_dim=21 -> action shape=(4,)  (expected (4,))
+  [ego] FORCING cmd_rate_scale=1 (--ego-rate-scale; profile 'vq2_case_c' value 0.4 NOT applied) gyro_sign=(-1.0, -1.0, -1.0)
+connecting udp:127.0.0.1:14550 ...
+  [detector] GateDetector on device='cuda:0' (weights='C:/Users/Shadow/Peregrine/models/vq2_m1_darkred_2026-07-23_fp16_384x640.engine')
+Loading C:/Users/Shadow/Peregrine/models/vq2_m1_darkred_2026-07-23_fp16_384x640.engine for TensorRT inference...
+[07/24/2026-16:31:14] [TRT] [I] Loaded engine size: 8 MiB
+[07/24/2026-16:31:14] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +10, now: CPU 0, GPU 15 (MiB)
+  [prewarm] emit=centre CONFIRMED: model emits 5 keypoints (inner 4 + regressed centre).
+  [prewarm] YOLO detector warmed in 3.93s (first-predict off the launch window; tick-0 stall eliminated).
+
+====================== FLIGHT 1/1 ======================
+recording -> data\runs\20260724_233115_v19pick_Ws0_f1
+  [recipe-drift] WARNING: 4 knob(s) differ from the picked model's recipe: ego_assist_thrust, ego_dup_merge_bearing, ego_gate_z_bias, rate (flown values override the recipe pins).
+>>> Waiting PASSIVELY for the race GO (no sim-control command will be sent; this is the submission-safe posture).
+
+  LATE-JOIN GO!  to_go=-2.75s  pos_off=0.00 m  gi=0.  armed=True sim_t=   6.188s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+
+[arm] ...
+  attempt 1/3: ACK=MAV_RESULT_ACCEPTED  armed=True
+  [ego] no live TRACK_INFO + self-localizing profile -> MAP-FREE flight (vision yaw/z + the tracked gate lever; NO absolute map).
+  [ego] coarse map from --ego-coarse-map configs/vq2_coarse_map.json (9 gates): [[-1, 1], [0, -1], [1, -1], [0, 0], [-1, 0], [0, 1], [-1, 0], [-1, 0], [0, 0]]
+
+[ego] ckpt=ckpts/v19Ws0_actor.pth  profile=vq2_case_c self_localizing=True
+[ego] act bounds thrust [0,3.765] rates +-3.14 | cmd_rate_scale=1 (ego FORCES wire scale via --ego-rate-scale; the seeker profile's 0.4 is NOT applied -- the RL plant was sysid'd at wire scale 1.0)
+[ego] det_hold=0.2s stale_horizon=0.6s obs_coast=False sector_mode=map slot1=True (SOURCE: seeker tg+1 next-gate track) pitch_clamp=20deg roll_clamp=0deg yaw_clamp=0.7 speed_gov=off virtual_flip=True rate=30Hz max=120s ...
+[ego] takeoff-assist OFF (--no-ego-takeoff-assist): raw policy thrust from tick 0 (A1 ground-freeze risk).
+[ego] GATE-OFFSET band-aid ON: after passing gate(s) [4], shift the AIM x-5 (right) y+5 (up) m, body frame, for 0.5s (once each). Applied in the obs AFTER tracking. TEMPORARY aim nudge -- remove once a trained fix lands.
+  t=   6.24s gi=0 conf=1.00 area=0.98 thr=0.187 rate=[-0.16,-1.38,-0.12]     t=   7.25s gi=0 conf=1.00 area=0.98 thr=0.234 rate=[+0.03,+0.00,-0.00]     t=   8.29s gi=0 conf=1.00 area=0.78 thr=0.343 rate=[+0.04,+0.00,-0.06]   
+  [ego] HARD COLLISION -> abort.
+  [ego-log] wrote 51 ticks -> data\runs\20260724_233115_v19pick_Ws0_f1\ego_obs.jsonl
+  [seeker-log] wrote 51 ticks -> data\runs\20260724_233115_v19pick_Ws0_f1\seeker.jsonl
+  [loop-rate]  22.3 Hz over 51 ticks (target 30); worst work 87 ms; 47.1% ticks over budget -> CHOKED
+  [ego-diag] fresh gate levers=46  masked-slot0 ticks=0/51 (0% blackout duty)
+  [ego-diag] slot1 next-gate levers=37/51 (73% of ticks fed a fresh tg+1 pose)
+  [ego-timing] wrote 51 ticks -> ego_timing.jsonl
+  [ego-timing] median ms/tick: work=31 nav_update=19 detect_lever=10
+  [ego-timing]   detect ticks (n=51): work=31 nav_update=19 detect_lever=10
+  [ego-timing]   nav.detect: n=51 avg=12.5ms max=28.8ms
+  [ego-timing]   nav.vp_yaw: n=10 avg=34.2ms max=43.2ms
+  [ego-timing]   nav.floor_height: n=17 avg=23.4ms max=30.7ms
+
+[safety] disarming ...
+
+  flight 1: CRASH  gates=0  session=data\runs\20260724_233115_v19pick_Ws0_f1
+  [video-thread] frames=192 max_gap=153ms@fid=355683 gaps>200ms=0 gaps>1s=0 gap_sum=6342ms max_pub=0.0ms reconnects=0(idle=0,exc=0) | wire: datagrams=207827 completed=192 evicted=0 dup=201549 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
+
+==== fly_rl summary ====
+  flight 1: CRASH      gates=0  data\runs\20260724_233115_v19pick_Ws0_f1
+  collisions (all flights): 2 (ids [1001]; 1001=gate 1002=env)
