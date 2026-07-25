@@ -657,6 +657,10 @@ def _meta_seeker_constants(args) -> dict:
         # candidate pool was de-duplicated.
         "dup_merge_bearing_rad": (float(getattr(args, "ego_dup_merge_bearing", 0.0))
                                   if getattr(args, "ego_ckpt", None) else c.dup_merge_bearing_rad),
+        # 2026-07-25: whether the tracked RANGE was dead-reckoned between fixes (False == EMA-frozen
+        # == every flight to date). CLI-driven on the ego path.
+        "track_propagate_range": (bool(getattr(args, "seeker_propagate_range", False))
+                                  if getattr(args, "ego_ckpt", None) else c.track_propagate_range),
     }
 
 
@@ -1958,6 +1962,12 @@ def _build_casec_seeker(args, gates):
             # cost 98% -> 38% small-gate recall.
             **({"dup_merge_bearing_rad": float(getattr(args, "ego_dup_merge_bearing", 0.0))}
                if _ego_path else {}),
+            # TRACK RANGE PROPAGATION (2026-07-25), ego only: dead-reckon the tracked range between
+            # detector fixes by the closing speed along the line of sight instead of freezing it on
+            # the EMA (fly_rl passes the body-FRD velocity into seeker.propagate). Default False ==
+            # byte-identical.
+            **({"track_propagate_range": bool(getattr(args, "seeker_propagate_range", False))}
+               if _ego_path else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
                                         if getattr(args, "ego_ckpt", None) else 0.0),
@@ -2409,6 +2419,10 @@ def _fly_ego(client, actor, args, flight_idx: int,
                                              # None -- see the flight loop). SOURCE = vision-stack-owned.
         sector_mode=args.ego_sector_mode,
         coarse_map=coarse_map,
+        # OBS FIX GAIN (2026-07-25): K in rel_new = (1-K)*propagated_held + K*fix, both slots.
+        # 1.0 (default) == the historical SNAP == byte-identical; training low-passed at K=1/N_eff
+        # (N_eff ~ U[4,9] -> ~0.154). K=1 is still forced on re-acquisition (training parity).
+        fix_gain=float(getattr(args, "ego_fix_gain", 1.0)),
     ))
 
     print(f"\n[ego] ckpt={args.ego_ckpt}  profile={profile.name} "
@@ -2418,6 +2432,9 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"--ego-rate-scale; the seeker profile's 0.4 is NOT applied -- the RL plant was "
           f"sysid'd at wire scale 1.0)")
     print(f"[ego] det_hold={args.ego_det_hold:g}s stale_horizon={args.ego_stale_horizon:g}s "
+          f"fix_gain={float(getattr(args, 'ego_fix_gain', 1.0)):g}"
+          f"{' (SNAP -- training low-passed at ~0.154)' if float(getattr(args, 'ego_fix_gain', 1.0)) >= 1.0 else ''} "
+          f"seeker_propagate_range={bool(getattr(args, 'seeker_propagate_range', False))} "
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
           f"slot1={args.ego_slot1}{' (SOURCE: seeker tg+1 next-gate track)' if args.ego_slot1 else ''} "
           f"pitch_clamp={args.ego_pitch_clamp:g}deg roll_clamp={args.ego_roll_clamp:g}deg "
@@ -2771,7 +2788,15 @@ def _fly_ego(client, actor, args, flight_idx: int,
         # ROTATED to in the frame (not a stale static prediction). dt from the sim (IMU) clock.
         _prop_dt = (st - _ego_prev_st) / 1e9 if _ego_prev_st is not None else 0.0
         _ego_prev_st = st
-        seeker.propagate(s.gyro_body, _prop_dt)
+        # --seeker-propagate-range: also dead-reckon the tracked RANGE along the line of sight, which
+        # needs the drone's own velocity in BODY FRD -- the same R^T v_ned the obs builder takes
+        # (EgoObsBuilder.update: v_flu = _FLIP_FRD_FLU * (R.T @ v_ned)), before the FLU flip. None
+        # (flag off, or the KF has no velocity yet) => propagate() stays bearing-only == byte-identical.
+        _prop_vel_frd = None
+        if (getattr(args, "seeker_propagate_range", False)
+                and nav_state.velocity_ned is not None):
+            _prop_vel_frd = R_frd2ned.T @ np.asarray(nav_state.velocity_ned, dtype=np.float64)
+        seeker.propagate(s.gyro_body, _prop_dt, vel_frd=_prop_vel_frd)
 
         # --- gate lever: feed each frame_id ONCE (a repeated pose is NOT a fresh fix; the
         # builder ego-propagates through the gap between real detections) ---
@@ -3670,6 +3695,31 @@ def build_parser() -> argparse.ArgumentParser:
                          "at 0.33 rad so none are touched. This is the RECALL-SAFE fix -- it only ever "
                          "removes a pose that has a near-twin -- unlike training duplicates out with "
                          "hard negatives, which collapsed small-gate recall 98%% -> 38%%.")
+    ap.add_argument("--ego-fix-gain", type=float, default=1.0,
+                    help="EGO obs-builder FIX GAIN K (ego path only): how much of a fresh vision fix is "
+                         "written into the held gate lever. rel_new = (1-K)*propagated_held + K*fix, "
+                         "applied to BOTH slots. 1.0 (DEFAULT) = SNAP to every fix -- what every flight "
+                         "to date flew, and the reason per-fix noise reaches the policy unfiltered: "
+                         "measured over 51 flights, inside 1-2 m of a gate 96%% of fixes carry <4 "
+                         "corners, 23%% fall back to bbox range, and the vertical target jitters with "
+                         "p99 half-metre tick-to-tick jumps. TRAINING did not snap: its estimator "
+                         "low-passed with K = 1/N_eff, N_eff ~ U[4,9] (~0.154 at the mean), so the "
+                         "policy learned on a belief that averaged ~6 fixes. Lower = smoother/laggier; "
+                         "the held belief is ego-propagated (rotate by -w*dt, translate by -v*dt) "
+                         "between fixes, so a low K is dead-reckoning corrected by vision, not a "
+                         "frozen target. K is FORCED to 1.0 on RE-ACQUISITION (no held belief, or one "
+                         "older than --ego-stale-horizon) -- the training reacquisition snap, so a "
+                         "prior that drifted through a blackout is discarded rather than blended.")
+    ap.add_argument("--seeker-propagate-range", action="store_true",
+                    help="EGO gate-TRACK range propagation (ego path only). Between detector fixes the "
+                         "seeker already rotates the tracked BEARING by the gyro; the tracked RANGE is "
+                         "left frozen on its EMA, so at race speed it is stale by the whole detection "
+                         "gap (~0.1 s at 10 Hz). This dead-reckons it too: r -= (v_body . u_hat)*dt "
+                         "along the (freshly rotated) line of sight, floored at 0.3 m. Affects BOTH the "
+                         "active and next-gate tracks, and therefore what the continuity/jump gates, "
+                         "the pass-drop rule and the slot1 promote check compare a fresh detection "
+                         "against -- it does NOT loosen any of them. OFF (default) = the range stays on "
+                         "its EMA = byte-identical. Requires the gyro propagation (on by default).")
     ap.add_argument("--ego-gate-z-bias", type=float, default=0.0,
                     help="EGO perceived-gate VERTICAL bias in METRES, applied at the VISION emission "
                          "(GateSeeker._valid_poses adds it to the camera-frame +Y/down of EVERY emitted "
@@ -4085,10 +4135,19 @@ def main() -> int:
                 handoff_dist=args.handoff_dist,
                 handoff_speed_min=args.handoff_speed_min,
                 checkpoint=str(args.checkpoint), max_seconds=args.max_seconds,
+                # 2026-07-25: the named estimator+control preset (NavigatorConfig flags + the uplink
+                # cmd_rate_scale) this flight actually flew. It was the one top-level knob meta.json
+                # never recorded, so 494 banked sessions cannot be split by profile after the fact.
+                # BOTH paths (it is not an ego-only flag).
+                deploy_profile=str(getattr(args, "deploy_profile", "")),
                 # ego meta ONLY on the ego path (VQ1/gate-seeker meta.json byte-identical)
                 **({"ego_ckpt": str(args.ego_ckpt),
                     "ego_det_hold": args.ego_det_hold,
                     "ego_stale_horizon": args.ego_stale_horizon,
+                    # 2026-07-25 obs fix gain + seeker range propagation, as FLOWN (1.0 / False ==
+                    # the pre-2026-07-25 behaviour), so an A/B flight is self-describing.
+                    "ego_fix_gain": float(getattr(args, "ego_fix_gain", 1.0)),
+                    "seeker_propagate_range": bool(getattr(args, "seeker_propagate_range", False)),
                     "ego_obs_coast": args.ego_obs_coast,
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,

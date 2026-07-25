@@ -123,6 +123,12 @@ def _unit(v: np.ndarray, fallback: np.ndarray | None = None) -> np.ndarray:
 # the default paths" invariant); pinned equal to racer.ego_obs._FLIP_FRD_FLU in tests.
 _FLIP_FRD_FLU = np.array([1.0, -1.0, -1.0], dtype=np.float64)
 
+# Minimum tracked range the ``track_propagate_range`` dead-reckoning may produce. The tracked range feeds
+# the continuity jump gate, the pass-drop rule and the slot1 promote check -- none of which have a meaning
+# at 0 or a negative range, so an over-propagated (or just-flown-through) track must degrade into
+# "very close", never into a sign flip.
+_RANGE_PROP_FLOOR_M = 0.3
+
 
 def _leveled_from_body(v_body_flu: np.ndarray, roll: float, pitch: float) -> np.ndarray:
     """Rotate a body-FLU vector into the gravity-leveled heading frame (yaw removed) -- a VERBATIM copy
@@ -371,9 +377,18 @@ class GateSeekerConfig:
     # GYRO-FED TRACK PREDICTION: between detector fixes, rotate the stored track bearing by the body rotation
     # -[w]x dt (mirrors the obs builder's exp(-[w]x dt)) so the continuity gate compares the next detection
     # to where the gate has ROTATED to in the frame under fast yaw/roll (91% of emit-gaps are continuity
-    # rejects of a real detection that drifted outside the STATIC-prediction gate). Range stays on its EMA.
+    # rejects of a real detection that drifted outside the STATIC-prediction gate). Range stays on its EMA
+    # unless ``track_propagate_range`` is also on (below).
     # ON by default; fly_rl calls seeker.propagate(gyro, dt) each control tick. False => static prediction.
     track_gyro_propagate: bool = True
+    # RANGE PROPAGATION (2026-07-25): the companion of the bearing propagation above -- dead-reckon the
+    # tracked RANGE between detector fixes by the closing speed along the line of sight
+    # (r -= (v_body . u_hat)*dt), instead of leaving it frozen on its EMA. On a fast close-in approach the
+    # frozen range is stale by the whole detection gap (~0.1 s at 10 Hz, ~1 m at race speed), which is
+    # what the continuity/jump gates and the pass-drop rule then compare a fresh detection against.
+    # Requires ``track_gyro_propagate`` (the range ride-along lives inside the same ``propagate`` call)
+    # AND a caller-supplied ``vel_frd``. OFF by default == range stays on its EMA == byte-identical.
+    track_propagate_range: bool = False
 
     # --- NEXT-GATE (slot1) TRACK  (the --ego-slot1 SOURCE; 2026-07-12) ---
     # The tg+1 gate for the WINDOW=2 ego obs slot1. ``detect_next_gate_lever`` maintains a SECOND
@@ -1241,10 +1256,15 @@ class GateSeeker:
         track BEARING by the body rotation ``exp(-[w]x dt)`` (mirroring the obs builder's ego-propagation)
         so the continuity gate compares the NEXT detection to where the gate has ROTATED to in the frame
         under fast yaw/roll -- 91% of the emit-gaps are continuity rejects of a REAL detection that drifted
-        outside the STATIC-prediction gate. Range is left on its EMA (bearing-only; ``vel_frd`` is accepted
-        for a future range-propagation but unused). fly_rl calls this every control tick (not only fresh-
-        frame ticks) so the prediction stays current across the ~7-15 Hz detection gaps. No-op when
-        disabled, no track, no/non-finite gyro, or a non-positive dt."""
+        outside the STATIC-prediction gate. fly_rl calls this every control tick (not only fresh-frame
+        ticks) so the prediction stays current across the ~7-15 Hz detection gaps. No-op when disabled,
+        no track, no/non-finite gyro, or a non-positive dt.
+
+        RANGE: left on its EMA (bearing-only) unless ``config.track_propagate_range`` is on AND a body-FRD
+        ``vel_frd`` is supplied, in which case each track's range is also dead-reckoned by the closing speed
+        along its (freshly rotated) line of sight -- see ``_propagate_range`` for the derivation. Both
+        tracks (active + next) are propagated identically. ``vel_frd=None`` reproduces the bearing-only
+        behaviour exactly."""
         if not self.config.track_gyro_propagate or gyro_frd is None:
             return
         if self._track_bearing is None and self._next_track_bearing is None:
@@ -1257,7 +1277,14 @@ class GateSeeker:
         from scipy.spatial.transform import Rotation as _Rotation
         w_cam = R_camera_from_body() @ w                       # body FRD rate -> camera optical rate
         dR = _Rotation.from_rotvec(-w_cam * float(dt)).as_matrix()   # exp(-[w]x dt), gate rotates by -w
-        for attr in ("_track_bearing", "_next_track_bearing"):
+        # velocity in the SAME frame the bearings live in (camera optical), or None => bearing-only.
+        v_cam = None
+        if self.config.track_propagate_range and vel_frd is not None:
+            v = np.asarray(vel_frd, dtype=np.float64)
+            if v.shape == (3,) and np.all(np.isfinite(v)):
+                v_cam = R_camera_from_body() @ v              # body FRD velocity -> camera optical
+        for attr, rattr in (("_track_bearing", "_track_range_m"),
+                            ("_next_track_bearing", "_next_track_range_m")):
             b = getattr(self, attr)
             if b is None:
                 continue
@@ -1268,6 +1295,40 @@ class GateSeeker:
             setattr(self, attr,
                     np.array([np.arctan2(float(ray[0]), z), np.arctan2(float(ray[1]), z)],
                              dtype=np.float64))
+            if v_cam is not None:
+                self._propagate_range(rattr, ray, v_cam, float(dt))
+
+    def _propagate_range(self, rattr: str, ray_cam: np.ndarray, v_cam: np.ndarray, dt: float) -> None:
+        """Dead-reckon ONE track's range along its line of sight (the ``track_propagate_range`` half of
+        ``propagate``). Called with the ALREADY-rotated camera ray for that track.
+
+        DERIVATION. The tracked range r is |drone->gate| along the tracked bearing. Over dt the drone
+        translates by v*dt in its own frame while the gate stays put, so to first order the range changes
+        by MINUS the component of that translation along the line of sight:
+            r_pred = r - (v . u_hat) * dt          u_hat = unit vector toward the CURRENT bearing
+        (+ (v.u_hat) == flying TOWARD the gate == range shrinks). This is the range companion of the
+        rotation propagation above and of the obs builder's ``rel_new = dR@rel_old - v_body*dt`` -- taking
+        the norm of that expression gives exactly this, since dR is a rotation (norm-preserving).
+
+        FRAME. A dot product is rotation-invariant, so it may be evaluated in ANY frame provided BOTH
+        vectors are expressed in it. The stored bearing is CAMERA OPTICAL (x=right, y=down, z=forward) and
+        ``vel_frd`` arrives in body FRD, so the velocity is pushed through the SAME ``R_camera_from_body()``
+        this function already uses for the gyro -- inheriting the +20 deg mount and any angular boresight --
+        and the projection is taken in camera optical:
+            u_cam = normalize(dR @ [tan az, tan el, 1]) ;   closing = u_cam . (R_cb @ v_frd)
+        (Evaluating it in body FRD as (R_cb^T u_cam) . v_frd is algebraically identical.) The METRIC
+        boresight (camera-vs-body vertical offset) is deliberately NOT applied: it is a translation, so it
+        cancels out of a direction, and the residual body-rate lever-arm term w x r_offset is ~1 cm/s --
+        far below the per-fix range noise this is smoothing against.
+        """
+        r = getattr(self, rattr)
+        if r is None or not np.isfinite(float(r)):
+            return
+        n = float(np.linalg.norm(ray_cam))
+        if n < 1e-9:
+            return
+        closing = float((ray_cam / n) @ v_cam)                # m/s along the line of sight, +ve = closing
+        setattr(self, rattr, max(float(r) - closing * dt, _RANGE_PROP_FLOOR_M))
 
     # -- arrival-prior veto (WP2b) ------------------------------------------
     def _leveled_bearing(self, pose: GatePose, roll: float, pitch: float) -> tuple[float, float]:

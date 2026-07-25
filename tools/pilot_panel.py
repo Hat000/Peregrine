@@ -209,6 +209,24 @@ SCHEMA = [
          group="Ego perception", default=0.0, step=0.1,
          help="Perceived-gate VERTICAL bias (m) added to EVERY vision emission (both slots). "
               "+ lowers the gate so the drone aims/passes LOWER through it. 0 = off. Try 0.3."),
+    dict(key="ego_fix_gain", flag="--ego-fix-gain", action="value", ui="number",
+         group="Ego perception", default=1.0, step=0.05,
+         help="Obs-builder FIX GAIN K, both slots: rel_new = (1-K)*propagated_held + K*fix. 1.0 = SNAP "
+              "to every fix -- what every flight to date flew. Inside 1-2 m of a gate 96% of fixes "
+              "carry <4 corners and 23% fall back to bbox range, so the snap puts p99 half-metre "
+              "tick-to-tick jumps straight into the vertical target. TRAINING low-passed at K = 1/N_eff "
+              "with N_eff ~ U[4,9] (~0.154), i.e. the policy learned on a belief averaging ~6 fixes. "
+              "Lower = smoother/laggier; the held lever is ego-propagated between fixes, so a low K is "
+              "dead-reckoning corrected by vision, not a frozen target. K snaps back to 1.0 on "
+              "RE-ACQUISITION (nothing held, or held past the stale horizon)."),
+    dict(key="seeker_propagate_range", flag="--seeker-propagate-range", action="flag", ui="bool",
+         group="Ego perception", default=False,
+         help="Dead-reckon the tracked gate RANGE between detector fixes (r -= (v.u_hat)*dt along the "
+              "line of sight, floored at 0.3 m), instead of freezing it on its EMA. The bearing is "
+              "already gyro-propagated; the range is not, so at race speed it is stale by the whole "
+              "detection gap (~0.1 s at 10 Hz). Both slots. Changes what the continuity/jump gates, the "
+              "pass-drop rule and the slot1 promote check compare against -- it does NOT loosen them. "
+              "OFF = byte-identical to every flight to date."),
     dict(key="ego_det_hold", flag="--ego-det-hold", action="value", ui="number",
          group="Ego perception", default=0.2, step=0.05,
          help="Seconds a lost gate is still treated as 'detected' before masking to zero."),

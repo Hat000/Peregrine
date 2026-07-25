@@ -58,6 +58,14 @@ stale_horizon 0.5 s -- EgoEstimatorConfig defaults; the stage overrides neither)
   * between accepted fixes (age < det_hold) the held rel_pos is EGO-PROPAGATED exactly like the
     training estimator (rotate by -body_rate*dt, translate by -v_body*dt;
     ego_estimator.py:447-459) so the intra-gap obs stays coherent.
+  * an ACCEPTED fix is blended into that propagated belief with a scalar gain ``fix_gain``:
+    rel_new = (1-K)*propagated_held + K*fix. Deploy default K=1.0 == the historical SNAP (the
+    held belief is discarded on every fix), which is why measurement noise -- 96% of fixes inside
+    1-2 m of a gate carry <4 corners -- reaches the policy unfiltered. Training used the
+    steady-state low-pass K = 1/N_eff with N_eff ~ U[4,9] (ego_estimator.py:722-734, K~0.154), so
+    the pilot can dial the deploy gain onto the training smoothing. K is FORCED to 1.0 on
+    RE-ACQUISITION (no held belief, or a held belief older than ``stale_horizon_s``) -- exactly
+    the training reacquisition branch, which discards a prior that has drifted through a blackout.
 
 COARSE SECTOR (deploy analog of ``build_coarse_map``, peregrine_racing_ego.py:180-235):
   Training's sector is a STATIC per-gate (horiz, vert) bucket from COURSE geometry: horiz = the
@@ -272,6 +280,13 @@ class EgoObsBuilderConfig:
                                                    # build_coarse_map bucket the _pef champions trained on).
     sector_deadband_rad: float = SECTOR_DEADBAND_RAD
     propagate_gaps: bool = True                    # ego-propagate held rel_pos between fixes
+    fix_gain: float = 1.0                          # K in rel_new = (1-K)*propagated_held + K*fix, applied
+                                                   # to BOTH slots. 1.0 (default) == the historical SNAP ==
+                                                   # byte-identical. Training's estimator low-passed with
+                                                   # K = 1/N_eff, N_eff ~ U[4,9] (ego_estimator.py:722-734)
+                                                   # -> K ~ 0.154 at the mean; the deploy default is NOT
+                                                   # moved there (the pilot passes the value). Clamped to
+                                                   # [0,1] like training; K=1 is FORCED on re-acquisition.
 
 
 class EgoObsBuilder:
@@ -417,12 +432,38 @@ class EgoObsBuilder:
                     dR = Rotation.from_rotvec(-w_flu * dt).as_matrix()
                     self._rel_flu[slot] = dR @ self._rel_flu[slot] - v_flu * dt
             self._last_prop_sim_ns[slot] = t_ns
-            # fresh fix: snap (K=1) + refresh the held area + reset the staleness clock
+            # fresh fix: BLEND into the (just ego-propagated) held belief + refresh the held area +
+            # reset the staleness clock
             seen = sp is not None and np.isfinite(np.asarray(sp.t_cam_gate)).all()
             pose_seen[slot] = seen
             if seen:
                 rel_frd = rel_pos_body_frd_from_gatepose(sp.t_cam_gate)
-                self._rel_flu[slot] = _FLIP_FRD_FLU * rel_frd
+                fix_flu = _FLIP_FRD_FLU * rel_frd
+                # SCALAR-GAIN BLEND (training parity, chaum rl/ego_estimator.py:722-734):
+                #   rel_new = rel_held + K * (fix - rel_held) == (1-K)*rel_held + K*fix
+                # with rel_held the belief the loop above just ego-propagated to THIS tick. K=1
+                # (cfg.fix_gain default) is the historical SNAP and takes the ORIGINAL assignment
+                # below verbatim -- no arithmetic runs, so the default path is byte-identical.
+                #
+                # RE-ACQUISITION SNAP: training forces K=1 when the gate was MASKED before this fix
+                # (``reacq = t_since_fix > stale_horizon_s``, ego_estimator.py:730-732) because a
+                # prior that coasted past the horizon has drifted and must be discarded -- otherwise
+                # confidence would read fresh (1.0) while rel_pos still carried stale-propagation
+                # error. Same test here, on the SAME clock: ``_last_fix_sim_ns`` still holds the
+                # PREVIOUS fix time at this point (it is rewritten below), so the age computed here
+                # is training's ``_t_since_fix`` at the identical point of the update -- after the
+                # gap propagation, before the measurement. No held belief at all (cold slot, or the
+                # slot was reset by a gate advance) is likewise a snap.
+                k = float(np.clip(cfg.fix_gain, 0.0, 1.0))
+                held = self._rel_flu[slot]
+                age_prior = (float("inf") if self._last_fix_sim_ns[slot] is None
+                             else (t_ns - self._last_fix_sim_ns[slot]) / 1e9)
+                reacq = (held is None or age_prior > cfg.stale_horizon_s
+                         or not bool(np.all(np.isfinite(held))))
+                if k >= 1.0 or reacq:
+                    self._rel_flu[slot] = fix_flu
+                else:
+                    self._rel_flu[slot] = (1.0 - k) * held + k * fix_flu
                 # visible_area is derived by PROJECTING the gate model through R_cam_gate, so it is
                 # only meaningful when the pose carries a real ORIENTATION. An M+1 centre-emit pose
                 # with <3 corners has none -- it is synthesised with identity rotation because the
