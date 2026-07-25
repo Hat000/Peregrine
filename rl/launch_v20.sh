@@ -80,9 +80,18 @@
 #   V (the vertical fix), seeds 0,1 : drop(-10,10) + ceiling 16 -> +1 ~ 30%. TAG=v20V_s{0,1}.
 #   C (the control),      seed 0    : vertical knobs OFF (legacy descent-biased band, no ceiling) ->
 #                                     +1 ~ 1.6%, IDENTICAL in every other respect. TAG=v20C_s0.
-# C-vs-V isolates the VERTICAL change (only knobs that differ). C-vs-the-v19W_s0 parent isolates the
-# 25 Hz VISION change (only knob that differs). Two reads, three jobs -- and V carries the seed replicate
-# because a single seed does not count (~2.8x seed variance).
+# C-vs-V isolates the VERTICAL change CLEANLY -- the course knobs are the only tokens that differ, and
+# both arms share the warm start, the seed, and the cadence. C-vs-the-v19W_s0 parent prices the 25 Hz
+# VISION change, but read it as a TREND not a controlled A/B: C is v19W CONTINUED for another 18000
+# updates at 25 Hz (different cadence RNG seed too), not a re-run of it. Two reads, three jobs -- and V
+# carries the seed replicate because a single seed does not count (~2.8x seed variance).
+#
+# !! WHAT THE VERTICAL CHANGE DOES *NOT* TOUCH (verified bit-identical over 4000 sampled courses at a
+# fixed RNG seed): the SPAWN POSE, spawn_yaw, and the GATE-0 position -- x, y AND z. course_spawn_below_g0
+# (0.5-6.0 m) is untouched, the drop band is drawn with the SAME shape so the RNG stream position is
+# preserved, and neither the 0.5 m floor nor the 16 m ceiling can bind on gate 0. This matters: the v1.8/
+# v1.9 gate-1 competence is LAUNCH-TRAINED (the v16 gate-1 wall was launch-OOD, 0/8 vs 11/12), so the
+# launch geometry those checkpoints learned is preserved BY CONSTRUCTION. Only gates 1+ move.
 # !! gpu-medium QOS runs 2 CONCURRENT GPUs; queuing more never helps. Submit all three, they will drain.
 #
 # ---------------------------------------------------------------------------------------------------
