@@ -175,6 +175,23 @@ DEFAULT_COURSE_RANGES = dict(
                                   # training floor: spawn_below_g0_m only constrains gate 0 -- with the
                                   # default drop_m a LATER gate can sink below the pad, which would be
                                   # undivable-to with the floor on. None == OFF (byte-identical legacy).
+    gates_ceiling_m=None,         # (VERTICAL-STRUCTURE fix, 2026-07-25) the SYMMETRIC COUNTERPART of
+                                  # gates_above_spawn_m: when set, EVERY gate centre z is kept <=
+                                  # spawn_z + this (the pad is z=0 in the sampler frame). Enforced in
+                                  # the SAME sequential walk clamp (z[g] = clamp(z[g-1]+dz[g], min_z,
+                                  # max_z)) so a leg that would climb through the roof lands ON it and
+                                  # later descents resume from there (walk shape preserved; a climb's
+                                  # |dz| only ever SHRINKS, so max_grade still holds).
+                                  # WHY IT EXISTS: the legacy drop_m band (-3, 12) is DESCENT-BIASED
+                                  # (dz = -drop in [-12, +3]) so the vertical coarse-sector +1 bucket
+                                  # is realised on only ~1.6% of gates (measured, n=20000). Widening
+                                  # drop_m symmetrically (the existing course_drop_lo/hi keys) fixes
+                                  # that, but with only a FLOOR the walk is a reflected random walk
+                                  # that drifts unboundedly UP (measured max gate z 44 m over 8 gates
+                                  # at drop_m=(-8,8)). The ceiling bounds the envelope to a
+                                  # warehouse-realistic band AND keeps the structure OSCILLATING (a
+                                  # climb must eventually be followed by a descent) instead of a
+                                  # one-way climb-out. None == OFF (byte-identical legacy).
     lateral_offset_m=(0.0, 0.0),  # (Track-A course enrichment, 2026-07-13) per-gate NON-CUMULATIVE
                                   # perpendicular JOG -- a slalom/chicane xy-plane shift that is DISTINCT
                                   # from turn_rad's cumulative heading walk. For every gate g>=1 the gate
@@ -300,14 +317,21 @@ def sample_courses(n, device="cpu", generator=None, **overrides):
             mag[:, 0] = 0.0                                                        # gate 0 anchored on the approach
             sign = torch.where(torch.rand(m, G, device=device, generator=generator) < 0.5, -1.0, 1.0)
             gate_pos = gate_pos + (mag * sign).unsqueeze(-1) * perp
-        # GATES-ABOVE-SPAWN floor clamp (A1 floor fix, 2026-07-10; OFF when None == legacy). Sequential
+        # GATES-ABOVE-SPAWN floor clamp (A1 floor fix, 2026-07-10; OFF when None == legacy) + the
+        # SYMMETRIC gates_ceiling_m roof (vertical-structure fix, 2026-07-25; OFF when None). Sequential
         # so the walk continues from the clamped height (a post-dip climb actually climbs) instead of a
         # naive cumulative clamp that would pin every later gate to the floor. G <= ~8 -> loop is trivial.
-        if R["gates_above_spawn_m"] is not None:
-            min_z = float(R["gates_above_spawn_m"])
+        # torch.clamp(max=None) is a no-op, so the ceiling-OFF path is BYTE-IDENTICAL to the legacy one.
+        _floor_z = R["gates_above_spawn_m"]
+        _ceil_z = R["gates_ceiling_m"]
+        if _floor_z is not None or _ceil_z is not None:
+            min_z = None if _floor_z is None else float(_floor_z)
+            max_z = None if _ceil_z is None else float(_ceil_z)
+            if min_z is not None and max_z is not None and max_z < min_z:
+                raise ValueError(f"gates_ceiling_m={max_z} must be >= gates_above_spawn_m={min_z}")
             z_prev = torch.zeros(m, device=device)                                   # pad z = 0
             for g in range(G):
-                z_prev = torch.clamp(z_prev + dz[:, g], min=min_z)
+                z_prev = torch.clamp(z_prev + dz[:, g], min=min_z, max=max_z)
                 gate_pos[:, g, 2] = z_prev
         # gate yaw: bisector of incoming/outgoing headings; last gate = incoming heading. With the lateral
         # jog ON the heading walk no longer describes the actual legs, so re-derive the arriving headings

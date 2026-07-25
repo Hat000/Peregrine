@@ -154,6 +154,14 @@ def resolve_course_overrides(cfg) -> dict:
                                                     gate 0; with the default drop band a LATER gate
                                                     can sink below the pad -- undivable-to once
                                                     floor_at_spawn is on.]
+      course_gates_ceiling                        -> gates_ceiling_m (scalar) [VERTICAL-STRUCTURE fix
+                                                    2026-07-25: the SYMMETRIC counterpart -- keep EVERY
+                                                    gate centre z <= pad z + this. Pair it with a
+                                                    widened course_drop_lo/hi band to get a BOUNDED
+                                                    up-and-down vertical walk instead of the
+                                                    descent-biased default (which realises the coarse
+                                                    vertical sector +1 bucket on only ~1.6% of gates)
+                                                    or an unbounded reflected climb-out. Unset -> OFF.]
 
     ``spawn_dist_m`` is the standing-start pad -> gate-0 horizontal distance (Fengyou 2026-07-07: keep
     the FIRST gate 10-20 m out, not the sampler's default 18-28 m -- a shorter first approach is easier
@@ -211,6 +219,21 @@ def resolve_course_overrides(cfg) -> dict:
         if ga < 0.0:
             raise ValueError(f"course_gates_above_spawn must be >= 0, got {ga}")
         out["gates_above_spawn_m"] = ga
+    # course_gates_ceiling (scalar, VERTICAL-STRUCTURE fix 2026-07-25): the SYMMETRIC counterpart of the
+    # floor -- every gate centre z <= pad z + this (see peregrine_course.gates_ceiling_m). Bounds the
+    # vertical walk so a widened (symmetric) course_drop_lo/hi band gives OSCILLATING up/down structure
+    # instead of an unbounded reflected climb-out. Unset -> OFF (legacy). Fail LOUD on an inverted band:
+    # a ceiling below the floor would silently pin every gate to one plane (zero vertical structure --
+    # the exact class of bug this wiring exists to prevent).
+    gates_ceiling = getattr(cfg, "course_gates_ceiling", None)
+    if gates_ceiling is not None:
+        gc = float(gates_ceiling)
+        if gc <= 0.0:
+            raise ValueError(f"course_gates_ceiling must be > 0, got {gc}")
+        if "gates_above_spawn_m" in out and gc < out["gates_above_spawn_m"]:
+            raise ValueError(f"course_gates_ceiling={gc} must be >= "
+                             f"course_gates_above_spawn={out['gates_above_spawn_m']}")
+        out["gates_ceiling_m"] = gc
     return out
 
 
@@ -375,6 +398,31 @@ def build_coarse_map(gate_pos_zup: Tensor, spawn_pos_zup: Tensor,
     vert[elev > vert_thresh_rad] = 1
     vert[elev < -vert_thresh_rad] = -1
     return torch.stack([horiz, vert], dim=-1)                            # (N,G,2) long in {-1,0,1}
+
+
+def coarse_sector_stats(sector: Tensor, prefix: str = "") -> dict:
+    """REALISED {-1, 0, +1} distribution of the coarse-map buckets over a ``(..., G, 2)`` sector tensor.
+
+    The training-metrics read for the VERTICAL-STRUCTURE question (2026-07-25): the deploy stream feeds
+    obs[10] == +1 on 37.6% of ticks over 51 flights, while the DEFAULT course sampler realises +1 on only
+    ~1.6% of sampled gates -- the policy has effectively never been trained to climb. This function is the
+    instrument that says whether a course-sampler change actually MOVED that distribution (diagnose from
+    training metrics; a knob that runs is not a knob that bites).
+
+    Returns fractions keyed ``{prefix}vert_up/vert_level/vert_down`` + ``{prefix}horiz_right/…`` summing to
+    1.0 within each axis. PURE (no RNG, no state, inputs unmutated) -> unit-testable and cheap enough to
+    call once per env step on the live (N,G,2) coarse map."""
+    assert torch is not None
+    n = max(int(sector[..., 0].numel()), 1)
+    h, v = sector[..., 0], sector[..., 1]
+    return {
+        f"{prefix}vert_up": float((v == 1).sum()) / n,
+        f"{prefix}vert_level": float((v == 0).sum()) / n,
+        f"{prefix}vert_down": float((v == -1).sum()) / n,
+        f"{prefix}horiz_right": float((h == 1).sum()) / n,
+        f"{prefix}horiz_level": float((h == 0).sum()) / n,
+        f"{prefix}horiz_left": float((h == -1).sum()) / n,
+    }
 
 
 # ================================================================================================
@@ -801,8 +849,19 @@ def kp_persist_update(count, detectable, n_required):
 # On a non-frame tick detectable_effective is False for ALL gates, so the estimator EGO-PROPAGATES
 # (rotate by -body_rate*dt, translate by -v_body*dt) and DECAYS confidence -- the EXISTING code path.
 #   (1) FRAME CLOCK (ego_vision_frame_hz, default 30.0 Hz -- the 424-flight recorded stream rate, NOT
-#       28.8): a deterministic GLOBAL camera clock over the 40 Hz sim tick. Accumulate dt; fire a frame
-#       when the accumulator crosses the frame period (~33.3 ms) -> ~3 of every 4 ticks. NO RNG.
+#       28.8): a deterministic GLOBAL camera clock over the sim tick. Accumulate dt; fire a frame when
+#       the accumulator crosses the frame period. NO RNG.
+#       🚩 CADENCE ARITHMETIC (corrected 2026-07-25 -- the "40 Hz sim tick / ~3 of every 4 ticks" this
+#       comment used to claim was WRONG): the CONTROL tick is env.dt = 0.0333 s == 30.03 Hz (cfg/env/
+#       racing.yaml; no sbatch override; fly_rl.py:108 _TRAIN_DT pins the deploy loop to the same value).
+#       At frame_hz=30 the frame period (33.33 ms) is therefore ~= dt (33.3 ms), so the clock fires on
+#       99.90% of ticks -- the DEFAULT frame clock is a near-NO-OP and the ONLY thing thinning the
+#       fresh-fix stream today is the detector-success draw (2). The measured wire vision rate is ~25 Hz,
+#       which IS exactly representable here: 30.03/25 = 6/5, so the accumulator settles into a period-6
+#       ".FFFF." pattern = 5 frames per 6 ticks = 25.00 Hz effective, dropping the net fresh-fix rate
+#       10.50 -> 8.75 Hz at p=0.35. A NON-frame tick DROPS the fix (it does NOT hold or interpolate):
+#       detectable_effective is all-False, so the estimator ego-propagates and decays confidence.
+#       frame_hz MUST stay <= the loop rate (see _vc_frame_tick's at-most-one-frame-per-tick assumption).
 #   (2) DETECTOR SUCCESS (ego_vision_detect_p, default 0.35): on a frame tick a geometrically-detectable
 #       gate yields a fresh fix with probability p (the detector misses most frames). Net valid fresh-fix
 #       rate over a visible approach ~ frame_hz * p = 30 * 0.35 ~ 10 Hz (in the measured 7-15 Hz band).
@@ -2298,6 +2357,22 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         # indicator: it should fall long before the abort rate does). Both 0.0 when OFF (wiring watchdog).
         loss_components["blind_abort_rate"] = float(blind_abort.float().mean())
         loss_components["blind_clock_mean"] = float(self._blind_clock.mean())
+        # ===== VERTICAL-STRUCTURE diagnostic (2026-07-25) -- FREE, both reward paths, ALWAYS ON. The
+        # measured defect: obs[10] (the coarse VERTICAL sector) is fed +1 on 37.6% of DEPLOY ticks but
+        # the DEFAULT sampler realises +1 on ~1.6% of sampled gates, so the policy has effectively never
+        # been trained to climb. Two reads, because they answer different questions:
+        #   vert_sector_up_duty   = fraction of envs whose CURRENT TARGET's vert bucket == +1 THIS STEP.
+        #     This is TICK-WEIGHTED and is literally the obs[10] channel the actor sees -> the ONLY key
+        #     directly comparable to the 37.6% deploy number. Target ~0.25-0.40.
+        #   course_vert_up_frac   = fraction over the WHOLE live course population (every gate of every
+        #     env), i.e. the SAMPLER's realised structure, unweighted by how long the drone lingers.
+        # Pinned at ~0.016 == the vertical knobs did not take (wiring watchdog).
+        with torch.no_grad():
+            tg_vert = self._coarse_map[ar, tg, 1]
+            loss_components["vert_sector_up_duty"] = float((tg_vert == 1).float().mean())
+            loss_components["vert_sector_down_duty"] = float((tg_vert == -1).float().mean())
+            loss_components["course_vert_up_frac"] = float((self._coarse_map[..., 1] == 1).float().mean())
+            loss_components["course_vert_down_frac"] = float((self._coarse_map[..., 1] == -1).float().mean())
 
         # ===== ESTIMATOR-FAITHFUL diagnostics (L16: these keys emitting in the PRECHECK log ==
         # the package armed; absent keys == it did not). Scored per-step from the just-stepped
@@ -2417,3 +2492,73 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
         if reset_indices.numel() > 0:
             self.reset_idx(reset_indices)
         return self.get_observations(), (loss, reward), terminated, extra
+
+
+# ================================================================================================
+# OFFLINE VERTICAL-STRUCTURE REPORT (2026-07-25) -- ``python rl/peregrine_racing_ego.py <stage> [k=v ...]``
+# ================================================================================================
+# THE PRE-LAUNCH INSTRUMENT for the course-vertical-structure question. It samples courses through the
+# EXACT training path -- vq2_ego_curriculum.STAGES[stage] (+ any ``k=v`` the launcher passes as
+# ``++env.k=v``) -> resolve_course_overrides -> peregrine_course.sample_courses -> build_coarse_map --
+# and prints the REALISED coarse-sector distribution. Verify a knob MOVED the +1 bucket here, offline,
+# before burning a cluster job on it (the in-training twin of this read is env_loss/course_vert_up_frac
+# + env_loss/vert_sector_up_duty). Laptop-only: torch + numpy, NO diffaero, NO cluster.
+#
+#   python rl/peregrine_racing_ego.py dual_gate_fullstack_floor_pef16 course_n_gates=8
+#   python rl/peregrine_racing_ego.py dual_gate_fullstack_floor_pef16 course_n_gates=8 \
+#          course_drop_lo=-8.0 course_drop_hi=8.0 course_gates_ceiling=12.0
+def _vert_report_main(argv) -> int:                      # pragma: no cover - CLI wrapper
+    import argparse
+    from types import SimpleNamespace
+    from peregrine_course import sample_courses
+    from vq2_ego_curriculum import STAGES
+
+    ap = argparse.ArgumentParser(description="Realised coarse-sector distribution over sampled courses.")
+    ap.add_argument("stage", help="a vq2_ego_curriculum stage name")
+    ap.add_argument("overrides", nargs="*", help="k=v course_* overrides (the launcher's ++env.k=v)")
+    ap.add_argument("--n", type=int, default=20000, help="courses to sample (default 20000)")
+    ap.add_argument("--seed", type=int, default=20260725)
+    a = ap.parse_args(argv)
+
+    if a.stage not in STAGES:
+        raise SystemExit(f"unknown stage {a.stage!r} (have: {sorted(STAGES)})")
+    cfg = dict(STAGES[a.stage])
+    cfg.pop("_raw", None)
+    for tok in a.overrides:
+        k, _, v = tok.partition("=")
+        try:
+            cfg[k] = float(v) if ("." in v or "e" in v.lower() or "-" in v[1:]) else int(v)
+        except ValueError:
+            cfg[k] = v
+    ov = resolve_course_overrides(SimpleNamespace(**cfg))
+    gen = torch.Generator().manual_seed(int(a.seed))
+    c = sample_courses(a.n, device="cpu", generator=gen, **ov)
+    # Deadbands: the stage's own (default 0.20 rad) -- the SAME thresholds the env rebuilds with. DO NOT
+    # retune them to move the +1 bucket: the DEPLOY side reads a HAND-AUTHORED coarse-map JSON written to
+    # the 0.20 rad {-1,0,+1} convention, so a training-only deadband change would desync the LABEL
+    # SEMANTICS from the wire. Move the GEOMETRY (drop band / ceiling), never the label.
+    sec = build_coarse_map(c["gate_pos"], c["spawn_pos"],
+                           horiz_thresh_rad=float(cfg.get("ego_coarse_horiz_thresh_rad", 0.20)),
+                           vert_thresh_rad=float(cfg.get("ego_coarse_vert_thresh_rad", 0.20)))
+    st = coarse_sector_stats(sec)
+    v, z = sec[..., 1], c["gate_pos"][..., 2]
+    G = sec.shape[1]
+    print(f"stage={a.stage}  n={a.n}  G={G}  sampler_overrides={ov}")
+    print(f"  VERT  +1(up)={st['vert_up'] * 100:6.2f}%   0(level)={st['vert_level'] * 100:6.2f}%   "
+          f"-1(down)={st['vert_down'] * 100:6.2f}%")
+    print(f"  HORIZ +1={st['horiz_right'] * 100:6.2f}%    0={st['horiz_level'] * 100:6.2f}%    "
+          f"-1={st['horiz_left'] * 100:6.2f}%")
+    print("  per-gate +1%: " + " ".join(f"g{g}:{float((v[:, g] == 1).float().mean()) * 100:5.1f}"
+                                        for g in range(G)))
+    print(f"  gate z (m): mean={float(z.mean()):.2f}  p50={float(z.median()):.2f}  "
+          f"p95={float(z.flatten().quantile(0.95)):.2f}  max={float(z.max()):.2f}")
+    if G > 1:
+        up = v == 1
+        print("  courses with >=2 CONSECUTIVE up gates: "
+              f"{float((up[:, :-1] & up[:, 1:]).any(dim=1).float().mean()) * 100:.1f}%")
+    return 0
+
+
+if __name__ == "__main__":                               # pragma: no cover - CLI wrapper
+    import sys
+    raise SystemExit(_vert_report_main(sys.argv[1:]))
