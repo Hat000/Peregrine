@@ -56,6 +56,22 @@ WHAT THE MEASUREMENTS SHOW
   4. THE WIRE EVIDENCE IS SIX FLIGHTS. 3/6 v2.0 flights dying at gate 0 has
      p = 0.11-0.17 against the 21-25% baseline. Not a signal.
 
+  5. CORROBORATED BY THE SIMULATOR, NOT BY VISION. For the gate-0 deaths dying
+     <=3 m out, the sim's own collision counter reads >=1 on 100% of them (mean
+     9.9). They collide at short range on the gate-0 approach; they do not depart
+     at launch. This uses no vision quantity at all.
+
+  6. THE MARKER IS A WEATHERVANE. The recorded v1.9 -> v2.0 delta is EXACTLY six
+     override lines (ego_vision_frame_hz 30->25, +course_drop_lo/hi,
+     +course_gates_ceiling, cadence seed, init_from, runname) -- NOT ONE of which
+     touches pitch. Yet the release pitch command moved ~2x (-0.547 -> -1.064). An
+     output that swings 2x on six lines that never mention it is unpriced and
+     wanders with any training change. Confirmed from the rendered configs:
+     rw_att_pitch and att_pitch_limit_rad are ABSENT from all of v20V_s0, v20V_s1
+     and v19W_s0 .hydra/config.yaml -- v2.0 prices pitch AMPLITUDE (rw_pitch_duty
+     0.2 beyond a 0.6 band) and pitch JERK (0.03), both sign-blind, and nothing
+     else.
+
 TWO FOOTGUNS THIS WORK ESTABLISHED (both nearly banked a false result)
   A. THE GATE-SEAM TELEPORT MANUFACTURES SEPARATION. Measuring approach speed over a
      window that straddles the RACE_STATUS advance gives PASSES a spurious negative
