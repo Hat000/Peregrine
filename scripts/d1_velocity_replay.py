@@ -39,6 +39,12 @@ METHOD NOTES -- read these before quoting any number
    threshold sweep 12 -> infinity (NEW beats OLD on corr/sign/rms at every value, placebo
    loses at every value). Credit: the v21-release-dive session, which hit the same seam in an
    unrelated analysis (a phantom AUC 0.723 that collapsed to 0.565 once seam-free).
+6. ``--window`` IS ALSO SWEPT, for the same reason: a verdict that holds only at the chosen
+   cut is a verdict about the cut. Over T = 0.30 / 0.40 / 0.50 / 0.70 / 1.00 / 1.40 s (a 4.7x
+   range) the raw channel sits at slope +0.842..+0.908 and corr +0.814..+0.874, NEW beats OLD
+   on slope, corr, sign AND rms at every value, and the placebo loses at every value. rms gain
+   -8.6% to -13.5%; the default 0.5 s is the LEAST favourable point in the sweep, so the
+   headline number is the conservative one.
 
 Usage:
     python scripts/d1_velocity_replay.py --roots DIR [DIR ...] [--gain 0.15]
