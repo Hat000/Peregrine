@@ -158,7 +158,24 @@ drifted and re-locked levers dominated the tail. The per-tick check against `pos
 the sound instrument — it compares the model against an actual measurement rather than against
 another propagated belief. **Do not quote the 3.01 / 18.01 numbers; they are withdrawn.**
 
-**9. Test suite.** See the run summary at the bottom.
+**9. Test suite.** `tests/test_ego_det_geometric.py` — **28 tests**, including the two corpus tests
+above (they sample the newest recorded runs and skip cleanly if the corpus is absent).
+
+**Full suite on the committed state: 2077 passed · 1 failed · 78 skipped**
+(`pytest -q -p no:randomly`, 13 min 38 s).
+
+The single failure is **`test_diagnose_session.py::test_real_bundles_diagnose_end_to_end`** — one of
+the two the brief pre-declared as pre-existing. It is data-driven and cannot be reached by this
+change: it globs `handoff/shadowpc-postfix-dataset-2026-06-12/extracted` for bundles containing
+`debug_obs.jsonl`, the directory exists (so its `skipif` does not fire) but holds no such bundle, so
+the assertion is `assert []`.
+
+🚩 **Correction to the brief:** the *other* pre-declared failure,
+`test_blender_gen.py::test_augment_carries_the_mask_through_the_geometric_warp`, **does not fail
+here** — I ran that file directly and all 50 of its tests pass. So the expected-failure list is
+currently one item, not two.
+
+**No other failures.** Nothing else in the suite moved.
 
 ---
 
@@ -262,7 +279,10 @@ OFF, i.e. "mask like training" — is currently not being honoured by the proxy 
 | `src/racer/ego_obs.py` | `gate_detectable_geometric()`, the `GATE_VIS_*` constants, `det_geometric` config field, the AND in `_channels`, `det_geom` / `det_corners` diag |
 | `rl/fly_rl.py` | `--ego-det-geometric`, config passthrough, startup print, `n_masked` honesty fix, `ego_obs.jsonl` fields, `meta.json` value |
 | `tools/pilot_panel.py` | knob schema entry + `_V1_RECIPE` anti-ride-in pin |
-| `tests/test_ego_det_geometric.py` | 26 tests (new file) |
+| `scripts/replay_fix_gain.py` | its `fed` mask now ANDs `det_geom` — reading `det_proxy` alone would call a geometrically-masked tick "fed" on an armed flight. Byte-identical on every existing log (the key is absent, default `True`). |
+| `tests/test_ego_det_geometric.py` | 28 tests (new file) |
+
+Commit `9add3330` on `geo-det-2026-07-27`, branched from `aim-offsets-pin-2026-07-27` (`5a0af798`).
 
 **In flight, watch `det_geom` and `det_corners` in `ego_obs.jsonl`** — the corner count should decay
 smoothly from 8 and cross 4 near 1.8 m. If it crosses at 5 m or at 0.3 m, land and report: the mask
