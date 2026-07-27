@@ -1,0 +1,60 @@
+loading EGO actor: ckpts/v20Vs0_actor.pth
+[load_ego_actor] EGO action bounds HARDCODED: thrust [0,3.765] rates +-3.14 rad/s (no sidecar consulted; the ego launcher writes none and the legacy [0,5] fallback would overdrive thrust ~33%).
+  type: _ActorMean
+  obs_dim=21 -> action shape=(4,)  (expected (4,))
+  [ego] FORCING cmd_rate_scale=1 (--ego-rate-scale; profile 'vq2_case_c' value 0.4 NOT applied) gyro_sign=(-1.0, -1.0, -1.0)
+connecting udp:127.0.0.1:14550 ...
+  [detector] GateDetector on device='cuda:0' (weights='C:/Users/Shadow/Peregrine/models/vq2_m1_darkred_2026-07-23_fp16_384x640.engine')
+Loading C:/Users/Shadow/Peregrine/models/vq2_m1_darkred_2026-07-23_fp16_384x640.engine for TensorRT inference...
+[07/26/2026-18:30:39] [TRT] [I] Loaded engine size: 8 MiB
+[07/26/2026-18:30:39] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +10, now: CPU 0, GPU 15 (MiB)
+  [prewarm] emit=centre CONFIRMED: model emits 5 keypoints (inner 4 + regressed centre).
+  [prewarm] YOLO detector warmed in 11.40s (first-predict off the launch window; tick-0 stall eliminated).
+
+====================== FLIGHT 1/1 ======================
+recording -> data\runs\20260727_013040_v20pick_Vs0_f1
+>>> Waiting PASSIVELY for the race GO (no sim-control command will be sent; this is the submission-safe posture).
+  waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     waiting: started=False pos=n map=0     countdown +2.77s     countdown +2.52s     countdown +2.27s     countdown +2.02s     countdown +1.77s     countdown +1.52s     countdown +1.27s     countdown +1.02s     countdown +0.77s     countdown +0.52s     countdown +0.27s     countdown +0.02s     countdown -0.23s   
+  GO!  pos_off=0.00 m.  armed=True sim_t= 155.451s rpy=(+0.000,+0.000,+0.000) pos=NO vel=NO mag=yes baro=nanhPa
+
+[arm] ...
+  attempt 1/3: ACK=MAV_RESULT_ACCEPTED  armed=True
+  [ego] no live TRACK_INFO + self-localizing profile -> MAP-FREE flight (vision yaw/z + the tracked gate lever; NO absolute map).
+  [ego] coarse map from --ego-coarse-map configs/vq2_coarse_map.json (9 gates): [[-1, 1], [0, -1], [1, -1], [0, 0], [0, 0], [0, 1], [0, 0], [-1, 0], [0, 0]]
+
+[ego] ckpt=ckpts/v20Vs0_actor.pth  profile=vq2_case_c self_localizing=True
+[ego] act bounds thrust [0,3.765] rates +-3.14 | cmd_rate_scale=1 (ego FORCES wire scale via --ego-rate-scale; the seeker profile's 0.4 is NOT applied -- the RL plant was sysid'd at wire scale 1.0)
+[ego] det_hold=0.2s stale_horizon=0.6s obs_coast=False sector_mode=map slot1=True (SOURCE: seeker tg+1 next-gate track) pitch_clamp=20deg roll_clamp=0deg yaw_clamp=0.7 speed_gov=off virtual_flip=True rate=40Hz max=120s ...
+[ego] takeoff-assist OFF (--no-ego-takeoff-assist): raw policy thrust from tick 0 (A1 ground-freeze risk).
+  t= 155.58s gi=0 conf=1.00 area=0.96 thr=0.170 rate=[-0.45,-1.37,+0.15]     t= 156.59s gi=0 conf=1.00 area=0.99 thr=0.320 rate=[+0.24,+0.20,-0.01]     t= 157.68s gi=0 conf=0.85 area=0.97 thr=0.264 rate=[-0.85,+0.00,-0.02]   
+  [ego] gate 0 PASSED -> targeting 1
+    [ego] advance: advance_reset prior=(-1.0, 1.0)
+  t= 158.69s gi=1 conf=1.00 area=0.91 thr=0.300 rate=[-0.26,+0.04,+0.05]     t= 159.74s gi=1 conf=1.00 area=1.00 thr=0.202 rate=[-0.13,+0.00,-0.23]   
+  [ego] gate 1 PASSED -> targeting 2
+    [ego] advance: advance_reset prior=(0.0, -1.0)
+  t= 160.77s gi=2 conf=1.00 area=1.00 thr=0.308 rate=[-0.40,+0.00,-0.40]   
+  [ego] gate 2 PASSED -> targeting 3
+    [ego] advance: advance_reset prior=(1.0, -1.0)
+  t= 161.78s gi=3 conf=1.00 area=0.92 thr=0.246 rate=[+0.05,+0.04,-0.19]   
+  [ego] HARD COLLISION -> abort.
+  [ego-log] wrote 170 ticks -> data\runs\20260727_013040_v20pick_Vs0_f1\ego_obs.jsonl
+  [seeker-log] wrote 170 ticks -> data\runs\20260727_013040_v20pick_Vs0_f1\seeker.jsonl
+  [loop-rate]  24.2 Hz over 170 ticks (target 40); worst work 107 ms; 60.0% ticks over budget -> CHOKED
+  [ego-diag] fresh gate levers=149  masked-slot0 ticks=0/170 (0% blackout duty)
+  [ego-diag] slot1 next-gate levers=110/170 (65% of ticks fed a fresh tg+1 pose)
+  [ego-timing] wrote 170 ticks -> ego_timing.jsonl
+  [ego-timing] median ms/tick: work=29 nav_update=16 detect_lever=8
+  [ego-timing]   NO-detect ticks (n=15): work=2 nav_update=1 (nav is the non-vision floor -> AHRS/ESKF + estimator)
+  [ego-timing]   detect ticks (n=155): work=33 nav_update=17 detect_lever=9
+  [ego-timing]   nav.detect: n=155 avg=12.4ms max=54.9ms
+  [ego-timing]   nav.vp_yaw: n=31 avg=36.5ms max=46.4ms
+  [ego-timing]   nav.floor_height: n=51 avg=25.7ms max=41.9ms
+
+[safety] disarming ...
+
+  flight 1: CRASH  gates=3  session=data\runs\20260727_013040_v20pick_Vs0_f1
+  [video-thread] frames=385 max_gap=45ms@fid=64 gaps>200ms=0 gaps>1s=0 gap_sum=12220ms max_pub=0.1ms reconnects=25(idle=25,exc=0) | wire: datagrams=414220 completed=385 evicted=0 dup=401220 decode_failed=0 size_mismatch=0 bad_chunkmap=0 short=0
+
+==== fly_rl summary ====
+  flight 1: CRASH      gates=3  data\runs\20260727_013040_v20pick_Vs0_f1
+  collisions (all flights): 1 (ids [1001]; 1001=gate 1002=env)
