@@ -214,6 +214,38 @@ def test_innovation_clip_bounds_a_single_outlier():
     assert np.linalg.norm(f.correction()) <= 0.3 + 1e-9
 
 
+def test_gate_seam_teleport_is_rejected_not_absorbed():
+    """The seeker can re-lock onto a DIFFERENT gate while RACE_STATUS still reports the old
+    index; the lever teleports and the naive reading is a huge velocity. That must be rejected
+    as a track discontinuity, not clipped-and-absorbed."""
+    f = LateralVelocityFuser(VelocityFusionConfig(gain=0.5))
+    _run(f, v_true=[6.0, 0.0, 0.0], v_dr=[6.0, 0.0, 0.0], r0=(20.0, 0.0, 0.0), n=30)
+    quiet = f.correction().copy()
+    n0 = f.n_updates
+    f.propagate([0.0, 0.0, 0.0], [6.0, 0.0, 0.0], 1 / 30)   # real call order: tick, then fix
+    # a DIFFERENT gate, 12 m away in one frame -- deliberately still INSIDE the valid range
+    # band, so only the continuity gate can catch it (an out-of-band jump is caught earlier).
+    f.on_fix([22.0, -8.0, 1.0])
+    assert f.n_jumps == 1
+    assert f.n_updates == n0                 # no update taken from the teleport
+    np.testing.assert_allclose(f.correction(), quiet, atol=1e-9)
+    assert np.all(np.isfinite(f.correction()))
+
+
+def test_seam_gate_is_judged_on_vision_only_not_on_the_dr_velocity():
+    """The discontinuity gate must never look at the KF velocity under test -- otherwise it
+    would reject exactly the windows where dead reckoning disagrees with vision and silently
+    flatter the OLD arm. A drone whose DR velocity is wildly wrong, but whose lever moves
+    smoothly, must still produce updates."""
+    f = LateralVelocityFuser(VelocityFusionConfig(gain=0.5))
+    _run(f, v_true=[6.0, 1.5, 0.0], v_dr=[6.0, -8.0, 0.0],   # DR off by 9.5 m/s on the left axis
+         r0=(22.0, 0.0, 0.0), n=45)
+    assert f.n_jumps == 0                    # smooth vision -> no discontinuity claimed
+    assert f.n_updates > 5                   # and the window is still used
+    assert f.correction()[1] == pytest.approx(9.5, abs=1.0) or \
+        np.linalg.norm(f.correction()) >= 1.9   # clamped at max_bias_mps=2.0
+
+
 def test_baseline_band_rejects_too_short_and_too_long_windows():
     cfg = VelocityFusionConfig(gain=1.0, min_baseline_s=0.35, max_baseline_s=1.0)
     f = LateralVelocityFuser(cfg)

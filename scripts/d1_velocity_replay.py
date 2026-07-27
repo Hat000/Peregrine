@@ -27,6 +27,18 @@ METHOD NOTES -- read these before quoting any number
    window opens, so the estimate and the reference share no measurement. ``--in-sample``
    drops that and lets the filter see the window it is scored on (it flatters the fix).
 4. Ticks with a non-zero ``aim_off`` (manual pilot offset) are dropped.
+5. GATE-SEAM TELEPORT. The seeker can re-lock onto a DIFFERENT gate while RACE_STATUS still
+   reports the old index, so guarding only on ``gate_index`` is not enough: the lever jumps
+   mid-window and the reference reads a fabricated velocity. Measured: 1.57% of same-gate
+   consecutive fix pairs move >3 m more than any plausible velocity explains (p99 4.4 m, max
+   29 m), and leaving them in DEPRESSES the measured quality of the raw channel a long way
+   (LEFT slope 0.904 -> 0.649, corr 0.833 -> 0.427). ``--max-apparent-speed`` (default 20 m/s)
+   rejects such windows. It is judged on VISION+GYRO alone, never on the KF velocity under
+   test -- gating on ``|D_vis - D_dr|`` instead would select for windows where dead reckoning
+   already agrees and flatter the OLD arm. The A/B verdict is stable across the whole
+   threshold sweep 12 -> infinity (NEW beats OLD on corr/sign/rms at every value, placebo
+   loses at every value). Credit: the v21-release-dive session, which hit the same seam in an
+   unrelated analysis (a phantom AUC 0.723 that collapsed to 0.565 once seam-free).
 
 Usage:
     python scripts/d1_velocity_replay.py --roots DIR [DIR ...] [--gain 0.15]
@@ -160,7 +172,8 @@ def _applied(b, u):
     return b - u * float(u @ b)
 
 
-def windows(S, fix_events, T=0.5, rotcomp=True, max_dt=0.30, in_sample=False, placebo=None):
+def windows(S, fix_events, T=0.5, rotcomp=True, max_dt=0.30, in_sample=False, placebo=None,
+            max_apparent_speed=20.0):
     """Non-overlapping scoring windows between accepted fixes of the SAME gate."""
     out = []
     a = 0
@@ -184,6 +197,8 @@ def windows(S, fix_events, T=0.5, rotcomp=True, max_dt=0.30, in_sample=False, pl
         b, fb, Tw = pick
         A = fa["r"].copy()
         D = np.zeros(3)
+        P = fa["r"].copy()          # previous fix, rotated forward -- track-continuity gate
+        P_dt = 0.0
         ok = True
         for i in range(fa["i"] + 1, fb["i"] + 1):
             s = S[i]
@@ -193,6 +208,20 @@ def windows(S, fix_events, T=0.5, rotcomp=True, max_dt=0.30, in_sample=False, pl
             dR = _rot_body(s["w"], s["dt"]) if rotcomp else np.eye(3)
             A = dR @ A
             D = dR @ D + s["v_dr"] * s["dt"]
+            P = dR @ P
+            P_dt += s["dt"]
+            # GATE-SEAM TELEPORT: the seeker can re-lock onto a DIFFERENT gate while RACE_STATUS
+            # still reports the old index, which jumps the lever and manufactures a huge apparent
+            # velocity. Reject the window on VISION+GYRO evidence only -- gating on |D_vis - D_dr|
+            # instead would select for windows where dead reckoning already agrees and silently
+            # flatter the OLD arm. (v21-release-dive 2026-07-27: the same seam produced an
+            # AUC 0.723 phantom in an unrelated analysis.)
+            if s["fix"] is not None and P_dt > 1e-6:
+                if float(np.linalg.norm(P - s["fix"])) / P_dt > max_apparent_speed:
+                    ok = False
+                    break
+                P = s["fix"].copy()
+                P_dt = 0.0
         if ok:
             v_vis = (A - fb["r"]) / Tw                       # vision-referenced mean body velocity
             v_old = D / Tw                                   # dead-reckoned mean over the same window
@@ -311,6 +340,9 @@ def main() -> int:
     ap.add_argument("--no-rotcomp", action="store_true",
                     help="reproduce the FLAWED uncompensated measurement (see method note 1)")
     ap.add_argument("--in-sample", action="store_true", help="drop the hold-out (flatters the fix)")
+    ap.add_argument("--max-apparent-speed", type=float, default=20.0,
+                    help="reject a scoring window containing a fix-to-fix lever jump faster than "
+                         "this (m/s) -- the gate-seam teleport. 1e9 disables the gate.")
     ap.add_argument("--placebo", action="store_true",
                     help="integrity check: keep the correction MAGNITUDE, randomise its direction. "
                          "Any metric that still improves is measuring smoothing, not information.")
@@ -340,7 +372,8 @@ def main() -> int:
         for name, S in cache.items():
             bias_tick, fx = replay(S, cfg, rotcomp=not args.no_rotcomp)
             W.extend(windows(S, fx, T=args.window, rotcomp=not args.no_rotcomp,
-                             in_sample=args.in_sample, placebo=rng_pl))
+                             in_sample=args.in_sample, placebo=rng_pl,
+                             max_apparent_speed=args.max_apparent_speed))
         print(f"\n================ gain = {g:g}"
               f"{'  [PLACEBO -- direction randomised]' if args.placebo else ''} ================")
         report(W, "LEFT  (body-FLU axis 1)", axis=1)

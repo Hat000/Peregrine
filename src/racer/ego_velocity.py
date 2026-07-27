@@ -112,6 +112,15 @@ class VelocityFusionConfig:
     max_tick_dt_s: float = 0.30  # a bigger control-tick gap breaks the gyro/DR accumulation
     innov_clip_mps: float = 2.0  # robust clip on the per-update innovation (heavy-tailed PnP outliers)
     max_bias_mps: float = 2.0    # hard clamp on the emitted correction
+    max_apparent_speed_mps: float = 20.0  # TRACK-DISCONTINUITY gate. The seeker can re-lock onto a
+                                 # DIFFERENT gate while RACE_STATUS still reports the old index (the
+                                 # pass-drop / re-acquire seam), which teleports the lever and would be
+                                 # read as a huge velocity. Measured: 1.57% of same-gate consecutive fix
+                                 # pairs move >3 m more than any plausible velocity explains (p99 4.4 m,
+                                 # max 29 m). A fix-to-fix apparent speed above this is not a velocity,
+                                 # it is a different landmark -- drop the window and re-anchor. Gated on
+                                 # VISION+GYRO only (never on the KF velocity under test), so it cannot
+                                 # select for windows where dead reckoning happens to agree.
     hold_s: float = 0.8          # blackout: hold the bias frozen this long after the last fix ...
     decay_tau_s: float = 1.0     # ... then decay it back to zero (fall back to the raw KF velocity)
 
@@ -147,6 +156,9 @@ class LateralVelocityFuser:
         self._anchor: np.ndarray | None = None   # anchor lever, rotated into the CURRENT body frame
         self._disp = np.zeros(3)                 # DR displacement over the window, current body frame
         self._baseline_s = 0.0
+        self._prev_fix: np.ndarray | None = None  # previous fix, rotated into the CURRENT body frame
+        self._prev_fix_dt = 0.0                  # time since that fix (track-continuity gate)
+        self.n_jumps = 0                         # track discontinuities rejected
         self._age_s = 0.0                        # time since the last accepted fix
         self._u_last: np.ndarray | None = None   # last line-of-sight unit vector (body FLU)
         self.n_updates = 0
@@ -158,6 +170,8 @@ class LateralVelocityFuser:
         self._anchor = None
         self._disp = np.zeros(3)
         self._baseline_s = 0.0
+        self._prev_fix = None
+        self._prev_fix_dt = 0.0
 
     def on_gate_change(self) -> None:
         """Active gate advanced: the landmark changed, so the window is void. The BIAS is kept --
@@ -182,6 +196,9 @@ class LateralVelocityFuser:
         self.bias = dR @ self.bias                  # world-fixed vector held in body coordinates
         if self._u_last is not None:
             self._u_last = dR @ self._u_last
+        if self._prev_fix is not None:
+            self._prev_fix = dR @ self._prev_fix
+            self._prev_fix_dt += dt
         if self._anchor is not None:
             self._anchor = dR @ self._anchor
             self._disp = dR @ self._disp + v * dt
@@ -207,6 +224,24 @@ class LateralVelocityFuser:
             return
         u = r / rng
         self._u_last = u
+        # TRACK-CONTINUITY GATE (the gate-seam teleport, v21-release-dive 2026-07-27): if the lever
+        # moved faster than any drone can fly, the seeker re-locked onto a DIFFERENT gate and this is
+        # not a velocity measurement at all. Judged on vision+gyro alone -- never on the KF velocity
+        # under test -- so it cannot bias the estimate toward agreeing with dead reckoning.
+        if self._prev_fix is not None:
+            step = float(np.linalg.norm(self._prev_fix - r))
+            # dt ~ 0 (two fixes inside one tick) cannot be divided through; treat any real motion
+            # over no time as a discontinuity rather than an infinite velocity.
+            jumped = (step / self._prev_fix_dt > cfg.max_apparent_speed_mps
+                      if self._prev_fix_dt > 1e-6 else step > 0.05)
+            if jumped:
+                self.n_jumps += 1
+                self.drop_anchor()
+                self._prev_fix = r.copy()
+                self._prev_fix_dt = 0.0
+                return
+        self._prev_fix = r.copy()
+        self._prev_fix_dt = 0.0
         if self._anchor is not None and cfg.min_baseline_s <= self._baseline_s <= cfg.max_baseline_s:
             b_meas = (self._anchor - r - self._disp) / self._baseline_s
             if np.isfinite(b_meas).all():
@@ -264,4 +299,5 @@ class LateralVelocityFuser:
             "age_s": round(float(self._age_s), 3),
             "n_upd": int(self.n_updates),
             "n_clip": int(self.n_rejected),
+            "n_jump": int(self.n_jumps),
         }
