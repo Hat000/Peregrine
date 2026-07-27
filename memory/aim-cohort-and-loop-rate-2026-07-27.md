@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-27T05:21:30.151Z
+  modified: 2026-07-27T05:33:28.824Z
 ---
 
 # The 7 aim-offset flights (2026-07-27 04:38-04:40) — what they did and did not settle
@@ -131,5 +131,41 @@ exactly the range that matters). 🛑 **One global release ⇒ the lateral trim 
 vertical dodge are MUTUALLY EXCLUSIVE.** An always-on lateral trim (the analogue of
 `ego_gate_z_bias`, which has **no lateral counterpart** — checked the whole knob list) is the small
 default-OFF build that would let both run.
+
+## 🛑🛑 THIRD COHORT (05:25, n=9) — MY DIRECTIONAL CLAIM DIES, THE DISTRIBUTION SURVIVES
+
+Same config as 05:09 (`rate` 30, offset `4:0,3;5:0,3`). Gates `[0,0,1,3,3,5,5,5,6]`, mean 3.11.
+**Pooled rate-30 (n=18): mean 3.78 vs rate-40's 1.14** — the rate result is untouched.
+
+🛑🛑 **"ALL 5 LATERAL KILLS PUT THE DRONE LEFT (p = 0.031)" IS WITHDRAWN.** This cohort's four
+lateral kills are **−0.48, +0.71, −0.77, −0.64 — three on the RIGHT.** Pooled across all three
+cohorts: **6 left / 3 right, sign-test p = 0.51.** A five-sample direction count was never
+evidence; it took nine more flights to say so. **Never bank a direction off n=5.**
+
+🟢 **The pass-lateral shift SURVIVES and tightens as n grows** — the opposite behaviour to an
+artifact:
+
+| cohort | n | mean lat | t | L/R | sign p |
+|---|---|---|---|---|---|
+| 05:09 rate30 | 40 | +0.246 | +2.96 | 29/11 | 0.0064 |
+| 05:25 rate30 | 28 | +0.119 | +1.29 | 19/9 | 0.087 |
+| **pooled rate30** | **68** | **+0.193** | **+3.13** | **48/20** | **0.0009** |
+| pooled 07-27 v19 | 77 | +0.225 | +3.94 | 55/22 | 0.0002 |
+
+🟢 **The model is self-consistent**: μ = +0.193, σ = 0.511 predicts **3.0 : 1** left-vs-right
+beyond ±0.45 m; observed 2.0 : 1. So the slams ARE the tail of a shifted distribution — the claim
+just lives at the level of **the distribution**, never the individual kill. Trim target is now
+**+0.20** (from n = 68, not n = 40).
+
+🟡 **Gate-5 attrition looks broken open: 4 of 9 flights that reached gate 4 passed gate 5 (44%)
+vs the census's 9 of 101 (8.9%), Fisher p = 0.011.** 🛑 **CONFOUNDED** — rate AND the aim offset
+both differ from the census; there is **no control arm** (every flight in all three cohorts has
+the offset configured), so the vertical dodge is still **unadjudicated**.
+
+🚩 **META PROVENANCE HOLE:** `recipe_drift` flags `ego_assist_thrust` from flight 3 of this set
+onward, but the meta block in `fly_rl.py` **never writes its value** (it writes fix_gain,
+propagate_range, vel_fuse, aim_*, obs_coast, rate_scale, z_bias, clamps — not assist). The flown
+value is unrecoverable from the log. Trivial fix; until then a drifted assist silently confounds
+a cohort. Ask the pilot what changed at 05:26.
 
 Related: [[gate-strike-last-3m-2026-07-27]] · [[failure-census-2026-07-27]].
