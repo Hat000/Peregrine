@@ -504,10 +504,24 @@ class EgoObsBuilder:
             # 'map' mode: latch the hand-authored per-gate turn bucket NOW -- before the first fix,
             # so the anticipation prior is live through the blind approach (training feeds sector[tg]
             # statically regardless of visibility). 'auto' still waits for the first fix (below);
-            # 'zero' leaves it None -> (0,0). Past the last mapped gate -> clamp to the last row.
+            # 'zero' leaves it None -> (0,0).
+            #
+            # PAST THE LAST MAPPED GATE -> (0, 0), "I do not know", NOT the last row (2026-07-27).
+            # The map is hand-authored from FLOWN gates, so it necessarily ends where our deepest
+            # flight ended -- 9 rows today against a 20-gate course. The old behaviour CLAMPED the
+            # index, so every gate from the last mapped one onward was fed that row's bucket as if it
+            # were a survey result. Today that is harmless only by luck: the last row happens to be
+            # [0, 0]. The moment anyone extends the map and its final row carries a real turn, all
+            # eleven unmapped gates would silently inherit a CONFIDENT WRONG turn prior -- and this
+            # channel is the "where to look before the gate is visible" cue, so a wrong prior delays
+            # acquisition on exactly the gates we have never reached. (0, 0) is the honest value: the
+            # same thing sector_mode='zero' feeds, and what an unmapped gate means.
             if cfg.sector_mode == "map":
-                gi = int(np.clip(self._gate_index, 0, self._coarse_map.shape[0] - 1))
-                self._sector = (float(self._coarse_map[gi, 0]), float(self._coarse_map[gi, 1]))
+                gi = int(self._gate_index)
+                if 0 <= gi < self._coarse_map.shape[0]:
+                    self._sector = (float(self._coarse_map[gi, 0]), float(self._coarse_map[gi, 1]))
+                else:
+                    self._sector = (0.0, 0.0)
             # D1: the landmark changed, so the open measurement window is void. The estimated IMU
             # bias is KEPT (it belongs to the IMU, not to the gate).
             if self._vfuse is not None:
