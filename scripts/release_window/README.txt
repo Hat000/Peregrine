@@ -87,6 +87,28 @@ TWO FOOTGUNS THIS WORK ESTABLISHED (both nearly banked a false result)
      first silently relabels every mode that happens to be fast. Rank modes only
      after checking what the earlier rules absorbed.
 
+THE RULE THAT GENERALISES BOTH (and two other 07-27 withdrawals)
+    Premises that failed on this project recently, with what "established" them:
+      "release-dive is the #1 mode"   <- classify.py rule #1, t_end <= 2.5
+                                         => measured WHEN a flight ended, not WHAT killed it
+      "speed kills at gate 0" AUC .72 <- a speed window containing the advance
+                                         => measured the GATE SEAM, not the drone
+      "no launcher arms ego_faithful" <- a grep over *.sbatch + launch_v1[6789].sh
+                                         => measured which FILES MENTION a flag, not
+                                            which CONFIG RAN (the stage dict in
+                                            rl/vq2_ego_curriculum.py:1390 owns it)
+      "obs lateral vel carries no info" <- a lever difference without de-rotation
+      "vertical undershoot dominates"   <- rel_flu[2] read at +23.8 deg pitch
+    NONE of these was a wrong number. Every one was a CORRECT number carrying a
+    mechanism claim it could not support.
+
+      => BEFORE ADOPTING A PREMISE, NAME THE ARTIFACT THAT ESTABLISHED IT, AND
+         CHECK THAT THE ARTIFACT MEASURED THE MECHANISM RATHER THAN A CORRELATE.
+
+    "Adjudicate from a run's own .hydra/overrides.yaml, never the launcher source"
+    and "check what a classifier's rule actually tests before ranking on its
+    output" are corollaries, not separate lessons.
+
 WHAT SURVIVES, AND WHERE TO GO INSTEAD
     The deaths are real; only the mode name and the proposed lever are wrong. Those
     that die close (<=3 m) read INSIDE the 1.5 m opening at the last observable tick
