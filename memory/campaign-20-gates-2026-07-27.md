@@ -61,7 +61,9 @@ gate-19 states are drawn from the same distribution as gate-1) — **it caps the
 
 ## 🟢 RANKED TRAINING ARMS (5 seeds each ⇒ ~3.3 non-collapsed; 21.5 A100-GPU-h ≈ 12.9 h wall)
 
-1. **ARM 1 — `+env.ego_obs_coast=true`. RUN FIRST. One token, no code, no warm-start break.**
+1. **ARM 1 — `+env.ego_obs_coast=true`. One token, no code, no warm-start break.** 🛑 **CONTESTED —
+   it has already run once in a noise-0 sweep (see the second-pass corrections). Still ranked first,
+   but launch it knowing the prior evidence is mildly AGAINST, not absent.**
    Motivated by the terminal-mask inversion → [[vision-horizon-fov-2026-07-27]]. Aborts: at t+60 s
    the key must appear in `.hydra/config.yaml`; at t+4 min `metrics/cross_offset_m` must NOT be
    bit-identical to control; at t+30 min `banked_prog_mean` ≥ 50% of control and `exit_oob` ≤ 0.10.
@@ -78,9 +80,9 @@ gate-19 states are drawn from the same distribution as gate-1) — **it caps the
    breaks.
 4. **ARM 4 — course geometry coverage** (`course_seg_len_lo/hi`, `min_pair_dist`). Filler only.
 
-🛑 **STANDING PRECONDITION, ZERO GPU COST, BLOCKS EVERY REWARD ARM:** resolve `rw_cross_zero_m` —
-the stage says **4.0**, the launcher says **0.75**, a **28.4× difference in parabola curvature**.
-One `cat $RUNDIR/.hydra/config.yaml`. Six lane reports are conditional on it.
+✅ **THAT PRECONDITION IS NOW LIFTED:** `rw_cross_zero_m` **= 0.75** (`launch_v19.sh:240` `++`
+force-overrides the stage's `+…=4.0`). Confirm with one `.hydra` cat when the cluster returns, but
+the in-repo chain is unambiguous, so reward arms are no longer blocked.
 
 ## 🛑🛑 THE ARM THAT MUST NOT BE RUN — and MEMORY named it as the lead candidate
 
@@ -109,12 +111,55 @@ Fix the source; do not buy a run for it.
    effectively zero until the back half is surveyed. Resolvable only by flying deeper.
 2. **Arm 1's direction could be backwards** — if the wire's coasted lever is degraded enough that
    training on it teaches the policy to trust garbage, the arm costs 21.5 GPU-h.
-3. `rw_cross_zero_m` unresolved (above).
+3. ~~`rw_cross_zero_m` unresolved~~ -- **RESOLVED = 0.75 in the second pass, see above.**
 4. Proving one launcher token landed does not prove they all did.
 5. **The obstacle's COLLISION-id evidence is weaker than the lanes claimed** — the `1002` rows carry
    `altitude_minimum_delta` and `threat_level: 1` with tiny impulses and look like **proximity
    advisories, not impacts**. Rest the obstacle case on the survival-ladder shape and the in-repo
    14/31-deaths measurement instead. **Do not cite the ID split as primary.**
+
+## 🟢🟢🟢 THE GATE-4 DODGE WORKS — 89% vs 30%, p = 0.0052, WITH A BY-CONSTRUCTION PLACEBO
+
+**The strongest positive result of the campaign, and it is Fengyou's own dodge.** Matched cohort
+rebuilt from `meta.json` (v19Ws0 · commanded rate 30 · pitch clamp 20 · z_bias 0.30, n=57),
+differing ONLY in whether a vertical offset was armed — read from the LOG (`aim_off` non-null on
+that gate index AND |vertical| > 0.5), never from the config string, because the release-0.0 trim
+flights carry offsets on every gate with ZERO vertical and must not count as dodges:
+
+| gate | reached | WITH dodge | WITHOUT | Fisher |
+|---|---|---|---|---|
+| 3 (PLACEBO — the dodge cannot arm here) | 38 | n/a | 29/38 (76%) | by construction |
+| **4** | 29 | **8/9 = 89%** | **6/20 = 30%** | **p = 0.0052** |
+| 5 | 14 | 4/8 = 50% | 2/6 = 33% | p = 0.627 — **UNPROVEN** |
+
+🟢 The placebo is structural, not chosen: the offset only arms at `gate_index` 4 and 5, so gates 0–3
+are a control **by construction**. 🚩 The three flights that removed the dodge (release 0.0) died on
+terminal ENV impacts at **12.87 / 14.59 / 14.92 m** from gate 4 — the obstacle band, exactly.
+🛑 **GATE 5 IS NOT SOLVED.** 3 of its 4 deaths are at-gate strikes, not band deaths, and its one band
+death happened at 18.3 m **with the dodge armed** ⇒ +3 m up is not sufficient there.
+
+## 🛑 CORRECTIONS ESTABLISHED IN THE SECOND PASS
+
+* **`rw_cross_zero_m` IS RESOLVED = 0.75, at zero GPU cost.** `launch_v19.sh:240` `VPEF8NC` sets
+  `++env.rw_cross_zero_m=0.75`, and `++` force-overrides the stage's `+env...=4.0`
+  (`vq2_ego_curriculum.py:1379`). Curvature 20/0.75² = **35.6 reward/m²**. This is a code-chain
+  argument, not a launcher-absence one, so it is legitimate — still confirm with one `.hydra` cat.
+  **The standing precondition that blocked every reward arm is lifted.**
+* **The 1002-contact caveat is refined, not upheld.** *Terminal* 1002 rows carry `threat_level: 2`
+  and impulse **2.06–7.45** — the same band as confirmed GATE strikes (4.1–7.3). *Post-terminal*
+  rows carry `threat_level: 1` and impulse 0.03–0.18. **Discriminator: `threat_level == 2 AND
+  impulse > 1.0`.** The obstacle case survives on the terminal rows.
+* **ARM 1 (`ego_obs_coast`) is CONTESTED, not clean.** `vq2_ego_curriculum.py:929-931` records it
+  already run in a noise-0 calibration sweep at **0.522**, inside a 0.32–0.64 band. The counter —
+  that at `ego_noise_scale: 0.0` the coasted estimate is "nearly free (~0.01 m over 1.5 s)" and so
+  carries no realism content — is real but is an argument, not a measurement. **Weigh it as n≈1
+  prior evidence AGAINST, not as an untried lever.**
+
+## 🚩 KILL-MODE SPLIT (30 flights with post-impact data, the only impact data that exists)
+
+**GATE strike 20** (lateral 8 · vertical 6 · both 1 · **inside the aperture at the last fix 5**) ·
+**ENV impact 7** · unusable 3. ⇒ **two-thirds of deaths are at-gate strikes, and a quarter of those
+were already on a passing line when vision stopped** — the blind-interval scatter, on tape.
 
 Related: [[vision-horizon-fov-2026-07-27]] · [[aim-cohort-and-loop-rate-2026-07-27]] ·
 [[failure-census-2026-07-27]].
