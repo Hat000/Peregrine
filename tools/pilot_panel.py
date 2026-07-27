@@ -294,9 +294,19 @@ SCHEMA = [
          group="Ego control", default="",
          help="Speed governor \"SOFT,HARD\" m/s -- or a single number = hard cap at that speed (blank or 0 = off). Caps the OVER-hover "
               "thrust as speed runs SOFT->HARD (hard-clamps to hover at/above HARD); altitude-neutral -- "
-              "only ever caps TOWARD hover, never forces a sink. Universal ~5 m/s cap on ANY model, no "
-              "retrain: try 5,6.5 (smooth ramp) or 5 (abrupt hard cap). Watch gov / gov_engaged in ego_obs.jsonl (is it braking? altitude "
-              "hold through the band?). NEEDS commit 293ffee."),
+              "only ever caps TOWARD hover, never forces a sink. "
+              "\U0001F6D1 DO NOT ARM THIS AT 5,6.5 -- the old help said 'try 5,6.5' and that value is "
+              "HARMFUL. Adjudicated 2026-07-27 over n=1910 per-gate approaches in 92 "
+              "(checkpoint x rate x gate) strata: per-gate survival vs speed is an INVERTED U peaking "
+              "at 7.0-8.0 m/s (p=0.839, speed^2 z=-3.86) and the fleet already flies 6.58 m/s median -- "
+              "BELOW the peak. A 5,6.5 governor engages on 99.6% of approaches and drags the fleet "
+              "0.839 -> 0.731. SLOWING IS THE WRONG SIGN: the blind run-in is a FOV-FIXED ~2.0 m of "
+              "DISTANCE (last-sighted range flat 1.86-2.08 m across speed quintiles 2.56-16.52 m/s, "
+              "corr(speed, last-sighted) = +0.006), so slowing only stretches blind TIME -- and blind "
+              "time kills independently (b=-2.31, z=-2.67). 8.0 -> 6.0 m/s = +34% open-loop flight. "
+              "Never flown in 680 recorded flights. If armed at all, only a TAIL-CLIP 8.5,9.5 that "
+              "cannot touch the 6-8 m/s operating point. Watch gov / gov_engaged in ego_obs.jsonl. "
+              "NEEDS commit 293ffee."),
     dict(key="ego_yaw_clamp", flag="--ego-yaw-clamp", action="value", ui="number",
          group="Ego control", default=0.7, step=0.05,
          help="Hard yaw-rate command clip (rad/s, 0=off). MANDATORY 0.7 for despin ckpts."),
