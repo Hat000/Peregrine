@@ -92,13 +92,35 @@ TWO FOOTGUNS THIS WORK ESTABLISHED (both nearly banked a false result)
      guarantee is STRONGER than a threshold sweep; you sweep when you have no such
      guarantee. (Point made by d1-velocity, and correct -- I had understated my own
      evidence.)
-     THE RESIDUAL, honestly: that argument covers the ADVANCE seam only. It does
-     NOT cover the broader mis-lock seam (the seeker re-locking onto a different
-     gate mid-approach while the index holds). That one is caught here by a
-     separate guard -- windows are rejected if any consecutive-tick lever jump
-     exceeds 1.5 m (~45 m/s apparent) -- which gates on the VISION LEVER ALONE and
-     therefore does not touch the variable under test. That 1.5 m threshold is
-     itself unswept; it is the one genuinely unswept choice in this file.
+     THE RESIDUAL: that argument covers the ADVANCE seam only. It does NOT cover
+     the broader mis-lock seam (the seeker re-locking onto a different gate
+     mid-approach while the index holds). That one is caught here by a separate
+     guard -- windows are rejected if any consecutive-tick lever jump exceeds
+     1.5 m -- which gates on the VISION LEVER ALONE and so does not touch the
+     variable under test.
+
+     THAT 1.5 m GATE IS NOW SWEPT AND MEASURED (d1-velocity, 6c3587fe, 43,885
+     same-gate consecutive fix pairs; leak = teleport-class events MISSED, reject
+     = share of all pairs discarded):
+         |d|/dt > 20 m/s  (a speed gate)   leak 1.45%   reject 9.76%
+         |d|    > 1.5 m   (this one)       leak 0.14%   reject 3.72%   <-- best
+         |d| > 20*dt + 1.0 m               leak 4.78%   reject 2.58%
+         |d| > 15*dt + 1.0 m               leak 2.03%   reject 3.00%
+     ~10x less leakage while discarding 2.6x LESS good data. Sweep of the distance
+     itself: 1.0 -> 0.00%/7.59%, 1.5 -> 0.14%/3.72%, 2.0 -> 0.60%/2.50%,
+     3.0 -> 11.3%/1.49%. 1.5 m is the knee.
+     MECHANISM, which is the transferable part: DIVIDING BY dt DILUTES A TELEPORT
+     that lands across a long detection gap, while its DISTANCE stays large.
+     Teleport-class apparent speed has p5 = 28 m/s -- that slow tail is exactly
+     what a speed gate lets through. A DISTANCE gate has no such tail, because a
+     re-lock is bounded below by the gate spacing. Corroborating the value: honest
+     inter-fix motion is bounded by corpus p99 speed 14.2 m/s over the p99 fix gap
+     124 ms = 1.76 m.
+     HONEST PROVENANCE: 1.5 m was chosen here as a physically-motivated bound on
+     one tick of real motion (~0.33 m at 10 m/s and 30 Hz, so ~4.5x margin). It
+     was NOT derived from the p99xp99 calculation above, and it was not swept by
+     me -- d1-velocity did both, post hoc. Right variable, roughly right value,
+     less rigour than the number now carries.
   B. A CLASSIFIER'S RULE ORDER IS A CAUSAL CLAIM. Putting a cheap temporal rule
      first silently relabels every mode that happens to be fast. Rank modes only
      after checking what the earlier rules absorbed.
@@ -124,6 +146,24 @@ THE RULE THAT GENERALISES BOTH (and two other 07-27 withdrawals)
     "Adjudicate from a run's own .hydra/overrides.yaml, never the launcher source"
     and "check what a classifier's rule actually tests before ranking on its
     output" are corollaries, not separate lessons.
+
+  RANKING OF EVIDENCE, in the order you should prefer it:
+      1. RIGHT VARIABLE       -- the quantity is chosen against the physics
+      2. RULED OUT BY CONSTRUCTION -- the artefact cannot occur in your window
+      3. HOLDS ACROSS A SWEPT THRESHOLD
+      4. HOLDS AT THE CHOSEN VALUE
+    Do not let a reflex to self-criticise demote (2) to (4) -- a structural
+    guarantee is STRONGER than a sweep; you sweep when you have no guarantee.
+    And (1) DOMINATES (3), which is the counter-intuitive one and was measured,
+    not asserted: a swept 20 m/s SPEED gate leaked 1.45% of teleports while
+    discarding 9.76% of good data; an unswept 1.5 m DISTANCE gate leaked 0.14%
+    while discarding 3.72%. The sweep was thorough and the variable was wrong,
+    because dividing by dt dilutes a teleport across a long detection gap while
+    its distance stays large. A SWEEP TELLS YOU WHETHER A THRESHOLD IS ROBUST; IT
+    TELLS YOU NOTHING ABOUT WHETHER YOU PICKED THE RIGHT VARIABLE, and it can
+    launder a bad variable into a confident-looking result.
+    (Established by d1-velocity, 6c3587fe, over 43,885 fix pairs -- they set out
+    to find a leak in the distance gate and found the opposite.)
 
   COROLLARY THAT BIT TWICE: THE GUARD YOU REACH FOR CAN BE THE SECOND ARTEFACT.
     Having found the seam, the obvious fix is to reject windows where the vision
