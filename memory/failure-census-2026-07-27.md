@@ -71,7 +71,7 @@ exists exactly to close this, and `video_index.jsonl` already runs 70–130 ms p
 
 | mode | N | % | v15 | v16 | v18 | v19 | v20 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| **launch/release window** | **115** | **20.1** | 18 | 49 | 19 | 21 | 3 |
+| ~~launch/release window~~ 🛑 relabelled at-gate @g0 | 115 | 20.1 | 18 | 49 | 19 | 21 | 3 |
 | vertical undershoot | 9 | 1.6 | 3 | 2 | 3 | 1 | 0 |
 | vertical overshoot | 16 | 2.8 | 1 | 8 | 3 | 2 | 0 |
 | lateral diverge (conservative) | 44 | 7.7 | 11 | 14 | 2 | 9 | 1 |
@@ -91,15 +91,14 @@ die at *earlier* gates. v20 is 6 flights — reported, not concludable.
 
 | fix | modes | exposure |
 |---|---|---|
-| **release-dive retrain (v2.1)** | launch window | **20.1%** — highest confidence, axis-independent |
+| ~~release-dive retrain (v2.1)~~ | ~~launch window~~ | 🛑 **REFUTED** — the bucket is at-gate death at gate 0 (classifier rule order) and the release-dive marker does not predict death |
 | **close-in coast + bbox-range preference** | at-gate undetermined + blackout | **≤ 33.7% + 11.2%** — the only fix that attacks the blindness itself |
 | **truthful lateral velocity / `ego_faithful`** | lateral + corner + part of undetermined | **7.7 … 22.2%** — worst tail (p50 1.84 m, p90 2.88 m) |
 | gate-seam (`pass_drop` teleport) | obstacle leg + gate-4 cluster | 3.8 … 13.9% — 20% of deaths within 1.0 s of an advance |
 | vertical-structure training (v2.0) | vertical family | 4.4 … 7.2% — smaller than expected (see the artifact above) |
 | loop-rate (`vq2_ego_lean`) | margin on all at-gate | 39% of deaths flew < 30 Hz |
 
-🚩 **v2.0's release-dive regression attacks the single largest determinable death mode in the WRONG
-direction** ⇒ v2.1 is the top training priority.
+🛑 **BOTH CLAIMS IN THIS TABLE'S TOP ROW ARE WITHDRAWN.** "launch/release window" is not a mode — `classify.py` rule #1 is TEMPORAL (`t_end<=2.5 ∧ max_gate==0`) and pre-empts every geometric rule; those flights die at range p50 **1.50 m**. And the release-dive marker does not predict death (v19 died −1.379 vs passed −1.378; arm-level corr **+0.338, wrong sign**). **No v2.1 arm was launched.** → [[velocity-channel-2026-07-27]]
 
 ## 🛑🛑 TWO INVISIBLE OBSTACLES — CONFIRMED BY THE PILOT AND MEASURED
 
@@ -147,8 +146,9 @@ course offset on gates 4 and 5 is **route planning at the only layer that can ho
 different from the arrestor/tape/speed-governor band-aids retired under [[feedback-no-deploy-bandaids]],
 which masked control flaws the policy *could* have learned.
 
-`aim_off` census: 15 sessions / 360 ticks — at log `gate_index` **5** (5 sessions, 135 ticks, to [0,10] m)
-and **1** (3 sessions, 131 ticks). **Exclude those ticks always; exclude the whole session when the aim
+`aim_off` census: **8 sessions / 266 ticks** — at log `gate_index` **5** (5 sessions, 135 ticks, to [0,10] m)
+and **1** (3 sessions, 131 ticks). 🔧 A banked "15 sessions / 360 ticks" was WRONG and contradicted its own
+breakdown; two independent scans of all 573 run dirs give 8/266. **Exclude those ticks always; exclude the whole session when the aim
 leg is the fatal leg.**
 
 ## Residual instrument weaknesses (stated, not hidden)
