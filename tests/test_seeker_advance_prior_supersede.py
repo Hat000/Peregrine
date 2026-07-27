@@ -338,6 +338,102 @@ def test_propagate_noop_when_disabled_or_no_track():
 
 
 # ---------------------------------------------------------------------------
+# RANGE PROPAGATION (2026-07-25): r -= (v_body . u_hat)*dt along the line of sight, floored.
+# ---------------------------------------------------------------------------
+def _armed(**cfg) -> GateSeeker:
+    """A seeker with both tracks live, dead ahead in the CAMERA frame (bearing 0,0)."""
+    s = _seeker(track_propagate_range=True, **cfg)
+    s._track_range_m, s._track_bearing = 10.0, np.array([0.0, 0.0])
+    s._next_track_range_m, s._next_track_bearing = 25.0, np.array([0.0, 0.0])
+    return s
+
+
+def test_propagate_range_default_is_off():
+    """DEFAULT-OFF: the flag defaults False and the range stays on its EMA even when a velocity is
+    supplied -- byte-identical to the bearing-only propagation."""
+    assert GateSeekerConfig().track_propagate_range is False
+    s = _seeker()
+    s._track_range_m, s._track_bearing = 10.0, np.array([0.0, 0.0])
+    s._next_track_range_m, s._next_track_bearing = 25.0, np.array([0.0, 0.0])
+    s.propagate(np.zeros(3), 0.1, vel_frd=np.array([8.0, 0.0, 0.0]))
+    assert s._track_range_m == 10.0 and s._next_track_range_m == 25.0
+
+
+def test_propagate_range_needs_a_velocity():
+    """vel_frd=None (the old 2-arg call, and the ego path when the KF has no velocity yet) leaves
+    the range untouched even with the flag ON."""
+    s = _armed()
+    s.propagate(np.zeros(3), 0.1)
+    assert s._track_range_m == 10.0 and s._next_track_range_m == 25.0
+
+
+def test_propagate_range_closes_at_the_line_of_sight_rate_on_both_tracks():
+    """Flying straight at a gate dead ahead in the camera frame: the range shrinks by the full
+    speed*dt, on the ACTIVE and the NEXT track alike. The bearing is camera-optical, so 'dead
+    ahead' means along the camera axis -- the velocity is pushed through R_camera_from_body()."""
+    from racer.frames import R_camera_from_body
+    s = _armed()
+    v_cam_forward = R_camera_from_body().T @ np.array([0.0, 0.0, 8.0])   # 8 m/s along the cam axis
+    s.propagate(np.zeros(3), 0.1, vel_frd=v_cam_forward)
+    assert s._track_range_m == pytest.approx(10.0 - 0.8, abs=1e-9)
+    assert s._next_track_range_m == pytest.approx(25.0 - 0.8, abs=1e-9)
+
+
+def test_propagate_range_projects_off_axis_motion():
+    """Only the LINE-OF-SIGHT component counts: motion perpendicular to the bearing does not
+    change the range, and an oblique bearing closes at speed*cos(angle), not speed."""
+    from racer.frames import R_camera_from_body
+    R = R_camera_from_body()
+    perp = R.T @ np.array([8.0, 0.0, 0.0])            # camera +x (right), normal to a (0,0) bearing
+    s = _armed()
+    s.propagate(np.zeros(3), 0.1, vel_frd=perp)
+    assert s._track_range_m == pytest.approx(10.0, abs=1e-9)
+
+    az = 0.4                                          # bearing 0.4 rad off the camera axis
+    s2 = _armed()
+    s2._track_bearing = np.array([az, 0.0])
+    s2.propagate(np.zeros(3), 0.1, vel_frd=R.T @ np.array([0.0, 0.0, 8.0]))
+    assert s2._track_range_m == pytest.approx(10.0 - 0.8 * np.cos(az), abs=1e-9)
+
+
+def test_propagate_range_is_floored_and_never_flips_sign():
+    """An over-propagated (or just-flown-through) track degrades to 'very close', never to 0 or a
+    negative range -- the continuity gate, pass-drop and slot1 promote all compare against it."""
+    from racer.frames import R_camera_from_body
+    s = _armed()
+    s._track_range_m = 0.5
+    s.propagate(np.zeros(3), 1.0, vel_frd=R_camera_from_body().T @ np.array([0.0, 0.0, 20.0]))
+    assert s._track_range_m == pytest.approx(0.3, abs=1e-12)
+
+
+def test_propagate_range_opens_when_receding():
+    """Sign check: flying AWAY grows the range (the just-passed gate receding behind the drone)."""
+    from racer.frames import R_camera_from_body
+    s = _armed()
+    s.propagate(np.zeros(3), 0.1, vel_frd=R_camera_from_body().T @ np.array([0.0, 0.0, -5.0]))
+    assert s._track_range_m == pytest.approx(10.5, abs=1e-9)
+
+
+def test_propagate_range_uses_the_rotated_bearing():
+    """The projection is taken against the bearing AFTER the gyro rotation, not before: a body yaw
+    that swings the gate off the camera axis must reduce the closing rate in the SAME call."""
+    from racer.frames import R_camera_from_body
+    v = R_camera_from_body().T @ np.array([0.0, 0.0, 8.0])
+    dt, w = 0.2, np.array([0.0, 0.0, 3.0])            # a big yaw over the step
+    s = _armed()
+    s.propagate(w, dt, vel_frd=v)
+    moved = float(np.linalg.norm(s._track_bearing))
+    assert moved > 0.3                                 # the bearing really did swing off axis
+    assert s._track_range_m > 10.0 - 8.0 * dt + 1e-3   # closed by LESS than the full speed*dt
+
+
+def test_propagate_range_ignores_non_finite_velocity():
+    s = _armed()
+    s.propagate(np.zeros(3), 0.1, vel_frd=np.array([np.nan, 0.0, 0.0]))
+    assert s._track_range_m == 10.0
+
+
+# ---------------------------------------------------------------------------
 # WP2e: decision-log extensions.
 # ---------------------------------------------------------------------------
 def test_decision_log_carries_prior_and_supersede_streak(monkeypatch):

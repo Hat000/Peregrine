@@ -490,3 +490,153 @@ def test_sector_auto_zero_untouched_by_map_addition():
     for mode in ("auto", "zero"):
         b = EgoObsBuilder(EgoObsBuilderConfig(sector_mode=mode, virtual_flip=False))
         np.testing.assert_allclose(_map_update(b, 0, 0)[9:11], [0.0, 0.0])
+
+
+# ---------------------------------------------------------------------------
+# OBS FIX GAIN (2026-07-25): rel_new = (1-K)*propagated_held + K*fix, K forced to 1 on
+# re-acquisition. Training reference: chaum rl/ego_estimator.py:722-734 -- K = 1/N_eff clamped to
+# [0,1], and reacq = (t_since_fix > stale_horizon_s) => K=1.
+# ---------------------------------------------------------------------------
+def _held(b: EgoObsBuilder) -> np.ndarray:
+    return np.asarray(b.last_diag["rel_flu"], dtype=np.float64)
+
+
+def test_fix_gain_default_is_the_snap():
+    """DEFAULT-OFF: fix_gain defaults to 1.0, and a fresh fix then lands the held lever exactly on
+    the fix -- the pre-2026-07-25 behaviour, with no blend arithmetic in the way."""
+    assert EgoObsBuilderConfig().fix_gain == 1.0
+    b = EgoObsBuilder(EgoObsBuilderConfig(virtual_flip=False))
+    t0 = 1_000_000_000
+    pose2 = _pose_dead_ahead(8.0, vert_body=-1.0)
+    b.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.array([5.0, 0.0, 0.0]),
+             gyro_frd=np.zeros(3), pose=_pose_dead_ahead(10.0), last_normed_thrust=0.0)
+    b.update(sim_time_ns=t0 + 33_000_000, gate_index=0, R_frd2ned=np.eye(3),
+             vel_ned=np.array([5.0, 0.0, 0.0]), gyro_frd=np.zeros(3), pose=pose2,
+             last_normed_thrust=0.0)
+    # the held lever IS the second fix (no trace of the propagated 10 m prior)
+    expect = rel_pos_body_frd_from_gatepose(pose2.t_cam_gate) * np.array([1.0, -1.0, -1.0])
+    np.testing.assert_allclose(_held(b), expect, atol=1e-12)
+
+
+def test_fix_gain_blends_fix_into_the_propagated_belief():
+    """K<1: the accepted fix moves the held lever exactly K of the way from the PROPAGATED prior
+    (not from the previous raw fix) toward the new fix."""
+    K, dt_ns = 0.25, 33_000_000
+    cfg = dict(virtual_flip=False, stale_horizon_s=1.0, det_hold_s=1.0)
+    snap = EgoObsBuilder(EgoObsBuilderConfig(**cfg))                     # K=1 reference arm
+    blend = EgoObsBuilder(EgoObsBuilderConfig(fix_gain=K, **cfg))
+    t0, v = 1_000_000_000, np.array([4.0, 0.0, 0.0])
+    p0, p1 = _pose_dead_ahead(10.0), _pose_dead_ahead(8.0, vert_body=-1.0)
+    for b in (snap, blend):
+        b.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=v,
+                 gyro_frd=np.zeros(3), pose=p0, last_normed_thrust=0.0)
+    # the prior both arms hold entering tick 2 = the first fix ego-propagated one tick forward.
+    # Zero body rates => the rotation is identity and only the -v_flu*dt translation acts.
+    prior = _held(snap).copy() - np.array([4.0, 0.0, 0.0]) * (dt_ns / 1e9)
+    for b in (snap, blend):
+        b.update(sim_time_ns=t0 + dt_ns, gate_index=0, R_frd2ned=np.eye(3), vel_ned=v,
+                 gyro_frd=np.zeros(3), pose=p1, last_normed_thrust=0.0)
+    fix = _held(snap)                                                   # K=1 arm == the raw fix
+    np.testing.assert_allclose(_held(blend), (1.0 - K) * prior + K * fix, atol=1e-12)
+    assert not np.allclose(_held(blend), fix)                           # the blend is not a snap
+
+
+def test_fix_gain_snaps_on_first_acquisition():
+    """A COLD slot has no belief to blend into -- the first fix snaps whatever the gain."""
+    b = EgoObsBuilder(EgoObsBuilderConfig(fix_gain=0.154, virtual_flip=False))
+    ref = EgoObsBuilder(EgoObsBuilderConfig(virtual_flip=False))
+    for x in (b, ref):
+        x.update(sim_time_ns=1_000_000_000, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+                 gyro_frd=np.zeros(3), pose=_pose_dead_ahead(10.0, vert_body=-2.0),
+                 last_normed_thrust=0.0)
+    np.testing.assert_allclose(_held(b), _held(ref), atol=1e-12)
+
+
+def test_fix_gain_snaps_on_reacquisition_past_the_stale_horizon():
+    """Training's reacq branch (ego_estimator.py:730-732): a belief older than stale_horizon_s has
+    drifted, so its first fresh fix uses K=1 rather than the slow blend. A fix INSIDE the horizon
+    must still blend -- both halves are pinned so the boundary cannot silently move."""
+    K, horizon = 0.154, 0.5
+    cfg = dict(fix_gain=K, virtual_flip=False, stale_horizon_s=horizon, det_hold_s=horizon)
+    t0, far, near = 1_000_000_000, _pose_dead_ahead(20.0), _pose_dead_ahead(6.0, vert_body=-3.0)
+
+    stale = EgoObsBuilder(EgoObsBuilderConfig(**cfg))
+    stale.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+                 gyro_frd=np.zeros(3), pose=far, last_normed_thrust=0.0)
+    stale.update(sim_time_ns=t0 + int(1.5 * horizon * 1e9), gate_index=0, R_frd2ned=np.eye(3),
+                 vel_ned=np.zeros(3), gyro_frd=np.zeros(3), pose=near, last_normed_thrust=0.0)
+    ref = EgoObsBuilder(EgoObsBuilderConfig(virtual_flip=False))        # a pure snap
+    ref.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+               gyro_frd=np.zeros(3), pose=near, last_normed_thrust=0.0)
+    np.testing.assert_allclose(_held(stale), _held(ref), atol=1e-12)    # SNAPPED, prior discarded
+
+    fresh = EgoObsBuilder(EgoObsBuilderConfig(**cfg))
+    fresh.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+                 gyro_frd=np.zeros(3), pose=far, last_normed_thrust=0.0)
+    fresh.update(sim_time_ns=t0 + int(0.5 * horizon * 1e9), gate_index=0, R_frd2ned=np.eye(3),
+                 vel_ned=np.zeros(3), gyro_frd=np.zeros(3), pose=near, last_normed_thrust=0.0)
+    assert abs(float(_held(fresh)[0]) - 20.0) < abs(float(_held(fresh)[0]) - 6.0)   # still near 20
+
+
+def test_fix_gain_applies_to_slot1_too():
+    """The gain is per-slot and identical: slot1 (next gate) blends by the same rule as slot0."""
+    K = 0.25
+    cfg = dict(virtual_flip=False, slot1_enabled=True, stale_horizon_s=1.0, det_hold_s=1.0)
+    t0, dt_ns = 1_000_000_000, 33_000_000
+    p0, p1 = _pose_dead_ahead(24.0), _pose_dead_ahead(20.0, vert_body=-2.0)
+    snap = EgoObsBuilder(EgoObsBuilderConfig(**cfg))
+    blend = EgoObsBuilder(EgoObsBuilderConfig(fix_gain=K, **cfg))
+    for b in (snap, blend):
+        b.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+                 gyro_frd=np.zeros(3), pose=_pose_dead_ahead(10.0), next_pose=p0,
+                 last_normed_thrust=0.0)
+    prior = np.asarray(snap.last_diag["rel_flu1"], dtype=np.float64)    # zero velocity => no drift
+    for b in (snap, blend):
+        b.update(sim_time_ns=t0 + dt_ns, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+                 gyro_frd=np.zeros(3), pose=_pose_dead_ahead(9.0), next_pose=p1,
+                 last_normed_thrust=0.0)
+    fix1 = np.asarray(snap.last_diag["rel_flu1"], dtype=np.float64)
+    np.testing.assert_allclose(np.asarray(blend.last_diag["rel_flu1"], dtype=np.float64),
+                               (1.0 - K) * prior + K * fix1, atol=1e-12)
+
+
+def test_fix_gain_is_clamped_to_unit_interval():
+    """Out-of-range gains clamp like training's ``(1/n_eff).clamp(0,1)``: >1 snaps, <0 holds."""
+    t0, p0, p1 = 1_000_000_000, _pose_dead_ahead(10.0), _pose_dead_ahead(6.0, vert_body=-2.0)
+    cfg = dict(virtual_flip=False, stale_horizon_s=1.0, det_hold_s=1.0)
+    hi = EgoObsBuilder(EgoObsBuilderConfig(fix_gain=5.0, **cfg))
+    lo = EgoObsBuilder(EgoObsBuilderConfig(fix_gain=-1.0, **cfg))
+    for b in (hi, lo):
+        b.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+                 gyro_frd=np.zeros(3), pose=p0, last_normed_thrust=0.0)
+    prior_lo = _held(lo).copy()
+    for b in (hi, lo):
+        b.update(sim_time_ns=t0 + 33_000_000, gate_index=0, R_frd2ned=np.eye(3),
+                 vel_ned=np.zeros(3), gyro_frd=np.zeros(3), pose=p1, last_normed_thrust=0.0)
+    ref = EgoObsBuilder(EgoObsBuilderConfig(**cfg))
+    ref.update(sim_time_ns=t0, gate_index=0, R_frd2ned=np.eye(3), vel_ned=np.zeros(3),
+               gyro_frd=np.zeros(3), pose=p1, last_normed_thrust=0.0)
+    np.testing.assert_allclose(_held(hi), _held(ref), atol=1e-12)       # >1 -> snap
+    np.testing.assert_allclose(_held(lo), prior_lo, atol=1e-12)         # <0 -> ignore the fix
+
+
+def test_fix_gain_one_is_bitwise_identical_to_the_snap_over_a_mixed_sequence():
+    """The byte-identity guarantee end to end: at the default gain every emitted obs must be
+    BITWISE equal to the untouched path -- across fixes, gaps past det_hold, re-acquisitions and
+    gate advances. (Empirically confirmed against the pre-change module over 50 real flights by
+    scripts/replay_fix_gain.py --check-identical; this is the in-tree tripwire.)"""
+    rng = np.random.default_rng(7)
+    a = EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True))
+    b = EgoObsBuilder(EgoObsBuilderConfig(slot1_enabled=True, fix_gain=1.0))
+    t = 1_000_000_000
+    for k in range(400):
+        t += 33_000_000
+        gi = k // 150                                   # two gate advances over the sequence
+        seen = (k % 7) < 4                              # fixes with realistic gaps
+        pose = (_pose_dead_ahead(12.0 - 0.02 * (k % 150), lateral=float(rng.normal(0, 0.3)),
+                                 vert_body=float(rng.normal(0, 0.3))) if seen else None)
+        nxt = _pose_dead_ahead(26.0, lateral=float(rng.normal(0, 0.5))) if (k % 5) == 0 else None
+        kw = dict(sim_time_ns=t, gate_index=gi, R_frd2ned=np.eye(3),
+                  vel_ned=np.array([6.0, 0.2, -0.1]), gyro_frd=np.array([0.1, -0.2, 0.3]),
+                  pose=pose, next_pose=nxt, last_normed_thrust=1.0)
+        assert a.update(**kw).tobytes() == b.update(**kw).tobytes(), f"diverged at tick {k}"

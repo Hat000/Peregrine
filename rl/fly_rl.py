@@ -131,6 +131,13 @@ _ACT_MAX = np.array([5.0,  3.14,  3.14,  3.14], dtype=np.float64)
 # Training control interval (cfg/env/racing.yaml dt: 0.0333 — no sbatch override).
 _TRAIN_DT = 0.0333
 
+# Terminal states whose aftermath the post-impact recorder samples (--ego-post-terminal-s; see
+# the block at the end of _fly_ego). CRASH ONLY, deliberately: a threat>=2 hard collision is a
+# run this project already counts as INVALID, so the extra armed window can change no verdict.
+# FINISHED / TIMEOUT / SIM_RESET keep today's immediate teardown -- SIM_RESET in particular
+# exists to CUT commands promptly, and a finished run must not keep flying on a latched command.
+_POST_TERMINAL_STATES = ("CRASH",)
+
 # ---------------------------------------------------------------------------
 # Course: 6 VQ1 gates in DiffAero Z-up frame (from rl/peregrine_course_diffaero.json)
 # Z-up frame = NED * [1,-1,-1]; all gate yaws = 3.141592569 (=π to 8e-8).
@@ -657,6 +664,10 @@ def _meta_seeker_constants(args) -> dict:
         # candidate pool was de-duplicated.
         "dup_merge_bearing_rad": (float(getattr(args, "ego_dup_merge_bearing", 0.0))
                                   if getattr(args, "ego_ckpt", None) else c.dup_merge_bearing_rad),
+        # 2026-07-25: whether the tracked RANGE was dead-reckoned between fixes (False == EMA-frozen
+        # == every flight to date). CLI-driven on the ego path.
+        "track_propagate_range": (bool(getattr(args, "seeker_propagate_range", False))
+                                  if getattr(args, "ego_ckpt", None) else c.track_propagate_range),
     }
 
 
@@ -1958,6 +1969,12 @@ def _build_casec_seeker(args, gates):
             # cost 98% -> 38% small-gate recall.
             **({"dup_merge_bearing_rad": float(getattr(args, "ego_dup_merge_bearing", 0.0))}
                if _ego_path else {}),
+            # TRACK RANGE PROPAGATION (2026-07-25), ego only: dead-reckon the tracked range between
+            # detector fixes by the closing speed along the line of sight instead of freezing it on
+            # the EMA (fly_rl passes the body-FRD velocity into seeker.propagate). Default False ==
+            # byte-identical.
+            **({"track_propagate_range": bool(getattr(args, "seeker_propagate_range", False))}
+               if _ego_path else {}),
             # VISION-side perceived-gate vertical bias: lower EVERY emitted gate by a constant (ego only).
             perceived_gate_down_bias_m=(float(getattr(args, "ego_gate_z_bias", 0.0))
                                         if getattr(args, "ego_ckpt", None) else 0.0),
@@ -2319,6 +2336,84 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     return result
 
 
+def post_impact_capture(client, *, seconds: float, tick: float, k0: int,
+                        gate_index: int, final_state: str) -> "tuple[list, list, float]":
+    """POST-IMPACT FLIGHT RECORDER: sample-only aftermath capture for a bounded window.
+
+    Called ONCE, AFTER a flight loop has already terminated (see the call site in ``_fly_ego``),
+    to record the impact the flight log structurally cannot contain. Returns
+    ``(rows, aftershock_contacts, elapsed_s)``.
+
+    HARD CONTRACT -- this is a recorder, not a controller:
+      * it NEVER sends a command. It only ``pump()``s the link and reads ``client.state``, so the
+        wire stays exactly as quiet after the terminal tick as it is today.
+      * it restores ``client.collisions`` to the length it had on entry before returning (the
+        aftershocks are returned instead), so ``result["collisions"]``, ``meta.json`` collisions,
+        the batch summary and the NEXT flight's ``n_coll0`` cannot move.
+      * it swallows every exception -- a recorder must never cost the caller its flight log --
+        and returns whatever it captured.
+      * every row carries ``post_terminal=True`` so no analysis can mistake aftermath for flight.
+
+    ``k0`` continues the flight log's ``k`` sequence so the two streams join; ``gate_index`` is
+    the terminal-tick fallback for when RACE_STATUS has gone quiet.
+    """
+    rows: list = []
+    contacts: list = []
+    n_coll_entry = len(client.collisions)
+    t0 = time.monotonic()
+    try:
+        t_end, t_next, k = t0 + max(0.0, float(seconds)), t0, int(k0)
+        while time.monotonic() < t_end:
+            while time.monotonic() < t_next:          # same pacing as the flight loop
+                client.pump()
+                time.sleep(0.001)
+            client.pump()
+            t_next = time.monotonic() + tick
+            s   = client.state
+            fr  = getattr(client, "_latest_frame", None)
+            rs  = client.race_status
+            g, a = s.gyro_body, s.accel_body
+            rows.append({
+                "k": k,                        # continues the ego_obs k sequence (join key)
+                "post_terminal": True,         # NEVER mistake an aftermath tick for flight
+                "final_state": final_state,
+                "t_since_terminal_s": round(time.monotonic() - t0, 4),
+                "sim_time_ns": int(s.sim_time_ns),
+                "gate_index": (int(rs["active_gate_index"])
+                               if rs and rs.get("active_gate_index") is not None
+                               else int(gate_index)),
+                # RAW WIRE ONLY -- no estimator, no policy, no command. gyro+accel ARE the axis
+                # discriminator the failure classification needs: the direction of the impact
+                # spike in body FRD separates a LATERAL gate strike from a VERTICAL undershoot
+                # from a FLOOR hit, which a log that stops before the strike can never show.
+                "gyro_frd": (None if g is None
+                             else np.asarray(g, dtype=np.float64).round(5).tolist()),
+                "accel_frd": (None if a is None
+                              else np.asarray(a, dtype=np.float64).round(4).tolist()),
+                "quat_ned_wxyz": (None if s.orientation_ned_wxyz is None else
+                                  np.asarray(s.orientation_ned_wxyz,
+                                             dtype=np.float64).round(5).tolist()),
+                "armed": bool(s.armed),
+                # join back to the recorded video: the impact FRAME is what human eyes
+                # adjudicate the strike from (video keeps recording through this window).
+                "frame_id": (fr.frame_id if fr is not None else None),
+                "n_contacts": len(client.collisions) - n_coll_entry,
+            })
+            k += 1
+        contacts = [dict(c) for c in client.collisions[n_coll_entry:]]
+    except Exception as exc:                   # never cost the caller its flight log
+        print(f"  [post-impact] WARNING: capture aborted ({type(exc).__name__}: {exc}) "
+              f"-- flight + ego_obs.jsonl unaffected.", file=sys.stderr)
+        try:
+            contacts = [dict(c) for c in client.collisions[n_coll_entry:]]
+        except Exception:
+            pass
+    finally:
+        # Restore the ledger to its entry length so NO existing metric moves.
+        del client.collisions[n_coll_entry:]
+    return rows, contacts, time.monotonic() - t0
+
+
 def _fly_ego(client, actor, args, flight_idx: int,
              session_dir: Path | None, result: dict) -> dict:
     """EGO (21-dim egocentric) RL deploy loop on the case-C self-localizing stack (--ego-ckpt).
@@ -2336,12 +2431,18 @@ def _fly_ego(client, actor, args, flight_idx: int,
     The 21-dim obs itself is built by ``racer.ego_obs.EgoObsBuilder`` (see its module docstring
     for the full frame/masking contract). Per-tick products are buffered in memory and written
     ONCE at loop exit (<session>/ego_obs.jsonl) -- no per-tick blocking I/O in the control loop.
-    ADDITIVE + OPT-IN: nothing on the default RL / gate-seeker paths changes."""
+    ADDITIVE + OPT-IN: nothing on the default RL / gate-seeker paths changes.
+
+    After a CRASH exit the POST-IMPACT RECORDER (--ego-post-terminal-s, see the block below the
+    loop) samples the wire for a further bounded window into a SEPARATE
+    <session>/ego_postimpact.jsonl -- same buffer-then-flush discipline, no commands sent, and
+    ego_obs.jsonl itself is untouched."""
     from scipy.spatial.transform import Rotation as _Rot
 
     from racer.contracts import Frame
     from racer.deploy_profile import get_profile
-    from racer.ego_obs import EgoObsBuilder, EgoObsBuilderConfig, roll_pitch_zup
+    from racer.ego_obs import (EgoObsBuilder, EgoObsBuilderConfig, parse_aim_offsets,
+                               roll_pitch_zup)
     from racer.navigator import gates_from_track_records, load_track_map
 
     profile = get_profile(args.deploy_profile)
@@ -2397,6 +2498,22 @@ def _fly_ego(client, actor, args, flight_idx: int,
         print(f"  [ego] coarse map from --ego-coarse-map {args.ego_coarse_map} "
               f"({coarse_map.shape[0]} gates): {coarse_map.astype(int).tolist()}")
 
+    # PER-GATE AIM OFFSET: parse on the PAD, not in the tick loop -- a mistyped dodge must abort
+    # here, never silently do nothing for a whole flight. Blank (default) -> {} -> OFF.
+    try:
+        _aim_offsets = parse_aim_offsets(getattr(args, "ego_aim_offsets", "") or "")
+    except ValueError as exc:
+        print(f"  [ego] --ego-aim-offsets: {exc}. abort.", file=sys.stderr)
+        result["final_state"] = "BAD_AIM_OFFSETS"
+        return result
+    if _aim_offsets:
+        _rel = float(getattr(args, "ego_aim_release", 12.0))
+        _fade = float(getattr(args, "ego_aim_fade", 0.0))
+        print(f"  [ego] AIM OFFSET ARMED (body FLU, +lateral=RIGHT / +vertical=UP): "
+              f"{ {g: list(v) for g, v in sorted(_aim_offsets.items())} } "
+              f"release<={_rel:g} m" + (f", fade {_fade:g} m (NEVER FLOWN)" if _fade > 0
+                                        else " (hard step -- what the pilot flew)"))
+
     builder = EgoObsBuilder(EgoObsBuilderConfig(
         stale_horizon_s=args.ego_stale_horizon,
         det_hold_s=args.ego_det_hold,
@@ -2409,6 +2526,21 @@ def _fly_ego(client, actor, args, flight_idx: int,
                                              # None -- see the flight loop). SOURCE = vision-stack-owned.
         sector_mode=args.ego_sector_mode,
         coarse_map=coarse_map,
+        # OBS FIX GAIN (2026-07-25): K in rel_new = (1-K)*propagated_held + K*fix, both slots.
+        # 1.0 (default) == the historical SNAP == byte-identical; training low-passed at K=1/N_eff
+        # (N_eff ~ U[4,9] -> ~0.154). K=1 is still forced on re-acquisition (training parity).
+        fix_gain=float(getattr(args, "ego_fix_gain", 1.0)),
+        # D1 VISION-REFERENCED LATERAL VELOCITY (2026-07-27): 0.0 (default) == OFF == byte-
+        # identical (the fuser is not constructed). > 0 estimates the DEAD-RECKONING error of
+        # obs[0:3] against the tracked gate and adds it back, LOS-perpendicular only.
+        vel_fuse_gain=float(getattr(args, "ego_vel_fuse", 0.0)),
+        # PER-GATE AIM OFFSET (2026-07-27): {gate_index: (lateral_m, vertical_m)} added to the
+        # slot-0 lever in BODY FLU while that gate is active, released at ego_aim_release m.
+        # Empty (default) == OFF == byte-identical. The repo form of the pilot's ShadowPC-only
+        # aim_off dodge; see racer.ego_obs.parse_aim_offsets for the measured sign convention.
+        aim_offsets=_aim_offsets,
+        aim_release_m=float(getattr(args, "ego_aim_release", 12.0)),
+        aim_fade_m=float(getattr(args, "ego_aim_fade", 0.0)),
     ))
 
     print(f"\n[ego] ckpt={args.ego_ckpt}  profile={profile.name} "
@@ -2418,6 +2550,11 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"--ego-rate-scale; the seeker profile's 0.4 is NOT applied -- the RL plant was "
           f"sysid'd at wire scale 1.0)")
     print(f"[ego] det_hold={args.ego_det_hold:g}s stale_horizon={args.ego_stale_horizon:g}s "
+          f"fix_gain={float(getattr(args, 'ego_fix_gain', 1.0)):g}"
+          f"{' (SNAP -- training low-passed at ~0.154)' if float(getattr(args, 'ego_fix_gain', 1.0)) >= 1.0 else ''} "
+          f"seeker_propagate_range={bool(getattr(args, 'seeker_propagate_range', False))} "
+          f"vel_fuse={float(getattr(args, 'ego_vel_fuse', 0.0)):g}"
+          f"{' (OFF -- obs[0:3] is raw dead-reckoning)' if float(getattr(args, 'ego_vel_fuse', 0.0)) <= 0.0 else ' (vision-referenced LATERAL velocity ON)'} "
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
           f"slot1={args.ego_slot1}{' (SOURCE: seeker tg+1 next-gate track)' if args.ego_slot1 else ''} "
           f"pitch_clamp={args.ego_pitch_clamp:g}deg roll_clamp={args.ego_roll_clamp:g}deg "
@@ -2771,7 +2908,15 @@ def _fly_ego(client, actor, args, flight_idx: int,
         # ROTATED to in the frame (not a stale static prediction). dt from the sim (IMU) clock.
         _prop_dt = (st - _ego_prev_st) / 1e9 if _ego_prev_st is not None else 0.0
         _ego_prev_st = st
-        seeker.propagate(s.gyro_body, _prop_dt)
+        # --seeker-propagate-range: also dead-reckon the tracked RANGE along the line of sight, which
+        # needs the drone's own velocity in BODY FRD -- the same R^T v_ned the obs builder takes
+        # (EgoObsBuilder.update: v_flu = _FLIP_FRD_FLU * (R.T @ v_ned)), before the FLU flip. None
+        # (flag off, or the KF has no velocity yet) => propagate() stays bearing-only == byte-identical.
+        _prop_vel_frd = None
+        if (getattr(args, "seeker_propagate_range", False)
+                and nav_state.velocity_ned is not None):
+            _prop_vel_frd = R_frd2ned.T @ np.asarray(nav_state.velocity_ned, dtype=np.float64)
+        seeker.propagate(s.gyro_body, _prop_dt, vel_frd=_prop_vel_frd)
 
         # --- gate lever: feed each frame_id ONCE (a repeated pose is NOT a fresh fix; the
         # builder ego-propagates through the gap between real detections) ---
@@ -2945,6 +3090,17 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     # (policy_step was bypassed) and rate_frd/collective are the stare-brake command.
                     "arrest_phase": arrest_phase,
                     "arrest_id": arrest_id,
+                    # D1 (only present when --ego-vel-fuse > 0, so the default log is byte-
+                    # identical): the vision-referenced velocity-error tracker state -- bias,
+                    # the APPLIED (LOS-perpendicular) correction, window length, update counts.
+                    **({"vfuse": d["vfuse"]} if "vfuse" in d else {}),
+                    # PER-GATE AIM OFFSET (only present when --ego-aim-offsets is set, so the
+                    # default log stays byte-identical): the EFFECTIVE [lateral_m, vertical_m]
+                    # applied to the slot-0 lever this tick, or null while inactive. Same key,
+                    # same shape and same 'null when off' semantics as the pilot's ShadowPC build,
+                    # so scripts/d1_velocity_replay.py + scripts/replay_fix_gain.py keep cutting
+                    # these ticks unchanged. NOTE rel_flu above already has it baked in.
+                    **({"aim_off": d["aim_off"]} if "aim_off" in d else {}),
                 })
             except Exception:
                 _ego_log_errors += 1
@@ -2990,6 +3146,37 @@ def _fly_ego(client, actor, args, flight_idx: int,
         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
         print(f"\n  ({final_state.lower()})")
 
+    # === POST-IMPACT FLIGHT RECORDER (--ego-post-terminal-s) ==================================
+    # THE GAP THIS CLOSES: every stop condition in the loop above ``break``s from the TOP of the
+    # tick body -- the hard-collision abort is the block ~300 lines up -- while the per-tick
+    # forensics record is appended at the BOTTOM, after the command send. So the tick that
+    # DETECTS the crash is discarded whole, and no tick is ever sampled again: the impact
+    # transient and its aftermath are structurally absent from ego_obs.jsonl. On top of that the
+    # detection itself is quantised to one check per control tick and lags the sim's COLLISION
+    # message, so the recording stops several ticks BEFORE the strike it is meant to explain.
+    # This block keeps SAMPLING (never commanding) for a short bounded window so the strike and
+    # the contact events land on disk.
+    #
+    # SAFETY CONTRACT -- this is a recorder, and must be incapable of changing the flight:
+    #   * it runs only AFTER the loop has broken, and only for _POST_TERMINAL_STATES (CRASH: a
+    #     threat>=2 hard collision -- a run this project already counts as INVALID);
+    #   * it NEVER calls client.send_command: the wire goes quiet exactly as it does today;
+    #   * the window's wall time is subtracted back out of the loop-rate verdict below and the
+    #     client's collision ledger is restored to its terminal length, so achieved_hz,
+    #     result["collisions"], meta.json's collisions and the NEXT flight's n_coll0 are all
+    #     exactly what they would have been;
+    #   * rows go to their OWN file (ego_postimpact.jsonl) and carry post_terminal=True. They are
+    #     never mixed into ego_obs.jsonl -- tape_extract would otherwise turn aftermath into a
+    #     replay command tape and replay_fix_gain would feed it to the obs builder.
+    # Residual, by design: on a CRASH the vehicle stays armed with its last command latched for
+    # the window before the disarm. --ego-post-terminal-s 0 restores the old teardown exactly.
+    _post_s = max(0.0, float(getattr(args, "ego_post_terminal_s", 0.0) or 0.0))
+    _post_log, _post_contacts, _post_elapsed = [], [], 0.0
+    if session_dir is not None and _post_s > 0.0 and final_state in _POST_TERMINAL_STATES:
+        _post_log, _post_contacts, _post_elapsed = post_impact_capture(
+            client, seconds=_post_s, tick=tick, k0=n_ticks,
+            gate_index=gate_index, final_state=final_state)
+
     # --- ego forensics log: single write covering every exit path ---
     if session_dir is not None and _sysid_log:
         import csv as _csvmod
@@ -3020,12 +3207,38 @@ def _fly_ego(client, actor, args, flight_idx: int,
             print(f"  [seeker-log] wrote {len(_seeker_log)} ticks -> {sout}")
         except Exception as exc:
             print(f"  [seeker-log] WARNING: failed to write seeker.jsonl: {exc}")
+    if session_dir is not None and (_post_log or _post_contacts):
+        pout = Path(session_dir) / "ego_postimpact.jsonl"
+        try:
+            # Row 0 is the CONTACT record; rows 1..N are the post-terminal ticks. Both carry
+            # post_terminal=True. `terminal_contacts` is every COLLISION of THIS flight up to the
+            # terminal tick -- id 1001=gate vs 1002=environment is the single strongest failure
+            # classifier the sim publishes, and until now it was persisted only as an integer
+            # COUNT in meta.json, i.e. gate-strike vs floor-hit was unrecoverable from a session.
+            _contact_row = {
+                "k": None, "post_terminal": True, "record": "contacts",
+                "final_state": final_state,
+                "window_s": round(_post_elapsed, 3),
+                "last_flight_tick_k": (_ego_log[-1]["k"] if _ego_log else None),
+                "last_flight_sim_time_ns": (_ego_log[-1]["sim_time_ns"] if _ego_log else None),
+                "terminal_contacts": [dict(c) for c in client.collisions[n_coll0:]],
+                "post_terminal_contacts": _post_contacts,
+            }
+            pout.write_text("\n".join(json.dumps(r) for r in [_contact_row, *_post_log]) + "\n",
+                            encoding="utf-8")
+            print(f"  [post-impact] wrote {len(_post_log)} post-terminal ticks "
+                  f"({_post_elapsed:.2f}s) + {len(_contact_row['terminal_contacts'])} terminal / "
+                  f"{len(_post_contacts)} aftershock contact(s) -> {pout}")
+        except Exception as exc:
+            print(f"  [post-impact] WARNING: failed to write ego_postimpact.jsonl: {exc}")
     if _ego_log_errors:
         print(f"  [ego-log] WARNING: {_ego_log_errors} per-tick record errors "
               f"(logging bug, not flight bug)")
 
     # --- loop-rate + perception-supply verdicts (A19 health-check parity) ---
-    elapsed = max(time.monotonic() - loop_t0, 1e-6)
+    # _post_elapsed is subtracted so the post-impact window can never drag the achieved-Hz
+    # verdict (it is 0.0 whenever the window did not run => byte-identical arithmetic).
+    elapsed = max(time.monotonic() - loop_t0 - _post_elapsed, 1e-6)
     achieved_hz = n_ticks / elapsed
     over_pct = 100.0 * n_over_budget / max(n_ticks, 1)
     rate_ok = achieved_hz >= 0.9 * args.rate and over_pct < 5.0
@@ -3081,8 +3294,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
     result["ego_next_levers"] = n_next_pose_ticks
     if kp_n >= 2:                       # armed-only key: OFF-path result dict byte-identical
         result["ego_kp_suppressed"] = n_kp_suppressed
+    if _post_log or _post_contacts:     # ditto: absent unless the post-impact window ran
+        result["post_terminal_ticks"] = len(_post_log)
+        result["post_terminal_contacts"] = len(_post_contacts)
     result["final_state"] = final_state
     result["gate_index"] = gate_index
+    # NB: the ledger was restored above, so this is the terminal-tick delta -- unchanged by the
+    # post-impact window.
     result["collisions"] = len(client.collisions) - n_coll0
     return result
 
@@ -3670,6 +3888,85 @@ def build_parser() -> argparse.ArgumentParser:
                          "at 0.33 rad so none are touched. This is the RECALL-SAFE fix -- it only ever "
                          "removes a pose that has a near-twin -- unlike training duplicates out with "
                          "hard negatives, which collapsed small-gate recall 98%% -> 38%%.")
+    ap.add_argument("--ego-fix-gain", type=float, default=1.0,
+                    help="EGO obs-builder FIX GAIN K (ego path only): how much of a fresh vision fix is "
+                         "written into the held gate lever. rel_new = (1-K)*propagated_held + K*fix, "
+                         "applied to BOTH slots. 1.0 (DEFAULT) = SNAP to every fix -- what every flight "
+                         "to date flew, and the reason per-fix noise reaches the policy unfiltered: "
+                         "measured over 51 flights, inside 1-2 m of a gate 96%% of fixes carry <4 "
+                         "corners, 23%% fall back to bbox range, and the vertical target jitters with "
+                         "p99 half-metre tick-to-tick jumps. TRAINING did not snap: its estimator "
+                         "low-passed with K = 1/N_eff, N_eff ~ U[4,9] (~0.154 at the mean), so the "
+                         "policy learned on a belief that averaged ~6 fixes. Lower = smoother/laggier; "
+                         "the held belief is ego-propagated (rotate by -w*dt, translate by -v*dt) "
+                         "between fixes, so a low K is dead-reckoning corrected by vision, not a "
+                         "frozen target. K is FORCED to 1.0 on RE-ACQUISITION (no held belief, or one "
+                         "older than --ego-stale-horizon) -- the training reacquisition snap, so a "
+                         "prior that drifted through a blackout is discarded rather than blended.")
+    ap.add_argument("--seeker-propagate-range", action="store_true",
+                    help="EGO gate-TRACK range propagation (ego path only). Between detector fixes the "
+                         "seeker already rotates the tracked BEARING by the gyro; the tracked RANGE is "
+                         "left frozen on its EMA, so at race speed it is stale by the whole detection "
+                         "gap (~0.1 s at 10 Hz). This dead-reckons it too: r -= (v_body . u_hat)*dt "
+                         "along the (freshly rotated) line of sight, floored at 0.3 m. Affects BOTH the "
+                         "active and next-gate tracks, and therefore what the continuity/jump gates, "
+                         "the pass-drop rule and the slot1 promote check compare a fresh detection "
+                         "against -- it does NOT loosen any of them. OFF (default) = the range stays on "
+                         "its EMA = byte-identical. Requires the gyro propagation (on by default).")
+    ap.add_argument("--ego-vel-fuse", type=float, default=0.0,
+                    help="EGO VISION-REFERENCED LATERAL VELOCITY gain (ego path only; D1 2026-07-27). "
+                         "obs[0:3] is the deploy KF velocity, and on this wire that KF has NO position "
+                         "reference at all -- no GPS, no mag, no baro, and (measured) 0 of 94991 logged "
+                         "ticks over 624 flights ever took a vision world-fix -- so it is pure IMU "
+                         "strapdown dead reckoning. TRAINING never modelled that: rl/ego_estimator.py "
+                         "defaults vel_model='legacy', which SEEDS the obs velocity at truth and pulls "
+                         "it 15%% back toward TRUE body velocity at every vision fix (:815-819), a "
+                         "~0.01 m/s steady-state error. This closes the gap: the tracked gate is a "
+                         "world-FIXED landmark, so (anchor lever rotated by the gyro) minus (current "
+                         "fix) is a world-referenced measurement of how far the drone actually moved; "
+                         "differenced against the dead-reckoned displacement over the same window it "
+                         "yields the KF velocity error, tracked with THIS gain and added to obs[0:3]. "
+                         "ONLY the line-of-sight-PERPENDICULAR part is estimated and applied (measured "
+                         "perpendicular lever noise 0.036 m vs 0.089-0.36 m along the range axis), so "
+                         "closing speed is left entirely to the KF and the range channel's EMA/bbox/"
+                         "propagate contaminants are projected out. 0.0 (DEFAULT) = OFF = byte-"
+                         "identical. 0.10 is the calibrated value (best hold-out rms + sign-agreement "
+                         "over 611 replayed flights; ~2 s of averaging, matched to the measured ~2 s "
+                         "correlation time of the error). Held through a blackout, then decayed back to "
+                         "the raw KF velocity. Validate with scripts/d1_velocity_replay.py.")
+    ap.add_argument("--ego-aim-offsets", type=str, default="",
+                    help="EGO PER-GATE AIM OFFSET, \"gate:lateral,vertical;gate:lateral,vertical\" "
+                         "(0-based gate_index, metres) -- e.g. \"4:0,10;5:0,10\". Shifts the "
+                         "PERCEIVED gate the policy chases, in BODY FLU, ONLY while that "
+                         "gate_index is active and ONLY on slot0. Blank (default) = OFF = "
+                         "byte-identical. SIGNS (measured off the pilot's eight aim_off sessions, "
+                         "NOT assumed): +lateral = RIGHT, +vertical = UP -- so the drone aims/"
+                         "passes right/HIGHER. This is the OPPOSITE vertical sign to "
+                         "--ego-gate-z-bias, which adds to the camera-frame +Y (DOWN); and it is a "
+                         "DIFFERENT FRAME: a camera-frame vertical of b also moves the perceived "
+                         "RANGE by 0.342*b (frames.R_camera_from_body), which the flown deltas do "
+                         "NOT show (|D_fwd| <= 0.28 m at a 10 m offset). PURPOSE: the two invisible "
+                         "obstacles measured ~14.5 m short of gate 4 (14/31 deaths, median 14.56 m) "
+                         "and gate 5 (9/21, median 14.36 m). The pilot flew 4:UNPROBED and "
+                         "\"5:0,10\" five times, and among flights that REACHED gate 5: band deaths "
+                         "0/5 vs 9/23 (Fisher p=0.118), at-gate deaths 3/5 vs 3/23 (p=0.050), pass "
+                         "rate 2/5 vs 5/23 (p=0.367). It RELOCATES the failure from the obstacle to "
+                         "the gate, and at n=5 the ONLY result near significance is that regression. "
+                         "Default OFF; fly it as an A/B, not as a fix.")
+    ap.add_argument("--ego-aim-release", type=float, default=12.0,
+                    help="Range (m) at/below which --ego-aim-offsets is released, measured on the "
+                         "held slot0 belief EXCLUDING its own offset (so the gate cannot hold "
+                         "itself open). 12.0 = the median of the pilot's five hand-timed releases "
+                         "(10.58/11.36/12.63/14.67/17.20 m) -- below the 11-16 m obstacle band, so "
+                         "the offset is still up across the obstacle, and clear of the gate so the "
+                         "last 12 m are threaded on the honest lever. The pilot's own rule was a "
+                         "~2.0 s wall-clock hold from the gate change, which does not transfer "
+                         "across speeds; this is the range restatement of the same envelope.")
+    ap.add_argument("--ego-aim-fade", type=float, default=0.0,
+                    help="Linear fade width (m) above --ego-aim-release: the offset scales 1 -> 0 "
+                         "over [release, release+fade]. 0.0 (default) = a HARD STEP = exactly what "
+                         "the pilot flew. Any value > 0 has NEVER FLOWN -- treat the first flights "
+                         "on it as a new arm, not as a continuation of his five.")
     ap.add_argument("--ego-gate-z-bias", type=float, default=0.0,
                     help="EGO perceived-gate VERTICAL bias in METRES, applied at the VISION emission "
                          "(GateSeeker._valid_poses adds it to the camera-frame +Y/down of EVERY emitted "
@@ -3736,6 +4033,18 @@ def build_parser() -> argparse.ArgumentParser:
                          "counts fresh frames -- near-matched at 30 Hz, slower under frame "
                          "starvation). Fly a debounce-trained ckpt with the SAME N or the wire "
                          "sees earlier/flickerier first fixes than training did.")
+    ap.add_argument("--ego-post-terminal-s", type=float, default=0.5,
+                    help="EGO POST-IMPACT RECORDER: after a CRASH (threat>=2 hard collision) keep "
+                         "SAMPLING the wire for this many seconds and write the rows to "
+                         "<session>/ego_postimpact.jsonl (raw gyro/accel/quat/frame_id + every "
+                         "COLLISION event, each row flagged post_terminal=true). Closes a permanent "
+                         "evidence gap: the flight loop breaks at the TOP of the tick that detects "
+                         "the crash, before that tick's record is appended, so ego_obs.jsonl always "
+                         "ends BEFORE the strike and the killing axis (lateral / vertical / floor) "
+                         "is unrecoverable. RECORDING ONLY -- no command is sent during the window, "
+                         "no row enters ego_obs.jsonl, and achieved_hz / collisions / gate_index are "
+                         "held at their terminal-tick values. Default 0.5; 0 = OFF (exact old "
+                         "teardown). Cost: the disarm on a CRASH is delayed by this window.")
     ap.add_argument("--ego-arrestor", action="store_true",
                     help="EGO post-gate STARE-BRAKE takeover (replay-ratchet ARRESTOR). DEFAULT OFF "
                          "(byte-identical policy path). When ON, after a chosen gate is banked the "
@@ -4085,10 +4394,27 @@ def main() -> int:
                 handoff_dist=args.handoff_dist,
                 handoff_speed_min=args.handoff_speed_min,
                 checkpoint=str(args.checkpoint), max_seconds=args.max_seconds,
+                # 2026-07-25: the named estimator+control preset (NavigatorConfig flags + the uplink
+                # cmd_rate_scale) this flight actually flew. It was the one top-level knob meta.json
+                # never recorded, so 494 banked sessions cannot be split by profile after the fact.
+                # BOTH paths (it is not an ego-only flag).
+                deploy_profile=str(getattr(args, "deploy_profile", "")),
                 # ego meta ONLY on the ego path (VQ1/gate-seeker meta.json byte-identical)
                 **({"ego_ckpt": str(args.ego_ckpt),
                     "ego_det_hold": args.ego_det_hold,
                     "ego_stale_horizon": args.ego_stale_horizon,
+                    # 2026-07-25 obs fix gain + seeker range propagation, as FLOWN (1.0 / False ==
+                    # the pre-2026-07-25 behaviour), so an A/B flight is self-describing.
+                    "ego_fix_gain": float(getattr(args, "ego_fix_gain", 1.0)),
+                    "seeker_propagate_range": bool(getattr(args, "seeker_propagate_range", False)),
+                    # 2026-07-27 D1: vision-referenced lateral-velocity gain as FLOWN (0.0 == OFF
+                    # == obs[0:3] is the raw dead-reckoned KF velocity, the pre-D1 behaviour).
+                    "ego_vel_fuse": float(getattr(args, "ego_vel_fuse", 0.0)),
+                    # 2026-07-27 per-gate aim offset, as FLOWN ("" == OFF). The release/fade are
+                    # recorded even when the spec is blank so a cohort can be split on them later.
+                    "ego_aim_offsets": str(getattr(args, "ego_aim_offsets", "") or ""),
+                    "ego_aim_release": float(getattr(args, "ego_aim_release", 12.0)),
+                    "ego_aim_fade": float(getattr(args, "ego_aim_fade", 0.0)),
                     "ego_obs_coast": args.ego_obs_coast,
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,
@@ -4101,6 +4427,9 @@ def main() -> int:
                     "ego_speed_gov": args.ego_speed_gov,
                     "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist,
+                    # post-impact recorder window as FLOWN (0.0 == no ego_postimpact.jsonl), so a
+                    # session with no aftermath file is distinguishable from one flown with it off.
+                    "ego_post_terminal_s": float(getattr(args, "ego_post_terminal_s", 0.0)),
                     # Patch-1 WP6: flight provenance -- the ACTUAL map rows flown, the seeker constants
                     # in force, and the recipe-drift list (knobs whose flown value != the picked model's
                     # recipe pin; empty when clean) the panel passed via --recipe-drift.

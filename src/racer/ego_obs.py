@@ -58,6 +58,14 @@ stale_horizon 0.5 s -- EgoEstimatorConfig defaults; the stage overrides neither)
   * between accepted fixes (age < det_hold) the held rel_pos is EGO-PROPAGATED exactly like the
     training estimator (rotate by -body_rate*dt, translate by -v_body*dt;
     ego_estimator.py:447-459) so the intra-gap obs stays coherent.
+  * an ACCEPTED fix is blended into that propagated belief with a scalar gain ``fix_gain``:
+    rel_new = (1-K)*propagated_held + K*fix. Deploy default K=1.0 == the historical SNAP (the
+    held belief is discarded on every fix), which is why measurement noise -- 96% of fixes inside
+    1-2 m of a gate carry <4 corners -- reaches the policy unfiltered. Training used the
+    steady-state low-pass K = 1/N_eff with N_eff ~ U[4,9] (ego_estimator.py:722-734, K~0.154), so
+    the pilot can dial the deploy gain onto the training smoothing. K is FORCED to 1.0 on
+    RE-ACQUISITION (no held belief, or a held belief older than ``stale_horizon_s``) -- exactly
+    the training reacquisition branch, which discards a prior that has drifted through a blackout.
 
 COARSE SECTOR (deploy analog of ``build_coarse_map``, peregrine_racing_ego.py:180-235):
   Training's sector is a STATIC per-gate (horiz, vert) bucket from COURSE geometry: horiz = the
@@ -87,6 +95,12 @@ numpy port of the training ``ego_actor_obs`` (window indexing, keep-logic, mask 
 order, NaN guard) -- so the deploy masking semantics are the TRAINING code path by construction
 (pinned element-exact against the verbatim reference in tests/test_ego_deploy_obs.py).
 
+PER-GATE AIM OFFSET (2026-07-27, default OFF): ``aim_offsets`` shifts the slot-0 lever the policy
+consumes by a per-gate-index 2-vector in BODY FLU, released by range before the gate. This is the
+repo form of the pilot's ShadowPC-only ``aim_off`` dodge for the two invisible obstacles ~14.5 m
+short of gates 4 and 5; ``parse_aim_offsets`` carries the measured sign convention and why the
+``GateSeeker._valid_poses`` camera-frame bias is NOT the same lever.
+
 ADDITIVE + OPT-IN: nothing imports this module on the default fly_rl paths; VQ1/inc7/gate-seeker
 stay byte-identical.
 """
@@ -99,6 +113,7 @@ from scipy.spatial.transform import Rotation
 
 from racer import frames
 from racer.contracts import GatePose
+from racer.ego_velocity import LateralVelocityFuser, VelocityFusionConfig
 from racer.vision.gate_pose import GATE_INNER_SIZE_M, gate_object_points
 
 # ---------------------------------------------------------------------------------------------
@@ -250,6 +265,76 @@ def ego_actor_obs_np(velocity: np.ndarray, roll_pitch: np.ndarray, body_rates: n
 
 
 # ---------------------------------------------------------------------------------------------
+# PER-GATE AIM OFFSET (2026-07-27) -- the repo form of the pilot's ShadowPC-only ``aim_off`` dodge
+# ---------------------------------------------------------------------------------------------
+def parse_aim_offsets(spec: str) -> dict[int, tuple[float, float]]:
+    """Parse ``"4:0,10;5:0,10"`` -> ``{4: (0.0, 10.0), 5: (0.0, 10.0)}``.
+
+    Grammar: ``gate_index:lateral_m,vertical_m`` groups separated by ``;`` (or whitespace).
+    Blank/whitespace-only -> ``{}`` (OFF). Malformed input RAISES -- a mistyped dodge silently
+    doing nothing on a flight is worse than a pad abort.
+
+    SIGN CONVENTION (body FLU, measured -- not assumed):
+      * ``lateral_m``  +RIGHT  -- the perceived gate moves RIGHT, so the policy aims/passes RIGHT.
+        Applied as ``rel_flu[1] (LEFT) -= lateral_m``.
+      * ``vertical_m`` +UP     -- the perceived gate moves UP, so the policy aims/passes HIGHER.
+        Applied as ``rel_flu[2] (UP) += vertical_m``.
+
+    This is the convention the pilot flew, recovered from the eight ``aim_off`` sessions in
+    data/runs by differencing the logged body-FLU lever across the arm/release ticks (attitude is
+    constant tick-to-tick, so the jump isolates the injection):
+
+        aim_off        D_fwd    D_left   D_up      (release transition, aim -> None)
+        [0.0, -3.0]   +0.202   +0.035   +2.916
+        [0.0, +3.0]   -0.144   +0.036   -3.039
+        [-3.0, 0.0]   +0.168   -3.026   -0.500
+        [0.0, +10.0]  -0.078   -0.213   -9.797
+        [0.0, +10.0]  -0.112   -0.177   -9.679
+        [0.0, +10.0]  -0.276   -0.058  -10.162
+        [0.0, +10.0]  +0.161   -0.039  -10.260
+
+    Two consequences, both load-bearing:
+
+    1. THE VERTICAL SIGN IS OPPOSITE TO ``--ego-gate-z-bias``. That knob adds its value to the
+       camera-frame +Y, which is DOWN ("+ lowers the gate"); this one is +UP. ``vertical_m=+10``
+       here is roughly ``ego_gate_z_bias = -10.6``, NOT ``+10``. They do not share a sign.
+    2. THE FRAME IS BODY FLU, NOT THE CAMERA FRAME. ``frames.R_camera_from_body()`` puts a camera
+       +Y offset ``b`` at body FLU ``(+0.342b, 0, -0.940b)`` -- i.e. a 10 m vertical injected at
+       ``GateSeeker._valid_poses`` would ALSO move the perceived RANGE by 3.42 m. The flown deltas
+       put 0.00 there (|D_fwd| <= 0.28 m, all of it one tick of ownship motion) and the full
+       magnitude on UP. So the pilot's dodge is NOT the ``_valid_poses`` injection point and
+       cannot be reproduced there.
+    """
+    out: dict[int, tuple[float, float]] = {}
+    if spec is None:
+        return out
+    for group in str(spec).replace(";", " ").split():
+        if not group:
+            continue
+        head, sep, tail = group.partition(":")
+        if not sep:
+            raise ValueError(f"aim-offset group {group!r} is missing ':' "
+                             "(expected 'gate_index:lateral_m,vertical_m')")
+        parts = tail.split(",")
+        if len(parts) != 2:
+            raise ValueError(f"aim-offset group {group!r} needs exactly two offsets "
+                             "'lateral_m,vertical_m'")
+        try:
+            gate = int(head.strip())
+            lat, vert = float(parts[0]), float(parts[1])
+        except ValueError as exc:
+            raise ValueError(f"aim-offset group {group!r} is not numeric: {exc}") from exc
+        if gate < 0:
+            raise ValueError(f"aim-offset gate index must be >= 0 (0-based), got {gate}")
+        if not (np.isfinite(lat) and np.isfinite(vert)):
+            raise ValueError(f"aim-offset group {group!r} has a non-finite offset")
+        if gate in out:
+            raise ValueError(f"aim-offset gate {gate} listed twice")
+        out[gate] = (lat, vert)
+    return out
+
+
+# ---------------------------------------------------------------------------------------------
 # The stateful deploy-side builder
 # ---------------------------------------------------------------------------------------------
 @dataclass
@@ -272,6 +357,38 @@ class EgoObsBuilderConfig:
                                                    # build_coarse_map bucket the _pef champions trained on).
     sector_deadband_rad: float = SECTOR_DEADBAND_RAD
     propagate_gaps: bool = True                    # ego-propagate held rel_pos between fixes
+    fix_gain: float = 1.0                          # K in rel_new = (1-K)*propagated_held + K*fix, applied
+                                                   # to BOTH slots. 1.0 (default) == the historical SNAP ==
+                                                   # byte-identical. Training's estimator low-passed with
+                                                   # K = 1/N_eff, N_eff ~ U[4,9] (ego_estimator.py:722-734)
+                                                   # -> K ~ 0.154 at the mean; the deploy default is NOT
+                                                   # moved there (the pilot passes the value). Clamped to
+                                                   # [0,1] like training; K=1 is FORCED on re-acquisition.
+    vel_fuse_gain: float = 0.0                     # D1 VISION-REFERENCED LATERAL VELOCITY (2026-07-27).
+                                                   # 0.0 (default) == OFF == byte-identical: the fuser is
+                                                   # not even constructed and obs[0:3] stays the raw KF
+                                                   # velocity. > 0 arms racer.ego_velocity.
+                                                   # LateralVelocityFuser, which estimates the DEAD-
+                                                   # RECKONING error of obs[0:3] against the tracked gate
+                                                   # (a world-fixed landmark) and adds it back, in the
+                                                   # LOS-PERPENDICULAR subspace only. See that module's
+                                                   # docstring for the observability limits.
+    vel_fuse: "VelocityFusionConfig | None" = None  # optional full knob set for the fuser; ``gain`` is
+                                                   # always taken from ``vel_fuse_gain`` above.
+    # --- PER-GATE AIM OFFSET (2026-07-27) --------------------------------------------------------
+    # {gate_index: (lateral_m, vertical_m)} added to the slot-0 lever the policy consumes, in BODY
+    # FLU, while ``gate_index`` is active. None/empty (default) == OFF == byte-identical (no dict
+    # lookup, no arithmetic, no new key in last_diag). See ``parse_aim_offsets`` for the sign
+    # convention and the measurement that fixed it.
+    aim_offsets: "dict[int, tuple[float, float]] | None" = None
+    # Range (m, TRUE held-belief range EXCLUDING the offset) at/below which the offset is released.
+    # 12.0 = the median of the pilot's five hand-timed releases on gate 5 (10.58/11.36/12.63/14.67/
+    # 17.20 m); it sits BELOW the 11-16 m obstacle band so the offset is still up while the drone
+    # crosses it, and clear of the gate so the last ~12 m are threaded on the honest lever.
+    aim_release_m: float = 12.0
+    # Width (m) of a linear fade above ``aim_release_m``: the offset scales 1 -> 0 over
+    # [release, release+fade]. 0.0 (default) == a HARD STEP == what the pilot actually flew.
+    aim_fade_m: float = 0.0
 
 
 class EgoObsBuilder:
@@ -298,6 +415,20 @@ class EgoObsBuilder:
                 raise ValueError("coarse_map buckets must each be in {-1,0,1}.")
         else:
             self._coarse_map = None
+        # D1: the vision-referenced lateral-velocity fuser is only CONSTRUCTED when armed, so the
+        # default path runs exactly the code it always ran (byte-identical, no new arithmetic).
+        self._vfuse: LateralVelocityFuser | None = None
+        if float(self.cfg.vel_fuse_gain) > 0.0:
+            vcfg = self.cfg.vel_fuse or VelocityFusionConfig()
+            self._vfuse = LateralVelocityFuser(
+                VelocityFusionConfig(**{**vcfg.__dict__, "gain": float(self.cfg.vel_fuse_gain)}))
+        self._last_fuse_ns: int | None = None
+        # PER-GATE AIM OFFSET: normalised once here so the hot path is a single ``is not None``
+        # test. Empty/absent -> None -> the tick does exactly the arithmetic it always did.
+        self._aim_offsets: dict[int, tuple[float, float]] | None = None
+        if self.cfg.aim_offsets:
+            self._aim_offsets = {int(g): (float(v[0]), float(v[1]))
+                                 for g, v in dict(self.cfg.aim_offsets).items()}
         self.last_diag: dict = {}
         self._reset_slot()
         self._gate_index: int | None = None
@@ -317,6 +448,9 @@ class EgoObsBuilder:
         """Full reset (sim epoch restart / new flight)."""
         self._reset_slot()
         self._gate_index = None
+        if self._vfuse is not None:
+            self._vfuse.reset()
+            self._last_fuse_ns = None
 
     def slot0_hint_frd(self) -> np.ndarray | None:
         """Patch-1 WP1b: the held ACTIVE-gate (slot0) lever as a body-FRD 3-vector [forward, right, down]
@@ -374,6 +508,10 @@ class EgoObsBuilder:
             if cfg.sector_mode == "map":
                 gi = int(np.clip(self._gate_index, 0, self._coarse_map.shape[0] - 1))
                 self._sector = (float(self._coarse_map[gi, 0]), float(self._coarse_map[gi, 1]))
+            # D1: the landmark changed, so the open measurement window is void. The estimated IMU
+            # bias is KEPT (it belongs to the IMU, not to the gate).
+            if self._vfuse is not None:
+                self._vfuse.on_gate_change()
 
         # -- frames --------------------------------------------------------------------------
         R = np.asarray(R_frd2ned, dtype=np.float64)
@@ -389,6 +527,14 @@ class EgoObsBuilder:
         v_flu = _FLIP_FRD_FLU * (R.T @ v_ned)      # true body FLU velocity (= R_zup^T v_zup)
         w_flu = _FLIP_FRD_FLU * w_frd              # true body FLU rates
         roll_true, pitch_true = roll_pitch_zup(R_b2w_zup)
+
+        # -- D1 (armed only): roll the vision-referenced velocity-error tracker forward one control
+        # tick. It runs on the RAW KF velocity (open loop -- the estimate must not depend on the
+        # correction it produces) and on the SAME gyro/dt the lever propagation below uses.
+        if self._vfuse is not None:
+            _fdt = (0.0 if self._last_fuse_ns is None else (t_ns - self._last_fuse_ns) / 1e9)
+            self._last_fuse_ns = t_ns
+            self._vfuse.propagate(w_flu, v_flu, _fdt)
 
         # virtual-flipped (tail-first) quantities the policy consumes
         if cfg.virtual_flip:
@@ -417,12 +563,43 @@ class EgoObsBuilder:
                     dR = Rotation.from_rotvec(-w_flu * dt).as_matrix()
                     self._rel_flu[slot] = dR @ self._rel_flu[slot] - v_flu * dt
             self._last_prop_sim_ns[slot] = t_ns
-            # fresh fix: snap (K=1) + refresh the held area + reset the staleness clock
+            # fresh fix: BLEND into the (just ego-propagated) held belief + refresh the held area +
+            # reset the staleness clock
             seen = sp is not None and np.isfinite(np.asarray(sp.t_cam_gate)).all()
             pose_seen[slot] = seen
             if seen:
                 rel_frd = rel_pos_body_frd_from_gatepose(sp.t_cam_gate)
-                self._rel_flu[slot] = _FLIP_FRD_FLU * rel_frd
+                fix_flu = _FLIP_FRD_FLU * rel_frd
+                # D1 (armed only): feed the RAW measurement, never the blended/propagated hold --
+                # a hold carries the dead-reckoned velocity inside it and would make the estimate
+                # circular. slot0 only (the ACTIVE gate is the landmark the window is anchored to).
+                if slot == 0 and self._vfuse is not None:
+                    self._vfuse.on_fix(fix_flu)
+                # SCALAR-GAIN BLEND (training parity, chaum rl/ego_estimator.py:722-734):
+                #   rel_new = rel_held + K * (fix - rel_held) == (1-K)*rel_held + K*fix
+                # with rel_held the belief the loop above just ego-propagated to THIS tick. K=1
+                # (cfg.fix_gain default) is the historical SNAP and takes the ORIGINAL assignment
+                # below verbatim -- no arithmetic runs, so the default path is byte-identical.
+                #
+                # RE-ACQUISITION SNAP: training forces K=1 when the gate was MASKED before this fix
+                # (``reacq = t_since_fix > stale_horizon_s``, ego_estimator.py:730-732) because a
+                # prior that coasted past the horizon has drifted and must be discarded -- otherwise
+                # confidence would read fresh (1.0) while rel_pos still carried stale-propagation
+                # error. Same test here, on the SAME clock: ``_last_fix_sim_ns`` still holds the
+                # PREVIOUS fix time at this point (it is rewritten below), so the age computed here
+                # is training's ``_t_since_fix`` at the identical point of the update -- after the
+                # gap propagation, before the measurement. No held belief at all (cold slot, or the
+                # slot was reset by a gate advance) is likewise a snap.
+                k = float(np.clip(cfg.fix_gain, 0.0, 1.0))
+                held = self._rel_flu[slot]
+                age_prior = (float("inf") if self._last_fix_sim_ns[slot] is None
+                             else (t_ns - self._last_fix_sim_ns[slot]) / 1e9)
+                reacq = (held is None or age_prior > cfg.stale_horizon_s
+                         or not bool(np.all(np.isfinite(held))))
+                if k >= 1.0 or reacq:
+                    self._rel_flu[slot] = fix_flu
+                else:
+                    self._rel_flu[slot] = (1.0 - k) * held + k * fix_flu
                 # visible_area is derived by PROJECTING the gate model through R_cam_gate, so it is
                 # only meaningful when the pose carries a real ORIENTATION. An M+1 centre-emit pose
                 # with <3 corners has none -- it is synthesised with identity rotation because the
@@ -475,6 +652,14 @@ class EgoObsBuilder:
                 if slot == 0 and self._sector is None and cfg.sector_mode == "auto":
                     self._sector = self._compute_sector(self._rel_flu[0], roll_true, pitch_true)
 
+        # -- PER-GATE AIM OFFSET (armed only): the effective (lateral, vertical) for THIS tick.
+        # Computed here, AFTER the fuse/propagate and AFTER _compute_sector, so it touches neither
+        # the held belief nor the latched sector -- exactly what the pilot's flights show (the
+        # logged sector is identical either side of a release, and dropping the offset removes it
+        # from a COASTED lever in one tick, which a belief-baked offset could not do).
+        aim = self._aim_offset_now(int(gate_index))
+        aimed: list[np.ndarray | None] = [None]   # slot0's OFFSET lever, for last_diag (see below)
+
         # -- per-slot staleness -> confidence + det proxy + the virtual-flipped rel_pos obs -------
         def _channels(slot: int) -> tuple[np.ndarray, float, bool, float]:
             rel_flu = self._rel_flu[slot]
@@ -484,12 +669,27 @@ class EgoObsBuilder:
                 age = max(0.0, (t_ns - self._last_fix_sim_ns[slot]) / 1e9)
             c = float(np.clip(1.0 - age / max(cfg.stale_horizon_s, 1e-9), 0.0, 1.0))
             d = age < cfg.det_hold_s
+            # slot0 ONLY -- the pilot's dodge left slot1 untouched (measured: rel_flu1 is continuous
+            # across every release), and a knob keyed on the ACTIVE gate index has no business
+            # shifting the NEXT gate. Applied BEFORE the virtual flip and BEFORE the confidence
+            # mask (a masked slot stays exactly zero).
+            if slot == 0 and aim is not None and rel_flu is not None:
+                rel_flu = rel_flu + np.array([0.0, -aim[0], aim[1]], dtype=np.float64)
+                aimed[0] = rel_flu
             r = (np.zeros(3) if rel_flu is None
                  else (_RZ_PI_BODY @ rel_flu if cfg.virtual_flip else rel_flu))
             return r, c, d, age
 
         rel0, conf0, det0, age0 = _channels(0)
         sector_row = self._sector if self._sector is not None else (0.0, 0.0)
+
+        # -- D1 (armed only): obs[0:3] = the KF velocity + the vision-referenced LOS-perpendicular
+        # correction. Re-derives v_obs from the CORRECTED body-FLU velocity through the identical
+        # flip; nothing else in the obs moves (the held lever keeps propagating on the raw KF
+        # velocity, exactly as trained).
+        if self._vfuse is not None:
+            _v_corr = self._vfuse.correct(v_flu)
+            v_obs = (_RZ_PI_BODY @ _v_corr) if cfg.virtual_flip else _v_corr
 
         # -- assemble through the training masking/concat logic. slot1_enabled => a real WINDOW=2
         # window (n_gates=2, both slots masked independently); OFF => the single-gate n_gates=1 path
@@ -515,15 +715,27 @@ class EgoObsBuilder:
                 target_gate=0, n_gates=1,          # n_gates=1 => slot1 window-invalid => zeros,
                 obs_coast=cfg.obs_coast)           # EXACTLY the single-gate champion's training state
 
+        # ``rel_flu`` reports the lever the POLICY was fed this tick -- the aim offset included,
+        # exactly as the pilot's own build logged it, so his eight aim_off sessions and every
+        # flight on this knob stay one comparable corpus (and render_yolo keeps drawing where we
+        # actually aimed). ``aim_off`` carries the offset so any consumer can subtract it back out.
+        _rel_diag = self._rel_flu[0] if aimed[0] is None else aimed[0]
         self.last_diag = {
             "age_s": age0 if np.isfinite(age0) else None,
             "conf": conf0, "det_proxy": bool(det0), "area": self._area[0],
             "pose_seen": bool(pose_seen[0]),
-            "rel_flu": None if self._rel_flu[0] is None else self._rel_flu[0].tolist(),
+            "rel_flu": None if _rel_diag is None else _rel_diag.tolist(),
             "sector": list(sector[0]),
             "roll_obs": roll_obs, "pitch_obs": pitch_obs,
             "slot1_enabled": bool(cfg.slot1_enabled),
         }
+        if self._aim_offsets is not None:
+            # present on EVERY tick once the knob is configured (None while not applying), so the
+            # field's presence marks "this flight could have been offset" -- the shape
+            # scripts/d1_velocity_replay.py and scripts/failure_profile/* already consume.
+            self.last_diag["aim_off"] = None if aim is None else [aim[0], aim[1]]
+        if self._vfuse is not None:
+            self.last_diag["vfuse"] = self._vfuse.diag()
         if cfg.slot1_enabled:
             self.last_diag.update({
                 "conf1": conf1, "det_proxy1": bool(det1), "area1": self._area[1],
@@ -532,6 +744,48 @@ class EgoObsBuilder:
                 "rel_flu1": None if self._rel_flu[1] is None else self._rel_flu[1].tolist(),
             })
         return obs
+
+    # -- per-gate aim offset ------------------------------------------------------------------
+    def _aim_offset_now(self, gate_index: int) -> tuple[float, float] | None:
+        """The EFFECTIVE (lateral_m, vertical_m) to apply to slot0 this tick, or None.
+
+        Active when (a) the knob is configured, (b) ``gate_index`` has an entry, (c) a slot-0
+        belief exists at all -- an offset must SHIFT a real lever, never conjure one out of a
+        blank slot -- and (d) the range gate passes.
+
+        RANGE GATE. The obstacle sits ~14.5 m short of the gate but the gate still has to be
+        threaded at 0 m, so the offset must come off. What the pilot actually flew (measured over
+        all eight sessions) was a ~2.0 s hold from the gate-index change, released BY HAND:
+        five of eight ran 1.97-2.00 s and three were cut short (0.47/0.70/0.94 s), so the release
+        RANGE scattered over 10.58-17.20 m with no rule behind it. A wall-clock hold does not
+        transfer across speeds, so this reproduces the same envelope with the physically
+        meaningful quantity instead: release at ``aim_release_m`` (default 12.0 = the median of
+        those five releases), hard step by default because a hard step is what flew. Set
+        ``aim_fade_m`` > 0 for a linear fade over [release, release+fade] -- gentler, and NEVER
+        FLOWN, so treat the first flights on it as a new arm.
+
+        Range is measured on the HELD belief, offset EXCLUDED, so the gate cannot chase its own
+        output (a +10 m vertical inflates |rel| by ~4 m at 12 m range -- enough to hold itself on
+        for another ~0.4 s of closing)."""
+        if self._aim_offsets is None:
+            return None
+        off = self._aim_offsets.get(int(gate_index))
+        if off is None:
+            return None
+        rel = self._rel_flu[0]
+        if rel is None:
+            return None
+        rng = float(np.linalg.norm(rel))
+        if not np.isfinite(rng):
+            return None
+        rel_m = max(float(self.cfg.aim_release_m), 0.0)
+        fade_m = max(float(self.cfg.aim_fade_m), 0.0)
+        if rng <= rel_m:
+            return None
+        scale = 1.0 if fade_m <= 0.0 else min(1.0, (rng - rel_m) / fade_m)
+        if scale <= 0.0:
+            return None
+        return (off[0] * scale, off[1] * scale)
 
     # -- coarse sector (see module docstring) -------------------------------------------------
     def _compute_sector(self, rel_flu: np.ndarray, roll_true: float,

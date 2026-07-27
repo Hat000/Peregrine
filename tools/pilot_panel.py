@@ -209,6 +209,54 @@ SCHEMA = [
          group="Ego perception", default=0.0, step=0.1,
          help="Perceived-gate VERTICAL bias (m) added to EVERY vision emission (both slots). "
               "+ lowers the gate so the drone aims/passes LOWER through it. 0 = off. Try 0.3."),
+    dict(key="ego_aim_offsets", flag="--ego-aim-offsets", action="value", ui="text",
+         group="Ego perception", default="",
+         help="PER-GATE aim offset \"gate:lateral,vertical;...\" in metres, 0-based gate_index -- "
+              "e.g. \"4:0,10;5:0,10\". Shifts the PERCEIVED gate the policy chases, in BODY FLU, "
+              "only while that gate is active and only on slot0. Blank = OFF. SIGNS: +lateral = "
+              "RIGHT, +vertical = UP (aims/passes HIGHER) -- the OPPOSITE vertical sign to "
+              "z-bias above, which is camera +Y = DOWN, and a different frame (camera-frame "
+              "vertical also moves perceived RANGE by 0.342x; body-frame does not). FOR: the two "
+              "invisible obstacles ~14.5 m short of gate 4 (14/31 deaths there) and gate 5 "
+              "(9/21). Pilot flew \"5:0,10\" x5; among flights that REACHED gate 5: band deaths "
+              "0/5 vs 9/23 (p=0.118), at-gate deaths 3/5 vs 3/23 (p=0.050), pass 2/5 vs 5/23 "
+              "(p=0.367). CORRECTED 2026-07-27 (pilot + geometry): the at-gate deaths are NOT "
+              "caused by the dodge -- it releases at 12.2-21.8 m and those flights die at "
+              "1.9-3.8 m, i.e. 10-20 m (1.7-3.3 s) of recovery after the offset is gone, and "
+              "the SHORTEST dodge (0.47 s, released furthest out, most recovery) still died at "
+              "the gate. They are ordinary at-gate deaths, the mode that kills 27-34% of every "
+              "approach. What the dodge does buy is 0/5 obstacle-band deaths vs 9/23. Duration "
+              "was never a fixed rule either -- the pilot tuned it 2.00/1.97/0.94/0.70/0.47 s "
+              "across one session. Gate 4 has NEVER been probed. Fly it as an A/B."),
+    dict(key="ego_aim_release", flag="--ego-aim-release", action="value", ui="number",
+         group="Ego perception", default=12.0, step=0.5,
+         help="Range (m) at/below which the per-gate aim offset is RELEASED, measured on the held "
+              "belief excluding its own offset. 12.0 = median of the pilot's five hand-timed "
+              "releases (10.6-17.2 m): below the 11-16 m obstacle band (so it is still up across "
+              "the obstacle) and clear of the gate (so the last 12 m are threaded honestly). His "
+              "own rule was a ~2.0 s wall-clock hold, which does not transfer across speeds."),
+    dict(key="ego_aim_fade", flag="--ego-aim-fade", action="value", ui="number",
+         group="Ego perception", default=0.0, step=0.5,
+         help="Linear fade width (m) above the release range: offset scales 1->0 over "
+              "[release, release+fade]. 0 = HARD STEP = exactly what flew. >0 has NEVER FLOWN."),
+    dict(key="ego_fix_gain", flag="--ego-fix-gain", action="value", ui="number",
+         group="Ego perception", default=1.0, step=0.05,
+         help="Obs-builder FIX GAIN K, both slots: rel_new = (1-K)*propagated_held + K*fix. 1.0 = SNAP "
+              "to every fix -- what every flight to date flew. Inside 1-2 m of a gate 96% of fixes "
+              "carry <4 corners and 23% fall back to bbox range, so the snap puts p99 half-metre "
+              "tick-to-tick jumps straight into the vertical target. TRAINING low-passed at K = 1/N_eff "
+              "with N_eff ~ U[4,9] (~0.154), i.e. the policy learned on a belief averaging ~6 fixes. "
+              "Lower = smoother/laggier; the held lever is ego-propagated between fixes, so a low K is "
+              "dead-reckoning corrected by vision, not a frozen target. K snaps back to 1.0 on "
+              "RE-ACQUISITION (nothing held, or held past the stale horizon)."),
+    dict(key="seeker_propagate_range", flag="--seeker-propagate-range", action="flag", ui="bool",
+         group="Ego perception", default=False,
+         help="Dead-reckon the tracked gate RANGE between detector fixes (r -= (v.u_hat)*dt along the "
+              "line of sight, floored at 0.3 m), instead of freezing it on its EMA. The bearing is "
+              "already gyro-propagated; the range is not, so at race speed it is stale by the whole "
+              "detection gap (~0.1 s at 10 Hz). Both slots. Changes what the continuity/jump gates, the "
+              "pass-drop rule and the slot1 promote check compare against -- it does NOT loosen them. "
+              "OFF = byte-identical to every flight to date."),
     dict(key="ego_det_hold", flag="--ego-det-hold", action="value", ui="number",
          group="Ego perception", default=0.2, step=0.05,
          help="Seconds a lost gate is still treated as 'detected' before masking to zero."),
@@ -355,6 +403,13 @@ _V1_RECIPE = {
     # every emitted gate point (gate_seeker _valid_poses); the champion value is 0 (0.25 landed 1:1
     # in a true-crossing miss). Combined with the WP6a model-pick reset, no stale knob can ride in.
     "ego_gate_z_bias": 0.0,
+    # 2026-07-27 (commander): the per-gate AIM OFFSET is pinned here at the _V1 base to the INERT
+    # value for the same reason as the two above -- ``_recipe_managed_keys()`` is the UNION of recipe
+    # pins and is exactly the set a model-pick RESETS, so a knob that appears in NO recipe is a knob
+    # that silently RIDES across a model switch. This one moves where the drone believes the gate is,
+    # so a stale ride-in is a wrong-target flight. Pinned EMPTY (never active): a recipe may not ARM
+    # an aim offset, and picking any model clears one the pilot set for a previous model.
+    "ego_aim_offsets": "",
     "seeker_detector": "yolo",
     "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
     "ego_assist_thrust": 1.3,
@@ -967,7 +1022,11 @@ def clear_finished():
 # --------------------------------------------------------------------------- #
 # Sessions + git
 # --------------------------------------------------------------------------- #
-SMALL_FILES = ["meta.json", "ego_obs.jsonl", "ego_timing.jsonl", "video_index.jsonl", "seeker.jsonl"]
+SMALL_FILES = ["meta.json", "ego_obs.jsonl", "ego_timing.jsonl", "video_index.jsonl", "seeker.jsonl",
+               # post-impact recorder (--ego-post-terminal-s): the aftermath ticks + contact events.
+               # Small, CRASH-only, and absent on clean flights -- but it is the only record of the
+               # strike itself, so it has to ride the panel sync or it never reaches the analysis box.
+               "ego_postimpact.jsonl"]
 HEAVY_FILES = ["video.bin", "mavlink.tlog"]
 
 def list_sessions(limit=200):

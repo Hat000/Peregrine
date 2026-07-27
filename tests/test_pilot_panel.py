@@ -239,3 +239,25 @@ def test_track_ema_alpha_is_not_recipe_managed():
     """A PROBE knob, like the acquire cap: picking a model must not reset it, so a sweep survives a
     checkpoint switch."""
     assert "ego_track_ema_alpha" not in P._recipe_managed_keys()
+
+
+def test_fix_gain_and_range_propagation_are_knobs_defaulting_to_todays_behaviour():
+    """2026-07-25: the two levers of the vertical-target package. Both must be flyable from the panel
+    (they exist to be A/B'd) and both must default to the pre-change behaviour -- fix_gain 1.0 is the
+    historical SNAP to every vision fix, and the range propagation OFF leaves the tracked range frozen
+    on its EMA. Neither is recipe-managed: picking a checkpoint must not reset a running sweep."""
+    gain, prop = P.BY_KEY["ego_fix_gain"], P.BY_KEY["seeker_propagate_range"]
+    assert gain["flag"] == "--ego-fix-gain" and gain["default"] == 1.0
+    assert prop["flag"] == "--seeker-propagate-range" and prop["default"] is False
+    assert gain["group"] == prop["group"] == P.BY_KEY["ego_det_hold"]["group"]
+
+    ckpt = {"ego_ckpt": "ckpts/v19Ws0_actor.pth"}
+    argv, _ = P.build_cmd(ckpt)
+    assert argv[argv.index("--ego-fix-gain") + 1] == "1.0"
+    assert "--seeker-propagate-range" not in argv          # store_true: absent == off
+    argv, _ = P.build_cmd({**ckpt, "ego_fix_gain": "0.154", "seeker_propagate_range": True})
+    assert argv[argv.index("--ego-fix-gain") + 1] == "0.154"
+    assert "--seeker-propagate-range" in argv
+
+    managed = P._recipe_managed_keys()
+    assert "ego_fix_gain" not in managed and "seeker_propagate_range" not in managed
