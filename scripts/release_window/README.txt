@@ -165,6 +165,27 @@ THE RULE THAT GENERALISES BOTH (and two other 07-27 withdrawals)
     (Established by d1-velocity, 6c3587fe, over 43,885 fix pairs -- they set out
     to find a leak in the distance gate and found the opposite.)
 
+  AND THE ONE THAT KILLS "THE ARTEFACT PROBABLY WASHES OUT OF THE A/B".
+    The same D1 comparison, re-run at four successive states of instrument
+    cleanliness (d1-velocity, 5c47e0ea):
+
+      measurement state                OLD slope / corr    NEW rms gain
+      no gyro de-rotation              +0.039 / +0.017     verdict INVERTED
+      de-rotated, no seam gate         +0.649 / +0.427      -4.0%
+      seam gate as a SPEED  (20 m/s)   +0.904 / +0.833      -8.6%
+      seam gate as a DISTANCE (1.5 m)  +0.952 / +0.862     -13.0%
+
+    Every single cleanup moved BOTH readings, in OPPOSITE directions: the control
+    arm looked better AND the candidate fix's benefit grew. Four times running, the
+    same way each time. The reason is structural -- a corrupted REFERENCE is SHARED
+    by both arms, so it drags the whole comparison toward noise rather than
+    favouring either side. So the common defence "the noise probably cuts both
+    ways, it'll wash out of a controlled comparison" would have been wrong four
+    times in a row, in a predictable direction.
+      => FIX THE INSTRUMENT. DO NOT REASON ABOUT WHICH WAY ITS ERRORS POINT.
+    This file's own AUC 0.723 is the same phenomenon in miniature: the artefact did
+    not add symmetric noise, it manufactured a specific effect of a specific size.
+
   COROLLARY THAT BIT TWICE: THE GUARD YOU REACH FOR CAN BE THE SECOND ARTEFACT.
     Having found the seam, the obvious fix is to reject windows where the vision
     displacement and the dead-reckoned displacement disagree. That gates on the
