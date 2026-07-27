@@ -130,7 +130,13 @@ class VelocityFusionConfig:
                                  # ceiling on honest inter-fix motion: the corpus p99 speed (14.2 m/s)
                                  # over the p99 fix gap (124 ms) is 1.76 m. Sweep: 1.0 m -> 0.00%/7.59%,
                                  # 1.5 -> 0.14%/3.72%, 2.0 -> 0.60%/2.50%, 3.0 -> 11.3%/1.49%.
-                                 # (Form credit: the v21-release-dive session; thresholds measured here.)
+                                 # PROVENANCE, exactly: the v21-release-dive session chose the DISTANCE
+                                 # form and the 1.5 m value independently, as a rough bound on one tick
+                                 # of motion (~0.33 m at 10 m/s / 30 Hz, ~4.5x margin) -- NOT from the
+                                 # p99 ceiling above, and unswept. The right VARIABLE picked for a
+                                 # simple reason; the numbers above are this corpus confirming it after
+                                 # the fact. Recorded that way because "chosen against the physics"
+                                 # would credit the value with rigour it did not have when it was set.
                                  #
                                  # Judged on VISION+GYRO only -- never on the KF velocity under test --
                                  # so it cannot select for windows where dead reckoning happens to agree.

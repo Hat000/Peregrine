@@ -49,6 +49,24 @@ METHOD NOTES -- read these before quoting any number
    moves BOTH arms up -- OLD slope +0.952 / corr +0.862, NEW rms -13.0% -- and the placebo
    still loses, rms 1.082 OLD vs 1.186 placebo vs 0.941 NEW.)
 
+WHY YOU CANNOT ASSUME CONTAMINATION "CUTS BOTH WAYS"
+----------------------------------------------------
+Four times in this instrument's history a measurement fix moved the OLD and NEW arms in
+OPPOSITE directions at once -- the raw channel looked BETTER and the fix's benefit looked
+LARGER, simultaneously:
+
+    measurement state              OLD slope / corr        NEW rms gain
+    no gyro de-rotation            +0.039 / +0.017         (verdict inverted entirely)
+    de-rotated, no seam gate       +0.649 / +0.427         -4.0%
+    seam gate as a SPEED (20 m/s)  +0.904 / +0.833         -8.6%
+    seam gate as a DISTANCE (1.5m) +0.952 / +0.862         -13.0%
+
+Contamination was suppressing the channel's true quality AND the fix's true value at the
+same time, because a corrupted reference is shared by both arms and pulls the whole
+comparison toward noise. So "the artefact probably washes out of an A/B" would have been
+wrong four times running, in the same direction each time. Fix the instrument; do not
+reason about which way its errors point.
+
 Usage:
     python scripts/d1_velocity_replay.py --roots DIR [DIR ...] [--gain 0.15]
     python scripts/d1_velocity_replay.py --roots DIR --actor path/to/actor.pth \
