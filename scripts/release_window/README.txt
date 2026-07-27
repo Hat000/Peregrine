@@ -148,22 +148,44 @@ THE RULE THAT GENERALISES BOTH (and two other 07-27 withdrawals)
     output" are corollaries, not separate lessons.
 
   RANKING OF EVIDENCE, in the order you should prefer it:
-      1. RIGHT VARIABLE       -- the quantity is chosen against the physics
-      2. RULED OUT BY CONSTRUCTION -- the artefact cannot occur in your window
-      3. HOLDS ACROSS A SWEPT THRESHOLD
-      4. HOLDS AT THE CHOSEN VALUE
-    Do not let a reflex to self-criticise demote (2) to (4) -- a structural
-    guarantee is STRONGER than a sweep; you sweep when you have no guarantee.
-    And (1) DOMINATES (3), which is the counter-intuitive one and was measured,
-    not asserted: a swept 20 m/s SPEED gate leaked 1.45% of teleports while
-    discarding 9.76% of good data; an unswept 1.5 m DISTANCE gate leaked 0.14%
-    while discarding 3.72%. The sweep was thorough and the variable was wrong,
-    because dividing by dt dilutes a teleport across a long detection gap while
-    its distance stays large. A SWEEP TELLS YOU WHETHER A THRESHOLD IS ROBUST; IT
-    TELLS YOU NOTHING ABOUT WHETHER YOU PICKED THE RIGHT VARIABLE, and it can
-    launder a bad variable into a confident-looking result.
-    (Established by d1-velocity, 6c3587fe, over 43,885 fix pairs -- they set out
-    to find a leak in the distance gate and found the opposite.)
+      1. RULED OUT BY CONSTRUCTION -- the artefact CANNOT occur in your window
+      2. GATED ON THE RIGHT VARIABLE -- chosen against the physics of the artefact
+      3. GATED ON A SWEPT THRESHOLD OF SOME OTHER VARIABLE
+      4. HOLDS AT ONE CHOSEN VALUE
+    (1) is a PROOF; (2) and (3) are FILTERS WITH A LEAK RATE -- even the good gate
+    below leaks 0.14%. Do not let a reflex to self-criticise demote (1) to (4).
+
+    (2) DOMINATES (3), which is the counter-intuitive entry and was MEASURED, not
+    asserted: a swept 20 m/s SPEED gate leaked 1.45% of teleports while discarding
+    9.76% of good data; an unswept 1.5 m DISTANCE gate leaked 0.14% while
+    discarding 3.72%. The sweep was thorough and the variable was wrong, because
+    dividing by dt dilutes a teleport across a long detection gap while its
+    distance stays large. A SWEEP TELLS YOU WHETHER A THRESHOLD IS ROBUST; IT TELLS
+    YOU NOTHING ABOUT WHETHER YOU PICKED THE RIGHT VARIABLE, and it can launder a
+    bad variable into a confident-looking result.
+    (d1-velocity, 6c3587fe, 43,885 fix pairs -- they set out to find a leak in the
+    distance gate and found the opposite.)
+
+    !! I ORIGINALLY WROTE THIS RANKING WITH (2) ABOVE (1), AND THAT WAS WRONG --
+    corrected by the commander. The experiment compared a swept wrong-variable gate
+    against an unswept right-variable gate: BOTH GATES. It establishes
+    right-variable > swept, and says NOTHING about either against a structural
+    guarantee. Promoting (2) over (1) extrapolated past the artifact that
+    established it -- THE EXACT FAILURE THIS FILE IS ABOUT, committed while writing
+    it up. Left in the record rather than quietly fixed, because the tell is worth
+    more than the tidy version: the extrapolation felt like a synthesis.
+
+  THE REAL RISK IN A CONSTRUCTION ARGUMENT IS SCOPE, NOT STRENGTH.
+    A proof is only a proof of what it covers, and nothing in it announces what it
+    does not. This file's own argument -- "both band edges lie before the gate
+    plane, so an advance cannot occur inside the window" -- is airtight for the
+    ADVANCE seam and gave ZERO protection against the MIS-LOCK seam, which is a
+    real artefact (1.57% of same-index pairs, max 29.1 m) that had to be caught by
+    a separate gate. Nothing in the construction argument hinted at that hole.
+      => PROVE WHAT YOU CAN, GATE THE REST ON THE RIGHT VARIABLE, AND STATE
+         EXPLICITLY WHICH ARTEFACTS THE PROOF DOES NOT COVER.
+    That composition rule is better than any ranking, because it is what you
+    actually do.
 
   AND THE ONE THAT KILLS "THE ARTEFACT PROBABLY WASHES OUT OF THE A/B".
     The same D1 comparison, re-run at four successive states of instrument
@@ -183,8 +205,19 @@ THE RULE THAT GENERALISES BOTH (and two other 07-27 withdrawals)
     ways, it'll wash out of a controlled comparison" would have been wrong four
     times in a row, in a predictable direction.
       => FIX THE INSTRUMENT. DO NOT REASON ABOUT WHICH WAY ITS ERRORS POINT.
-    This file's own AUC 0.723 is the same phenomenon in miniature: the artefact did
-    not add symmetric noise, it manufactured a specific effect of a specific size.
+
+    !! AND DO NOT STOP AT "ARTEFACTS DEFLATE, SO A SURVIVING EFFECT IS SAFE."
+    The four cases above all deflated because the contamination sat in the
+    REFERENCE, which both arms SHARE -- that drags a comparison toward noise. The
+    deflation direction is a property of WHERE the contamination sat, not of
+    contamination. This file's AUC 0.723 is the counterexample, and it is the same
+    seam: contaminating the PREDICTOR instead of the reference, it MANUFACTURED a
+    specific effect of a specific size -- indistinguishable from the census's best
+    real separators (0.721 / 0.731) -- and reversed once measured seam-free.
+        contamination in the REFERENCE  -> deflates BOTH arms  -> looks conservative
+        contamination in the PREDICTOR  -> invents an effect   -> looks like a find
+    Either half alone is misleading. A dirty instrument does not blur a result; it
+    invents one. (Two-halves framing settled with d1-velocity, 4e458e3a.)
 
   COROLLARY THAT BIT TWICE: THE GUARD YOU REACH FOR CAN BE THE SECOND ARTEFACT.
     Having found the seam, the obvious fix is to reject windows where the vision
