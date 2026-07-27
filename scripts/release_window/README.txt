@@ -83,6 +83,22 @@ TWO FOOTGUNS THIS WORK ESTABLISHED (both nearly banked a false result)
      conditional death rate FALLS with speed (30.4% at 4-6 m/s -> 20.8% above 10).
      Any approach-speed statistic must be measured over a fixed range band, never
      over a window that can contain an advance.
+
+     WHY THE 6->3 m BAND IS SOUND, stated so a future reader does not downgrade a
+     proof to an unswept assumption: the defence is STRUCTURAL, not empirical.
+     Both edges lie strictly BEFORE the gate plane, so a RACE_STATUS advance
+     CANNOT occur inside the window for either group -- the artefact is ruled out
+     by construction rather than shown not to bite at a chosen cut. A structural
+     guarantee is STRONGER than a threshold sweep; you sweep when you have no such
+     guarantee. (Point made by d1-velocity, and correct -- I had understated my own
+     evidence.)
+     THE RESIDUAL, honestly: that argument covers the ADVANCE seam only. It does
+     NOT cover the broader mis-lock seam (the seeker re-locking onto a different
+     gate mid-approach while the index holds). That one is caught here by a
+     separate guard -- windows are rejected if any consecutive-tick lever jump
+     exceeds 1.5 m (~45 m/s apparent) -- which gates on the VISION LEVER ALONE and
+     therefore does not touch the variable under test. That 1.5 m threshold is
+     itself unswept; it is the one genuinely unswept choice in this file.
   B. A CLASSIFIER'S RULE ORDER IS A CAUSAL CLAIM. Putting a cheap temporal rule
      first silently relabels every mode that happens to be fast. Rank modes only
      after checking what the earlier rules absorbed.
