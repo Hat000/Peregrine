@@ -623,6 +623,38 @@ def _parse_recipe_drift(spec: str | None) -> list:
     return [k for k in (str(spec or "")).split(",") if k.strip()]
 
 
+def _meta_args_snapshot(args) -> dict:
+    """EVERY resolved CLI value, as flown. The curated keys below this are a hand-picked SUBSET, and
+    that subset is a provenance HOLE: on 2026-07-27 the panel's ``recipe_drift`` correctly flagged
+    ``ego_assist_thrust`` as drifted on 7 of 9 flights, but no curated key recorded its VALUE, so the
+    flown number was UNRECOVERABLE from the log and silently confounded the cohort. A curated list can
+    only ever record the knobs someone remembered; this records the ones nobody thought of.
+
+    Deliberately GENERIC (``vars(args)`` filtered to JSON-safe scalars) so it needs no maintenance when
+    a knob is added -- the failure mode being fixed is exactly "a new knob was added and the recorder
+    was not updated". Paths are str()'d; anything unserializable is dropped rather than raising, because
+    a recorder that can throw would cost a flight. ADDITIVE: every existing curated key stays exactly
+    where it was, so no reader of an older meta.json changes behaviour."""
+    out = {}
+    try:
+        raw = vars(args)
+    except Exception:
+        return out
+    for k, v in sorted(raw.items()):
+        if k.startswith("_"):
+            continue
+        try:
+            if v is None or isinstance(v, (bool, int, float, str)):
+                out[k] = v
+            elif isinstance(v, (list, tuple)):
+                out[k] = [x if isinstance(x, (bool, int, float, str, type(None))) else str(x) for x in v]
+            else:
+                out[k] = str(v)
+        except Exception:
+            continue
+    return out
+
+
 def _meta_coarse_rows(args) -> "list | None":
     """The ACTUAL sector rows read from the flown coarse-map file (int [[horiz,vert], ...]), or None
     when no map is set / it fails to load -- so meta.json records WHICH map this flight actually flew."""
@@ -4436,6 +4468,9 @@ def main() -> int:
                     "coarse_map_rows": _meta_coarse_rows(args),
                     "seeker_constants": _meta_seeker_constants(args),
                     "recipe_drift": _parse_recipe_drift(getattr(args, "recipe_drift", "")),
+                    # 2026-07-27: EVERY resolved arg, so a drifted knob can never again be named by
+                    # recipe_drift while its VALUE is unrecoverable (see _meta_args_snapshot).
+                    "args_all": _meta_args_snapshot(args),
                     # the ACTUAL detector this flight flew -> renders overlay the SAME engine
                     # (tools/render_yolo.py reads these), not a stale hardcoded default.
                     # ALSO top-level (it is nested under seeker_constants too): the renderer read it
