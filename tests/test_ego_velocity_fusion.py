@@ -255,17 +255,32 @@ _OLD_MODULE_SRC = None
 
 
 def _old_builder_class(tmp_path):
-    """Import the PRE-CHANGE ego_obs.py straight out of git HEAD and return its builder class."""
+    """Import the LAST PRE-D1 revision of ego_obs.py straight out of git and return its module.
+
+    Walks the file's history back to the newest revision that does not yet know about
+    ``vel_fuse``, so this keeps comparing against the real pre-change builder no matter how many
+    commits land on top (pinning HEAD would compare the new file with itself)."""
     import importlib.util
-    src = subprocess.run(["git", "show", "HEAD:src/racer/ego_obs.py"], cwd=str(_ROOT),
-                         capture_output=True, text=True)
-    if src.returncode != 0 or "class EgoObsBuilder" not in src.stdout:
-        pytest.skip("git HEAD copy of src/racer/ego_obs.py unavailable")
-    p = tmp_path / "ego_obs_head.py"
-    p.write_text(src.stdout, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("ego_obs_head", p)
+    log = subprocess.run(["git", "log", "--format=%H", "--", "src/racer/ego_obs.py"],
+                         cwd=str(_ROOT), capture_output=True, text=True)
+    if log.returncode != 0:
+        pytest.skip("git history for src/racer/ego_obs.py unavailable")
+    text = None
+    for sha in log.stdout.split():
+        blob = subprocess.run(["git", "show", f"{sha}:src/racer/ego_obs.py"], cwd=str(_ROOT),
+                              capture_output=True, text=True)
+        if blob.returncode != 0 or "class EgoObsBuilder" not in blob.stdout:
+            continue
+        if "vel_fuse" not in blob.stdout:
+            text = blob.stdout
+            break
+    if text is None:
+        pytest.skip("no pre-D1 revision of src/racer/ego_obs.py found in history")
+    p = tmp_path / "ego_obs_pre_d1.py"
+    p.write_text(text, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("ego_obs_pre_d1", p)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["ego_obs_head"] = mod
+    sys.modules["ego_obs_pre_d1"] = mod
     spec.loader.exec_module(mod)
     return mod
 
