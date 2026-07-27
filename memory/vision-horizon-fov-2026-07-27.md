@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-27T06:24:31.013Z
+  modified: 2026-07-27T06:28:19.709Z
 ---
 
 # The vision horizon is FIELD-OF-VIEW GEOMETRY — 2026-07-27
@@ -67,17 +67,41 @@ distribution (|lat| AUC 0.582), the chain is now complete:
 > interval → **every deploy-side aim/trim/bias knob acts BEFORE the blind interval and therefore
 > cannot touch the thing that kills.**
 
-**NOT FIXABLE BY TUNING.** The candidate responses, in order of expected value:
-1. **TRAIN THE POLICY TO COMMIT BLIND** — if training feeds an accurate lever to 0 m while the wire
-   goes blind at 1.8 m, the policy has never experienced the situation that kills it. That is a
-   `rate`-class train/deploy contract mismatch. **VERIFY BEFORE ACTING** (this is the open question
-   handed to the training-contract workflow).
-2. **DETECT PARTIAL GATES.** The detector needs the whole gate; a detector that fires on bars or
-   corners would keep tracking closer. Vision-training change, not a knob.
-3. **IMPROVE THE PROPAGATED BELIEF** over the blind interval (`ego_fix_gain`,
+## 🛑🛑 "TRAIN IT TO COMMIT BLIND" IS **REFUTED** — TRAINING ALREADY MODELS THIS BLACKOUT, EXACTLY
+
+My own leading hypothesis, killed before it cost a 6-hour GPU run. **Training is not naive about
+visibility.** `rl/gate_visibility.py:225 gate_detectable` projects **8 gate keypoints** through the
+**SAME intrinsics imported from `racer.frames`** (fx=fy=320, 640×360, +20°) and requires
+**`MIN_VISIBLE_CORNERS = 4`** in-frame and unoccluded, plus a 30 m far cap. Ran it directly
+(torch 2.9.1 CPU, `scripts/vision_horizon/train_vs_wire_horizon.py`) — closest range still
+detectable in TRAINING, by geometry:
+
+| approach | training horizon |
+|---|---|
+| pitched **+24°** (the flown median) | **1.72 m** |
+| pitched +10° | **1.78 m** |
+| level, 0.3 m high | **1.19 m** |
+| head-on level centred | 1.29 m |
+| level 0.3 m low / 0.3 m lateral | 1.55 / 1.40 m |
+
+**Wire: median 1.78 m, minimum-ever 1.19 m.** Training +10° gives 1.78; training 0.3-m-high gives
+1.19. **They agree to centimetres across the geometry range.** ⇒ **THE POLICY HAS ALREADY BEEN
+TRAINED ON THIS EXACT BLACKOUT. DO NOT RUN THAT ARM.** 🟢 A useful corollary: the deploy YOLO is
+performing AT the level training assumes (median observed − predicted = +0.04 m, and the p90 tail
+matches too) — **the vision stack is not underperforming; this is geometry.**
+
+⇒ **The terminal scatter is therefore NOT a train/deploy mismatch. It is the policy's real
+precision limit on a ~1.8 m blind commit at ~8 m/s.** Remaining levers, re-ranked:
+1. **Make the policy better at the blind commit** — reward/termination pressure on terminal L-inf
+   SCATTER (not its mean). A legitimate training arm; see [[aim-cohort-and-loop-rate-2026-07-27]].
+2. **Shrink the blind interval in TIME** rather than distance — i.e. gate-approach speed. Trades
+   against the speed north-star; measure before assuming.
+3. **Detect PARTIAL gates** to push the horizon closer than 4-of-8 corners. Note training would
+   then be the OPTIMISTIC side, so it must move too, or a new mismatch is created.
+4. **Better belief propagation** across the blind interval (`ego_fix_gain`,
    `seeker_propagate_range` are both still at pre-2026-07-25 defaults).
-4. Camera FOV / mount pitch — hardware, likely unavailable, but the +20° up-pitch is why the
-   *vertical* axis binds and is worth stating to whoever owns the mount.
+5. Camera FOV / mount pitch — hardware; the +20° up-pitch is why the *vertical* axis binds, worth
+   telling whoever owns the mount.
 
 Instruments: `scripts/vision_horizon/last_sighted_range.py` · `scripts/vision_horizon/fov_cutoff.py`.
 Related: [[aim-cohort-and-loop-rate-2026-07-27]] · [[gate-strike-last-3m-2026-07-27]].
