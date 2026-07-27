@@ -985,7 +985,11 @@ def clear_finished():
 # --------------------------------------------------------------------------- #
 # Sessions + git
 # --------------------------------------------------------------------------- #
-SMALL_FILES = ["meta.json", "ego_obs.jsonl", "ego_timing.jsonl", "video_index.jsonl", "seeker.jsonl"]
+SMALL_FILES = ["meta.json", "ego_obs.jsonl", "ego_timing.jsonl", "video_index.jsonl", "seeker.jsonl",
+               # post-impact recorder (--ego-post-terminal-s): the aftermath ticks + contact events.
+               # Small, CRASH-only, and absent on clean flights -- but it is the only record of the
+               # strike itself, so it has to ride the panel sync or it never reaches the analysis box.
+               "ego_postimpact.jsonl"]
 HEAVY_FILES = ["video.bin", "mavlink.tlog"]
 
 def list_sessions(limit=200):

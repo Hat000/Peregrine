@@ -373,6 +373,16 @@ class MavlinkClient:
                 "id": int(msg.id),                                       # 1001=gate, 1002=environment
                 "threat_level": int(getattr(msg, "threat_level", 0)),   # 1..2 (2 = harder hit)
                 "impulse": float(getattr(msg, "horizontal_minimum_delta", 0.0)),  # impulse kg*m/s
+                # ADDITIVE [post-impact recorder 2026-07-27]: the REMAINING COLLISION fields, kept
+                # verbatim instead of discarded. The sim already repurposes horizontal_minimum_delta
+                # (nominally metres) as the impulse, so these two unread floats are the only place a
+                # contact GEOMETRY could be arriving; capture them so the question is answerable
+                # from a recording instead of by guesswork. src/action = MAV_COLLISION_SRC /
+                # MAV_COLLISION_ACTION. Purely append-only: every existing reader keys by name.
+                "src": int(getattr(msg, "src", 0)),
+                "action": int(getattr(msg, "action", 0)),
+                "altitude_minimum_delta": float(getattr(msg, "altitude_minimum_delta", 0.0)),
+                "time_to_minimum_delta": float(getattr(msg, "time_to_minimum_delta", 0.0)),
                 "recv_monotonic_ns": recv,
                 "sim_time_ns": self.state.sim_time_ns,
             })

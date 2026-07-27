@@ -131,6 +131,13 @@ _ACT_MAX = np.array([5.0,  3.14,  3.14,  3.14], dtype=np.float64)
 # Training control interval (cfg/env/racing.yaml dt: 0.0333 — no sbatch override).
 _TRAIN_DT = 0.0333
 
+# Terminal states whose aftermath the post-impact recorder samples (--ego-post-terminal-s; see
+# the block at the end of _fly_ego). CRASH ONLY, deliberately: a threat>=2 hard collision is a
+# run this project already counts as INVALID, so the extra armed window can change no verdict.
+# FINISHED / TIMEOUT / SIM_RESET keep today's immediate teardown -- SIM_RESET in particular
+# exists to CUT commands promptly, and a finished run must not keep flying on a latched command.
+_POST_TERMINAL_STATES = ("CRASH",)
+
 # ---------------------------------------------------------------------------
 # Course: 6 VQ1 gates in DiffAero Z-up frame (from rl/peregrine_course_diffaero.json)
 # Z-up frame = NED * [1,-1,-1]; all gate yaws = 3.141592569 (=π to 8e-8).
@@ -2329,6 +2336,84 @@ def _fly_gate_seeker(client, args, flight_idx: int,
     return result
 
 
+def post_impact_capture(client, *, seconds: float, tick: float, k0: int,
+                        gate_index: int, final_state: str) -> "tuple[list, list, float]":
+    """POST-IMPACT FLIGHT RECORDER: sample-only aftermath capture for a bounded window.
+
+    Called ONCE, AFTER a flight loop has already terminated (see the call site in ``_fly_ego``),
+    to record the impact the flight log structurally cannot contain. Returns
+    ``(rows, aftershock_contacts, elapsed_s)``.
+
+    HARD CONTRACT -- this is a recorder, not a controller:
+      * it NEVER sends a command. It only ``pump()``s the link and reads ``client.state``, so the
+        wire stays exactly as quiet after the terminal tick as it is today.
+      * it restores ``client.collisions`` to the length it had on entry before returning (the
+        aftershocks are returned instead), so ``result["collisions"]``, ``meta.json`` collisions,
+        the batch summary and the NEXT flight's ``n_coll0`` cannot move.
+      * it swallows every exception -- a recorder must never cost the caller its flight log --
+        and returns whatever it captured.
+      * every row carries ``post_terminal=True`` so no analysis can mistake aftermath for flight.
+
+    ``k0`` continues the flight log's ``k`` sequence so the two streams join; ``gate_index`` is
+    the terminal-tick fallback for when RACE_STATUS has gone quiet.
+    """
+    rows: list = []
+    contacts: list = []
+    n_coll_entry = len(client.collisions)
+    t0 = time.monotonic()
+    try:
+        t_end, t_next, k = t0 + max(0.0, float(seconds)), t0, int(k0)
+        while time.monotonic() < t_end:
+            while time.monotonic() < t_next:          # same pacing as the flight loop
+                client.pump()
+                time.sleep(0.001)
+            client.pump()
+            t_next = time.monotonic() + tick
+            s   = client.state
+            fr  = getattr(client, "_latest_frame", None)
+            rs  = client.race_status
+            g, a = s.gyro_body, s.accel_body
+            rows.append({
+                "k": k,                        # continues the ego_obs k sequence (join key)
+                "post_terminal": True,         # NEVER mistake an aftermath tick for flight
+                "final_state": final_state,
+                "t_since_terminal_s": round(time.monotonic() - t0, 4),
+                "sim_time_ns": int(s.sim_time_ns),
+                "gate_index": (int(rs["active_gate_index"])
+                               if rs and rs.get("active_gate_index") is not None
+                               else int(gate_index)),
+                # RAW WIRE ONLY -- no estimator, no policy, no command. gyro+accel ARE the axis
+                # discriminator the failure classification needs: the direction of the impact
+                # spike in body FRD separates a LATERAL gate strike from a VERTICAL undershoot
+                # from a FLOOR hit, which a log that stops before the strike can never show.
+                "gyro_frd": (None if g is None
+                             else np.asarray(g, dtype=np.float64).round(5).tolist()),
+                "accel_frd": (None if a is None
+                              else np.asarray(a, dtype=np.float64).round(4).tolist()),
+                "quat_ned_wxyz": (None if s.orientation_ned_wxyz is None else
+                                  np.asarray(s.orientation_ned_wxyz,
+                                             dtype=np.float64).round(5).tolist()),
+                "armed": bool(s.armed),
+                # join back to the recorded video: the impact FRAME is what human eyes
+                # adjudicate the strike from (video keeps recording through this window).
+                "frame_id": (fr.frame_id if fr is not None else None),
+                "n_contacts": len(client.collisions) - n_coll_entry,
+            })
+            k += 1
+        contacts = [dict(c) for c in client.collisions[n_coll_entry:]]
+    except Exception as exc:                   # never cost the caller its flight log
+        print(f"  [post-impact] WARNING: capture aborted ({type(exc).__name__}: {exc}) "
+              f"-- flight + ego_obs.jsonl unaffected.", file=sys.stderr)
+        try:
+            contacts = [dict(c) for c in client.collisions[n_coll_entry:]]
+        except Exception:
+            pass
+    finally:
+        # Restore the ledger to its entry length so NO existing metric moves.
+        del client.collisions[n_coll_entry:]
+    return rows, contacts, time.monotonic() - t0
+
+
 def _fly_ego(client, actor, args, flight_idx: int,
              session_dir: Path | None, result: dict) -> dict:
     """EGO (21-dim egocentric) RL deploy loop on the case-C self-localizing stack (--ego-ckpt).
@@ -2346,7 +2431,12 @@ def _fly_ego(client, actor, args, flight_idx: int,
     The 21-dim obs itself is built by ``racer.ego_obs.EgoObsBuilder`` (see its module docstring
     for the full frame/masking contract). Per-tick products are buffered in memory and written
     ONCE at loop exit (<session>/ego_obs.jsonl) -- no per-tick blocking I/O in the control loop.
-    ADDITIVE + OPT-IN: nothing on the default RL / gate-seeker paths changes."""
+    ADDITIVE + OPT-IN: nothing on the default RL / gate-seeker paths changes.
+
+    After a CRASH exit the POST-IMPACT RECORDER (--ego-post-terminal-s, see the block below the
+    loop) samples the wire for a further bounded window into a SEPARATE
+    <session>/ego_postimpact.jsonl -- same buffer-then-flush discipline, no commands sent, and
+    ego_obs.jsonl itself is untouched."""
     from scipy.spatial.transform import Rotation as _Rot
 
     from racer.contracts import Frame
@@ -3025,6 +3115,37 @@ def _fly_ego(client, actor, args, flight_idx: int,
         final_state = "TIMEOUT" if time.monotonic() >= deadline else "STALLED"
         print(f"\n  ({final_state.lower()})")
 
+    # === POST-IMPACT FLIGHT RECORDER (--ego-post-terminal-s) ==================================
+    # THE GAP THIS CLOSES: every stop condition in the loop above ``break``s from the TOP of the
+    # tick body -- the hard-collision abort is the block ~300 lines up -- while the per-tick
+    # forensics record is appended at the BOTTOM, after the command send. So the tick that
+    # DETECTS the crash is discarded whole, and no tick is ever sampled again: the impact
+    # transient and its aftermath are structurally absent from ego_obs.jsonl. On top of that the
+    # detection itself is quantised to one check per control tick and lags the sim's COLLISION
+    # message, so the recording stops several ticks BEFORE the strike it is meant to explain.
+    # This block keeps SAMPLING (never commanding) for a short bounded window so the strike and
+    # the contact events land on disk.
+    #
+    # SAFETY CONTRACT -- this is a recorder, and must be incapable of changing the flight:
+    #   * it runs only AFTER the loop has broken, and only for _POST_TERMINAL_STATES (CRASH: a
+    #     threat>=2 hard collision -- a run this project already counts as INVALID);
+    #   * it NEVER calls client.send_command: the wire goes quiet exactly as it does today;
+    #   * the window's wall time is subtracted back out of the loop-rate verdict below and the
+    #     client's collision ledger is restored to its terminal length, so achieved_hz,
+    #     result["collisions"], meta.json's collisions and the NEXT flight's n_coll0 are all
+    #     exactly what they would have been;
+    #   * rows go to their OWN file (ego_postimpact.jsonl) and carry post_terminal=True. They are
+    #     never mixed into ego_obs.jsonl -- tape_extract would otherwise turn aftermath into a
+    #     replay command tape and replay_fix_gain would feed it to the obs builder.
+    # Residual, by design: on a CRASH the vehicle stays armed with its last command latched for
+    # the window before the disarm. --ego-post-terminal-s 0 restores the old teardown exactly.
+    _post_s = max(0.0, float(getattr(args, "ego_post_terminal_s", 0.0) or 0.0))
+    _post_log, _post_contacts, _post_elapsed = [], [], 0.0
+    if session_dir is not None and _post_s > 0.0 and final_state in _POST_TERMINAL_STATES:
+        _post_log, _post_contacts, _post_elapsed = post_impact_capture(
+            client, seconds=_post_s, tick=tick, k0=n_ticks,
+            gate_index=gate_index, final_state=final_state)
+
     # --- ego forensics log: single write covering every exit path ---
     if session_dir is not None and _sysid_log:
         import csv as _csvmod
@@ -3055,12 +3176,38 @@ def _fly_ego(client, actor, args, flight_idx: int,
             print(f"  [seeker-log] wrote {len(_seeker_log)} ticks -> {sout}")
         except Exception as exc:
             print(f"  [seeker-log] WARNING: failed to write seeker.jsonl: {exc}")
+    if session_dir is not None and (_post_log or _post_contacts):
+        pout = Path(session_dir) / "ego_postimpact.jsonl"
+        try:
+            # Row 0 is the CONTACT record; rows 1..N are the post-terminal ticks. Both carry
+            # post_terminal=True. `terminal_contacts` is every COLLISION of THIS flight up to the
+            # terminal tick -- id 1001=gate vs 1002=environment is the single strongest failure
+            # classifier the sim publishes, and until now it was persisted only as an integer
+            # COUNT in meta.json, i.e. gate-strike vs floor-hit was unrecoverable from a session.
+            _contact_row = {
+                "k": None, "post_terminal": True, "record": "contacts",
+                "final_state": final_state,
+                "window_s": round(_post_elapsed, 3),
+                "last_flight_tick_k": (_ego_log[-1]["k"] if _ego_log else None),
+                "last_flight_sim_time_ns": (_ego_log[-1]["sim_time_ns"] if _ego_log else None),
+                "terminal_contacts": [dict(c) for c in client.collisions[n_coll0:]],
+                "post_terminal_contacts": _post_contacts,
+            }
+            pout.write_text("\n".join(json.dumps(r) for r in [_contact_row, *_post_log]) + "\n",
+                            encoding="utf-8")
+            print(f"  [post-impact] wrote {len(_post_log)} post-terminal ticks "
+                  f"({_post_elapsed:.2f}s) + {len(_contact_row['terminal_contacts'])} terminal / "
+                  f"{len(_post_contacts)} aftershock contact(s) -> {pout}")
+        except Exception as exc:
+            print(f"  [post-impact] WARNING: failed to write ego_postimpact.jsonl: {exc}")
     if _ego_log_errors:
         print(f"  [ego-log] WARNING: {_ego_log_errors} per-tick record errors "
               f"(logging bug, not flight bug)")
 
     # --- loop-rate + perception-supply verdicts (A19 health-check parity) ---
-    elapsed = max(time.monotonic() - loop_t0, 1e-6)
+    # _post_elapsed is subtracted so the post-impact window can never drag the achieved-Hz
+    # verdict (it is 0.0 whenever the window did not run => byte-identical arithmetic).
+    elapsed = max(time.monotonic() - loop_t0 - _post_elapsed, 1e-6)
     achieved_hz = n_ticks / elapsed
     over_pct = 100.0 * n_over_budget / max(n_ticks, 1)
     rate_ok = achieved_hz >= 0.9 * args.rate and over_pct < 5.0
@@ -3116,8 +3263,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
     result["ego_next_levers"] = n_next_pose_ticks
     if kp_n >= 2:                       # armed-only key: OFF-path result dict byte-identical
         result["ego_kp_suppressed"] = n_kp_suppressed
+    if _post_log or _post_contacts:     # ditto: absent unless the post-impact window ran
+        result["post_terminal_ticks"] = len(_post_log)
+        result["post_terminal_contacts"] = len(_post_contacts)
     result["final_state"] = final_state
     result["gate_index"] = gate_index
+    # NB: the ledger was restored above, so this is the terminal-tick delta -- unchanged by the
+    # post-impact window.
     result["collisions"] = len(client.collisions) - n_coll0
     return result
 
@@ -3817,6 +3969,18 @@ def build_parser() -> argparse.ArgumentParser:
                          "counts fresh frames -- near-matched at 30 Hz, slower under frame "
                          "starvation). Fly a debounce-trained ckpt with the SAME N or the wire "
                          "sees earlier/flickerier first fixes than training did.")
+    ap.add_argument("--ego-post-terminal-s", type=float, default=0.5,
+                    help="EGO POST-IMPACT RECORDER: after a CRASH (threat>=2 hard collision) keep "
+                         "SAMPLING the wire for this many seconds and write the rows to "
+                         "<session>/ego_postimpact.jsonl (raw gyro/accel/quat/frame_id + every "
+                         "COLLISION event, each row flagged post_terminal=true). Closes a permanent "
+                         "evidence gap: the flight loop breaks at the TOP of the tick that detects "
+                         "the crash, before that tick's record is appended, so ego_obs.jsonl always "
+                         "ends BEFORE the strike and the killing axis (lateral / vertical / floor) "
+                         "is unrecoverable. RECORDING ONLY -- no command is sent during the window, "
+                         "no row enters ego_obs.jsonl, and achieved_hz / collisions / gate_index are "
+                         "held at their terminal-tick values. Default 0.5; 0 = OFF (exact old "
+                         "teardown). Cost: the disarm on a CRASH is delayed by this window.")
     ap.add_argument("--ego-arrestor", action="store_true",
                     help="EGO post-gate STARE-BRAKE takeover (replay-ratchet ARRESTOR). DEFAULT OFF "
                          "(byte-identical policy path). When ON, after a chosen gate is banked the "
@@ -4194,6 +4358,9 @@ def main() -> int:
                     "ego_speed_gov": args.ego_speed_gov,
                     "ego_slot1": args.ego_slot1,
                     "ego_kp_persist": args.ego_kp_persist,
+                    # post-impact recorder window as FLOWN (0.0 == no ego_postimpact.jsonl), so a
+                    # session with no aftermath file is distinguishable from one flown with it off.
+                    "ego_post_terminal_s": float(getattr(args, "ego_post_terminal_s", 0.0)),
                     # Patch-1 WP6: flight provenance -- the ACTUAL map rows flown, the seeker constants
                     # in force, and the recipe-drift list (knobs whose flown value != the picked model's
                     # recipe pin; empty when clean) the panel passed via --recipe-drift.
