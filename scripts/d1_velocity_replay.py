@@ -62,10 +62,21 @@ LARGER, simultaneously:
     seam gate as a DISTANCE (1.5m) +0.952 / +0.862         -13.0%
 
 Contamination was suppressing the channel's true quality AND the fix's true value at the
-same time, because a corrupted reference is shared by both arms and pulls the whole
+same time, because a corrupted REFERENCE is shared by both arms and pulls the whole
 comparison toward noise. So "the artefact probably washes out of an A/B" would have been
-wrong four times running, in the same direction each time. Fix the instrument; do not
-reason about which way its errors point.
+wrong four times running, in the same direction each time.
+
+DO NOT GENERALISE THAT INTO "artefacts deflate, so my number is conservative" -- the
+direction above is a property of WHERE the contamination sat, not of contamination. Same
+seam, contaminating the PREDICTOR instead of the reference, does the opposite: the
+v21-release-dive session's speed-at-gate-0 hypothesis scored AUC 0.723 -- profile-grade,
+indistinguishable from that analysis's best real separators -- purely because its speed
+window straddled the RACE_STATUS advance. Seam-free over a fixed range band it was 0.565,
+and the effect reversed sign. A dirty instrument does not blur a result; it invents one,
+of a specific size, that looks exactly like a finding.
+
+So: fix the instrument. Do not reason about which way its errors point, and do not treat
+a surviving effect as safe because you can tell yourself a story about the noise.
 
 Usage:
     python scripts/d1_velocity_replay.py --roots DIR [DIR ...] [--gain 0.15]
