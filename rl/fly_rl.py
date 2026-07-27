@@ -2423,6 +2423,10 @@ def _fly_ego(client, actor, args, flight_idx: int,
         # 1.0 (default) == the historical SNAP == byte-identical; training low-passed at K=1/N_eff
         # (N_eff ~ U[4,9] -> ~0.154). K=1 is still forced on re-acquisition (training parity).
         fix_gain=float(getattr(args, "ego_fix_gain", 1.0)),
+        # D1 VISION-REFERENCED LATERAL VELOCITY (2026-07-27): 0.0 (default) == OFF == byte-
+        # identical (the fuser is not constructed). > 0 estimates the DEAD-RECKONING error of
+        # obs[0:3] against the tracked gate and adds it back, LOS-perpendicular only.
+        vel_fuse_gain=float(getattr(args, "ego_vel_fuse", 0.0)),
     ))
 
     print(f"\n[ego] ckpt={args.ego_ckpt}  profile={profile.name} "
@@ -2435,6 +2439,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"fix_gain={float(getattr(args, 'ego_fix_gain', 1.0)):g}"
           f"{' (SNAP -- training low-passed at ~0.154)' if float(getattr(args, 'ego_fix_gain', 1.0)) >= 1.0 else ''} "
           f"seeker_propagate_range={bool(getattr(args, 'seeker_propagate_range', False))} "
+          f"vel_fuse={float(getattr(args, 'ego_vel_fuse', 0.0)):g}"
+          f"{' (OFF -- obs[0:3] is raw dead-reckoning)' if float(getattr(args, 'ego_vel_fuse', 0.0)) <= 0.0 else ' (vision-referenced LATERAL velocity ON)'} "
           f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
           f"slot1={args.ego_slot1}{' (SOURCE: seeker tg+1 next-gate track)' if args.ego_slot1 else ''} "
           f"pitch_clamp={args.ego_pitch_clamp:g}deg roll_clamp={args.ego_roll_clamp:g}deg "
@@ -2970,6 +2976,10 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     # (policy_step was bypassed) and rate_frd/collective are the stare-brake command.
                     "arrest_phase": arrest_phase,
                     "arrest_id": arrest_id,
+                    # D1 (only present when --ego-vel-fuse > 0, so the default log is byte-
+                    # identical): the vision-referenced velocity-error tracker state -- bias,
+                    # the APPLIED (LOS-perpendicular) correction, window length, update counts.
+                    **({"vfuse": d["vfuse"]} if "vfuse" in d else {}),
                 })
             except Exception:
                 _ego_log_errors += 1
@@ -3720,6 +3730,27 @@ def build_parser() -> argparse.ArgumentParser:
                          "the pass-drop rule and the slot1 promote check compare a fresh detection "
                          "against -- it does NOT loosen any of them. OFF (default) = the range stays on "
                          "its EMA = byte-identical. Requires the gyro propagation (on by default).")
+    ap.add_argument("--ego-vel-fuse", type=float, default=0.0,
+                    help="EGO VISION-REFERENCED LATERAL VELOCITY gain (ego path only; D1 2026-07-27). "
+                         "obs[0:3] is the deploy KF velocity, and on this wire that KF has NO position "
+                         "reference at all -- no GPS, no mag, no baro, and (measured) 0 of 94991 logged "
+                         "ticks over 624 flights ever took a vision world-fix -- so it is pure IMU "
+                         "strapdown dead reckoning. TRAINING never modelled that: rl/ego_estimator.py "
+                         "defaults vel_model='legacy', which SEEDS the obs velocity at truth and pulls "
+                         "it 15%% back toward TRUE body velocity at every vision fix (:815-819), a "
+                         "~0.01 m/s steady-state error. This closes the gap: the tracked gate is a "
+                         "world-FIXED landmark, so (anchor lever rotated by the gyro) minus (current "
+                         "fix) is a world-referenced measurement of how far the drone actually moved; "
+                         "differenced against the dead-reckoned displacement over the same window it "
+                         "yields the KF velocity error, tracked with THIS gain and added to obs[0:3]. "
+                         "ONLY the line-of-sight-PERPENDICULAR part is estimated and applied (measured "
+                         "perpendicular lever noise 0.036 m vs 0.089-0.36 m along the range axis), so "
+                         "closing speed is left entirely to the KF and the range channel's EMA/bbox/"
+                         "propagate contaminants are projected out. 0.0 (DEFAULT) = OFF = byte-"
+                         "identical. 0.10 is the calibrated value (best hold-out rms + sign-agreement "
+                         "over 611 replayed flights; ~2 s of averaging, matched to the measured ~2 s "
+                         "correlation time of the error). Held through a blackout, then decayed back to "
+                         "the raw KF velocity. Validate with scripts/d1_velocity_replay.py.")
     ap.add_argument("--ego-gate-z-bias", type=float, default=0.0,
                     help="EGO perceived-gate VERTICAL bias in METRES, applied at the VISION emission "
                          "(GateSeeker._valid_poses adds it to the camera-frame +Y/down of EVERY emitted "
@@ -4148,6 +4179,9 @@ def main() -> int:
                     # the pre-2026-07-25 behaviour), so an A/B flight is self-describing.
                     "ego_fix_gain": float(getattr(args, "ego_fix_gain", 1.0)),
                     "seeker_propagate_range": bool(getattr(args, "seeker_propagate_range", False)),
+                    # 2026-07-27 D1: vision-referenced lateral-velocity gain as FLOWN (0.0 == OFF
+                    # == obs[0:3] is the raw dead-reckoned KF velocity, the pre-D1 behaviour).
+                    "ego_vel_fuse": float(getattr(args, "ego_vel_fuse", 0.0)),
                     "ego_obs_coast": args.ego_obs_coast,
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,

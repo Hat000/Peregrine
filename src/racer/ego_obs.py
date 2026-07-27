@@ -107,6 +107,7 @@ from scipy.spatial.transform import Rotation
 
 from racer import frames
 from racer.contracts import GatePose
+from racer.ego_velocity import LateralVelocityFuser, VelocityFusionConfig
 from racer.vision.gate_pose import GATE_INNER_SIZE_M, gate_object_points
 
 # ---------------------------------------------------------------------------------------------
@@ -287,6 +288,17 @@ class EgoObsBuilderConfig:
                                                    # -> K ~ 0.154 at the mean; the deploy default is NOT
                                                    # moved there (the pilot passes the value). Clamped to
                                                    # [0,1] like training; K=1 is FORCED on re-acquisition.
+    vel_fuse_gain: float = 0.0                     # D1 VISION-REFERENCED LATERAL VELOCITY (2026-07-27).
+                                                   # 0.0 (default) == OFF == byte-identical: the fuser is
+                                                   # not even constructed and obs[0:3] stays the raw KF
+                                                   # velocity. > 0 arms racer.ego_velocity.
+                                                   # LateralVelocityFuser, which estimates the DEAD-
+                                                   # RECKONING error of obs[0:3] against the tracked gate
+                                                   # (a world-fixed landmark) and adds it back, in the
+                                                   # LOS-PERPENDICULAR subspace only. See that module's
+                                                   # docstring for the observability limits.
+    vel_fuse: "VelocityFusionConfig | None" = None  # optional full knob set for the fuser; ``gain`` is
+                                                   # always taken from ``vel_fuse_gain`` above.
 
 
 class EgoObsBuilder:
@@ -313,6 +325,14 @@ class EgoObsBuilder:
                 raise ValueError("coarse_map buckets must each be in {-1,0,1}.")
         else:
             self._coarse_map = None
+        # D1: the vision-referenced lateral-velocity fuser is only CONSTRUCTED when armed, so the
+        # default path runs exactly the code it always ran (byte-identical, no new arithmetic).
+        self._vfuse: LateralVelocityFuser | None = None
+        if float(self.cfg.vel_fuse_gain) > 0.0:
+            vcfg = self.cfg.vel_fuse or VelocityFusionConfig()
+            self._vfuse = LateralVelocityFuser(
+                VelocityFusionConfig(**{**vcfg.__dict__, "gain": float(self.cfg.vel_fuse_gain)}))
+        self._last_fuse_ns: int | None = None
         self.last_diag: dict = {}
         self._reset_slot()
         self._gate_index: int | None = None
@@ -332,6 +352,9 @@ class EgoObsBuilder:
         """Full reset (sim epoch restart / new flight)."""
         self._reset_slot()
         self._gate_index = None
+        if self._vfuse is not None:
+            self._vfuse.reset()
+            self._last_fuse_ns = None
 
     def slot0_hint_frd(self) -> np.ndarray | None:
         """Patch-1 WP1b: the held ACTIVE-gate (slot0) lever as a body-FRD 3-vector [forward, right, down]
@@ -389,6 +412,10 @@ class EgoObsBuilder:
             if cfg.sector_mode == "map":
                 gi = int(np.clip(self._gate_index, 0, self._coarse_map.shape[0] - 1))
                 self._sector = (float(self._coarse_map[gi, 0]), float(self._coarse_map[gi, 1]))
+            # D1: the landmark changed, so the open measurement window is void. The estimated IMU
+            # bias is KEPT (it belongs to the IMU, not to the gate).
+            if self._vfuse is not None:
+                self._vfuse.on_gate_change()
 
         # -- frames --------------------------------------------------------------------------
         R = np.asarray(R_frd2ned, dtype=np.float64)
@@ -404,6 +431,14 @@ class EgoObsBuilder:
         v_flu = _FLIP_FRD_FLU * (R.T @ v_ned)      # true body FLU velocity (= R_zup^T v_zup)
         w_flu = _FLIP_FRD_FLU * w_frd              # true body FLU rates
         roll_true, pitch_true = roll_pitch_zup(R_b2w_zup)
+
+        # -- D1 (armed only): roll the vision-referenced velocity-error tracker forward one control
+        # tick. It runs on the RAW KF velocity (open loop -- the estimate must not depend on the
+        # correction it produces) and on the SAME gyro/dt the lever propagation below uses.
+        if self._vfuse is not None:
+            _fdt = (0.0 if self._last_fuse_ns is None else (t_ns - self._last_fuse_ns) / 1e9)
+            self._last_fuse_ns = t_ns
+            self._vfuse.propagate(w_flu, v_flu, _fdt)
 
         # virtual-flipped (tail-first) quantities the policy consumes
         if cfg.virtual_flip:
@@ -439,6 +474,11 @@ class EgoObsBuilder:
             if seen:
                 rel_frd = rel_pos_body_frd_from_gatepose(sp.t_cam_gate)
                 fix_flu = _FLIP_FRD_FLU * rel_frd
+                # D1 (armed only): feed the RAW measurement, never the blended/propagated hold --
+                # a hold carries the dead-reckoned velocity inside it and would make the estimate
+                # circular. slot0 only (the ACTIVE gate is the landmark the window is anchored to).
+                if slot == 0 and self._vfuse is not None:
+                    self._vfuse.on_fix(fix_flu)
                 # SCALAR-GAIN BLEND (training parity, chaum rl/ego_estimator.py:722-734):
                 #   rel_new = rel_held + K * (fix - rel_held) == (1-K)*rel_held + K*fix
                 # with rel_held the belief the loop above just ego-propagated to THIS tick. K=1
@@ -532,6 +572,14 @@ class EgoObsBuilder:
         rel0, conf0, det0, age0 = _channels(0)
         sector_row = self._sector if self._sector is not None else (0.0, 0.0)
 
+        # -- D1 (armed only): obs[0:3] = the KF velocity + the vision-referenced LOS-perpendicular
+        # correction. Re-derives v_obs from the CORRECTED body-FLU velocity through the identical
+        # flip; nothing else in the obs moves (the held lever keeps propagating on the raw KF
+        # velocity, exactly as trained).
+        if self._vfuse is not None:
+            _v_corr = self._vfuse.correct(v_flu)
+            v_obs = (_RZ_PI_BODY @ _v_corr) if cfg.virtual_flip else _v_corr
+
         # -- assemble through the training masking/concat logic. slot1_enabled => a real WINDOW=2
         # window (n_gates=2, both slots masked independently); OFF => the single-gate n_gates=1 path
         # (slot1 window-invalid => zeros), byte-identical to the pre-slot1 builder. -----------------
@@ -565,6 +613,8 @@ class EgoObsBuilder:
             "roll_obs": roll_obs, "pitch_obs": pitch_obs,
             "slot1_enabled": bool(cfg.slot1_enabled),
         }
+        if self._vfuse is not None:
+            self.last_diag["vfuse"] = self._vfuse.diag()
         if cfg.slot1_enabled:
             self.last_diag.update({
                 "conf1": conf1, "det_proxy1": bool(det1), "area1": self._area[1],
