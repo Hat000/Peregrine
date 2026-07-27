@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-27T05:33:28.824Z
+  modified: 2026-07-27T05:47:50.495Z
 ---
 
 # The 7 aim-offset flights (2026-07-27 04:38-04:40) — what they did and did not settle
@@ -167,5 +167,58 @@ onward, but the meta block in `fly_rl.py` **never writes its value** (it writes 
 propagate_range, vel_fuse, aim_*, obs_coast, rate_scale, z_bias, clamps — not assist). The flown
 value is unrecoverable from the log. Trivial fix; until then a drifted assist silently confounds
 a cohort. Ask the pilot what changed at 05:26.
+
+## 🟢🟢 THE LATERAL TRIM FLEW (05:31–05:40, n=5) — IT ACTUATES, THEN THE AUTHORITY EVAPORATES
+
+`0:0.25,0;…;8:0.25,0`, `ego_aim_release 0.0`, armed 50–235 ticks/flight. **De-inject before any
+geometry**: logged `rel_flu` includes the offset, so `rel_true = rel_logged + [0, +aim_lat, −aim_vert]`.
+🚩 **The pass-point statistic (n=16) said the trim went the WRONG way (+0.13). It was mixing
+ranges.** Range-MATCHED at tick level it is unambiguous — the trim should give −0.25:
+
+| range | baseline (n) | trim (n) | delta |
+|---|---|---|---|
+| 8–12 m | +0.639 (848) | −0.146 (182) | **−0.785 ± 0.124** |
+| 5–8 m | +0.385 (627) | +0.082 (161) | **−0.303 ± 0.067** ← full authority |
+| 3–5 m | +0.384 (413) | +0.193 (96) | −0.191 ± 0.047 |
+| 2–3 m | +0.302 (248) | +0.209 (70) | −0.093 ± 0.068 |
+| 1–2 m | +0.153 (170) | +0.057 (42) | **−0.096 ± 0.049** ← ~40% left |
+
+## 🛑🛑 VISION BLACKS OUT INSIDE 1.5 m — AND THE OUTCOME IS DECIDED THERE
+
+Fresh-fix rate vs range (n≈4200 ticks): 99% beyond 4 m · 95% at 2.5–4 · **82% at 2–2.5** ·
+**80% at 1.5–2** · **24% at 1–1.5** · **0% inside 1 m** (median fix age there **0.285 s** ≈ 2.3 m of
+travel at 8 m/s). `pass_drop_range_m = 2.5` does not make a cliff at 2.5; the collapse is ~1.5 m.
+
+🛑🛑 **AT THE LAST SIGHTED FIX, PASSES AND GATE-STRIKES ARE NEARLY THE SAME DISTRIBUTION**
+(fresh fix inside 3 m; 93 passes vs 23 gate-strikes):
+
+| discriminator at last sight | pass p50 | strike p50 | **AUC** |
+|---|---|---|---|
+| **\|lateral\|** | 0.35 | 0.42 | **0.582** ← barely above chance |
+| \|vertical\| | 0.19 | 0.39 | 0.676 |
+| **max(\|lat\|,\|vert\|) = the L-inf** | 0.39 | 0.71 | **0.736** ← the real discriminator |
+| range at last sight (BLIND METRES) | 1.80 | 1.73 | 0.420 (none) |
+| speed · \|roll\| · \|pitch\| · \|yaw\| rate | — | — | 0.53 / 0.49 / 0.55 / 0.47 (none) |
+
+**40% of CONFIRMED PASSES are already outside 0.45 m laterally at last sight and pass anyway**;
+strike |lat| includes 0.02, 0.05, 0.06, 0.16 — dead-centre at last sight and still hit.
+⇒ **No aim/trim/offset knob can fix this: they move a MEAN, and what kills is the SCATTER, which
+already straddles the aperture before the drone goes blind.** This is a policy-precision problem,
+i.e. TRAINING, not deploy.
+
+🛑 **SELF-CORRECTION: "the reward prices L-inf, which is the v2.1 defect" is UNDERMINED BY MY OWN
+DATA.** `cross_offset = pass_linf` prices **exactly the quantity that best predicts survival**
+(0.736 vs 0.582 lateral). Lateral scatter IS ~1.8× vertical at last sight (p50 0.35 vs 0.19), but
+it discriminates WORSE because passes tolerate it. The defect is **scatter magnitude**, not the
+choice of norm. → supersedes the v2.1 candidate line in [[gate-strike-last-3m-2026-07-27]].
+
+🚩 **Trim cohort died 3/5 on ENVIRONMENT at gate 4, not on a gate** — expected: `release 0.0` for
+the lateral trim removes the gate-4/5 vertical dodge (the mutual exclusivity, realised). Put the
+dodge back; the trim buys nothing at the gate.
+
+🚩 **PILOT OBSERVATION (Fengyou, 07-27): takeoff assist was turned OFF deliberately — the
+transition OUT of assist SINKS the drone right before a gate.** That is the `ego_assist_thrust`
+drift from 05:26 onward, and it is a real handoff-transient defect worth its own look; it sits next
+to the TERMINAL DIVE open defect (`fly_rl.py:766` fences nose-DOWN only).
 
 Related: [[gate-strike-last-3m-2026-07-27]] · [[failure-census-2026-07-27]].
