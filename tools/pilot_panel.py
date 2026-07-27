@@ -266,6 +266,26 @@ SCHEMA = [
     dict(key="ego_obs_coast", flag="--ego-obs-coast", action="boolopt", ui="bool",
          group="Ego perception", default=False,
          help="Coast the rel_pos + decaying confidence through blackout (only for coast-trained ckpts)."),
+    dict(key="ego_det_geometric", flag="--ego-det-geometric", action="boolopt", ui="bool",
+         group="Ego perception", default=False,
+         help="GEOMETRIC gate-detectability instead of the clock alone (default OFF, UNFLOWN). The "
+              "det that masks obs[11:16] becomes (age < ego_det_hold) AND training's OWN 8-keypoint "
+              "rule -- 4 inner + 4 outer gate corners projected through the real intrinsics and the "
+              "+20 deg mount, >=4 in frame, 30 m cap -- run on the held belief. WHY: training "
+              "recomputes that test every tick and zeros slot0 on 100% of ticks inside 1.0 m, but "
+              "the deploy stand-in is a CLOCK that every fresh fix resets, so it mostly never fires "
+              "before the gate plane. Measured over 899 confirmed passes: slot0 stays filled through "
+              "the whole blind run-in on 65.7% of approaches, 94% at the last tick before the "
+              "advance -- the policy flies the last ~1.8 m (where the outcome is decided) on a "
+              "coasted lever it never trained on. ON, the lever zeros at ~1.8 m instead, which is "
+              "what training shows the policy. Verified against training's own function: median "
+              "cutoff 1.861 m vs 1.861 m over 398 random approaches. REPLAYED over 564 recorded "
+              "flights: it clears 571 of 571 filled ticks inside 1.0 m (exactly training's state) "
+              "while disagreeing with the REAL detector on 0.0-0.2% of ticks in every range bin "
+              "from 3 to 23 m -- it blinds nothing outside the band it is for. It can only mask "
+              "MORE than today, never less. Watch det_geom / det_corners in ego_obs.jsonl (corners should "
+              "decay smoothly and cross 4 near 1.8 m). NOT mutually exclusive with the aim offset -- "
+              "the geometry is read off the HONEST lever, before the dodge is injected."),
     dict(key="ego_kp_persist", flag="--ego-kp-persist", action="value", ui="number",
          group="Ego perception", default=0, step=1,
          help="Keypoint-persistence debounce: N consecutive fresh frames before a fix transmits. 0/1 = off."),
@@ -420,6 +440,13 @@ _V1_RECIPE = {
     # so a stale ride-in is a wrong-target flight. Pinned EMPTY (never active): a recipe may not ARM
     # an aim offset, and picking any model clears one the pilot set for a previous model.
     "ego_aim_offsets": "",
+    # 2026-07-27 (commander): pinned OFF at the _V1 base for the SAME anti-ride-in reason as the
+    # three above -- ``_recipe_managed_keys()`` is the union of recipe pins and is exactly the set a
+    # model-pick RESETS, so a knob in NO recipe rides across model switches at whatever was last
+    # typed. This one changes WHEN THE POLICY STOPS SEEING THE GATE, so a stale ride-in would
+    # silently re-scope every cohort taken after it. Pinned False (never armed by a recipe): arming
+    # it is a deliberate per-flight act, and picking any model clears it.
+    "ego_det_geometric": False,
     "seeker_detector": "yolo",
     "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
     "ego_assist_thrust": 1.3,
