@@ -32,19 +32,22 @@ METHOD NOTES -- read these before quoting any number
    mid-window and the reference reads a fabricated velocity. Measured: 1.57% of same-gate
    consecutive fix pairs move >3 m more than any plausible velocity explains (p99 4.4 m, max
    29 m), and leaving them in DEPRESSES the measured quality of the raw channel a long way
-   (LEFT slope 0.904 -> 0.649, corr 0.833 -> 0.427). ``--max-apparent-speed`` (default 20 m/s)
-   rejects such windows. It is judged on VISION+GYRO alone, never on the KF velocity under
+   (LEFT slope 0.952 -> 0.649, corr 0.862 -> 0.427). ``--max-fix-step`` (default 1.5 m)
+   rejects such windows -- a DISTANCE, not a speed (leak/reject 0.14%/3.72% vs 1.45%/9.76%
+   for a 20 m/s gate; dividing by dt dilutes a teleport that lands across a long gap). It is judged on VISION+GYRO alone, never on the KF velocity under
    test -- gating on ``|D_vis - D_dr|`` instead would select for windows where dead reckoning
    already agrees and flatter the OLD arm. The A/B verdict is stable across the whole
-   threshold sweep 12 -> infinity (NEW beats OLD on corr/sign/rms at every value, placebo
-   loses at every value). Credit: the v21-release-dive session, which hit the same seam in an
+   threshold sweep (NEW beats OLD on corr/sign/rms at every value, placebo loses at every
+   value). Credit: the v21-release-dive session, which hit the same seam in an
    unrelated analysis (a phantom AUC 0.723 that collapsed to 0.565 once seam-free).
 6. ``--window`` IS ALSO SWEPT, for the same reason: a verdict that holds only at the chosen
    cut is a verdict about the cut. Over T = 0.30 / 0.40 / 0.50 / 0.70 / 1.00 / 1.40 s (a 4.7x
    range) the raw channel sits at slope +0.842..+0.908 and corr +0.814..+0.874, NEW beats OLD
-   on slope, corr, sign AND rms at every value, and the placebo loses at every value. rms gain
-   -8.6% to -13.5%; the default 0.5 s is the LEAST favourable point in the sweep, so the
-   headline number is the conservative one.
+   on slope, corr, sign AND rms at every value, and the placebo loses at every value. The
+   default 0.5 s is the LEAST favourable point in the sweep, so the headline is conservative.
+   (That sweep predates the switch from the speed gate to the distance gate; the distance gate
+   moves BOTH arms up -- OLD slope +0.952 / corr +0.862, NEW rms -13.0% -- and the placebo
+   still loses, rms 1.082 OLD vs 1.186 placebo vs 0.941 NEW.)
 
 Usage:
     python scripts/d1_velocity_replay.py --roots DIR [DIR ...] [--gain 0.15]
@@ -179,7 +182,7 @@ def _applied(b, u):
 
 
 def windows(S, fix_events, T=0.5, rotcomp=True, max_dt=0.30, in_sample=False, placebo=None,
-            max_apparent_speed=20.0):
+            max_fix_step=1.5):
     """Non-overlapping scoring windows between accepted fixes of the SAME gate."""
     out = []
     a = 0
@@ -222,8 +225,8 @@ def windows(S, fix_events, T=0.5, rotcomp=True, max_dt=0.30, in_sample=False, pl
             # instead would select for windows where dead reckoning already agrees and silently
             # flatter the OLD arm. (v21-release-dive 2026-07-27: the same seam produced an
             # AUC 0.723 phantom in an unrelated analysis.)
-            if s["fix"] is not None and P_dt > 1e-6:
-                if float(np.linalg.norm(P - s["fix"])) / P_dt > max_apparent_speed:
+            if s["fix"] is not None:
+                if float(np.linalg.norm(P - s["fix"])) > max_fix_step:
                     ok = False
                     break
                 P = s["fix"].copy()
@@ -346,9 +349,12 @@ def main() -> int:
     ap.add_argument("--no-rotcomp", action="store_true",
                     help="reproduce the FLAWED uncompensated measurement (see method note 1)")
     ap.add_argument("--in-sample", action="store_true", help="drop the hold-out (flatters the fix)")
-    ap.add_argument("--max-apparent-speed", type=float, default=20.0,
-                    help="reject a scoring window containing a fix-to-fix lever jump faster than "
-                         "this (m/s) -- the gate-seam teleport. 1e9 disables the gate.")
+    ap.add_argument("--max-fix-step", type=float, default=1.5,
+                    help="reject a scoring window containing a fix-to-fix lever jump larger than "
+                         "this (METRES) -- the gate-seam teleport. A distance, not a speed: measured "
+                         "leak/reject over 43,885 pairs is 0.14%%/3.72%% at 1.5 m vs 1.45%%/9.76%% for "
+                         "a 20 m/s speed gate, because dividing by dt dilutes a teleport landing "
+                         "across a long detection gap. 1e9 disables the gate.")
     ap.add_argument("--placebo", action="store_true",
                     help="integrity check: keep the correction MAGNITUDE, randomise its direction. "
                          "Any metric that still improves is measuring smoothing, not information.")
@@ -379,7 +385,7 @@ def main() -> int:
             bias_tick, fx = replay(S, cfg, rotcomp=not args.no_rotcomp)
             W.extend(windows(S, fx, T=args.window, rotcomp=not args.no_rotcomp,
                              in_sample=args.in_sample, placebo=rng_pl,
-                             max_apparent_speed=args.max_apparent_speed))
+                             max_fix_step=args.max_fix_step))
         print(f"\n================ gain = {g:g}"
               f"{'  [PLACEBO -- direction randomised]' if args.placebo else ''} ================")
         report(W, "LEFT  (body-FLU axis 1)", axis=1)

@@ -226,10 +226,27 @@ def test_gate_seam_teleport_is_rejected_not_absorbed():
     # a DIFFERENT gate, 12 m away in one frame -- deliberately still INSIDE the valid range
     # band, so only the continuity gate can catch it (an out-of-band jump is caught earlier).
     f.on_fix([22.0, -8.0, 1.0])
+    assert f.cfg.max_fix_step_m == 1.5      # the gate is a DISTANCE, not a speed
     assert f.n_jumps == 1
     assert f.n_updates == n0                 # no update taken from the teleport
     np.testing.assert_allclose(f.correction(), quiet, atol=1e-9)
     assert np.all(np.isfinite(f.correction()))
+
+
+def test_seam_gate_is_a_distance_not_a_speed():
+    """Measured on 43,885 corpus pairs: a 1.5 m distance gate leaks 0.14% of teleports while
+    dropping 3.72% of pairs; a 20 m/s speed gate leaks 1.45% while dropping 9.76%. Dividing by
+    dt dilutes a teleport that lands across a long detection gap. So the same 2 m jump must be
+    rejected whether it arrives over one tick or over five."""
+    for gap_ticks in (1, 5):
+        f = LateralVelocityFuser(VelocityFusionConfig(gain=0.5))
+        _run(f, v_true=[6.0, 0.0, 0.0], v_dr=[6.0, 0.0, 0.0], r0=(20.0, 0.0, 0.0), n=30)
+        for _ in range(gap_ticks):
+            f.propagate([0.0, 0.0, 0.0], [6.0, 0.0, 0.0], 1 / 30)
+        held = f.correction().copy()
+        f.on_fix([14.0, -3.0, 0.5])          # ~3 m off the smooth track
+        assert f.n_jumps == 1, f"missed the jump at gap={gap_ticks} ticks"
+        np.testing.assert_allclose(f.correction(), held, atol=1e-9)
 
 
 def test_seam_gate_is_judged_on_vision_only_not_on_the_dr_velocity():

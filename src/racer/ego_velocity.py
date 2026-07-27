@@ -112,15 +112,28 @@ class VelocityFusionConfig:
     max_tick_dt_s: float = 0.30  # a bigger control-tick gap breaks the gyro/DR accumulation
     innov_clip_mps: float = 2.0  # robust clip on the per-update innovation (heavy-tailed PnP outliers)
     max_bias_mps: float = 2.0    # hard clamp on the emitted correction
-    max_apparent_speed_mps: float = 20.0  # TRACK-DISCONTINUITY gate. The seeker can re-lock onto a
-                                 # DIFFERENT gate while RACE_STATUS still reports the old index (the
-                                 # pass-drop / re-acquire seam), which teleports the lever and would be
-                                 # read as a huge velocity. Measured: 1.57% of same-gate consecutive fix
-                                 # pairs move >3 m more than any plausible velocity explains (p99 4.4 m,
-                                 # max 29 m). A fix-to-fix apparent speed above this is not a velocity,
-                                 # it is a different landmark -- drop the window and re-anchor. Gated on
-                                 # VISION+GYRO only (never on the KF velocity under test), so it cannot
-                                 # select for windows where dead reckoning happens to agree.
+    max_fix_step_m: float = 1.5  # TRACK-DISCONTINUITY gate. The seeker can re-lock onto a DIFFERENT
+                                 # gate while RACE_STATUS still reports the old index (the pass-drop /
+                                 # re-acquire seam), which teleports the lever and reads as a huge
+                                 # velocity. Measured: 1.57% of same-gate consecutive fix pairs move
+                                 # >3 m more than any plausible velocity explains (p99 4.4 m, max 29 m).
+                                 #
+                                 # The gate is a DISTANCE, not a speed, and that choice is measured, not
+                                 # stylistic. Over 43,885 pairs, leak (teleports missed) / reject (all
+                                 # pairs dropped):
+                                 #     |d|/dt > 20 m/s      1.45% / 9.76%
+                                 #     |d|    > 1.5 m       0.14% / 3.72%   <-- dominates on BOTH axes
+                                 #     |d| > 20*dt + 1.0 m  4.78% / 2.58%
+                                 # Dividing by dt dilutes a teleport that lands across a long detection
+                                 # gap, while its DISTANCE stays large -- so the speed form leaks ~10x
+                                 # more while rejecting 2.6x more good data. 1.5 m is also ~the physical
+                                 # ceiling on honest inter-fix motion: the corpus p99 speed (14.2 m/s)
+                                 # over the p99 fix gap (124 ms) is 1.76 m. Sweep: 1.0 m -> 0.00%/7.59%,
+                                 # 1.5 -> 0.14%/3.72%, 2.0 -> 0.60%/2.50%, 3.0 -> 11.3%/1.49%.
+                                 # (Form credit: the v21-release-dive session; thresholds measured here.)
+                                 #
+                                 # Judged on VISION+GYRO only -- never on the KF velocity under test --
+                                 # so it cannot select for windows where dead reckoning happens to agree.
     hold_s: float = 0.8          # blackout: hold the bias frozen this long after the last fix ...
     decay_tau_s: float = 1.0     # ... then decay it back to zero (fall back to the raw KF velocity)
 
@@ -229,12 +242,10 @@ class LateralVelocityFuser:
         # not a velocity measurement at all. Judged on vision+gyro alone -- never on the KF velocity
         # under test -- so it cannot bias the estimate toward agreeing with dead reckoning.
         if self._prev_fix is not None:
-            step = float(np.linalg.norm(self._prev_fix - r))
-            # dt ~ 0 (two fixes inside one tick) cannot be divided through; treat any real motion
-            # over no time as a discontinuity rather than an infinite velocity.
-            jumped = (step / self._prev_fix_dt > cfg.max_apparent_speed_mps
-                      if self._prev_fix_dt > 1e-6 else step > 0.05)
-            if jumped:
+            # A DISTANCE test, deliberately not a speed one -- see max_fix_step_m. It needs no dt,
+            # so there is no divide-by-zero branch and two fixes inside one tick are handled by the
+            # same arithmetic as any other pair.
+            if float(np.linalg.norm(self._prev_fix - r)) > cfg.max_fix_step_m:
                 self.n_jumps += 1
                 self.drop_anchor()
                 self._prev_fix = r.copy()
