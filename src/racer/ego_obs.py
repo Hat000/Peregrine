@@ -55,6 +55,15 @@ stale_horizon 0.5 s -- EgoEstimatorConfig defaults; the stage overrides neither)
     continuous while tracked, masks ~det_hold_s after loss-of-lock -- reproducing the training
     blackout cliff slightly delayed. A coasted non-zero rel_pos is NEVER fed past that (the
     champion trained on zeros at the crossing -- coast-OFF).
+    🛑 THAT PROXY DOES NOT REPRODUCE THE ONE BLACKOUT THAT MATTERS. Every fresh fix resets ``age``,
+    so the cliff mostly never fires before the gate plane: measured over 899 seam-guarded confirmed
+    passes, slot0 stays NON-ZERO through the whole blind run-in on 65.7% of approaches (mean filled
+    fraction 0.872), while TRAINING masks slot0 on 100% of ticks inside 1.0 m. The final ~1.8 m is
+    flown blind by construction (VFOV 58.7 deg, axis +20 deg up -> the gate overflows vertically),
+    and that is the interval in which every gate outcome is decided. ``det_geometric`` (default OFF)
+    restores the missing test by ANDing training's own 8-keypoint rule into ``det`` -- see
+    ``gate_detectable_geometric`` for the algorithm, the measured training-parity calibration and
+    the two documented divergences.
   * between accepted fixes (age < det_hold) the held rel_pos is EGO-PROPAGATED exactly like the
     training estimator (rotate by -body_rate*dt, translate by -v_body*dt;
     ego_estimator.py:447-459) so the intra-gap obs stays coherent.
@@ -127,6 +136,30 @@ EGO_OBS_DIM = 9 + 2 + EGO_WINDOW * EGO_PER_SLOT  # 21
 EGO_STALE_HORIZON_S = 0.5    # confidence 1 -> 0 over this after loss-of-lock, then hard mask
 EGO_DET_HOLD_S = 0.2         # deploy analog of the per-tick geometric ``det`` (see module doc)
 SECTOR_DEADBAND_RAD = 0.20   # build_coarse_map horiz/vert deadband (training default)
+
+# --- TRAINING VISIBILITY MODEL constants, mirrored 1:1 from chaum rl/gate_visibility.py -----------
+# (GATE_OUTER_M 2.7 / GATE_INNER_M 1.5 / GATE_DEPTH_M 0.26 / MIN_VISIBLE_CORNERS / FAR_CAP_M_DEFAULT).
+# These are the spec-3.7 gate, so they are NOT the pass-test aperture: training threads a gate with
+# ``0.75 - body_radius`` (r ~ U[0.28,0.38] => 0.37-0.47 m). For VISIBILITY the PHYSICAL half-width is
+# what projects into the frame, so 0.75/1.35 are correct here and must not be shrunk.
+GATE_VIS_INNER_HALF_M = 0.75          # gate_visibility._HALF_INNER  (inner opening 1.5 m)
+GATE_VIS_OUTER_HALF_M = 1.35          # gate_visibility._HALF_OUTER  (outer frame 2.7 m)
+GATE_VIS_FRONT_FACE_M = -0.13         # gate_visibility._FRONT_FACE_DOWNRANGE (= -GATE_DEPTH_M/2):
+                                      # the keypoints sit on the face NEARER the incoming drone.
+GATE_VIS_MIN_CORNERS = 4              # gate_visibility.MIN_VISIBLE_CORNERS
+GATE_VIS_FAR_CAP_M = 30.0             # gate_visibility.FAR_CAP_M_DEFAULT (cap on the CENTRE range)
+# The 8 keypoints as (right, up) coefficients, inner ring then outer ring, in the corner order
+# gate_visibility.corners_gate_frame() emits ((-,-), (+,-), (+,+), (-,+)). Built once: the armed
+# path runs every control tick on a COMPUTE-BOUND loop, so per-tick allocation is not free.
+_GATE_VIS_RU = np.array(
+    [[-GATE_VIS_INNER_HALF_M, -GATE_VIS_INNER_HALF_M],
+     [+GATE_VIS_INNER_HALF_M, -GATE_VIS_INNER_HALF_M],
+     [+GATE_VIS_INNER_HALF_M, +GATE_VIS_INNER_HALF_M],
+     [-GATE_VIS_INNER_HALF_M, +GATE_VIS_INNER_HALF_M],
+     [-GATE_VIS_OUTER_HALF_M, -GATE_VIS_OUTER_HALF_M],
+     [+GATE_VIS_OUTER_HALF_M, -GATE_VIS_OUTER_HALF_M],
+     [+GATE_VIS_OUTER_HALF_M, +GATE_VIS_OUTER_HALF_M],
+     [-GATE_VIS_OUTER_HALF_M, +GATE_VIS_OUTER_HALF_M]], dtype=np.float64)
 
 # Body-frame FRD <-> FLU flip (R_x(pi) diagonal) and the virtual pi-about-body-z flip -- SAME
 # constants as rl/fly_rl.py (_FLIP body part / _RZ_PI_BODY). Redefined here so src/ never imports
@@ -211,6 +244,162 @@ def visible_area_from_gatepose(R_cam_gate: np.ndarray, t_cam_gate: np.ndarray) -
         return 0.0
     ref = fx * fy * (GATE_INNER_SIZE_M ** 2) / (rng * rng)
     return float(np.clip(area_px / max(ref, 1e-9), 0.0, 1.0))
+
+
+# ---------------------------------------------------------------------------------------------
+# GEOMETRIC DETECTABILITY (2026-07-27, default OFF) -- the deploy mirror of training's ``det``
+# ---------------------------------------------------------------------------------------------
+def gate_detectable_geometric(rel_flu: "np.ndarray | None", R_b2w_zup: np.ndarray, *,
+                              min_corners: int = GATE_VIS_MIN_CORNERS,
+                              far_cap_m: float = GATE_VIS_FAR_CAP_M,
+                              R_cam_from_body: "np.ndarray | None" = None) -> tuple[bool, int]:
+    """Is the gate GEOMETRICALLY detectable from the held belief? -- the deploy mirror of chaum
+    ``rl/gate_visibility.py::gate_detectable`` (8 keypoints, >= 4 in frame, 30 m centre cap).
+
+    WHY THIS EXISTS. Training recomputes ``det`` from GEOMETRY every 33 ms and hard-masks
+    ``obs[11:16]`` to zeros the moment the gate stops fitting in frame. Deploy substitutes a TIME
+    proxy, ``det_proxy = (age < det_hold_s)`` -- and that proxy mostly NEVER FIRES before the gate
+    plane, because every fresh fix resets ``age``. Measured over 899 seam-guarded confirmed passes:
+      * NOT ONE pass ever received a fix inside 1.19 m; last-sighted range p10 1.48 / med 1.78 / p90
+        2.80 m -- the final ~1.8 m is flown blind BY CONSTRUCTION (camera HFOV 90 deg but VFOV only
+        58.7 deg with the axis pitched +20 deg UP, so the gate overflows VERTICALLY first);
+      * TRAINING masks slot0 to zeros on 100% of ticks inside 1.0 m;
+      * THE WIRE keeps feeding a filled, coasted lever -- 65.7% of approaches stay non-zero through
+        the whole blind run-in, mean filled fraction 0.872, 94% filled at the last tick before the
+        gate advance.
+    So the policy is handed a lever in exactly the interval where every gate outcome is decided, in
+    a state it never trained on. This function is the geometry the proxy was standing in for.
+
+    THE ALGORITHM IS TRAINING'S, NOT A NEW ONE. 8 front-face keypoints (4 inner at +-0.75 m, 4 outer
+    at +-1.35 m, all offset -0.13 m downrange onto the face nearer the drone), projected through the
+    SAME intrinsics and the SAME +20 deg mount, counted IN-FRAME iff camera-depth tz > 0 and
+    u in [0, 640) and v in [0, 360); detectable iff >= 4 of 8 in frame AND the centre range <= 30 m.
+
+    NO GROUND TRUTH. Inputs are the builder's own HELD belief (``rel_flu``, TRUE body FLU, from PnP
+    + ego-propagation) and the AHRS attitude. There is no world position, no gate map, no truth.
+
+    WHAT DIFFERS FROM TRAINING -- both measured, not asserted:
+
+    1. GATE ORIENTATION. Training knows each gate's world yaw. The wire does not (no map), and the
+       one wire quantity that could supply it -- the PnP ``R_cam_gate`` -- is documented on
+       ``GatePose.visible_area_meas`` as "the one genuinely ambiguous part of the pose fit (IPPE's
+       two solutions differ in tilt SIGN)" and measured a near-constant 0.99 apparent area in
+       flight, i.e. it reports "square-on" always and carries no information. So this uses the
+       SQUARE-ON model the closed form already validated: the gate is a WORLD-VERTICAL square whose
+       normal is the HORIZONTAL component of the line of sight. It is exact whenever the approach
+       azimuth matches the gate yaw (which a drone about to fly THROUGH the opening approximately
+       satisfies) and degrades smoothly otherwise.
+       COST, measured against training's own ``gate_detectable`` (torch) over 398 random realistic
+       approaches (roll ~N(0,15) deg, pitch ~N(24,10) deg, gate yaw vs approach ~N(0,12) deg,
+       lateral/vertical offsets ~N(0,0.4) m): cutoff range median TRAINING 1.861 m vs DEPLOY 1.861 m,
+       per-approach delta median +0.009 m, p10 -0.256 / p90 +0.217 m. UNBIASED, scatter ~+-0.25 m.
+       On a straight-in approach it is EXACT: this function reproduces training's published horizon
+       table to the millimetre (head-on level 1.290, 0.3 m high 1.185, 0.3 m low 1.550, pitch +10
+       1.780, pitch +24 1.715 -- all delta 0.000, pinned in tests/test_ego_det_geometric.py).
+
+    2. OCCLUSION BY OTHER GATES. Training runs an image-space projected-annulus test against every
+       OTHER gate. The wire has no other-gate geometry, so it is omitted. This can only make the
+       deploy test MORE permissive (it never masks for an occluder), i.e. it never fires spuriously.
+
+    3. THE METRIC BORESIGHT. ``frames.BORESIGHT.vert_offset_m`` (-0.25 m) is undone here, because
+       ``rel_pos_body_frd_from_gatepose`` ADDED it to move the PnP lever from the camera optical
+       centre to the body origin. Undoing it reconstructs ``t_cam_gate`` EXACTLY at a fresh fix, so
+       this test evaluates precisely the geometry the detector itself was working with -- which is
+       the point, and is true whatever the boresight physically represents. Training has no such
+       term, so it costs a measured +0.123 m median cutoff vs training (masks that much earlier);
+       that is smaller than the p10/p90 scatter above, and it is a REAL property of the deploy
+       chain, not an approximation.
+
+    FRAMES -- the part that silently inverts. Everything here is the TRUE, UNFLIPPED physical body:
+    ``rel_flu`` is TRUE body FLU [fwd, LEFT, UP] and ``R_b2w_zup`` is the TRUE body-FLU -> world-Z-up
+    rotation. The virtual pi-about-body-z flip (``_RZ_PI_BODY``) is NEVER applied: it exists because
+    training flies TAIL-FIRST and flips only its EMULATED camera so it looks along travel
+    (peregrine_racing_ego.py::_cam_R_wb), while the deployed drone flies NOSE-first with a real
+    camera already pointing that way. Same physical situation, so the deploy side uses the unflipped
+    frame. Do NOT pass ``obs[3:5]`` / ``obs[11:14]`` here -- those are virtual-flipped.
+    World UP in body FLU is taken as ``R_b2w_zup[2, :]`` (the third ROW == R^T @ e_z), which removes
+    the drone's own attitude EXACTLY and is yaw-free by construction.
+
+    VALIDATED AGAINST THE REAL DETECTOR, not only against training. Replayed over 564 recorded
+    flights / 36 967 ticks that carried a genuine fix (``pose_seen``): if the detector produced a
+    fix the gate demonstrably WAS in frame, so every disagreement is a tick this test would mask
+    wrongly. Disagreement is 3.07% overall and is 0.0-0.2% in EVERY range bin from 3 m to 23 m --
+    it is confined to 1-3 m (83.2% of the 1-2 m bin), with the median disagreeing tick at 1.82 m
+    carrying 3 of 8 corners, i.e. sitting on the 4-of-8 threshold. That is not model error: it is
+    the deploy<->training gap itself, and it lands on training's own 50% crossing of 1.83 m. Effect
+    on the state that matters: inside 1.0 m, where training feeds ZEROS on 100% of ticks, the wire
+    has 571 filled slot0 ticks today and 0 when this is armed.
+    🚩 The FIRST replay metric I wrote -- "closest still-detectable range per approach" -- gave a
+    p90 of 18 m and was WITHDRAWN: it read the range off the last-in-time detectable tick, where
+    ``rel_flu`` is a coasted (sometimes mis-locked) belief whose range jumps, so drifted levers
+    dominated the tail. Compare this test against a MEASUREMENT (``pose_seen``), never against
+    another propagated belief.
+
+    ``R_cam_from_body`` is an optional pre-built ``frames.R_camera_from_body()`` -- purely a cost
+    hoist for the two-slot caller (that call rebuilds two scipy Rotations, ~165 us, and the deploy
+    loop is COMPUTE-BOUND at p50 29.5 ms/tick where what pays is vision freshness). None (the
+    default) reads it LIVE, so a calibration edit still propagates. It is NOT a place to inject a
+    different camera.
+
+    Returns ``(detectable, n_corners_in_frame)``. A None / non-finite / zero-length lever, or a
+    degenerate attitude, returns ``(False, 0)`` -- "I cannot see it", the safe reading for a mask.
+    """
+    if rel_flu is None:
+        return False, 0
+    rel = np.asarray(rel_flu, dtype=np.float64).reshape(3)
+    if not np.all(np.isfinite(rel)):
+        return False, 0
+    rng = float(np.linalg.norm(rel))
+    if rng < 1e-6 or rng > float(far_cap_m):
+        return False, 0
+
+    R = np.asarray(R_b2w_zup, dtype=np.float64).reshape(3, 3)
+    up_b = R[2, :].astype(np.float64).copy()       # world UP expressed in body FLU (yaw-free)
+    n_up = float(np.linalg.norm(up_b))
+    if not np.isfinite(n_up) or n_up < 1e-9:
+        return False, 0
+    up_b /= n_up
+
+    los = rel / rng
+    normal = los - float(los @ up_b) * up_b        # HORIZONTAL component of the LOS == gate normal
+    n_norm = float(np.linalg.norm(normal))
+    if n_norm < 1e-6:
+        # Gate (almost) straight overhead or underfoot: the horizontal LOS vanishes and the
+        # world-vertical gate model is undefined. Fall back to a plane perpendicular to the LOS with
+        # an arbitrary but orthonormal in-plane basis -- the +-h corner SET is symmetric, so the
+        # choice only permutes the corner list. Never reached on a racing approach; here so the
+        # function cannot emit NaN.
+        normal = los
+        alt = np.array([1.0, 0.0, 0.0]) if abs(float(los[0])) < 0.9 else np.array([0.0, 1.0, 0.0])
+        up_b = np.cross(normal, alt)
+        up_b /= max(float(np.linalg.norm(up_b)), 1e-12)
+    else:
+        normal = normal / n_norm
+    right_b = np.cross(up_b, normal)               # sign irrelevant: the corner set is +- symmetric
+
+    # 8 front-face keypoints, inner ring then outer ring (gate_visibility.corners_gate_frame order).
+    corners_flu = (rel + GATE_VIS_FRONT_FACE_M * normal)[None, :] + (
+        _GATE_VIS_RU @ np.stack([right_b, up_b]))                                   # (8,3)
+
+    # body FLU -> body FRD -> camera optical, undoing the metric boresight the held lever carries
+    # (exact inverse of rel_pos_body_frd_from_gatepose, so at a fresh fix t == pose.t_cam_gate).
+    c_frd = corners_flu * _FLIP_FRD_FLU[None, :]
+    voff = frames.BORESIGHT.vert_offset_m
+    if voff != 0.0:
+        c_frd[:, 2] -= voff
+    R_cb = frames.R_camera_from_body() if R_cam_from_body is None else R_cam_from_body
+    t = c_frd @ np.asarray(R_cb, dtype=np.float64).T                                # (8,3)
+
+    K = frames.CAMERA_INTRINSICS_K
+    z = t[:, 2]
+    front = z > 0.0
+    z_safe = np.where(front, z, 1.0)
+    u = K[0, 0] * t[:, 0] / z_safe + K[0, 2]
+    v = K[1, 1] * t[:, 1] / z_safe + K[1, 2]
+    in_frame = (front & (u >= 0.0) & (u < frames.IMAGE_WIDTH)
+                & (v >= 0.0) & (v < frames.IMAGE_HEIGHT))
+    n_vis = int(np.count_nonzero(in_frame))
+    return bool(n_vis >= int(min_corners)), n_vis
 
 
 # ---------------------------------------------------------------------------------------------
@@ -342,6 +531,13 @@ class EgoObsBuilderConfig:
     stale_horizon_s: float = EGO_STALE_HORIZON_S   # confidence decay horizon (champion default 0.5)
     det_hold_s: float = EGO_DET_HOLD_S             # deploy det-proxy hold after loss-of-lock
     obs_coast: bool = False                        # champion = coast OFF (blackout cliff)
+    det_geometric: bool = False                    # GEOMETRIC DETECTABILITY (2026-07-27). False
+                                                   # (default) == OFF == byte-identical: the geometry
+                                                   # is not evaluated at all and no new diag key is
+                                                   # emitted. True ANDs training's 8-keypoint
+                                                   # ``gate_detectable`` mirror into the det used for
+                                                   # obs masking (see gate_detectable_geometric, and
+                                                   # the AND-vs-REPLACE rationale in `update`).
     virtual_flip: bool = True                      # tail-first virtual body flip (fly_rl convention)
     slot1_enabled: bool = False                    # WINDOW=2 next-gate slot. OFF (default) = single-slot
                                                    # n_gates=1 path (slot1 zeros; single-gate champions /
@@ -429,6 +625,10 @@ class EgoObsBuilder:
         if self.cfg.aim_offsets:
             self._aim_offsets = {int(g): (float(v[0]), float(v[1]))
                                  for g, v in dict(self.cfg.aim_offsets).items()}
+        # GEOMETRIC DETECTABILITY: normalised once so the hot path is a single ``if`` that is False
+        # on the default path -- gate_detectable_geometric is then never called and no arithmetic
+        # beyond the existing det-proxy comparison runs.
+        self._det_geometric = bool(self.cfg.det_geometric)
         self.last_diag: dict = {}
         self._reset_slot()
         self._gate_index: int | None = None
@@ -673,6 +873,10 @@ class EgoObsBuilder:
         # from a COASTED lever in one tick, which a belief-baked offset could not do).
         aim = self._aim_offset_now(int(gate_index))
         aimed: list[np.ndarray | None] = [None]   # slot0's OFFSET lever, for last_diag (see below)
+        geo: list[tuple[bool, int] | None] = [None, None]   # per-slot geometric det, for last_diag
+        # built ONCE per tick when armed (it rebuilds two scipy Rotations), still read LIVE so a
+        # frames.BORESIGHT calibration edit propagates; None on the default path == not built.
+        R_cb_tick = frames.R_camera_from_body() if self._det_geometric else None
 
         # -- per-slot staleness -> confidence + det proxy + the virtual-flipped rel_pos obs -------
         def _channels(slot: int) -> tuple[np.ndarray, float, bool, float]:
@@ -683,6 +887,27 @@ class EgoObsBuilder:
                 age = max(0.0, (t_ns - self._last_fix_sim_ns[slot]) / 1e9)
             c = float(np.clip(1.0 - age / max(cfg.stale_horizon_s, 1e-9), 0.0, 1.0))
             d = age < cfg.det_hold_s
+            # GEOMETRIC DETECTABILITY (armed only) -- ANDed into the det, never substituted for it.
+            #
+            # WHY *AND* AND NOT *REPLACE*. The age proxy is not merely a bad stand-in for geometry;
+            # it also carries the ONE masking event geometry cannot see -- LOSS OF LOCK. Training's
+            # ``det`` sits next to an estimator that always has truth available, so geometry alone
+            # is a complete answer there. The wire's detector genuinely fails (motion blur, dropped
+            # frames, a mis-lock): the gate can be perfectly in frame while nothing has been
+            # measured for a second. REPLACING the proxy would delete the blackout cliff at
+            # loss-of-lock and feed an indefinitely coasted lever whenever the geometry is happy --
+            # strictly worse than today. ANDing can only ever mask MORE, never less, so it adds the
+            # missing blind-run-in blackout without opening any new unmasked window. Every masking
+            # event that fires today still fires.
+            #
+            # Evaluated on the HONEST held belief -- BEFORE the aim offset is applied below -- for
+            # the same reason ``_aim_offset_now`` measures its release range offset-EXCLUDED: a
+            # +3 m vertical dodge would otherwise push the perceived gate out of frame and mask the
+            # slot exactly while the dodge is armed, i.e. the knob would silently disable the other.
+            if self._det_geometric:
+                g = gate_detectable_geometric(rel_flu, R_b2w_zup, R_cam_from_body=R_cb_tick)
+                geo[slot] = g
+                d = d and g[0]
             # slot0 ONLY -- the pilot's dodge left slot1 untouched (measured: rel_flu1 is continuous
             # across every release), and a knob keyed on the ACTIVE gate index has no business
             # shifting the NEXT gate. Applied BEFORE the virtual flip and BEFORE the confidence
@@ -748,6 +973,16 @@ class EgoObsBuilder:
             # field's presence marks "this flight could have been offset" -- the shape
             # scripts/d1_velocity_replay.py and scripts/failure_profile/* already consume.
             self.last_diag["aim_off"] = None if aim is None else [aim[0], aim[1]]
+        if self._det_geometric:
+            # Emitted ONLY when the knob is armed, so a default flight's log stays byte-identical
+            # and the KEY'S PRESENCE marks "this flight could have been geometrically masked".
+            # ``det_geom`` is the geometry alone; the det the obs actually used is
+            # ``det_proxy AND det_geom`` (``det_proxy`` deliberately keeps meaning the AGE proxy so
+            # the arrestor's det_fresh and every existing log analysis read what they always read).
+            # ``det_corners`` is the 0..8 in-frame keypoint count -- the calibration number: it
+            # should decay smoothly through the run-in and cross 4 at ~1.8 m.
+            self.last_diag["det_geom"] = bool(geo[0][0]) if geo[0] is not None else False
+            self.last_diag["det_corners"] = int(geo[0][1]) if geo[0] is not None else 0
         if self._vfuse is not None:
             self.last_diag["vfuse"] = self._vfuse.diag()
         if cfg.slot1_enabled:
@@ -757,6 +992,9 @@ class EgoObsBuilder:
                 "pose_seen1": bool(pose_seen[1]),
                 "rel_flu1": None if self._rel_flu[1] is None else self._rel_flu[1].tolist(),
             })
+            if self._det_geometric:
+                self.last_diag["det_geom1"] = bool(geo[1][0]) if geo[1] is not None else False
+                self.last_diag["det_corners1"] = int(geo[1][1]) if geo[1] is not None else 0
         return obs
 
     # -- per-gate aim offset ------------------------------------------------------------------
