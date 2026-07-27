@@ -3948,10 +3948,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "NOT show (|D_fwd| <= 0.28 m at a 10 m offset). PURPOSE: the two invisible "
                          "obstacles measured ~14.5 m short of gate 4 (14/31 deaths, median 14.56 m) "
                          "and gate 5 (9/21, median 14.36 m). The pilot flew 4:UNPROBED and "
-                         "\"5:0,10\" five times: 0/5 band deaths vs 9/23 (39%%) on the same leg, but "
-                         "3/5 then died AT gate 5 vs 3/23 baseline -- it RELOCATES the failure, and "
-                         "at n=5 the net pass rate (40%% vs 22%%) is NOT established. Default OFF; "
-                         "fly it as an A/B, not as a fix.")
+                         "\"5:0,10\" five times, and among flights that REACHED gate 5: band deaths "
+                         "0/5 vs 9/23 (Fisher p=0.118), at-gate deaths 3/5 vs 3/23 (p=0.050), pass "
+                         "rate 2/5 vs 5/23 (p=0.367). It RELOCATES the failure from the obstacle to "
+                         "the gate, and at n=5 the ONLY result near significance is that regression. "
+                         "Default OFF; fly it as an A/B, not as a fix.")
     ap.add_argument("--ego-aim-release", type=float, default=12.0,
                     help="Range (m) at/below which --ego-aim-offsets is released, measured on the "
                          "held slot0 belief EXCLUDING its own offset (so the gate cannot hold "

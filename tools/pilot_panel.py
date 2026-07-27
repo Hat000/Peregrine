@@ -218,9 +218,11 @@ SCHEMA = [
               "z-bias above, which is camera +Y = DOWN, and a different frame (camera-frame "
               "vertical also moves perceived RANGE by 0.342x; body-frame does not). FOR: the two "
               "invisible obstacles ~14.5 m short of gate 4 (14/31 deaths there) and gate 5 "
-              "(9/21). Pilot flew \"5:0,10\" x5: 0/5 obstacle-band deaths vs 39% baseline, BUT "
-              "3/5 then died AT gate 5 vs 13% -- it MOVES the failure; net pass rate 40% vs 22% "
-              "is NOT established at n=5. Gate 4 has never been probed. Fly it as an A/B."),
+              "(9/21). Pilot flew \"5:0,10\" x5; among flights that REACHED gate 5: band deaths "
+              "0/5 vs 9/23 (p=0.118), at-gate deaths 3/5 vs 3/23 (p=0.050), pass 2/5 vs 5/23 "
+              "(p=0.367). It MOVES the failure from the obstacle to the gate, and the only "
+              "result near significance is that regression. Gate 4 has NEVER been probed. "
+              "Fly it as an A/B, not as a fix."),
     dict(key="ego_aim_release", flag="--ego-aim-release", action="value", ui="number",
          group="Ego perception", default=12.0, step=0.5,
          help="Range (m) at/below which the per-gate aim offset is RELEASED, measured on the held "
