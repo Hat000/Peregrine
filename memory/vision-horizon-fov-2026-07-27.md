@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-27T06:28:19.709Z
+  modified: 2026-07-27T07:30:33.846Z
 ---
 
 # The vision horizon is FIELD-OF-VIEW GEOMETRY — 2026-07-27
@@ -90,8 +90,36 @@ TRAINED ON THIS EXACT BLACKOUT. DO NOT RUN THAT ARM.** 🟢 A useful corollary: 
 performing AT the level training assumes (median observed − predicted = +0.04 m, and the p90 tail
 matches too) — **the vision stack is not underperforming; this is geometry.**
 
-⇒ **The terminal scatter is therefore NOT a train/deploy mismatch. It is the policy's real
-precision limit on a ~1.8 m blind commit at ~8 m/s.** Remaining levers, re-ranked:
+## 🛑🛑 …BUT I CHECKED THE RIGHT VARIABLE ON THE WRONG CHANNEL. THE MISMATCH IS REAL AND INVERTED.
+
+**Correction to the refutation above, from the 48-agent training audit.** I verified that training
+goes blind at the same RANGE as the wire — true, and it stands. What I never asked was **what the
+observation looks like ONCE blind**, and there the two could not differ more:
+
+* **TRAINING MASKS `obs[11:16]` TO ZEROS** — 100% of ticks below 1.0 m, 99.3% below 1.5 m
+  (independent replay of the env's own `gate_detectable` over 26 092 real flown attitudes; 50%
+  crossing at ~1.83 m). `peregrine_racing_ego.py:521-523`, the `keep &= det` line.
+* **THE WIRE FEEDS A FILLED, COASTED LEVER** — 94.0% of ticks at the last tick before a gate
+  advance, 97.2% four ticks back (465 confirmed advances across 188 rate-30 flights, measured in
+  ticks-before-advance so it needs no range estimate and is immune to the advance seam).
+
+⇒ **The policy has never once been trained on the input state in which every gate outcome is
+decided.** And the asymmetry runs **OPPOSITE to my hypothesis**: deploy hands the policy *more*
+information in the blind band than training ever did, not less. A replay of v19Ws0/v20Vs0 over
+28 936 real observations with slot0 zeroed vs real moves `|Δroll cmd|` by a median **0.47–0.56
+rad/s** (p95 2.0) at 1.5–2.5 m — it is the channel the policy reads hardest, exactly there.
+
+🟢 **THE ARM IS ONE TOKEN: `+env.ego_obs_coast=true`** (reaches `peregrine_racing_ego.py:1254`,
+drops the `keep &= det` mask). No code change, no warm-start break. 🚩 The 2026-07-09 coast
+precedent read neutral, but that stage ran at `ego_noise_scale: 0.0` where the curriculum's own
+comment calls the coasted estimate "nearly free (~0.01 m error over 1.5 s)" — a *perfect* lever
+through the blackout, which is not the test. The shipped stage runs real noise.
+🛑 **Note the deploy knob `ego_obs_coast` already exists and is OFF; do NOT "fix" this by turning it
+on at deploy — that would move the WIRE toward training's zeros, i.e. throw information away.
+The change belongs in TRAINING.**
+
+⇒ **The terminal scatter is therefore NOT explained by the blind interval alone.** Levers,
+re-ranked:
 1. **Make the policy better at the blind commit** — reward/termination pressure on terminal L-inf
    SCATTER (not its mean). A legitimate training arm; see [[aim-cohort-and-loop-rate-2026-07-27]].
 2. **Shrink the blind interval in TIME** rather than distance — i.e. gate-approach speed. Trades
