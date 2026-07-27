@@ -398,6 +398,13 @@ _V1_RECIPE = {
     # every emitted gate point (gate_seeker _valid_poses); the champion value is 0 (0.25 landed 1:1
     # in a true-crossing miss). Combined with the WP6a model-pick reset, no stale knob can ride in.
     "ego_gate_z_bias": 0.0,
+    # 2026-07-27 (commander): the per-gate AIM OFFSET is pinned here at the _V1 base to the INERT
+    # value for the same reason as the two above -- ``_recipe_managed_keys()`` is the UNION of recipe
+    # pins and is exactly the set a model-pick RESETS, so a knob that appears in NO recipe is a knob
+    # that silently RIDES across a model switch. This one moves where the drone believes the gate is,
+    # so a stale ride-in is a wrong-target flight. Pinned EMPTY (never active): a recipe may not ARM
+    # an aim offset, and picking any model clears one the pilot set for a previous model.
+    "ego_aim_offsets": "",
     "seeker_detector": "yolo",
     "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
     "ego_assist_thrust": 1.3,

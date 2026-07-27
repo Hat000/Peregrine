@@ -352,9 +352,21 @@ def test_the_flag_reaches_the_builder_and_meta_json():
     assert '**({"aim_off": d["aim_off"]} if "aim_off" in d else {})' in src
 
 
-def test_panel_exposes_it_next_to_z_bias_but_never_pins_it_in_a_recipe():
-    """It sits with the other seeker/aim knobs, and it is NOT in any _V*_RECIPE: recipes are
-    release contracts, and a silent ride-in already corrupted a v16 batch once."""
+def test_panel_exposes_it_next_to_z_bias_and_pins_it_OFF_at_the_v1_base():
+    """It sits with the other seeker/aim knobs, and it is pinned EMPTY at the _V1 base.
+
+    COMMANDER CORRECTION (2026-07-27): the original brief said "do not add it to any pinned
+    _V*_RECIPE", which conflated two different things and this test enforced the wrong one.
+    Leaving a knob OUT of every recipe does not protect a release -- it does the opposite.
+    ``_recipe_managed_keys()`` is the UNION of recipe pins and is exactly the set a model-pick
+    RESETS; a knob absent from that union is one that silently RIDES across a model switch,
+    which is the 2026-07-19 failure mode verbatim (ego_yaw_clamp 0.35 + ego_gate_z_bias 0.25
+    rode into a v16 batch and corrupted it).
+
+    So the correct contract is: pinned at the _V1 base to the INERT value, never to an ACTIVE
+    one. That is what "recipes are release contracts" actually buys -- a model-pick clears any
+    aim offset the pilot set for a previous model, and no recipe can silently ARM one.
+    """
     sys.path.insert(0, str(_ROOT / "tools"))
     import pilot_panel as P
     spec = P.BY_KEY["ego_aim_offsets"]
@@ -362,8 +374,15 @@ def test_panel_exposes_it_next_to_z_bias_but_never_pins_it_in_a_recipe():
     assert spec["group"] == P.BY_KEY["ego_gate_z_bias"]["group"]
     for key in ("ego_aim_offsets", "ego_aim_release", "ego_aim_fade"):
         assert key in P.BY_KEY
-        for name in dir(P):
-            if name.startswith("_V") and name.endswith("_RECIPE"):
-                assert key not in getattr(P, name), f"{key} must not be pinned in {name}"
+    # the master switch is recipe-MANAGED, so a model-pick resets it ...
+    assert "ego_aim_offsets" in P._recipe_managed_keys()
+    assert P._V1_RECIPE["ego_aim_offsets"] == ""
+    # ... and NO recipe may pin it, or the range/fade sub-knobs, to anything ACTIVE.
+    for name in dir(P):
+        if name.startswith("_V") and name.endswith("_RECIPE"):
+            recipe = getattr(P, name)
+            assert recipe.get("ego_aim_offsets", "") == "", f"{name} must not ARM an aim offset"
+            for sub in ("ego_aim_release", "ego_aim_fade"):
+                assert sub not in recipe, f"{sub} must not be pinned in {name}"
     argv, _ = P.build_cmd({})
     assert "--ego-aim-offsets" not in argv             # default launch is byte-identical
