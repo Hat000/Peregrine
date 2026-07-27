@@ -8,12 +8,28 @@ mag, no baro, and (measured over 94,991 ticks of 624 logged flights) the vision 
 once produced a world fix -- ``time_since_vision_update_s`` is non-finite on 100% of ticks. So
 obs[0:3] is pure IMU strapdown dead reckoning whose error is free to wander.
 
-Training did NOT model that. ``rl/ego_estimator.py`` ships ``vel_model='legacy'`` by default and
-no launcher in the v16..v19 lineage arms ``env.ego_faithful``, so the training obs velocity is
-SEEDED AT TRUTH (ego_estimator.py:471), drifts only by a per-episode residual accel bias of
-+-0.05 m/s^2 (:147), and is pulled 15% back TOWARD THE TRUE body velocity at every accepted
-vision fix (:815-819). Its steady-state error is ~0.01 m/s. The policy therefore learned on a
-velocity channel it could trust essentially completely, and the wire cannot deliver one.
+Training's velocity, by contrast, IS corrected by vision. v1.9/v2.0 both run the stage
+``dual_gate_fullstack_floor_pef16`` (rl/launch_v19.sh:123, rl/launch_v20.sh:130), whose stage
+dict sets ``ego_faithful=True`` (rl/vq2_ego_curriculum.py) plus the ``++dynamics.
+capture_specific_force=true`` / ``n_substeps=5`` the faithful path requires. It sets no
+per-channel override, so ``ego_vel_model`` takes its faithful default ``'kf'``
+(rl/peregrine_racing_ego.py:1353) -- the translated deploy KF, NOT the ``'legacy'`` truth-pull
+surrogate. On that path ``rl/ego_estimator.py:777-806`` folds a stream of vision POSITION fixes
+into the KF (``z_datum = gate_pos_datum - R_datum @ fix_body``) and the velocity is corrected
+through the pos/vel cross-covariance.
+
+THE GAP IS THEREFORE NOT "truth vs dead reckoning" -- it is a CORRECTED KF vs an UNCORRECTED
+one. And the reason the wire cannot form that fix is structural: ``z_datum`` needs
+``gate_pos_datum``, i.e. a MAP, and the deployed profile is self-localizing/map-free
+(fly_rl.py builds ``gates = []``), so no world position fix is ever constructed and the KF
+runs open loop for the whole flight. This module supplies the map-FREE analog of the
+correction training gets: a gate-RELATIVE displacement measurement, which needs no map.
+
+(Superseded 2026-07-27: an earlier revision of this docstring claimed training ran
+``vel_model='legacy'`` with a ~0.01 m/s error. That was wrong -- it was grepped from the
+launchers, which never mention ``ego_faithful`` because the STAGE arms it. The training-side
+error magnitude is NOT re-derivable from source; read the ``kf_vel_err_mean`` scalar that
+peregrine_racing_ego.py:2393-2397 logs on every ``vel_model=='kf'`` run.)
 
 WHAT THIS DOES
 --------------
