@@ -109,6 +109,26 @@ THE RULE THAT GENERALISES BOTH (and two other 07-27 withdrawals)
     and "check what a classifier's rule actually tests before ranking on its
     output" are corollaries, not separate lessons.
 
+  COROLLARY THAT BIT TWICE: THE GUARD YOU REACH FOR CAN BE THE SECOND ARTEFACT.
+    Having found the seam, the obvious fix is to reject windows where the vision
+    displacement and the dead-reckoned displacement disagree. That gates on the
+    KF velocity UNDER TEST: it keeps exactly the windows where dead reckoning
+    already agrees, flatters the control arm, and can invert the verdict.
+    (d1-velocity, 8d5badb9 -- gated on vision+gyro apparent speed ALONE instead,
+    and pinned it with a test feeding a drone whose DR velocity is wrong by
+    9.5 m/s but whose lever moves smoothly, asserting the window is still used.)
+    Same shape as the AUC 0.723 above: a measurement artefact and the guard
+    against it are both artefacts until each is validated independently of the
+    quantity being measured. NEVER build a data-quality gate out of the variable
+    under test.
+
+  AND THE SEAM IS BIGGER THAN gate_index. Breaking windows on a gate_index change
+    is NOT sufficient: the seeker can re-lock onto a DIFFERENT gate while
+    RACE_STATUS still reports the OLD index, so gate_index looks constant across a
+    landmark change. Measured: 1.57% of SAME-index consecutive fix pairs move >3 m
+    more than any plausible velocity explains (p99 4.4 m, max 29.1 m)
+    (d1-velocity, corpus). Gate on APPARENT SPEED, not on the index.
+
 WHAT SURVIVES, AND WHERE TO GO INSTEAD
     The deaths are real; only the mode name and the proposed lever are wrong. Those
     that die close (<=3 m) read INSIDE the 1.5 m opening at the last observable tick
