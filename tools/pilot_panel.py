@@ -220,9 +220,14 @@ SCHEMA = [
               "invisible obstacles ~14.5 m short of gate 4 (14/31 deaths there) and gate 5 "
               "(9/21). Pilot flew \"5:0,10\" x5; among flights that REACHED gate 5: band deaths "
               "0/5 vs 9/23 (p=0.118), at-gate deaths 3/5 vs 3/23 (p=0.050), pass 2/5 vs 5/23 "
-              "(p=0.367). It MOVES the failure from the obstacle to the gate, and the only "
-              "result near significance is that regression. Gate 4 has NEVER been probed. "
-              "Fly it as an A/B, not as a fix."),
+              "(p=0.367). CORRECTED 2026-07-27 (pilot + geometry): the at-gate deaths are NOT "
+              "caused by the dodge -- it releases at 12.2-21.8 m and those flights die at "
+              "1.9-3.8 m, i.e. 10-20 m (1.7-3.3 s) of recovery after the offset is gone, and "
+              "the SHORTEST dodge (0.47 s, released furthest out, most recovery) still died at "
+              "the gate. They are ordinary at-gate deaths, the mode that kills 27-34% of every "
+              "approach. What the dodge does buy is 0/5 obstacle-band deaths vs 9/23. Duration "
+              "was never a fixed rule either -- the pilot tuned it 2.00/1.97/0.94/0.70/0.47 s "
+              "across one session. Gate 4 has NEVER been probed. Fly it as an A/B."),
     dict(key="ego_aim_release", flag="--ego-aim-release", action="value", ui="number",
          group="Ego perception", default=12.0, step=0.5,
          help="Range (m) at/below which the per-gate aim offset is RELEASED, measured on the held "
