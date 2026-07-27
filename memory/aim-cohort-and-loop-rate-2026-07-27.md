@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: b85130f9-ac88-4db2-8c68-0e28b966cf80
-  modified: 2026-07-27T04:59:43.664Z
+  modified: 2026-07-27T05:21:30.151Z
 ---
 
 # The 7 aim-offset flights (2026-07-27 04:38-04:40) — what they did and did not settle
@@ -77,6 +77,59 @@ a faster loop at an unchanged vision rate lowers the fresh-fix fraction (81–98
 🚩 **The 07-27 v20Vs0 session shows the same gate-0 cluster (3/6) with NO offset set** ⇒ whatever it
 is, it is not the aim offset.
 
-**NEXT TEST (one knob):** set panel `rate` **30**, re-pick nothing after, fly ~6 on the same branch
-and model. It tests the mismatch AND, if it works, restores the depth needed for the aim test to run
-at all. Related: [[gate-strike-last-3m-2026-07-27]] · [[failure-census-2026-07-27]].
+## 🟢🟢 RATE 30 FLOWN — CONFIRMED, AND IT IS A TRUE SINGLE-VARIABLE TEST
+
+`20260727_0509-0513`, n=9, same v19Ws0, same branch, **31 minutes after** the rate-40 set. The two
+runs' recorded `meta.json` differ on **exactly one substantive key: `rate_hz` 40.0 → 30.0**
+(`recipe_drift` is the panel's own bookkeeping of that same override). ⇒ **the date confound is
+dead.**
+
+| | n | gates reached | mean | died at g0 | ≥ g3 | ≥ g4 |
+|---|---|---|---|---|---|---|
+| rate 40 | 7 | 0,0,0,1,2,2,4 | 1.14 | 3 | 1 | 1 |
+| **rate 30** | 9 | 1,2,3,3,4,5,7,7,8 | **4.44** | **0** | **7** | **5** |
+
+Fisher: reached ≥ g3 **p = 0.041**; died at g0 p = 0.063; ≥ g4 p = 0.145. Achieved loop 21–22 Hz
+(vs 24.5–26). **Fresh-fix fraction 83–99% (median 96%) vs 69–91%** — the predicted mechanism.
+Best flights now reach **gate 7 twice and gate 8 once**, i.e. past both invisible obstacles.
+🚩 The aim offset armed on **5 of 9** flights (21–52 ticks, gates 4 and 5) — the offset test is now
+live for the first time, but still unadjudicated.
+
+## 🚩 A SYSTEMATIC **LEFT** BIAS — the side slams are the TAIL OF A SHIFTED DISTRIBUTION
+
+Kill axis is now read **at the impact** (strongest `id=1001` GATE contact → last fresh fix on that
+gate → levelled), not at the last log line: `scripts/postimpact/`.
+**Every classified lateral kill across both cohorts puts the drone LEFT of the gate**: +1.07, +1.10,
++1.28, +1.57, +0.92 m (5/5; fair-coin p = 0.031).
+
+Calibrated on **CONFIRMED PASSES** (the surface where a strike is impossible), closest fresh fix
+inside 5 m, aim-armed ticks excluded — 07-27 v19Ws0, n=49:
+* lateral **mean +0.285 m, median +0.238, t = +3.99, 36 left / 13 right** (sign test p = 0.0016)
+* vertical mean −0.097 — **the bias is LATERAL-ONLY**
+* pass |lat| p90 = **0.84 m**; the kills are 0.92–1.57 ⇒ **continuous, one distribution, not a
+  separate failure mode**
+
+🟢 **NOT A LEVELLING ARTIFACT — it survives removing the instrument**: on the RAW unlevelled
+`rel_flu` it is +0.238, 37/12; roll-sign-flipped +0.179. Sign anchored to CODE, not memory
+(`parse_aim_offsets`: `lateral_m` is +RIGHT, applied `rel_flu[1](LEFT) -= lateral_m` ⇒ drone-minus-
+gate lateral = `−rel_flu[1]`, positive = drone LEFT).
+
+🛑 **NOT YET SHOWN TO BE STANDING.** Split by cohort: v19Ws0 rate30 07-27 **+0.246 (t 2.96, 29/11)**
+and rate40 07-27 **+0.462 (t 3.95, 7/2)** — so it is **not the rate** — but v19Ws0 rate30 **07-25 is
++0.080 (t 0.35, 6/10)**. That 07-25 null is **UNDERPOWERED, not a refutation**: n=16, sd 0.888,
+SE 0.222 ⇒ it could hide the entire +0.25 effect at 1.1σ. Established for tonight; one more cohort
+decides whether it is a standing property.
+
+🛑 **My range-scaling → "9° yaw boresight" read is WITHDRAWN.** Lateral offset shrinking as the
+drone closes in is just the loop working; the regression slope identifies no mount angle. What
+survives is **the SIGN** and that the offset is still **+0.115 m at 1–2 m** (t = 3.8, n = 128).
+
+**THE TRIM IS EXPRESSIBLE TODAY, ZERO CODE** (verified against the real builder): `ego_aim_offsets`
+= `0:0.25,0;1:0.25,0;…;8:0.25,0` with **`ego_aim_release` = 0.0** — `_aim_offset_now` returns None
+only when `rng <= release`, so 0.0 keeps it armed **through the gate** (12.0 switches it OFF at
+exactly the range that matters). 🛑 **One global release ⇒ the lateral trim and the gate-4/5
+vertical dodge are MUTUALLY EXCLUSIVE.** An always-on lateral trim (the analogue of
+`ego_gate_z_bias`, which has **no lateral counterpart** — checked the whole knob list) is the small
+default-OFF build that would let both run.
+
+Related: [[gate-strike-last-3m-2026-07-27]] · [[failure-census-2026-07-27]].
