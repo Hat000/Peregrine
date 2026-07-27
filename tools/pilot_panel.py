@@ -209,6 +209,29 @@ SCHEMA = [
          group="Ego perception", default=0.0, step=0.1,
          help="Perceived-gate VERTICAL bias (m) added to EVERY vision emission (both slots). "
               "+ lowers the gate so the drone aims/passes LOWER through it. 0 = off. Try 0.3."),
+    dict(key="ego_aim_offsets", flag="--ego-aim-offsets", action="value", ui="text",
+         group="Ego perception", default="",
+         help="PER-GATE aim offset \"gate:lateral,vertical;...\" in metres, 0-based gate_index -- "
+              "e.g. \"4:0,10;5:0,10\". Shifts the PERCEIVED gate the policy chases, in BODY FLU, "
+              "only while that gate is active and only on slot0. Blank = OFF. SIGNS: +lateral = "
+              "RIGHT, +vertical = UP (aims/passes HIGHER) -- the OPPOSITE vertical sign to "
+              "z-bias above, which is camera +Y = DOWN, and a different frame (camera-frame "
+              "vertical also moves perceived RANGE by 0.342x; body-frame does not). FOR: the two "
+              "invisible obstacles ~14.5 m short of gate 4 (14/31 deaths there) and gate 5 "
+              "(9/21). Pilot flew \"5:0,10\" x5: 0/5 obstacle-band deaths vs 39% baseline, BUT "
+              "3/5 then died AT gate 5 vs 13% -- it MOVES the failure; net pass rate 40% vs 22% "
+              "is NOT established at n=5. Gate 4 has never been probed. Fly it as an A/B."),
+    dict(key="ego_aim_release", flag="--ego-aim-release", action="value", ui="number",
+         group="Ego perception", default=12.0, step=0.5,
+         help="Range (m) at/below which the per-gate aim offset is RELEASED, measured on the held "
+              "belief excluding its own offset. 12.0 = median of the pilot's five hand-timed "
+              "releases (10.6-17.2 m): below the 11-16 m obstacle band (so it is still up across "
+              "the obstacle) and clear of the gate (so the last 12 m are threaded honestly). His "
+              "own rule was a ~2.0 s wall-clock hold, which does not transfer across speeds."),
+    dict(key="ego_aim_fade", flag="--ego-aim-fade", action="value", ui="number",
+         group="Ego perception", default=0.0, step=0.5,
+         help="Linear fade width (m) above the release range: offset scales 1->0 over "
+              "[release, release+fade]. 0 = HARD STEP = exactly what flew. >0 has NEVER FLOWN."),
     dict(key="ego_fix_gain", flag="--ego-fix-gain", action="value", ui="number",
          group="Ego perception", default=1.0, step=0.05,
          help="Obs-builder FIX GAIN K, both slots: rel_new = (1-K)*propagated_held + K*fix. 1.0 = SNAP "

@@ -2441,7 +2441,8 @@ def _fly_ego(client, actor, args, flight_idx: int,
 
     from racer.contracts import Frame
     from racer.deploy_profile import get_profile
-    from racer.ego_obs import EgoObsBuilder, EgoObsBuilderConfig, roll_pitch_zup
+    from racer.ego_obs import (EgoObsBuilder, EgoObsBuilderConfig, parse_aim_offsets,
+                               roll_pitch_zup)
     from racer.navigator import gates_from_track_records, load_track_map
 
     profile = get_profile(args.deploy_profile)
@@ -2497,6 +2498,22 @@ def _fly_ego(client, actor, args, flight_idx: int,
         print(f"  [ego] coarse map from --ego-coarse-map {args.ego_coarse_map} "
               f"({coarse_map.shape[0]} gates): {coarse_map.astype(int).tolist()}")
 
+    # PER-GATE AIM OFFSET: parse on the PAD, not in the tick loop -- a mistyped dodge must abort
+    # here, never silently do nothing for a whole flight. Blank (default) -> {} -> OFF.
+    try:
+        _aim_offsets = parse_aim_offsets(getattr(args, "ego_aim_offsets", "") or "")
+    except ValueError as exc:
+        print(f"  [ego] --ego-aim-offsets: {exc}. abort.", file=sys.stderr)
+        result["final_state"] = "BAD_AIM_OFFSETS"
+        return result
+    if _aim_offsets:
+        _rel = float(getattr(args, "ego_aim_release", 12.0))
+        _fade = float(getattr(args, "ego_aim_fade", 0.0))
+        print(f"  [ego] AIM OFFSET ARMED (body FLU, +lateral=RIGHT / +vertical=UP): "
+              f"{ {g: list(v) for g, v in sorted(_aim_offsets.items())} } "
+              f"release<={_rel:g} m" + (f", fade {_fade:g} m (NEVER FLOWN)" if _fade > 0
+                                        else " (hard step -- what the pilot flew)"))
+
     builder = EgoObsBuilder(EgoObsBuilderConfig(
         stale_horizon_s=args.ego_stale_horizon,
         det_hold_s=args.ego_det_hold,
@@ -2517,6 +2534,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
         # identical (the fuser is not constructed). > 0 estimates the DEAD-RECKONING error of
         # obs[0:3] against the tracked gate and adds it back, LOS-perpendicular only.
         vel_fuse_gain=float(getattr(args, "ego_vel_fuse", 0.0)),
+        # PER-GATE AIM OFFSET (2026-07-27): {gate_index: (lateral_m, vertical_m)} added to the
+        # slot-0 lever in BODY FLU while that gate is active, released at ego_aim_release m.
+        # Empty (default) == OFF == byte-identical. The repo form of the pilot's ShadowPC-only
+        # aim_off dodge; see racer.ego_obs.parse_aim_offsets for the measured sign convention.
+        aim_offsets=_aim_offsets,
+        aim_release_m=float(getattr(args, "ego_aim_release", 12.0)),
+        aim_fade_m=float(getattr(args, "ego_aim_fade", 0.0)),
     ))
 
     print(f"\n[ego] ckpt={args.ego_ckpt}  profile={profile.name} "
@@ -3070,6 +3094,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     # identical): the vision-referenced velocity-error tracker state -- bias,
                     # the APPLIED (LOS-perpendicular) correction, window length, update counts.
                     **({"vfuse": d["vfuse"]} if "vfuse" in d else {}),
+                    # PER-GATE AIM OFFSET (only present when --ego-aim-offsets is set, so the
+                    # default log stays byte-identical): the EFFECTIVE [lateral_m, vertical_m]
+                    # applied to the slot-0 lever this tick, or null while inactive. Same key,
+                    # same shape and same 'null when off' semantics as the pilot's ShadowPC build,
+                    # so scripts/d1_velocity_replay.py + scripts/replay_fix_gain.py keep cutting
+                    # these ticks unchanged. NOTE rel_flu above already has it baked in.
+                    **({"aim_off": d["aim_off"]} if "aim_off" in d else {}),
                 })
             except Exception:
                 _ego_log_errors += 1
@@ -3903,6 +3934,38 @@ def build_parser() -> argparse.ArgumentParser:
                          "over 611 replayed flights; ~2 s of averaging, matched to the measured ~2 s "
                          "correlation time of the error). Held through a blackout, then decayed back to "
                          "the raw KF velocity. Validate with scripts/d1_velocity_replay.py.")
+    ap.add_argument("--ego-aim-offsets", type=str, default="",
+                    help="EGO PER-GATE AIM OFFSET, \"gate:lateral,vertical;gate:lateral,vertical\" "
+                         "(0-based gate_index, metres) -- e.g. \"4:0,10;5:0,10\". Shifts the "
+                         "PERCEIVED gate the policy chases, in BODY FLU, ONLY while that "
+                         "gate_index is active and ONLY on slot0. Blank (default) = OFF = "
+                         "byte-identical. SIGNS (measured off the pilot's eight aim_off sessions, "
+                         "NOT assumed): +lateral = RIGHT, +vertical = UP -- so the drone aims/"
+                         "passes right/HIGHER. This is the OPPOSITE vertical sign to "
+                         "--ego-gate-z-bias, which adds to the camera-frame +Y (DOWN); and it is a "
+                         "DIFFERENT FRAME: a camera-frame vertical of b also moves the perceived "
+                         "RANGE by 0.342*b (frames.R_camera_from_body), which the flown deltas do "
+                         "NOT show (|D_fwd| <= 0.28 m at a 10 m offset). PURPOSE: the two invisible "
+                         "obstacles measured ~14.5 m short of gate 4 (14/31 deaths, median 14.56 m) "
+                         "and gate 5 (9/21, median 14.36 m). The pilot flew 4:UNPROBED and "
+                         "\"5:0,10\" five times: 0/5 band deaths vs 9/23 (39%%) on the same leg, but "
+                         "3/5 then died AT gate 5 vs 3/23 baseline -- it RELOCATES the failure, and "
+                         "at n=5 the net pass rate (40%% vs 22%%) is NOT established. Default OFF; "
+                         "fly it as an A/B, not as a fix.")
+    ap.add_argument("--ego-aim-release", type=float, default=12.0,
+                    help="Range (m) at/below which --ego-aim-offsets is released, measured on the "
+                         "held slot0 belief EXCLUDING its own offset (so the gate cannot hold "
+                         "itself open). 12.0 = the median of the pilot's five hand-timed releases "
+                         "(10.58/11.36/12.63/14.67/17.20 m) -- below the 11-16 m obstacle band, so "
+                         "the offset is still up across the obstacle, and clear of the gate so the "
+                         "last 12 m are threaded on the honest lever. The pilot's own rule was a "
+                         "~2.0 s wall-clock hold from the gate change, which does not transfer "
+                         "across speeds; this is the range restatement of the same envelope.")
+    ap.add_argument("--ego-aim-fade", type=float, default=0.0,
+                    help="Linear fade width (m) above --ego-aim-release: the offset scales 1 -> 0 "
+                         "over [release, release+fade]. 0.0 (default) = a HARD STEP = exactly what "
+                         "the pilot flew. Any value > 0 has NEVER FLOWN -- treat the first flights "
+                         "on it as a new arm, not as a continuation of his five.")
     ap.add_argument("--ego-gate-z-bias", type=float, default=0.0,
                     help="EGO perceived-gate VERTICAL bias in METRES, applied at the VISION emission "
                          "(GateSeeker._valid_poses adds it to the camera-frame +Y/down of EVERY emitted "
@@ -4346,6 +4409,11 @@ def main() -> int:
                     # 2026-07-27 D1: vision-referenced lateral-velocity gain as FLOWN (0.0 == OFF
                     # == obs[0:3] is the raw dead-reckoned KF velocity, the pre-D1 behaviour).
                     "ego_vel_fuse": float(getattr(args, "ego_vel_fuse", 0.0)),
+                    # 2026-07-27 per-gate aim offset, as FLOWN ("" == OFF). The release/fade are
+                    # recorded even when the spec is blank so a cohort can be split on them later.
+                    "ego_aim_offsets": str(getattr(args, "ego_aim_offsets", "") or ""),
+                    "ego_aim_release": float(getattr(args, "ego_aim_release", 12.0)),
+                    "ego_aim_fade": float(getattr(args, "ego_aim_fade", 0.0)),
                     "ego_obs_coast": args.ego_obs_coast,
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,
