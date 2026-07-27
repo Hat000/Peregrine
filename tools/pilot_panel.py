@@ -424,18 +424,31 @@ _V1_RECIPE = {
     "ego_det_hold": 0.2,
     "ego_stale_horizon": 0.5,
     "ego_rate_scale": 1.2,
-    # 2026-07-27 (commander): 40.0 -> 30.0. THE POLICY IS TRAINED AT dt = 0.0333 s = 30.03 Hz
-    # (stage ``dual_gate_fullstack_floor_pef16`` sets no dt key, so env.dt falls through to the env
-    # config; ``peregrine_racing_ego.py`` states "the CONTROL tick is env.dt = 0.0333 s"). This knob's
-    # own schema default is 30.0 and its help reads "Control loop Hz (training dt = 30)" -- the pin
-    # was the only thing saying 40, and since ``rate`` is inside ``_recipe_managed_keys()`` EVERY
-    # model-pick re-applied it. Measured over all 680 recorded flights: rate 30 n=189 mean max gate
-    # 2.460 vs rate 40 n=481 1.769 (geometric per-gate survival 0.602 vs 0.494), and on 2026-07-27 a
-    # same-night same-checkpoint pair whose meta.json differ on ``rate_hz`` ALONE went 1.14 -> 3.78
-    # mean gates (n=7 vs 9; treat that magnitude as the small-cohort figure, the corpus-wide
-    # within-checkpoint effect is nearer 1.4x). Mechanism: det_hold/stale_horizon are in SECONDS, so
-    # a faster loop adds coasting ticks per vision fix -- measured fresh-fix fraction 69-91% at 40 Hz
-    # vs 83-99% at 30 Hz.
+    # 2026-07-27 (commander): 40.0 -> 30.0. THE EFFECT IS LARGE AND MEASURED -- but read the
+    # mechanism carefully, because the OBVIOUS one is FALSE and I had it backwards for half a day.
+    #
+    # MEASURED, all 670 recorded flights:  rate 30  n=189  mean max gate 2.460
+    #                                      rate 40  n=481  mean max gate 1.769
+    # plus a same-night same-checkpoint pair whose meta.json differ on ``rate_hz`` ALONE (1.14 ->
+    # 3.78 mean gates, n=7 vs 9 -- a small-cohort figure; the corpus-wide within-checkpoint effect
+    # is nearer 1.4x, so do not re-quote 3.78 as the cost of a single re-arm).
+    #
+    # 🛑 NOT "this matches the training dt". THE LOOP NEVER ACHIEVES ITS COMMANDED RATE -- it is
+    # COMPUTE-BOUND (per-tick work p50 29.5 ms, p90 62.5). Measured achieved rate:
+    #       commanded 30 -> 21.72 Hz median   (|err| from the 30.03 Hz training dt = 8.28)
+    #       commanded 40 -> 25.34 Hz median   (|err| = 4.66)
+    # So commanding 30 lands FURTHER from the training cadence and still wins decisively.
+    #
+    # ✅ THE REAL MECHANISM IS VISION FRESHNESS. A slower commanded loop leaves the perception
+    # pipeline time to deliver a NEW fix per tick instead of the policy re-reading a stale one:
+    #       fresh-fix fraction  commanded 30 -> 94.9%   commanded 40 -> 75.6%   (median, same n)
+    # ⇒ 🚩 A TESTABLE CONSEQUENCE THE WRONG MECHANISM WOULD HAVE HIDDEN: if freshness is what pays,
+    # commanding SLOWER STILL (25, or 20) may be better again -- the "matches training" story said
+    # 30 was the optimum and there was nothing below it to look for. Worth one cohort.
+    #
+    # Why it needed fixing at all: this knob's schema default is 30.0 and its help reads "Control
+    # loop Hz (training dt = 30)"; the pin was the only thing saying 40, and because ``rate`` is
+    # inside ``_recipe_managed_keys()`` EVERY model-pick silently re-applied it.
     # 🛑 DO NOT DELETE THIS KEY. A knob that appears in NO recipe is never reset by a model-pick and
     # rides across model switches at whatever was last typed (the WP5 rationale above). Pinning it
     # CORRECTLY is the fix; removing it re-opens a different hole.

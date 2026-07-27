@@ -3,11 +3,15 @@
 Every recipe key that mirrors a training-side constant is a place where a silent divergence costs
 flights, and this project has now paid for that twice in one file:
 
-  * ``rate`` was pinned 40.0 in _V1_RECIPE while the policy trains at dt = 0.0333 s = 30.03 Hz, the
-    knob's own schema default is 30.0, and its help text literally reads "training dt = 30". Because
-    ``rate`` is inside ``_recipe_managed_keys()`` -- the set a model-pick RESETS -- every model pick
-    silently re-armed the mismatch. Measured over all 680 recorded flights: rate 30 (n=189) reached
-    mean max gate 2.460 against rate 40 (n=481) 1.769.
+  * ``rate`` was pinned 40.0 in _V1_RECIPE while the knob's own schema default is 30.0 and its help
+    reads "training dt = 30". Because ``rate`` is inside ``_recipe_managed_keys()`` -- the set a
+    model-pick RESETS -- every model pick silently re-armed it. Measured over all 670 recorded
+    flights: rate 30 (n=189) reached mean max gate 2.460 against rate 40 (n=481) 1.769.
+    🛑 THE OBVIOUS MECHANISM IS FALSE. The loop is COMPUTE-BOUND and never achieves its commanded
+    rate: commanded 30 achieves 21.72 Hz median, commanded 40 achieves 25.34 -- so commanding 30
+    lands FURTHER from the 30.03 Hz training cadence and still wins. What pays is VISION FRESHNESS
+    (fresh-fix fraction 94.9% at commanded 30 vs 75.6% at 40). These tests therefore pin the VALUE
+    the panel must hand the pilot, and deliberately do NOT assert the cadence-matching rationale.
   * ``ego_stale_horizon`` was pinned 0.6 from _V17 onward while training uses 0.5, so obs[14] =
     clamp(1 - age/horizon, 0, 1) reported ~20% more confidence for the same staleness.
 
