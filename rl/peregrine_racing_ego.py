@@ -2137,6 +2137,16 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
             if self._egorw.pitch_jerk != 0.0:
                 pitch_cmd_delta = action[..., 2] - self.last_action[..., 2]
             pitch_cmd = action[..., 2] if self._egorw.pitch_duty != 0.0 else None
+            # ROLL-CHANNEL quietness inputs (close-in roll limit-cycle fix; None unless the respective term is
+            # armed -> byte-identical off). roll_cmd = channel 1 of the APPLIED command (action = [thrust,
+            # roll, pitch, yaw]; the yaw clamp touches ONLY channel 3, so channel 1 IS the applied roll, read
+            # at the same point as pitch_cmd). roll_cmd_delta = its L1 temporal change (the jerk term reads
+            # it). Defence against the close-in ROLL limit cycle (the growing-amplitude roll-rate oscillation
+            # that slams the gate side); the WIDE free band (0.8) leaves the course's transient turn-in roll free.
+            roll_cmd_delta = None
+            if self._egorw.roll_jerk != 0.0:
+                roll_cmd_delta = action[..., 1] - self.last_action[..., 1]
+            roll_cmd = action[..., 1] if self._egorw.roll_duty != 0.0 else None
             # VELOCITY-JERK smoothness input (R0 still-yaw hover boot 2026-07-12; None unless
             # rw_vel_smooth>0 -> byte-identical off): the CURRENT-step WORLD CoM acceleration
             # accel_curr = (v_t - v_{t-1})/dt (self._prev_vel holds v_{t-1}); accel_prev = the threaded
@@ -2209,6 +2219,10 @@ class PeregrineRacingEgo(PeregrineRacing):          # pragma: no cover - cluster
                 # PITCH-CHANNEL quietness (v1.6; None unless the term is armed): pitch_cmd (applied channel-2
                 # command) -> duty above the free band; pitch_cmd_delta -> L1 jerk. Mirror of the yaw terms.
                 pitch_cmd=pitch_cmd, pitch_cmd_delta=pitch_cmd_delta,
+                # ROLL-CHANNEL quietness (close-in roll limit-cycle fix; None unless the term is armed):
+                # roll_cmd (applied channel-1 command) -> duty above the free band; roll_cmd_delta -> L1
+                # jerk. Mirror of the pitch terms; defends the gate side against the close-in roll limit cycle.
+                roll_cmd=roll_cmd, roll_cmd_delta=roll_cmd_delta,
                 # VELOCITY-JERK smoothness (None unless rw_vel_smooth>0): current + previous world CoM accel.
                 accel_curr=accel_curr, accel_prev=accel_prev,
                 # RECOVERY / DAMPING form (A) (None unless rw_roll_recover>0): the drone->current-gate world

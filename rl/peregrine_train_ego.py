@@ -611,7 +611,8 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
         agg, n_ep = {}, 0
         ys = None                                          # yaw accumulators (lazy init; only when yaw_log)
         ps = None                                          # v1.6 pitch accumulators (lazy; only when yaw_log)
-        roll_sum = 0.0                                      # sum of per-episode peak |roll| (deg); yaw_log
+        rs = None                                          # roll-RATE accumulators (lazy; only when yaw_log)
+        roll_sum = 0.0                                      # sum of per-episode peak |roll| ANGLE (deg); yaw_log
         max_speed = 0.0                                     # v1.5: max GT episode-peak speed over the eval (m/s)
         obs = env.reset()
         with torch.no_grad():
@@ -628,9 +629,10 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
                 _ps = sr.get("peak_speed_mps")
                 if _ps is not None and _ps.numel() > 0:
                     max_speed = max(max_speed, float(_ps.max().item()))
-                if yaw_log:                                    # per-STEP yaw- + pitch-hunting accumulation
+                if yaw_log:                                    # per-STEP yaw- + pitch- + roll-hunting accumulation
                     ys = _accum_yaw(env, phys, m, ys)
                     ps = _accum_pitch(env, phys, m, ps)
+                    rs = _accum_roll(env, phys, m, rs)
                 if m is None:
                     continue
                 n = int(m.sum().item())
@@ -653,9 +655,10 @@ def _run_det_eval(self, env, agent, cfg, tag="", yaw_log=False, delay=None):
                   f"max_speed={max_speed:.2f}")
         else:
             print(f"DET_EVAL[{label}] no episodes completed in {steps} steps max_speed={max_speed:.2f}")
-        if yaw_log:                                        # single greppable YAW_EVAL[...] + PITCH_EVAL[...]
+        if yaw_log:                                        # single greppable YAW_EVAL[...] + PITCH_EVAL[...] + ROLL_EVAL[...]
             _emit_yaw_eval(env, label, delay, steps, ys, roll_sum, n_ep, r)
             _emit_pitch_eval(env, label, steps, ps)
+            _emit_roll_eval(env, label, steps, rs)
         return r
     except Exception as e:  # never let the post-hoc eval fail a completed run
         print(f"DET_EVAL: FAILED ({type(e).__name__}: {e})")
@@ -765,6 +768,61 @@ def _emit_pitch_eval(env, label, steps, ps):
     cmd_absmean = float(ps["cmd_abs_sum"].item()) / max(int(ps["cmd_n"]), 1)
     satur_duty = float(ps["satur_sum"].item()) / max(int(ps["cmd_n"]), 1)
     print(f"PITCH_EVAL[{label}] signflips_per_s={signflips_per_s:.3f} "
+          f"cmd_absmean={cmd_absmean:.4f} satur_duty={satur_duty:.4f}")
+
+
+def _accum_roll(env, phys_action, reset_mask, rs):
+    """Per-STEP ROLL-RATE accumulation for the ROLL_EVAL line (close-in roll limit-cycle fix; parallel to
+    _accum_pitch; only under _run_det_eval's ``yaw_log``). ``phys_action`` is the PHYSICAL action ([thrust,
+    roll, pitch, yaw] rad/s); the roll command is channel 1, and the env clamps ONLY channel 3 (yaw) -- so
+    phys_action[..,1] IS the applied roll command (no clamp to re-apply, unlike yaw). Sign-flips use the SAME
+    0.05 rad/s DEADBAND as yaw/pitch; satur_duty counts ticks at |roll_cmd| >= ROLL_CMD_RAIL (3.0, the fixed
+    authority the roll duty penalty normalises against). ``reset_mask`` zeroes the committed sign at episode
+    boundaries. This is how future checkpoint selection catches the close-in roll LIMIT CYCLE (a high
+    signflips_per_s / satur_duty) that currently passes invisibly. Returns the accumulator dict."""
+    import torch
+    cmd_roll = phys_action[..., 1].reshape(-1)
+    if rs is None:
+        z = torch.zeros_like(cmd_roll)
+        rs = {"last_sign": z.clone(), "flips": z.clone(),
+              "cmd_abs_sum": cmd_roll.new_zeros(()), "cmd_n": 0,
+              "satur_sum": cmd_roll.new_zeros(())}
+    active = cmd_roll.abs() > 0.05                          # DEADBAND (rad/s), same as yaw/pitch
+    s = torch.sign(cmd_roll)
+    prev = rs["last_sign"]
+    flip = active & (prev != 0) & (s != prev)
+    rs["flips"] = rs["flips"] + flip.to(cmd_roll.dtype)
+    rs["last_sign"] = torch.where(active, s, prev)
+    rs["cmd_abs_sum"] = rs["cmd_abs_sum"] + cmd_roll.abs().sum()
+    rs["cmd_n"] += int(cmd_roll.numel())
+    # ROLL SATURATION DUTY: fraction of eval steps at |roll_cmd| >= 3.0 (near the +-3.14 rail). Roll has no
+    # configurable clamp, so the threshold is the fixed authority rail (no clamp-OFF guard needed).
+    rs["satur_sum"] = rs["satur_sum"] + (cmd_roll.abs() >= 3.0).to(cmd_roll.dtype).sum()
+    if reset_mask is not None:
+        rm = reset_mask.reshape(-1).to(torch.bool)
+        rs["last_sign"] = torch.where(rm, torch.zeros_like(rs["last_sign"]), rs["last_sign"])
+    return rs
+
+
+def _emit_roll_eval(env, label, steps, rs):
+    """Compute + print the single greppable ``ROLL_EVAL[...]`` line from the per-step roll-rate accumulators
+    (close-in roll limit-cycle fix; the parallel to PITCH_EVAL, SAME EVAL[label] field=value style so the
+    census sweep greps it identically). Fields: signflips_per_s (0.05 rad/s deadband) + cmd_absmean +
+    satur_duty (|roll_cmd| >= 3.0). This is the checkpoint-selection instrument that finally catches a roll
+    limit cycle (high signflips_per_s / satur_duty) that currently passes invisibly. p2p_near is OMITTED (no
+    near-gate window threaded here), matching PITCH_EVAL."""
+    dt = float(getattr(env, "dt", 0.0) or 0.0)
+    if rs is None or dt <= 0.0:
+        print(f"ROLL_EVAL[{label}] signflips_per_s=nan cmd_absmean=nan satur_duty=nan  "
+              f"(no steps accumulated or dt unavailable)")
+        return
+    n_envs = int(rs["last_sign"].numel())
+    flip_total = float(rs["flips"].sum().item())
+    total_env_s = n_envs * steps * dt
+    signflips_per_s = flip_total / total_env_s if total_env_s > 0 else float("nan")
+    cmd_absmean = float(rs["cmd_abs_sum"].item()) / max(int(rs["cmd_n"]), 1)
+    satur_duty = float(rs["satur_sum"].item()) / max(int(rs["cmd_n"]), 1)
+    print(f"ROLL_EVAL[{label}] signflips_per_s={signflips_per_s:.3f} "
           f"cmd_absmean={cmd_absmean:.4f} satur_duty={satur_duty:.4f}")
 
 

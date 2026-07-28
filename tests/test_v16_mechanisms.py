@@ -214,3 +214,53 @@ def test_pitch_weights_resolve_from_cfg():
     # defaults (absent keys) -> OFF / wide band
     w0 = ER.EgoRewardWeights.from_cfg(type("C", (), {})())
     assert w0.pitch_duty == 0.0 and w0.pitch_jerk == 0.0 and w0.pitch_duty_free_band == 0.6
+
+
+# ================================================================================================
+# Mechanism 6 -- ROLL duty / jerk (2026-07-22 close-in roll limit-cycle fix; the BYTE-FOR-BYTE mirror of
+# the pitch terms on channel 1, WIDER free band 0.8 -- roll is NOT the primary axis; the jerk term is the
+# primary lever, a smooth turn-in pays ~0 while the growing-amplitude limit cycle pays the most).
+# ================================================================================================
+def test_roll_duty_free_band_zero_below_linear_above():
+    # below/at the free band (WIDE 0.8) -> EXACTLY 0 (normal turn-in roll stays untaxed)
+    below = torch.tensor([0.0, 0.4, 0.8], dtype=DT)
+    assert torch.allclose(ER.roll_duty_penalty(below, 0.1, 0.8), torch.zeros(3, dtype=DT))
+    # at the rail (3.0) with band 0.8 -> excess 1.0 -> -rw_roll_duty
+    at_rail = torch.tensor([3.0], dtype=DT)
+    assert ER.roll_duty_penalty(at_rail, 0.1, 0.8).item() == pytest.approx(-0.1, abs=1e-6)
+    # halfway in the excess band: |roll|=1.9 -> excess=(1.9-0.8)/(3.0-0.8)=0.5 -> -0.05
+    mid = torch.tensor([1.9], dtype=DT)
+    assert ER.roll_duty_penalty(mid, 0.1, 0.8).item() == pytest.approx(-0.05, abs=1e-6)
+    assert ER.ROLL_CMD_RAIL == 3.0                                      # same fixed authority rail as pitch
+
+
+def test_roll_duty_off_is_byte_identical_zeros():
+    rc = torch.tensor([0.0, 2.0, 3.0], dtype=DT)
+    assert torch.all(ER.roll_duty_penalty(rc, 0.0, 0.8) == 0)
+
+
+def test_roll_jerk_l1_and_off():
+    d = torch.tensor([0.0, 0.5, -1.0], dtype=DT)
+    assert torch.allclose(ER.roll_jerk_penalty(d, 0.03), -0.03 * d.abs())  # L1: a STEADY roll (0) pays 0
+    assert torch.all(ER.roll_jerk_penalty(d, 0.0) == 0)                    # OFF -> byte-identical
+
+
+def test_roll_penalties_are_negative_and_nonfarmable():
+    # both terms are <= 0 for ANY input (pure penalties, no positive-reward path)
+    rc = torch.tensor([0.0, 0.5, 1.5, 3.0, -2.4], dtype=DT)
+    assert torch.all(ER.roll_duty_penalty(rc, 0.2, 0.8) <= 0)
+    d = torch.tensor([0.0, 0.9, -2.0, 1.1], dtype=DT)
+    assert torch.all(ER.roll_jerk_penalty(d, 0.05) <= 0)
+
+
+def test_roll_weights_resolve_from_cfg():
+    # from_cfg's generic loop must pick up rw_roll_duty / rw_roll_jerk and roll_duty_free_band.
+    class _Cfg:
+        rw_roll_duty = 0.15
+        rw_roll_jerk = 0.04
+        roll_duty_free_band = 0.8
+    w = ER.EgoRewardWeights.from_cfg(_Cfg())
+    assert w.roll_duty == 0.15 and w.roll_jerk == 0.04 and w.roll_duty_free_band == 0.8
+    # defaults (absent keys) -> OFF / wide band
+    w0 = ER.EgoRewardWeights.from_cfg(type("C", (), {})())
+    assert w0.roll_duty == 0.0 and w0.roll_jerk == 0.0 and w0.roll_duty_free_band == 0.8

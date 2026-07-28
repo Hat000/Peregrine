@@ -279,8 +279,11 @@ def test_yaw_eval_appends_satur_duty_after_old_fields():
     src = _TRAIN_SRC
     # the composed line ends with "... n_passed={n_passed:.4f} satur_duty={satur_duty:.4f}"
     assert "satur_duty={satur_duty:.4f}" in src
+    # n_passed={..} is UNIQUE to YAW_EVAL; the satur_duty token is now SHARED by PITCH_EVAL / ROLL_EVAL
+    # (which precede _emit_yaw_eval in file order), so scope the satur_duty search to AFTER n_passed to pin
+    # the YAW line's OWN satur_duty (a bare src.index would grab the pitch line's earlier token).
     i_np = src.index("n_passed={n_passed:.4f}")
-    i_sd = src.index("satur_duty={satur_duty:.4f}")
+    i_sd = src.index("satur_duty={satur_duty:.4f}", i_np)
     assert i_np < i_sd, "satur_duty must come AFTER n_passed (append-only)"
     # old fields precede the new one, in their original order
     for tok in ("signflips_per_s=", "cmd_absmean=", "ach_absmean=", "roll_swing=", "n_passed="):
@@ -302,3 +305,19 @@ def test_det_eval_appends_max_speed_after_old_fields():
         assert src.index(tok) < i_ms, tok
     # no-episodes branch also carries max_speed
     assert "no episodes completed in {steps} steps max_speed={max_speed:.2f}" in src
+
+
+def test_roll_eval_line_emitted_with_three_fields():
+    """ROLL_EVAL (close-in roll limit-cycle fix, 2026-07-22): the greppable line carries the SAME three
+    fields as PITCH_EVAL (signflips_per_s / cmd_absmean / satur_duty) in BOTH the data and the nan/no-data
+    branch, and is WIRED into _run_det_eval alongside _emit_pitch_eval so checkpoint selection finally gates
+    the roll limit cycle that currently passes invisibly."""
+    src = _TRAIN_SRC
+    # the composed DATA line (split across two f-string fragments, exactly as PITCH_EVAL is)
+    assert "ROLL_EVAL[{label}] signflips_per_s={signflips_per_s:.3f} " in src
+    assert "cmd_absmean={cmd_absmean:.4f} satur_duty={satur_duty:.4f}" in src
+    # the nan/no-data branch is also parseable with the same three fields
+    assert "ROLL_EVAL[{label}] signflips_per_s=nan cmd_absmean=nan satur_duty=nan" in src
+    # WIRED: accumulated per step (channel 1) and emitted alongside the pitch line
+    assert "rs = _accum_roll(env, phys, m, rs)" in src
+    assert "_emit_roll_eval(env, label, steps, rs)" in src
