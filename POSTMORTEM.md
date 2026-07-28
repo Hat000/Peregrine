@@ -12,24 +12,31 @@ everything lives. It is written for whoever opens this repo next — including u
 
 | | |
 |---|---|
-| Recorded flights | **697** |
+| Run directories in `data/runs/` | **729** |
+| Recorded flights (≥5 ticks) | **699** |
 | All-time best | **gate 9** (`data/runs/20260722_031742_record9_cfg_f1`) |
 | Flights reaching gate 8+ | 3 |
 | Flights reaching gate 6+ | 18 |
-| Flights reaching gate 4+ | 148 |
-| Corpus mean max gate | 1.964 |
+| Flights reaching gate 4+ | 150 |
+| Corpus mean max gate | 1.971 |
 
-Max-gate distribution across all 697 flights:
+Max-gate distribution across all 699 flights:
 
 ```
-gate  0:  179    gate  5:   49
+gate  0:  179    gate  5:   50
 gate  1:  159    gate  6:    9   <-- the wall
 gate  2:  114    gate  7:    6
 gate  3:   97    gate  8:    1
-gate  4:   81    gate  9:    2
+gate  4:   82    gate  9:    2
 ```
 
-**The wall is at gate 6.** 49 flights reached gate 5; 9 reached gate 6. Nothing ever passed gate 9,
+Every number in this section recomputes from the repo itself — the whole corpus is on this branch:
+
+```
+python3 scripts/adjudicate/corpus_summary.py
+```
+
+**The wall is at gate 6.** 50 flights reached gate 5; 9 reached gate 6. Nothing ever passed gate 9,
 so gates 10–19 were never observed at all — no obstacle survey, no failure data, nothing. Any claim
 about the second half of the course is extrapolation.
 
