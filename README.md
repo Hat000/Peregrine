@@ -1,5 +1,20 @@
 # AI Grand Prix — autonomy stack
 
+> ## 🏁 This project is CLOSED (2026-07-28)
+>
+> The competition ended without reaching the 20-gate goal. The best flight of 699 recorded
+> reached **gate 9**, and there was a hard wall at gate 6.
+>
+> **→ Start with [`POSTMORTEM.md`](POSTMORTEM.md).** It carries the honest result, everything
+> that was established, everything that was refuted (with the numbers), and — most usefully —
+> the thirteen ways the instruments produced confident, reproducible, wrong answers.
+>
+> Every number in it recomputes from this repo: `python3 scripts/adjudicate/corpus_summary.py`
+>
+> All historical branches are preserved as `archive/*` tags rather than branches
+> (`git tag -l 'archive/*'`, then `git switch -c <name> archive/<name>` to reopen one).
+> Nothing was deleted.
+
 Anduril AI Grand Prix entry. Autonomous navigation of a simulated drone
 through a sequence of gates over a MAVLink + UDP-JPEG interface.
 
@@ -8,9 +23,13 @@ through a sequence of gates over a MAVLink + UDP-JPEG interface.
 
 ## Layout
 - `src/racer/` — autonomy stack (perception, control, frames, MAVLink client)
-- `scripts/` — smoke tests and utilities
-- `tests/` — unit tests
-- `data/` — recorded runs (gitignored)
+- `scripts/` — smoke tests, utilities, and the cohort-adjudication tooling
+  (`adjudicate/`, `vision_horizon/`, `postimpact/` — all accept `PEREGRINE_RUNS=<path>`)
+- `tests/` — unit tests (2077 passing)
+- `data/runs/` — **the flight corpus: 729 run directories, 699 recorded flights, committed.**
+  Every claim in `POSTMORTEM.md` is recomputable from it.
+- `handoff/` — the three final investigation reports (geometric detectability, the two
+  obstacles, and the speed refutation)
 
 ## Setup (Python 3.13)
 
