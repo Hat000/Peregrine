@@ -37,7 +37,7 @@ WHAT IS REPORTED.
     is the empirical byte-identity proof for the default.
   * Tick-to-tick |delta vertical| of the fed gate lever (median / p90 / p99), bucketed by forward
     distance -- the jitter the policy's vertical target actually carries. Only pairs where BOTH
-    ticks are FED (the training keep-mask: det_proxy AND conf>0) and the gate index is unchanged
+    ticks are FED (the training keep-mask: det_proxy AND det_geom AND conf>0) and the gate index is unchanged
     count, because a masked tick feeds a structural zero, not a noisy target.
   * Belief-vs-fix tracking at long range: median |blended belief - raw fix| at fix ticks in the 7-9 m
     band. A low gain that had gone stale would show up here as a growing offset.
@@ -165,9 +165,14 @@ def run_builder(builder, ticks: list[dict]) -> list[dict]:
             obs=obs,
             gate_index=t["gate_index"],
             rel_flu=(None if rel is None else np.asarray(rel, dtype=np.float64)),
-            # FED == the training keep-mask the builder just applied (det_proxy AND conf>0): only
-            # then does the lever reach the policy rather than a structural zero.
-            fed=bool(d.get("det_proxy")) and float(d.get("conf") or 0.0) > 0.0,
+            # FED == the training keep-mask the builder just applied: only then does the lever
+            # reach the policy rather than a structural zero. The det is det_proxy AND det_geom --
+            # ``det_geom`` (--ego-det-geometric, 2026-07-27) is ABSENT from every log written with
+            # the knob off, so the True default leaves this expression identical on the whole
+            # historical corpus while keeping it honest on an ARMED flight, where reading det_proxy
+            # alone would call a geometrically-masked tick "fed".
+            fed=(bool(d.get("det_proxy")) and bool(d.get("det_geom", True))
+                 and float(d.get("conf") or 0.0) > 0.0),
             pose_seen=bool(d.get("pose_seen")),
         ))
     return out

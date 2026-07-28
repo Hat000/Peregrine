@@ -470,12 +470,44 @@ def _map_update(builder, gate_index, t_ns=0):
 
 def test_sector_map_feeds_static_bucket_before_any_fix():
     """'map' latches coarse_map[active_gate_index] into obs[9:11] on the gate-change boundary —
-    live through the blind approach (pose=None), promoting on advance, clamping past the last row."""
+    live through the blind approach (pose=None), promoting on advance.
+
+    PAST THE LAST MAPPED GATE THIS NOW READS (0, 0), NOT THE LAST ROW (changed 2026-07-27). The old
+    assertion here pinned a CLAMP, and that was a deploy-only invention: training's sector array is
+    generated to cover every gate, so there is no trained behaviour for "past the map" to imitate.
+    The map is hand-authored from gates we have FLOWN, so it necessarily ends at our deepest flight
+    (9 rows against a 20-gate course), and clamping fed every unmapped gate the last surveyed row as
+    though it were a survey result. On the shipped map that is harmless only by luck — the last row
+    is [0, 0] — but the moment the map is extended and its final row carries a real turn, all the
+    unmapped gates would inherit a confident WRONG turn prior, on exactly the gates we have never
+    reached. obs[9:11] is the "where to look before the gate is visible" cue, so that costs
+    acquisition time where we can least afford it. (0, 0) is the honest value and is what
+    sector_mode='zero' feeds. See tests/test_coarse_map_past_last_row.py."""
     cmap = np.array([[-1.0, 1.0], [0.0, 0.0], [1.0, -1.0]])   # g0 right-up, g1 straight, g2 left-down
     b = EgoObsBuilder(EgoObsBuilderConfig(sector_mode="map", coarse_map=cmap, virtual_flip=False))
     np.testing.assert_allclose(_map_update(b, 0, 0)[9:11], [-1.0, 1.0])      # blind, no fix yet
     np.testing.assert_allclose(_map_update(b, 1, 1_000_000)[9:11], [0.0, 0.0])   # promote
-    np.testing.assert_allclose(_map_update(b, 9, 2_000_000)[9:11], [1.0, -1.0])  # clamp to last row
+    np.testing.assert_allclose(_map_update(b, 9, 2_000_000)[9:11], [0.0, 0.0])  # unmapped -> unknown
+
+
+def test_the_unmapped_sector_change_is_a_NO_OP_on_the_shipped_map():
+    """Zero flight risk today, which is why it can land without a cohort: the shipped map's last row
+    IS [0, 0], so clamping and (0, 0) are numerically identical for every gate past the map. The
+    change buys future safety, not present behaviour — assert that explicitly so nobody has to
+    re-derive it before flying."""
+    import json
+    from pathlib import Path
+    rows = json.loads(
+        (Path(__file__).resolve().parents[1] / "configs" / "vq2_coarse_map.json").read_text(
+            encoding="utf-8"))["sector"]
+    assert list(rows[-1]) == [0, 0], (
+        "the shipped map's last row is no longer [0,0]; the unmapped-gate change is no longer a "
+        "no-op and the next cohort must be treated as a behaviour A/B"
+    )
+    cmap = np.array(rows, dtype=float)
+    b = EgoObsBuilder(EgoObsBuilderConfig(sector_mode="map", coarse_map=cmap, virtual_flip=False))
+    for gi in (len(rows), len(rows) + 3, 19):
+        np.testing.assert_allclose(_map_update(b, gi, gi * 1_000_000)[9:11], rows[-1])
 
 
 def test_sector_map_requires_valid_coarse_map():

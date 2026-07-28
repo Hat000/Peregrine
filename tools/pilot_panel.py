@@ -266,6 +266,26 @@ SCHEMA = [
     dict(key="ego_obs_coast", flag="--ego-obs-coast", action="boolopt", ui="bool",
          group="Ego perception", default=False,
          help="Coast the rel_pos + decaying confidence through blackout (only for coast-trained ckpts)."),
+    dict(key="ego_det_geometric", flag="--ego-det-geometric", action="boolopt", ui="bool",
+         group="Ego perception", default=False,
+         help="GEOMETRIC gate-detectability instead of the clock alone (default OFF, UNFLOWN). The "
+              "det that masks obs[11:16] becomes (age < ego_det_hold) AND training's OWN 8-keypoint "
+              "rule -- 4 inner + 4 outer gate corners projected through the real intrinsics and the "
+              "+20 deg mount, >=4 in frame, 30 m cap -- run on the held belief. WHY: training "
+              "recomputes that test every tick and zeros slot0 on 100% of ticks inside 1.0 m, but "
+              "the deploy stand-in is a CLOCK that every fresh fix resets, so it mostly never fires "
+              "before the gate plane. Measured over 899 confirmed passes: slot0 stays filled through "
+              "the whole blind run-in on 65.7% of approaches, 94% at the last tick before the "
+              "advance -- the policy flies the last ~1.8 m (where the outcome is decided) on a "
+              "coasted lever it never trained on. ON, the lever zeros at ~1.8 m instead, which is "
+              "what training shows the policy. Verified against training's own function: median "
+              "cutoff 1.861 m vs 1.861 m over 398 random approaches. REPLAYED over 564 recorded "
+              "flights: it clears 571 of 571 filled ticks inside 1.0 m (exactly training's state) "
+              "while disagreeing with the REAL detector on 0.0-0.2% of ticks in every range bin "
+              "from 3 to 23 m -- it blinds nothing outside the band it is for. It can only mask "
+              "MORE than today, never less. Watch det_geom / det_corners in ego_obs.jsonl (corners should "
+              "decay smoothly and cross 4 near 1.8 m). NOT mutually exclusive with the aim offset -- "
+              "the geometry is read off the HONEST lever, before the dodge is injected."),
     dict(key="ego_kp_persist", flag="--ego-kp-persist", action="value", ui="number",
          group="Ego perception", default=0, step=1,
          help="Keypoint-persistence debounce: N consecutive fresh frames before a fix transmits. 0/1 = off."),
@@ -294,9 +314,19 @@ SCHEMA = [
          group="Ego control", default="",
          help="Speed governor \"SOFT,HARD\" m/s -- or a single number = hard cap at that speed (blank or 0 = off). Caps the OVER-hover "
               "thrust as speed runs SOFT->HARD (hard-clamps to hover at/above HARD); altitude-neutral -- "
-              "only ever caps TOWARD hover, never forces a sink. Universal ~5 m/s cap on ANY model, no "
-              "retrain: try 5,6.5 (smooth ramp) or 5 (abrupt hard cap). Watch gov / gov_engaged in ego_obs.jsonl (is it braking? altitude "
-              "hold through the band?). NEEDS commit 293ffee."),
+              "only ever caps TOWARD hover, never forces a sink. "
+              "\U0001F6D1 DO NOT ARM THIS AT 5,6.5 -- the old help said 'try 5,6.5' and that value is "
+              "HARMFUL. Adjudicated 2026-07-27 over n=1910 per-gate approaches in 92 "
+              "(checkpoint x rate x gate) strata: per-gate survival vs speed is an INVERTED U peaking "
+              "at 7.0-8.0 m/s (p=0.839, speed^2 z=-3.86) and the fleet already flies 6.58 m/s median -- "
+              "BELOW the peak. A 5,6.5 governor engages on 99.6% of approaches and drags the fleet "
+              "0.839 -> 0.731. SLOWING IS THE WRONG SIGN: the blind run-in is a FOV-FIXED ~2.0 m of "
+              "DISTANCE (last-sighted range flat 1.86-2.08 m across speed quintiles 2.56-16.52 m/s, "
+              "corr(speed, last-sighted) = +0.006), so slowing only stretches blind TIME -- and blind "
+              "time kills independently (b=-2.31, z=-2.67). 8.0 -> 6.0 m/s = +34% open-loop flight. "
+              "Never flown in 680 recorded flights. If armed at all, only a TAIL-CLIP 8.5,9.5 that "
+              "cannot touch the 6-8 m/s operating point. Watch gov / gov_engaged in ego_obs.jsonl. "
+              "NEEDS commit 293ffee."),
     dict(key="ego_yaw_clamp", flag="--ego-yaw-clamp", action="value", ui="number",
          group="Ego control", default=0.7, step=0.05,
          help="Hard yaw-rate command clip (rad/s, 0=off). MANDATORY 0.7 for despin ckpts."),
@@ -410,6 +440,13 @@ _V1_RECIPE = {
     # so a stale ride-in is a wrong-target flight. Pinned EMPTY (never active): a recipe may not ARM
     # an aim offset, and picking any model clears one the pilot set for a previous model.
     "ego_aim_offsets": "",
+    # 2026-07-27 (commander): pinned OFF at the _V1 base for the SAME anti-ride-in reason as the
+    # three above -- ``_recipe_managed_keys()`` is the union of recipe pins and is exactly the set a
+    # model-pick RESETS, so a knob in NO recipe rides across model switches at whatever was last
+    # typed. This one changes WHEN THE POLICY STOPS SEEING THE GATE, so a stale ride-in would
+    # silently re-scope every cohort taken after it. Pinned False (never armed by a recipe): arming
+    # it is a deliberate per-flight act, and picking any model clears it.
+    "ego_det_geometric": False,
     "seeker_detector": "yolo",
     "seeker_weights": "C:/Users/Shadow/Peregrine/models/vq2_partial_m_2026-07-06_fp16_384x640.engine",
     "ego_assist_thrust": 1.3,
@@ -424,7 +461,35 @@ _V1_RECIPE = {
     "ego_det_hold": 0.2,
     "ego_stale_horizon": 0.5,
     "ego_rate_scale": 1.2,
-    "rate": 40.0,
+    # 2026-07-27 (commander): 40.0 -> 30.0. THE EFFECT IS LARGE AND MEASURED -- but read the
+    # mechanism carefully, because the OBVIOUS one is FALSE and I had it backwards for half a day.
+    #
+    # MEASURED, all 670 recorded flights:  rate 30  n=189  mean max gate 2.460
+    #                                      rate 40  n=481  mean max gate 1.769
+    # plus a same-night same-checkpoint pair whose meta.json differ on ``rate_hz`` ALONE (1.14 ->
+    # 3.78 mean gates, n=7 vs 9 -- a small-cohort figure; the corpus-wide within-checkpoint effect
+    # is nearer 1.4x, so do not re-quote 3.78 as the cost of a single re-arm).
+    #
+    # 🛑 NOT "this matches the training dt". THE LOOP NEVER ACHIEVES ITS COMMANDED RATE -- it is
+    # COMPUTE-BOUND (per-tick work p50 29.5 ms, p90 62.5). Measured achieved rate:
+    #       commanded 30 -> 21.72 Hz median   (|err| from the 30.03 Hz training dt = 8.28)
+    #       commanded 40 -> 25.34 Hz median   (|err| = 4.66)
+    # So commanding 30 lands FURTHER from the training cadence and still wins decisively.
+    #
+    # ✅ THE REAL MECHANISM IS VISION FRESHNESS. A slower commanded loop leaves the perception
+    # pipeline time to deliver a NEW fix per tick instead of the policy re-reading a stale one:
+    #       fresh-fix fraction  commanded 30 -> 94.9%   commanded 40 -> 75.6%   (median, same n)
+    # ⇒ 🚩 A TESTABLE CONSEQUENCE THE WRONG MECHANISM WOULD HAVE HIDDEN: if freshness is what pays,
+    # commanding SLOWER STILL (25, or 20) may be better again -- the "matches training" story said
+    # 30 was the optimum and there was nothing below it to look for. Worth one cohort.
+    #
+    # Why it needed fixing at all: this knob's schema default is 30.0 and its help reads "Control
+    # loop Hz (training dt = 30)"; the pin was the only thing saying 40, and because ``rate`` is
+    # inside ``_recipe_managed_keys()`` EVERY model-pick silently re-applied it.
+    # 🛑 DO NOT DELETE THIS KEY. A knob that appears in NO recipe is never reset by a model-pick and
+    # rides across model switches at whatever was last typed (the WP5 rationale above). Pinning it
+    # CORRECTLY is the fix; removing it re-opens a different hole.
+    "rate": 30.0,
     "virtual_flip": True,
 }
 
@@ -464,7 +529,14 @@ _V17_RECIPE = {
     **_V16_RECIPE,
     "ego_pitch_clamp": 20.0,      # baseline-matched; fence OFF at rest, same regime as the recipe's 0
     "ego_gate_z_bias": 0.4,       # baseline-matched (the record flew it; _V16_RECIPE pins 0.0)
-    "ego_stale_horizon": 0.6,     # v1.7 notes state 0.6 as the v1.6 recipe value; _V16_RECIPE says 0.5
+    # 2026-07-27 (commander): 0.6 -> 0.5, matching TRAINING. The v1.7 note that put 0.6 here cited the
+    # v1.6 recipe, but _V16_RECIPE pins 0.5 and so does training (``ego_estimator.py`` EgoEstimatorCfg
+    # stale_horizon_s = 0.5); the deploy docstring at ``src/racer/ego_obs.py`` already CLAIMS 0.5.
+    # obs[14] = clamp(1 - age/stale_horizon, 0, 1), so flying 0.6 against a 0.5-trained policy reports
+    # ~20% MORE confidence for the same staleness -- with det_hold 0.2 the wire's obs[14] floor moves
+    # 0.667 -> 0.600, onto training's coasted-confidence value at the gate plane (~0.52-0.60).
+    # Small (<=0.07 on one channel) but free, and the same class of silent drift as the ``rate`` pin.
+    "ego_stale_horizon": 0.5,
     "ego_assist_thrust": 1.1,     # baseline-matched (_V16_RECIPE pins 1.3)
 }
 
@@ -555,7 +627,22 @@ CURRENT_CKPTS = {
 # ON, that is the first thing to try. FLAGGED to Fengyou, not silently chosen.
 _V19_RECIPE = {**_V18_RECIPE, "ego_gate_z_bias": 0.30}
 
+# ego-ckpts-v20-2026-07-26 (v2.0) -- 2026-07-27 (commander): v20 HAD NO RECIPE ENTRY AT ALL. Its six
+# flown sessions therefore fell through to whatever the panel last held: all 6 ran rate 40 (the old
+# _V1_RECIPE pin) and ``ego_pitch_clamp`` drifted 20/20/20/0/0/30 ACROSS THE COHORT -- so the shipped
+# v2.0 lead has never been flown at the correct loop rate, and its six flights are not one cohort.
+# A checkpoint with no MODEL_DEFAULTS entry gets no reset and no recipe pins, which is exactly the
+# hole ``_recipe_managed_keys()`` exists to close. Inherits v19 (its training lineage) unchanged;
+# the ONE thing v2.0 changed was the training course structure, which no deploy knob mirrors.
+_V20_RECIPE = {**_V19_RECIPE}
+
 MODEL_DEFAULTS = {
+    # ego-ckpts-v20-2026-07-26 -- v2.0. Vert env 5.884 vs v19Ws0 4.893 (+20%), flat 5.973 vs 5.880
+    # => v19 course-FRAGILE, v20 course-ROBUST. NOT yet the deploy lead: every wire flight it has is
+    # contaminated by the rate-40 pin above, so it must be RE-FLOWN at rate 30 before any comparison
+    # against v19Ws0 means anything.
+    "v20Vs0_actor.pth": {**_V20_RECIPE, "label": "v20pick_Vs0"},
+    "v20Vs1_actor.pth": {**_V20_RECIPE, "label": "v20pick_Vs1"},
     # ego-ckpts-v19-2026-07-24  -- ★ DEPLOY LEAD. See _V19_RECIPE above. W lineage; the Q arms were
     # rejected (dive / over-damp) and not shipped. Re-fly rule + settled GO + contact=INVALID as v18.
     "v19Ws0_actor.pth": {**_V19_RECIPE, "label": "v19pick_Ws0"},

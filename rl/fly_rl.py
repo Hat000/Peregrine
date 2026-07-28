@@ -623,6 +623,38 @@ def _parse_recipe_drift(spec: str | None) -> list:
     return [k for k in (str(spec or "")).split(",") if k.strip()]
 
 
+def _meta_args_snapshot(args) -> dict:
+    """EVERY resolved CLI value, as flown. The curated keys below this are a hand-picked SUBSET, and
+    that subset is a provenance HOLE: on 2026-07-27 the panel's ``recipe_drift`` correctly flagged
+    ``ego_assist_thrust`` as drifted on 7 of 9 flights, but no curated key recorded its VALUE, so the
+    flown number was UNRECOVERABLE from the log and silently confounded the cohort. A curated list can
+    only ever record the knobs someone remembered; this records the ones nobody thought of.
+
+    Deliberately GENERIC (``vars(args)`` filtered to JSON-safe scalars) so it needs no maintenance when
+    a knob is added -- the failure mode being fixed is exactly "a new knob was added and the recorder
+    was not updated". Paths are str()'d; anything unserializable is dropped rather than raising, because
+    a recorder that can throw would cost a flight. ADDITIVE: every existing curated key stays exactly
+    where it was, so no reader of an older meta.json changes behaviour."""
+    out = {}
+    try:
+        raw = vars(args)
+    except Exception:
+        return out
+    for k, v in sorted(raw.items()):
+        if k.startswith("_"):
+            continue
+        try:
+            if v is None or isinstance(v, (bool, int, float, str)):
+                out[k] = v
+            elif isinstance(v, (list, tuple)):
+                out[k] = [x if isinstance(x, (bool, int, float, str, type(None))) else str(x) for x in v]
+            else:
+                out[k] = str(v)
+        except Exception:
+            continue
+    return out
+
+
 def _meta_coarse_rows(args) -> "list | None":
     """The ACTUAL sector rows read from the flown coarse-map file (int [[horiz,vert], ...]), or None
     when no map is set / it fails to load -- so meta.json records WHICH map this flight actually flew."""
@@ -2518,6 +2550,11 @@ def _fly_ego(client, actor, args, flight_idx: int,
         stale_horizon_s=args.ego_stale_horizon,
         det_hold_s=args.ego_det_hold,
         obs_coast=args.ego_obs_coast,
+        # GEOMETRIC DETECTABILITY (2026-07-27): False (default) == OFF == byte-identical. ON, the
+        # det used for obs masking becomes (age < det_hold) AND training's own 8-keypoint
+        # gate_detectable rule evaluated on the held belief -- the blind-run-in blackout the time
+        # proxy alone never fires. See racer.ego_obs.gate_detectable_geometric.
+        det_geometric=bool(getattr(args, "ego_det_geometric", False)),
         virtual_flip=args.virtual_flip,
         slot1_enabled=bool(args.ego_slot1),  # WINDOW=2 next-gate slot (multi-gate _pef champions).
                                              # OFF (default) => single-slot n_gates=1, slot1 zeros
@@ -2555,7 +2592,10 @@ def _fly_ego(client, actor, args, flight_idx: int,
           f"seeker_propagate_range={bool(getattr(args, 'seeker_propagate_range', False))} "
           f"vel_fuse={float(getattr(args, 'ego_vel_fuse', 0.0)):g}"
           f"{' (OFF -- obs[0:3] is raw dead-reckoning)' if float(getattr(args, 'ego_vel_fuse', 0.0)) <= 0.0 else ' (vision-referenced LATERAL velocity ON)'} "
-          f"obs_coast={args.ego_obs_coast} sector_mode={args.ego_sector_mode} "
+          f"obs_coast={args.ego_obs_coast} "
+          f"det_geometric={bool(getattr(args, 'ego_det_geometric', False))}"
+          f"{' (8-keypoint training mirror ANDed into det -- UNFLOWN)' if getattr(args, 'ego_det_geometric', False) else ''} "
+          f"sector_mode={args.ego_sector_mode} "
           f"slot1={args.ego_slot1}{' (SOURCE: seeker tg+1 next-gate track)' if args.ego_slot1 else ''} "
           f"pitch_clamp={args.ego_pitch_clamp:g}deg roll_clamp={args.ego_roll_clamp:g}deg "
           f"yaw_clamp={args.ego_yaw_clamp:g} "
@@ -2970,7 +3010,12 @@ def _fly_ego(client, actor, args, flight_idx: int,
             sim_time_ns=st, gate_index=gate_index, R_frd2ned=R_frd2ned,
             vel_ned=nav_state.velocity_ned, gyro_frd=s.gyro_body,
             pose=pose, next_pose=next_pose, last_normed_thrust=last_normed)
-        if not builder.last_diag.get("det_proxy", False):
+        # n_masked must count what the OBS masking actually did, not just the age proxy: with
+        # --ego-det-geometric armed the det is (det_proxy AND det_geom). ``det_geom`` is absent
+        # from last_diag whenever the knob is off, and .get's True default makes this expression
+        # identical to the old one on the default path.
+        if not (builder.last_diag.get("det_proxy", False)
+                and builder.last_diag.get("det_geom", True)):
             n_masked += 1
         pol_dbg: dict = {}   # captures the RAW policy output (actor mean + rescaled action, pre-clamp)
         # --- post-gate STARE-BRAKE takeover (--ego-arrestor). When engaged it OWNS the wire this
@@ -3101,6 +3146,13 @@ def _fly_ego(client, actor, args, flight_idx: int,
                     # so scripts/d1_velocity_replay.py + scripts/replay_fix_gain.py keep cutting
                     # these ticks unchanged. NOTE rel_flu above already has it baked in.
                     **({"aim_off": d["aim_off"]} if "aim_off" in d else {}),
+                    # GEOMETRIC DETECTABILITY (only present when --ego-det-geometric is set, so the
+                    # default log stays byte-identical): ``det_geom`` = training's 8-keypoint rule
+                    # on the held belief, ``det_corners`` = the 0..8 in-frame count. The det the obs
+                    # actually used this tick is det_proxy AND det_geom; det_proxy still means the
+                    # AGE proxy alone, so every existing analysis of that field is unchanged.
+                    **({"det_geom": d["det_geom"], "det_corners": d["det_corners"]}
+                       if "det_geom" in d else {}),
                 })
             except Exception:
                 _ego_log_errors += 1
@@ -3775,6 +3827,22 @@ def build_parser() -> argparse.ArgumentParser:
                          "hard-masked at 0. Default 0.5 = the champion's EgoEstimatorConfig "
                          "default (the deployed stage overrides nothing). Match the TRAINED "
                          "value of the checkpoint being flown.")
+    ap.add_argument("--ego-det-geometric", action=argparse.BooleanOptionalAction, default=False,
+                    help="EGO GEOMETRIC DETECTABILITY (default OFF == byte-identical). ON, the det "
+                         "that masks obs[11:16] becomes (age < --ego-det-hold) AND training's own "
+                         "8-keypoint gate_detectable rule (4 inner + 4 outer corners projected "
+                         "through the real intrinsics + 20 deg mount, >=4 in frame, 30 m cap) "
+                         "evaluated on the HELD belief. WHY: training recomputes det from geometry "
+                         "every tick and masks slot0 on 100% of ticks inside 1.0 m; the deploy time "
+                         "proxy is reset by every fresh fix, so it mostly never fires before the "
+                         "gate plane -- measured over 899 confirmed passes, slot0 stays filled "
+                         "through the whole blind run-in on 65.7% of approaches. The policy is fed "
+                         "a coasted lever in the exact interval where every gate outcome is "
+                         "decided, a state it never trained on. Masks at ~1.8 m on a flown "
+                         "approach (training parity verified to +-0.25 m over 398 random "
+                         "geometries; replayed over 564 recorded flights it clears 571/571 filled "
+                         "ticks inside 1.0 m and disagrees with the real detector on 0.0-0.2% of "
+                         "ticks beyond 3 m). It can only mask MORE than today, never less. UNFLOWN.")
     ap.add_argument("--ego-obs-coast", action=argparse.BooleanOptionalAction, default=False,
                     help="EGO obs blackout-coast (matches training +env.ego_obs_coast): when ON "
                          "the det-proxy hard-mask is dropped and the coasted rel_pos + decaying "
@@ -4416,6 +4484,9 @@ def main() -> int:
                     "ego_aim_release": float(getattr(args, "ego_aim_release", 12.0)),
                     "ego_aim_fade": float(getattr(args, "ego_aim_fade", 0.0)),
                     "ego_obs_coast": args.ego_obs_coast,
+                    # RECORD THE VALUE, not just the name: a knob whose value the meta never stores
+                    # silently confounds a cohort (the ego_assist_thrust provenance hole).
+                    "ego_det_geometric": bool(getattr(args, "ego_det_geometric", False)),
                     "ego_rate_scale": args.ego_rate_scale,
                     "ego_sector_mode": args.ego_sector_mode,
                     "ego_coarse_map": args.ego_coarse_map,
@@ -4436,6 +4507,9 @@ def main() -> int:
                     "coarse_map_rows": _meta_coarse_rows(args),
                     "seeker_constants": _meta_seeker_constants(args),
                     "recipe_drift": _parse_recipe_drift(getattr(args, "recipe_drift", "")),
+                    # 2026-07-27: EVERY resolved arg, so a drifted knob can never again be named by
+                    # recipe_drift while its VALUE is unrecoverable (see _meta_args_snapshot).
+                    "args_all": _meta_args_snapshot(args),
                     # the ACTUAL detector this flight flew -> renders overlay the SAME engine
                     # (tools/render_yolo.py reads these), not a stale hardcoded default.
                     # ALSO top-level (it is nested under seeker_constants too): the renderer read it
