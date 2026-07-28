@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nocturne-shell"
+version = "0.1.0"
+description = "A screenless, listen-and-type shell for Claude Code."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "claude-agent-sdk>=0.1.0",
+    "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+# Default local voice + earcon mixing on non-Windows.
+sapi = ["pyttsx3>=2.90"]
+# Local neural TTS + ambient fallback + non-Windows earcons.
+audio = ["sounddevice>=0.4", "numpy>=1.23"]
+# Cloud voice needs nothing extra (uses stdlib urllib) beyond audio playback.
+spotify = ["spotipy>=2.23"]
+# Everything.
+all = ["pyttsx3>=2.90", "sounddevice>=0.4", "numpy>=1.23", "spotipy>=2.23"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+nocturne = "nocturne.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["nocturne*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

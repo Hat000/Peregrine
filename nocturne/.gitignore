@@ -1,0 +1,19 @@
+# Nocturne
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Generated at runtime (earcons regenerate on first launch)
+assets/earcons/default/*.wav
+
+# Local secrets / caches
+.spotify-cache
+nocturne.local.toml
+
+# Session transcripts
+logs/
+
+# Downloaded TTS binaries + neural voice models (large; fetched via scripts/setup_piper.ps1)
+voices/

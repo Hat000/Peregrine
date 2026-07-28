@@ -1,0 +1,79 @@
+# Nocturne configuration. Every field is optional; omitted fields use defaults.
+# Copy to ./nocturne.toml, ~/.config/nocturne/nocturne.toml, or point
+# $NOCTURNE_CONFIG / --config at it.
+
+[tts]
+# backend: "auto" picks the best available. Or force one:
+#   "sapi"       Windows/OS voice via pyttsx3 (zero-download)
+#   "piper"      local neural (set piper_model)
+#   "elevenlabs" cloud (set ELEVENLABS_API_KEY)
+#   "claude"     built-in system voice, no dependencies at all
+backend = "piper"    # local neural voice (warm, natural); set up under voices/
+voice = ""            # backend-specific voice id/name; "" = default
+rate = 1.0            # 1.0 = the voice's normal pace; raise toward 1.4 once you want it brisker
+volume = 0.9
+piper_model = "C:/Users/Fengy/Downloads/Projects/Anduril/.claude/worktrees/cool-faraday-3f7e21/nocturne/voices/models/en_US-amy-medium.onnx"
+piper_exe = "C:/Users/Fengy/Downloads/Projects/Anduril/.claude/worktrees/cool-faraday-3f7e21/nocturne/voices/piper/piper.exe"
+# elevenlabs_voice_id = "21m00Tcm4TlvDq8ikWAM"
+# elevenlabs_model = "eleven_turbo_v2_5"
+
+[speech]
+verbosity = "normal"        # "quiet" | "normal" | "verbose"
+speak_tool_use = true       # "editing config.py"
+speak_tool_results = true   # "12 tests passed"
+suppress_code_blocks = true # code/diff/log blocks announced, never read aloud
+max_result_chars = 2000
+
+[spotify]
+enabled = true
+# Set these env vars (not the values here): SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+redirect_uri = "http://127.0.0.1:8888/callback"
+thinking_context_uri = ""   # e.g. a playlist URI; "" = resume whatever was playing
+device_id = ""              # "" = current active device (needs Premium + an open device)
+restore_on_exit = true
+fade_ms = 900
+duck_instead_of_pause = false
+duck_volume = 20
+
+[audio]
+ambient_fallback = ""       # loopable wav used when Spotify is unavailable; "" = generated pad
+earcon_set = "default"
+earcon_volume = 0.5
+
+[context]
+window_tokens = 200000      # 1000000 for 1M-context models
+warn_thresholds = [0.75, 0.90]
+warn_before_compaction_at = 0.92
+speak_rate_limit_warnings = true
+
+[bedtime]
+mode = "focused"            # "focused" (autonomous) | "bedtime" (confirm writes)
+idle_sleep_minutes = 12.0
+idle_warn_seconds = 20.0
+wind_down_voice = ""
+wind_down_volume = 0.6
+confirm_dangerous = true
+
+[session]
+log_dir = "~/.local/state/nocturne/logs"
+write_transcript = true
+resume_last = false
+session_id = ""
+away_notifier = "none"      # "none" | "ntfy" | "pushover"
+# ntfy_topic = "my-nocturne"
+
+[agent]
+# driver: how Nocturne talks to Claude.
+#   "cli" (default) = spawn the Claude Code CLI on your Pro/Max SUBSCRIPTION.
+#                     No API key, no API credits. This is the point of Nocturne.
+#   "sdk"           = Claude Agent SDK; needs ANTHROPIC_API_KEY, billed as
+#                     pay-per-token API credits. Only if you specifically want that.
+driver = "cli"
+claude_cli_path = "C:/Users/Fengy/AppData/Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code/2.1.209/claude.exe"  # "" = auto-detect; set here because the Store-packaged app virtualizes %APPDATA%
+model = ""                  # "" = CLI default
+cwd = ""                    # working dir for the Claude Code session
+permission_mode = "default" # default | acceptEdits | plan | bypassPermissions
+include_partial_messages = true
+setting_sources = ["user", "project", "local"]  # SDK driver only; CLI honours them natively
+allowed_tools = []          # [] = default set; populate to restrict
+disallowed_tools = []       # e.g. ["Bash(rm *)"]
