@@ -126,6 +126,14 @@ must be wide enough to span the current offset** (at 0.75 m it's a dead-zone at 
 - 🟢 **`vglp3c`** — zero=3.0 warm **directly from champion** (a clean single jump, like zero=4 was).
   xoff **1.57 m**, thread **7%**, no collapse. 🚩 **Direct-from-champion walks tighter fine; re-warming
   an already-shifted policy is what collapses.**
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit)** — the "in-run zero anneal" described below **never
+> ran** (C2, confirmed conf 0.93): `vglpan`'s own Adroit stdout shows the anneal hook printed
+> `requested but env._egorw missing -- SKIPPED` and zero update-logging lines. `vglpan` actually
+> trained the whole run at **fixed `cross_zero=4.0`**; the xoff descent below is real (verified box-exit
+> counting) but is *not* evidence of a working continuous anneal — it is extra training + corridor +
+> magnitude centering at a static zero. The L6 retraction already covers this; this banner extends it
+> to the entry itself. See [11-audit-2026-07-09.md](11-audit-2026-07-09.md) C2/C8.
+
 - 🟢🟢 **`vglpan`** — **the winner.** Warm from vglp4 + **in-run zero anneal 4.0→0.75** (continuous,
   mutated per-update in the training loop — see [05]), 4000 upd. xoff rode **2.76→1.9→1.5→1.2→1.04→0.88**
   (monotone) as the zero annealed; thread **3%→20%**. Blew past every prior plateau. **Best policy to
@@ -185,12 +193,30 @@ problem** (the Era-5 "46%" was a harness artifact).
   matches training (0.05%), NOT the broken harness's 46%** — confirms `_run_det_eval` faithful and
   `ego_render_rollout` broken. 🚩 **deterministic (22.6%) ≥ stochastic (20%): essentially NO
   determinism gap** — the held noise was mildly *hurting*. The deployed policy is as good as training.
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit)** — `command_history.log:74210-74217` recovers `vglp05`'s
+> actual launch line: `EXTRA=++env.cross_zero_end=0.5`. Since the cross-zero anneal hook was inert (C2),
+> that override was a **no-op** — `vglp05` ran **config-identical to `vglpan`** (same stage, same fixed
+> `cross_zero=4.0`) except for +500 updates. It is a proven **accidental replicate**, not an independent
+> reward-tightening test: `vglpan` 0.20 thread/0.88 m vs `vglp05` 0.07 thread/1.7 m demonstrates **~2.8×
+> thread / ~2× xoff single-seed run-to-run variance**, not "over-tightening backfires." See
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md) (critic pass) — this also means every other n=1
+> comparison in this log carries at least this much unquantified noise.
+
 - 🔴 **`vglp05`** — fresh anneal (warm vglp4), zero **4→0.5** (target the effective aperture, contra the
   earlier L7 worry, since a 0.6 m crossing clips anyway). Result: xoff **1.7 m, thread 7%** — *worse*
   than vglpan (0.88 m, 20%). **Over-tightening the reward zero back-fires** (crossings the policy can't
   achieve get strongly-negative parabola → destabilises → crosses wider).
 - 🔴 **`vglpshp`** — fresh anneal + sharper endgame noise floor **0.03→0.015**. **End-collapsed**
   (xoff 9.9, thread 0). Over-sharpening destabilises the endgame (anneal-into-worse).
+
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit)** — the "decisive" arithmetic below is **false** at the
+> real fixed `cross_zero=4.0` `vglpan` actually trained at (C2/C8): at zero=4.0 a 0.88 m crossing earns
+> `20·(1−(0.88/4)²) ≈ +19.0` — **strongly positive**, not the claimed −7.6 at a zero=0.75 that was never
+> in effect. The reward was never punishing 0.88 m; the policy had almost no gradient telling it to
+> tighten. "Reward shaping is spent" is therefore **unsupported** — C5 (REFUTED, conf 0.80) demotes this
+> whole conclusion to an untested hypothesis; the calibration run that would actually test it
+> (`noise_scale=0` + the *real* post-fix anneal, `vczns0`) has not yet been run. See
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md) C5/C8.
 
 **Conclusion — the ~0.88 m crossing is a CONTROL-PRECISION floor, not a reward/noise/convergence
 limit** (answers [09] Q5):
@@ -204,6 +230,16 @@ limit** (answers [09] Q5):
 **Pivot to control/speed/perception.** Leading hypothesis: the drone crosses at ~8 m/s (≈12 m in
 ~1.5 s) — too fast to thread a ~0.42 m window. The progress reward pays closing-rate up to
 `rw_vmax_mps = 39 m/s`, a standing speed incentive.
+
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit)** — C4 (REFUTED, conf 0.80) found the compound framing
+> below over-claims. The **narrow** result stands: `rw_vmax_mps` is a reward-credit clip on progress
+> (zero hits grepping the env/dynamics for a velocity limit), not a speed constraint, so lowering it
+> is not a useful knob. But **no run ever measured the actual crossing speed** — `metrics/mean_speed`
+> is logged but was never pulled; the "~8 m/s" figure below is a back-of-envelope estimate, not
+> telemetry. So "therefore slow-crossing threads better is still untried" (already hedged below) should
+> be read as **fully untested**, not as a secondary footnote — it is specifically relevant to
+> `vglpns0`'s residual 36% failures, which are near-centred collisions. See
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md) C4.
 
 - ❌ **`vglpsl5` / `vglpsl3` (DONE, 2026-07-09) — SPEED LEVER REFUTED, and in the *wrong* direction.**
   The vglpan recipe with the rewarded-speed cap `rw_vmax_mps` lowered to **5** and **3 m/s**. Same
@@ -249,6 +285,17 @@ limit** (answers [09] Q5):
   the deployable lever must work *with* the real noise (→ `r_perc`, below; or a better estimator). The
   vglpns5 non-monotonicity (worse than both 0 and 1) is unexplained and likely an early transient —
   finals pending. → dossier [10](10-hypotheses-and-literature.md), [06](06-empirical-laws.md) L14.
+
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit)** — C3 (REFUTED, conf 0.78): this rejection is
+> **confounded**. The `vperc` stage statically sets `cross_zero=0.75` ("champion settings"), but the
+> `vglpan` base it warms from actually trained at fixed `cross_zero=4.0` (C2) — so `vperc05`/`vperc15`
+> silently carried a **hidden discrete 4.0→0.75 zero jump** on top of `r_perc`, the exact discontinuity
+> class that detonates warm-starts (L1). The **no-`r_perc` control collapsed identically**
+> (`vns01`/`vns31`, same hidden jump, zero reward change, bit-identical DET_EVAL 0.0051) — the collapse
+> cannot be attributed to `r_perc` over the confound. **Status: moved from REJECTED back to
+> UNTESTED-CLEANLY.** A clean retest (warm from `vglp4` at its native zero=4.0, single lever, failure
+> mode recorded) is cheap and `r_perc` remains the field's largest documented centring lever. See
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md) C3.
 
 - ❌ **`r_perc` perception reward — DETONATED (2026-07-09), rejected.** `vperc05`/`vperc15` (weights
   0.05/0.15, warm from champion) both collapsed within ~400 updates: thread 0.19 → **0.00**, xoff blew

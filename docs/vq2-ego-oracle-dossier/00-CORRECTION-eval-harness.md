@@ -93,3 +93,19 @@ vs the trusted training (stochastic) `thread 0.199, collision 0.713, miss 0.087,
 - **The problem is unambiguously CENTRING** — ~68% frame-clip deployed, crossings at ~0.88 m against a
   ~0.42 m effective window. The only lever that matters is pulling the crossing mean tighter (the
   parabola zero-anneal toward ~0.42–0.5 m).
+
+## SECOND-AUDIT CONFIRMATION (2026-07-09)
+
+A separate, independent fresh-eyes adversarial audit (2026-07-09, full report
+[11-audit-2026-07-09.md](11-audit-2026-07-09.md)) re-derived `_run_det_eval`'s faithfulness from
+scratch (claim C6) and **CONFIRMED it** (conf 0.85): same-instance env identity, the frozen-actor
+trick, and statistical power on the det≥stoch direction all check out by independent code inspection
+and a raw local capture of the `vglpanEV` result line. Two caveats surfaced that were not previously
+flagged here: (1) `_run_det_eval`'s default **300-step (10 s) horizon censors episodes** that run past
+it against `max_time=40 s` — slow-terminating episodes (timeouts, long hovers) never enter the
+aggregate, so the reported rates are conditioned on fast-ending episodes only; magnitude unmeasured.
+(2) "thread" remains a **point-mass geometric criterion** (interpolated crossing inside the
+aperture-minus-body-radius window), not a collision-simulated pass — fine for relative progress
+tracking, but the 90% competition target still needs validation by flying the policy in the real VQ2
+sim. Neither caveat overturns the CONFIRMED verdict; both are scoping notes for how to read the
+numbers.

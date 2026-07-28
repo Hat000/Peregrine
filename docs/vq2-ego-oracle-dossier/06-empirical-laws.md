@@ -5,6 +5,19 @@ backed by ≥2 observations. An oracle should either exploit or explain/refute t
 
 ### L1. Any large *structural* change to a warm-started policy collapses it into a floor-dive.
 
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit)** — C8 (REFUTED, conf 0.82) re-checked all 6 claimed
+> collapses against the actual stage configs: **1 of 6 was not a warm-start at all** (`vgk10a`, fresh),
+> **2 carried the same hidden discrete 4.0→0.75 zero jump** as the `r_perc` runs (`vglpsub`,
+> `vglpc40`) — leaving only **2 clean single-lever collapses** (`vgap8`, `vglp3`). Counter-evidence:
+> **4 discrete-reward-change survivals** (`vgctrw`, `vglp4`, `vglp3c`, `vglpsl5`/`vglpsl3`) plus one
+> massive obs-change survival (`vglpns0`); the *same* zero-3→4 change survives from one base (`vglp3c`,
+> direct-from-champion) and detonates from another (`vglp3`, re-warm) — the "any" quantifier fails, and
+> the "warm-from-champion survives" corollary below also fails (`vgap8` was warm-from-champion and
+> collapsed). **Restated law:** *a discrete reward change that newly punishes the policy's CURRENT
+> operating point can detonate it, base-dependently* — 2 clean supporting observations, not 6, all
+> single-seed. See [11-audit-2026-07-09.md](11-audit-2026-07-09.md) C8. **Original (now-narrowed) claim
+> below.**
+
 Observed **6×**: `frame_clip_is_miss` (warm), `k=10`+anneal, wide-aperture (`vgap8`), discrete zero
 shrink (`vglp3`/`vglp3b`), sub-aperture re-warm (`vglpsub`), double-centre re-warm (`vglpc40`). The
 policy sits in a narrow attractor; changing the reward semantics faster than the critic re-adapts
@@ -47,6 +60,15 @@ was real, but the surviving alternative was *fixed zero=4*, not a working anneal
 anneal is now fixed and under test (`vcza2`). The parts of L6 still standing: a fixed zero=6 is too flat
 (drifted worse) and zero=4 pulls (both observed at fixed values); the near-centre gradient scaling
 argument is analytic. **Original (now-suspect) claim below.**
+
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit, extends the retraction above)** — C8 (REFUTED, conf 0.82)
+> makes this explicit: **"continuous anneal is safe" now has zero clean positive evidence.** The one
+> run this claim leaned on (`vglpan`) never ran a continuous anneal at all (it trained at fixed
+> zero=4.0); the only genuinely continuous in-run anneals that *did* execute during the campaign
+> (the noise-scale curricula `vns01`/`vns31`, once the hook bug was understood as inert-then-fixed)
+> collapsed. `vcza2` (the real 4→0.75 anneal) is therefore the **first actual test** of this claim, not
+> a replication — treat any result from it as new information. See
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md) C8.
 
 **[SUSPECT] For a smooth crossing bowl, the "zero radius" must be tight enough to make a gradient — and
 must be *shrunk continuously*, never stepped.**
@@ -113,6 +135,18 @@ raw ~0.28 m measurement error because the **closed loop amplifies** it: the poli
 better estimator/detector (vision-commander domain), or (c) a policy more robust to the noise — **not**
 further crossing-reward shaping. `vglpns0` is a *ceiling* (we lack a perfect estimator at deploy), not a
 deployable number. The pre-correction reasoning is kept below for the record.
+
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit)** — two problems in the superseded block below, on top of
+> it already being superseded. (1) **The `vglp05` citation is invalid**: `vglp05`'s zero-anneal
+> `EXTRA` was a no-op (C2) — it ran config-identical to `vglpan`, so "a tighter reward zero (`vglp05`)
+> → worse" is really a ~2.8× thread / ~2× xoff **single-seed replicate**, not an independent
+> reward-tightening data point (see [11-audit-2026-07-09.md](11-audit-2026-07-09.md), the `vglp05`
+> finding). (2) **The "~0.28 m measurement error" bound is the wrong summary statistic**: it is the
+> 3-D `rel_pos` error norm, dominated by the ~0.33 m smoothed *depth* channel, which does not project
+> into a head-on crossing offset; the crossing-relevant **in-plane** error is ≈0.18 m and is
+> **bias-dominated** (a mostly-calibratable ≤0.19 m per-episode offset, not scatter) — so this
+> paragraph's perception-vs-control bound is built on the wrong number. See C1/C7 in
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md).
 
 **[SUPERSEDED] Original L14 claim: "a CONTROL-precision floor, not a reward/noise/convergence limit."**
 

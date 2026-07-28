@@ -59,6 +59,16 @@ DR to the real sim (needs its dynamics), (b) train for robustness *including* no
 break it), or (c) is DR-off simply irrelevant because the real sim has aero+latency? What's the right
 **nominal-dynamics eval gate**?
 
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit).** Q5 has now been **answered wrongly twice**: first
+> "CONTROL-limited" (the 2026-07-09 UPDATE block above), then "PERCEPTION-limited" ([06] L14, same
+> day, from the `vglpns0` ablation). The audit (C5, REFUTED conf 0.80) found both `vglpan` and
+> `vglpns0` trained at the same fixed `cross_zero=4.0` (the anneal was inert for both, C2) — a regime
+> with almost no reward gradient distinguishing a 0.32 m thread from a 0.8 m frame-clip (+19.2 of 20
+> either way). **Current status: perception-vs-reward-vs-control is genuinely unresolved**, pending
+> the missing calibration run (`vczns0`: `noise_scale=0` + the *real* post-fix cross-zero anneal, warm
+> from `vglp4`, with a mandatory `[cross-zero-anneal] ON` log check). See
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md) C5.
+
 ## Q5 — The centring floor: control-limited or reward-limited?
 
 The 6000-upd anneal (`vglpan6`) landed identically to 4000 (~0.9 m / 20%) → **not convergence-limited**.

@@ -19,6 +19,15 @@ Written 2026-07-08 by the RL commander (Claude, Opus 4.8) for Fengyou. Repo: `Pe
 > "reach-rate / 46%-never-reach / +3.2 m high-bias" findings are **artifacts** and are corrected there.
 > The TL;DR below is already corrected; [07] is left as-was with a correction banner.
 
+> 🛑 **THEN READ [11-audit-2026-07-09.md](11-audit-2026-07-09.md).** A fresh-eyes adversarial audit
+> (2026-07-09) revised or refuted **5 of 8** headline claims below: the r_perc rejection, the
+> speed-lever compound conclusion, the "36% control residual" reading, the noise/bias contract's
+> claim to be measured-and-current, and the warm-start-collapse "6×" tally. It also found a proven
+> ~2.8× single-seed run-variance replicate (`vglp05`), an obs blackout-masking cliff, a dead
+> `_rel_var` state, and a `[b,0,b]` sign-randomized bias bug. Per this dossier's own convention
+> nothing below was rewritten — every affected passage in [04]/[06]/[08]/[09]/[00] now carries a
+> 🛑 banner pointing here; treat the banners as authoritative over the text they sit above.
+
 ## TL;DR
 
 - **Goal:** ≥90% single-gate *thread* rate (clean pass through the aperture, zero contact),
@@ -74,6 +83,7 @@ never-reach problem. But it is the thread we were pulling when this dossier was 
 | [08-ideas-rejected-and-untried.md](08-ideas-rejected-and-untried.md) | Every idea we shot down (with why), and — separately — everything we **never tried** and everything we **never measured**. |
 | [09-open-questions-for-the-oracle.md](09-open-questions-for-the-oracle.md) | The specific questions we want answered, ranked. |
 | [10-hypotheses-and-literature.md](10-hypotheses-and-literature.md) | **Deep analysis (2026-07-09).** Our stack vs. the field's champion reward/obs designs (Swift, Song, Geles, MonoRace, CPC/TOGT); the quantitative centering baseline (~0.5 m field, →0.15 m with a perception reward); the N=1-vs-N=2 crash ablation; refined hypotheses + the sequenced plan (`r_perc` + dual-gate). |
+| [11-audit-2026-07-09.md](11-audit-2026-07-09.md) | **Fresh-eyes adversarial audit (2026-07-09).** 8 headline claims re-derived from primary sources by independent readers + a refutation-seeking critic; 5 of 8 revised/refuted (r_perc, speed-lever compound claim, the 36%-control-residual reading, the noise-contract's "measured/current" status, the warm-start "6×" law). Plus: the `vglp05` accidental-replicate variance finding, the obs blackout-masking cliff, the dead `_rel_var`, the `[b,0,b]` bias bug. |
 
 Figures live in [`figures/`](figures/). The analysis is reproducible from the scripts described in
 [07](07-diagnosis-hitmap.md).

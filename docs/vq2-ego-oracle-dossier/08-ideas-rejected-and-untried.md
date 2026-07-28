@@ -1,5 +1,15 @@
 # 08 — Ideas Rejected, and Everything We Never Tried / Never Saw
 
+> 🛑 **RETRACTED/CORRECTED (2026-07-09 audit).** Two corrections to the UPDATE block immediately below:
+> (1) **the `vglp05`-based sub-aperture rejection is invalid** — `vglp05`'s zero-anneal override was a
+> no-op (the anneal hook was inert), so it ran config-identical to `vglpan`; the "newly rejected,
+> zero→0.5 → worse" reading is really a ~2.8× thread / ~2× xoff single-seed replicate, not an
+> independent test of over-tightening (see [11-audit-2026-07-09.md](11-audit-2026-07-09.md), the
+> `vglp05` finding). (2) **`r_perc` moves back to UNTESTED-CLEANLY** (C3, REFUTED conf 0.78) — its
+> rejection (referenced later in Part A) was confounded by a hidden discrete 4.0→0.75 reward-zero jump
+> plus a fragile re-warm base whose no-`r_perc` control collapsed identically; see C3 in
+> [11-audit-2026-07-09.md](11-audit-2026-07-09.md).
+
 > **UPDATE (2026-07-09) — several items below have since moved.** Newly **rejected** (tested, failed):
 > the sub-aperture anneal (`vglp05`, zero→0.5 → *worse*, 1.7 m) and the sharper endgame noise floor
 > (`vglpshp`, 0.015 → collapse). Newly **measured/resolved**: the deterministic policy (faithful
