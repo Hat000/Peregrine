@@ -263,9 +263,20 @@ def test_no_meta_no_tlog_is_ungradeable_attention(tmp_path):
 _REAL = ROOT / "handoff/shadowpc-postfix-dataset-2026-06-12/extracted"
 
 
-@pytest.mark.skipif(not _REAL.is_dir(), reason="real recorded bundles not present in this checkout")
+def _real_bundles() -> list:
+    """Bundles actually present in THIS checkout, or []."""
+    if not _REAL.is_dir():
+        return []
+    return sorted(p for p in _REAL.iterdir() if (p / "debug_obs.jsonl").exists())
+
+
+# The guard used to be `not _REAL.is_dir()`, which tested the wrong thing: the directory survives in
+# checkouts whose bundle CONTENTS were never fetched (they are large and out-of-band), so the skip
+# did not fire and the test failed on an empty dir -- a red suite reporting missing optional data as
+# a broken build. Guard on the bundles themselves, which is what the test actually needs.
+@pytest.mark.skipif(not _real_bundles(), reason="real recorded bundles not present in this checkout")
 def test_real_bundles_diagnose_end_to_end():
-    bundles = sorted(p for p in _REAL.iterdir() if (p / "debug_obs.jsonl").exists())
+    bundles = _real_bundles()
     assert bundles, "expected at least one real bundle with debug_obs.jsonl"
     seen_pass = seen_attention = False
     for b in bundles:
